@@ -140,6 +140,38 @@ impl ChatStore for PostgresChatStore {
         Ok(rows.iter().map(read_message).collect())
     }
 
+    async fn set_message_content(
+        &self,
+        message_id: Uuid,
+        content: &str,
+        model: Option<&str>,
+    ) -> Result<Message, ChatError> {
+        let row = sqlx::query(
+            "update agent_messages set content = $2, model = coalesce($3, model) \
+             where id = $1 \
+             returning id, session_id, seq, role, content, model, prompt_tokens, \
+                       completion_tokens",
+        )
+        .bind(message_id)
+        .bind(content)
+        .bind(model)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or(ChatError::NotFound)?;
+
+        Ok(read_message(&row))
+    }
+
+    async fn delete_message(&self, message_id: Uuid) -> Result<(), ChatError> {
+        sqlx::query("delete from agent_messages where id = $1")
+            .bind(message_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
     async fn append_message(
         &self,
         session_id: Uuid,

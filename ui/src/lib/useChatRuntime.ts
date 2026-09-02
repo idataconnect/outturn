@@ -21,6 +21,9 @@ const convertMessage = (message: Message): ThreadMessageLike => ({
   content: [{ type: 'text', text: message.content }],
 })
 
+/** Highest contiguous delta index applied per message, for gap detection. */
+type DeltaProgress = Map<string, number>
+
 export function useChatRuntime(sessionId: string | null) {
   const [messages, setMessages] = useState<Message[]>([])
   const [isRunning, setIsRunning] = useState(false)
@@ -29,6 +32,29 @@ export function useChatRuntime(sessionId: string | null) {
   // Read inside the poll loop without making it a dependency, so switching
   // session does not tear down and rebuild the loop mid-request.
   const seen = useRef<Set<string>>(new Set())
+  const deltaProgress = useRef<DeltaProgress>(new Map())
+
+  /**
+   * Appends a fragment to a message already on screen.
+   *
+   * Deltas carry an index so a gap is detectable: applying one out of order
+   * would silently corrupt the text, where noticing lets the message be
+   * refetched instead.
+   */
+  const applyDelta = useCallback(
+    (messageId: string, idx: number, text: string): boolean => {
+      const expected = deltaProgress.current.get(messageId) ?? 0
+      if (idx !== expected) {
+        return false
+      }
+      deltaProgress.current.set(messageId, idx + 1)
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, content: m.content + text } : m)),
+      )
+      return true
+    },
+    [],
+  )
 
   const merge = useCallback((incoming: Message[]) => {
     if (incoming.length === 0) return
@@ -86,8 +112,32 @@ export function useChatRuntime(sessionId: string | null) {
             .map((e) => e.payload as Message)
           merge(arrived)
 
-          // An assistant reply means the turn finished.
-          if (arrived.some((m) => m.role === 'assistant')) {
+          // Deltas append to a message that already exists, so what is on
+          // screen during generation is the same object that remains after,
+          // and nothing is swapped when the turn completes.
+          let gapped = false
+          for (const event of result.events) {
+            if (event.kind !== 'chat.delta') continue
+            const { message_id, idx, text } = event.payload as {
+              message_id: string
+              idx: number
+              text: string
+            }
+            if (!applyDelta(message_id, idx, text)) {
+              gapped = true
+            }
+          }
+
+          // A missing delta cannot be reconstructed from the stream, so the
+          // message is reloaded rather than left with a hole in it.
+          if (gapped && sessionId) {
+            const fresh = await loadMessages(sessionId)
+            deltaProgress.current = new Map()
+            setMessages(fresh)
+          }
+
+          const done = result.events.filter((e) => e.kind === 'chat.done')
+          if (done.length > 0) {
             setIsRunning(false)
           }
 

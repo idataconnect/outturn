@@ -15,7 +15,7 @@ mod common;
 use common::fake_gateway::{Behaviour, FakeGateway};
 
 fn component() -> Vec<u8> {
-    std::fs::read("tests/fixtures/agent_default.wasm").expect("component fixture")
+    std::fs::read("assets/agent_default.wasm").expect("component fixture")
 }
 
 fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> RunOptions {

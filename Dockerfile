@@ -3,8 +3,19 @@ FROM rust:1 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
+# Cargo validates every [[test]] path when parsing the manifest, even for a
+# binary-only build. Empty stand-ins satisfy that without copying the real
+# tests, which would invalidate this layer whenever a test changed.
+RUN mkdir -p tests && \
+    touch tests/api.rs tests/queue_and_events.rs \
+          tests/agent_component.rs tests/agent_component_fake.rs
 # Embedded by sqlx::migrate! at compile time.
 COPY migrations/ migrations/
+# Read by wasmtime's bindgen! macro at compile time.
+COPY wit/ wit/
+# The agent component the runtime executes. Committed as a build artifact so
+# the image does not need the wasm toolchain.
+COPY assets/agent_default.wasm /agent_default.wasm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release --bin api --bin gateway --bin runtime && \
@@ -15,6 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:trixie-slim AS api
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
+COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["api"]

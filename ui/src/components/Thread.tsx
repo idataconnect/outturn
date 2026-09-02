@@ -1,6 +1,8 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive } from '@assistant-ui/react'
 import { Send } from 'lucide-react'
 
+import MarkdownText from './MarkdownText'
+
 /**
  * Thread built from assistant-ui primitives directly, using this project's
  * Tailwind classes. The prebuilt component is distributed through shadcn's
@@ -21,8 +23,10 @@ function UserMessage() {
 function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="flex justify-start">
-      <div className="max-w-[75%] px-4 py-2 rounded-lg text-sm whitespace-pre-wrap bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-900 dark:text-gray-100">
-        <MessagePrimitive.Parts />
+      <div className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-900 dark:text-gray-100">
+        {/* Only the assistant's text is markdown: rendering what the user
+            typed would mangle anything that resembled syntax. */}
+        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       </div>
     </MessagePrimitive.Root>
   )

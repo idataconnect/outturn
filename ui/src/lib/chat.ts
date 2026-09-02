@@ -11,9 +11,21 @@ export type Message = {
   model: string | null
 }
 
-/** Events carry a copy of the message they announce. */
-type ChatEvent =
+export type ChatEvent =
+  /** A message exists. Assistant replies arrive empty and are streamed into. */
   | { seq: number; kind: 'chat.message'; payload: Message }
+  /** A fragment of a message's content, in order. */
+  | {
+      seq: number
+      kind: 'chat.delta'
+      payload: { message_id: string; idx: number; text: string }
+    }
+  /**
+   * A message is complete. Carries no content: the client has already rendered
+   * the deltas, and re-sending the text would invite a replace that flashes if
+   * the two ever differed.
+   */
+  | { seq: number; kind: 'chat.done'; payload: { message_id: string; seq: number } }
   | { seq: number; kind: 'chat.error'; payload: { message: string } }
 
 type PollResponse = {

@@ -5,13 +5,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use crate::auth::{Role, TokenMinter};
 use crate::events;
-use crate::gateway::llm::types::{
-    ChatCompletionRequest, ChatCompletionResponse, Message as LlmMessage, MessageContent,
-    Role as LlmRole,
-};
 use crate::jobs;
+use crate::runtime::component::{
+    AgentRunner, Message as GuestMessage, ProgressSink, RunOptions,
+};
 
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
@@ -26,13 +27,20 @@ pub struct ChatTurnPayload {
     pub agent_id: Uuid,
 }
 
+/// Bounds a runaway guest. Generous enough for a long conversation, finite so
+/// a loop cannot occupy a worker indefinitely.
+const FUEL_PER_TURN: u64 = 50_000_000_000;
+
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
     pub chat: Arc<dyn ChatStore>,
     pub minter: Arc<TokenMinter>,
     pub gateway_url: String,
-    pub http: reqwest::Client,
+    /// Compiled once and reused: instantiation is cheap, compilation is not.
+    pub runner: Arc<AgentRunner>,
+    /// The component every agent currently runs.
+    pub agent_module: Arc<Vec<u8>>,
 }
 
 impl Worker {
@@ -148,74 +156,116 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
 
-        // The agent's system prompt leads every turn, ahead of the stored
-        // conversation, so editing it takes effect on the next message.
-        let mut messages = Vec::with_capacity(history.len() + 1);
-        if !agent.system_prompt.is_empty() {
-            messages.push(plain(LlmRole::System, &agent.system_prompt));
-        }
-        for m in &history {
-            messages.push(plain(role_from_str(&m.role), &m.content));
-        }
-
-        let model = model_for(&agent.policy);
-        let request = ChatCompletionRequest {
-            model: model.clone(),
-            messages,
-            tools: None,
-            temperature: None,
-            max_tokens: None,
-            stream: false,
-        };
-
-        // The worker acts on behalf of the session, so it mints a short-lived
-        // service token rather than reusing the browser's.
-        let token = self
-            .minter
-            .mint(payload.session_id, payload.tenant_id, &[Role::Operator])?;
-
-        let response = self
-            .http
-            .post(format!("{}/v1/chat/completions", self.gateway_url))
-            .bearer_auth(token)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("gateway returned {status}: {body}");
-        }
-
-        let completion: ChatCompletionResponse = response.json().await?;
-        let reply = completion
-            .choices
-            .first()
-            .map(|c| text_of(&c.message.content))
-            .unwrap_or_default();
-
-        let usage = completion
-            .usage
-            .as_ref()
-            .map(|u| Usage {
-                prompt_tokens: Some(u.prompt_tokens as i32),
-                completion_tokens: Some(u.completion_tokens as i32),
+        let conversation: Vec<GuestMessage> = history
+            .iter()
+            .map(|m| GuestMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
             })
-            .unwrap_or_default();
+            .collect();
 
-        let message = self
+        // The assistant's message is created empty before generation starts, so
+        // deltas attach to a row that already exists. Without this the browser
+        // would render a streaming buffer and then swap it for a loaded
+        // message, and any difference between the two would flash.
+        let placeholder = self
             .chat
-            .append_message(payload.session_id, "assistant", &reply, Some(&model), usage)
+            .append_message(payload.session_id, "assistant", "", None, Usage::default())
             .await
-            .map_err(|e| anyhow::anyhow!("append: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
 
         events::append(
             &self.pool,
             payload.tenant_id,
             Some(payload.session_id),
             "chat.message",
-            serde_json::to_value(&message)?,
+            serde_json::to_value(&placeholder)?,
+        )
+        .await?;
+
+        // Deltas are announced as they arrive, each carrying its index so a
+        // reader can tell a dropped one from a slow one.
+        let sink: ProgressSink = {
+            let pool = self.pool.clone();
+            let tenant_id = payload.tenant_id;
+            let session_id = payload.session_id;
+            let message_id = placeholder.id;
+            let index = Arc::new(AtomicI64::new(0));
+
+            Arc::new(move |text: &str| {
+                let pool = pool.clone();
+                let text = text.to_string();
+                let idx = index.fetch_add(1, Ordering::SeqCst);
+                // Spawned because the sink is synchronous: it is called from
+                // the host while the guest is blocked, and must not await.
+                tokio::spawn(async move {
+                    let _ = events::append(
+                        &pool,
+                        tenant_id,
+                        Some(session_id),
+                        "chat.delta",
+                        serde_json::json!({
+                            "message_id": message_id,
+                            "idx": idx,
+                            "text": text,
+                        }),
+                    )
+                    .await;
+                });
+            })
+        };
+
+        // A token minted for this turn, carrying only what the guest needs.
+        let token = self.minter.mint(
+            payload.session_id,
+            payload.tenant_id,
+            &[Role::Operator],
+        )?;
+
+        let reply = self
+            .runner
+            .run(
+                &self.agent_module,
+                conversation,
+                agent.system_prompt.clone(),
+                RunOptions {
+                    session_id: payload.session_id,
+                    gateway_url: self.gateway_url.clone(),
+                    gateway_token: token,
+                    default_model: model_for(&agent.policy),
+                    progress: Some(sink),
+                    fuel: FUEL_PER_TURN,
+                },
+            )
+            .await;
+
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(e) => {
+                // The placeholder would otherwise sit empty forever.
+                let _ = self.chat.delete_message(placeholder.id).await;
+                return Err(e);
+            }
+        };
+
+        let finished = self
+            .chat
+            .set_message_content(placeholder.id, &reply, Some(&model_for(&agent.policy)))
+            .await
+            .map_err(|e| anyhow::anyhow!("finalise: {e}"))?;
+
+        // Carries no content: the browser has already rendered the deltas, and
+        // sending the text again would invite a client to replace what it has
+        // and flash if the two ever differed.
+        events::append(
+            &self.pool,
+            payload.tenant_id,
+            Some(payload.session_id),
+            "chat.done",
+            serde_json::json!({
+                "message_id": finished.id,
+                "seq": finished.seq,
+            }),
         )
         .await?;
 
@@ -234,39 +284,5 @@ fn model_for(policy: &serde_json::Value) -> String {
         })
 }
 
-fn plain(role: LlmRole, content: &str) -> LlmMessage {
-    LlmMessage {
-        role,
-        content: MessageContent::Text(content.to_string()),
-        name: None,
-        tool_calls: None,
-        tool_call_id: None,
-    }
-}
 
-/// Stored roles are constrained by the table's check constraint, so an
-/// unrecognised value cannot occur; treat one as `user` rather than panicking.
-fn role_from_str(role: &str) -> LlmRole {
-    match role {
-        "system" => LlmRole::System,
-        "assistant" => LlmRole::Assistant,
-        "tool" => LlmRole::Tool,
-        _ => LlmRole::User,
-    }
-}
 
-/// Flattens multi-part content into text. Parts only appear for image input,
-/// which this path does not yet produce.
-fn text_of(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                crate::gateway::llm::types::ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-    }
-}

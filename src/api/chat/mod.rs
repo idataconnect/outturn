@@ -72,6 +72,19 @@ pub trait ChatStore: Send + Sync {
 
     async fn messages(&self, session_id: Uuid) -> Result<Vec<Message>, ChatError>;
 
+    /// Replaces a message's content, for a reply that was created empty and
+    /// streamed into.
+    async fn set_message_content(
+        &self,
+        message_id: Uuid,
+        content: &str,
+        model: Option<&str>,
+    ) -> Result<Message, ChatError>;
+
+    /// Removes a message. Used to clear a placeholder whose turn failed, which
+    /// would otherwise sit empty in the transcript forever.
+    async fn delete_message(&self, message_id: Uuid) -> Result<(), ChatError>;
+
     /// Appends a message, assigning the next sequence number for the session.
     async fn append_message(
         &self,

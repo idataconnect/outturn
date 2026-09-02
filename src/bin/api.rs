@@ -87,6 +87,14 @@ async fn main() {
         health.shutdown_signal(),
     ));
 
+    // The agent component every turn runs. Read once at startup: it is the
+    // same bytes for every session, and compiling it per turn would be waste.
+    let agent_module = std::fs::read(
+        std::env::var("OUTTURN_AGENT_MODULE")
+            .unwrap_or_else(|_| "/usr/local/share/outturn/agent_default.wasm".into()),
+    )
+    .expect("agent component");
+
     // Turns are produced here rather than in the request path, so a slow
     // provider never holds an HTTP connection open.
     Arc::new(Worker {
@@ -96,7 +104,10 @@ async fn main() {
         minter: Arc::new(worker_minter),
         gateway_url: std::env::var("OUTTURN_GATEWAY_URL")
             .unwrap_or_else(|_| "http://outturn-gateway:8081".into()),
-        http: reqwest::Client::new(),
+        runner: Arc::new(
+            outturn::runtime::component::AgentRunner::new().expect("agent runner"),
+        ),
+        agent_module: Arc::new(agent_module),
     })
     .spawn(health.shutdown_signal());
 

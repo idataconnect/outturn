@@ -35,7 +35,7 @@ async fn component_runs_a_turn_and_streams_progress() {
          `kubectl port-forward svc/outturn-gateway 18091:8081` running",
     );
 
-    let component = std::fs::read("tests/fixtures/agent_default.wasm").expect("component");
+    let component = std::fs::read("assets/agent_default.wasm").expect("component");
     let runner = AgentRunner::new().expect("runner");
 
     // Progress arrives while the model generates, which is what will drive
