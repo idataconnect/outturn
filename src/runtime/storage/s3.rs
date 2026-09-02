@@ -1,0 +1,178 @@
+use async_trait::async_trait;
+use s3::creds::Credentials;
+use s3::{Bucket, Region};
+
+use super::{FileMetadata, StorageBackend, StorageError};
+
+pub struct S3Storage {
+    bucket: Box<Bucket>,
+    prefix: String,
+}
+
+impl S3Storage {
+    pub fn new(
+        endpoint: &str,
+        bucket_name: &str,
+        access_key: &str,
+        secret_key: &str,
+        prefix: String,
+    ) -> Result<Self, StorageError> {
+        let region = Region::Custom {
+            region: "us-east-1".to_string(),
+            endpoint: endpoint.to_string(),
+        };
+
+        let credentials = Credentials::new(Some(access_key), Some(secret_key), None, None, None)
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let bucket = Bucket::new(bucket_name, region, credentials)
+            .map_err(|e| StorageError::Io(e.to_string()))?
+            .with_path_style();
+
+        Ok(Self {
+            bucket: Box::new(*bucket),
+            prefix,
+        })
+    }
+
+    fn key(&self, path: &str) -> String {
+        if self.prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}/{}", self.prefix, path)
+        }
+    }
+}
+
+#[async_trait]
+impl StorageBackend for S3Storage {
+    async fn read(
+        &self,
+        path: &str,
+        offset: u64,
+        len: u32,
+    ) -> Result<Vec<u8>, StorageError> {
+        let key = self.key(path);
+
+        if offset == 0 && len == u32::MAX {
+            let response = self
+                .bucket
+                .get_object(&key)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+
+            if response.status_code() == 404 {
+                return Err(StorageError::NotFound);
+            }
+
+            return Ok(response.to_vec());
+        }
+
+        let end = offset.saturating_add(len as u64).saturating_sub(1);
+
+        let response = self
+            .bucket
+            .get_object_range(&key, offset, Some(end))
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("404") || msg.contains("NoSuchKey") {
+                    StorageError::NotFound
+                } else {
+                    StorageError::Io(msg)
+                }
+            })?;
+
+        Ok(response.to_vec())
+    }
+
+    async fn write(
+        &self,
+        path: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<u64, StorageError> {
+        let key = self.key(path);
+
+        if offset != 0 {
+            let existing = match self.bucket.get_object(&key).await {
+                Ok(resp) => resp.to_vec(),
+                Err(_) => vec![],
+            };
+            let start = offset as usize;
+            let needed = start + data.len();
+            let mut buf = existing;
+            if buf.len() < needed {
+                buf.resize(needed, 0);
+            }
+            buf[start..start + data.len()].copy_from_slice(data);
+            self.bucket
+                .put_object(&key, &buf)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        } else {
+            self.bucket
+                .put_object(&key, data)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
+
+        Ok(data.len() as u64)
+    }
+
+    async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {
+        let key = self.key(path);
+        let (head, _code) = self
+            .bucket
+            .head_object(&key)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let size = head.content_length.unwrap_or(0) as u64;
+
+        Ok(FileMetadata {
+            path: path.to_string(),
+            size,
+            is_dir: false,
+        })
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<FileMetadata>, StorageError> {
+        let full_prefix = self.key(prefix);
+        let results = self
+            .bucket
+            .list(full_prefix.clone(), None)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let prefix_strip = if self.prefix.is_empty() {
+            "".to_string()
+        } else {
+            format!("{}/", self.prefix)
+        };
+
+        let entries = results
+            .into_iter()
+            .flat_map(|page| page.contents)
+            .map(|obj| {
+                let path = obj.key.strip_prefix(&prefix_strip).unwrap_or(&obj.key);
+                FileMetadata {
+                    path: path.to_string(),
+                    size: obj.size,
+                    is_dir: false,
+                }
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), StorageError> {
+        let key = self.key(path);
+        self.bucket
+            .delete_object(&key)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+}

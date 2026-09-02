@@ -1,0 +1,77 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 512Mi
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: OUTTURN_TOKEN_SECRET
+            value: "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887"
+          - name: OUTTURN_TOKEN_PUBLIC_KEY
+            value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+          - name: DATABASE_URL
+            value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
+          - name: OUTTURN_DEV_SEED
+            value: "1"
+          - name: OUTTURN_GATEWAY_URL
+            value: "http://outturn-gateway:8081"
+          - name: OUTTURN_DEFAULT_MODEL
+            value: "llama3.1"
+  - target:
+      kind: Deployment
+      name: outturn-gateway
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 512Mi
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: OLLAMA_URL
+            value: "http://172.18.0.1:11434"
+          - name: OUTTURN_TOKEN_PUBLIC_KEY
+            value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+  - target:
+      kind: Deployment
+      name: outturn-runtime
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: OUTTURN_TOKEN_SECRET
+            value: "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887"
+          - name: OUTTURN_TOKEN_PUBLIC_KEY
+            value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+          - name: DATABASE_URL
+            value: "postgres://outturn:outturn-dev@postgres:5432/outturn"

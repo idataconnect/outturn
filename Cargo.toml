@@ -1,0 +1,39 @@
+[package]
+name = "outturn"
+version = "0.0.1"
+edition = "2024"
+resolver = "3"
+description = "Reserved"
+license = "Apache-2.0"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+uuid = { version = "1.26.0", features = ["v7", "serde"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "uuid", "migrate", "chrono"] }
+redis = "1.6.0"
+opentelemetry = "0.32.0"
+opentelemetry-otlp = "0.32.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-opentelemetry = "0.33.0"
+tower-http = { version = "0.7.0", features = ["trace", "cors"] }
+reqwest = { version = "0.12", features = ["json"] }
+async-trait = "0.1"
+wasmtime = "48.0.1"
+wasmtime-wasi = "48.0.1"
+anyhow = "1"
+pasetors = "0.7"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+thiserror = "2"
+argon2 = "0.6"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
