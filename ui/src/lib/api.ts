@@ -1,9 +1,11 @@
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
+  // Declared and assigned explicitly rather than as a parameter property,
+  // which erasableSyntaxOnly disallows.
+  readonly status: number
+
+  constructor(status: number, message: string) {
     super(message)
+    this.status = status
   }
 }
 

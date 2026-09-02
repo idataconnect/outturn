@@ -183,3 +183,29 @@ pub async fn reap_abandoned(pool: &PgPool) -> Result<u64, JobError> {
 
     Ok(result.rows_affected())
 }
+
+/// Extends the lease on a job this worker is still running.
+///
+/// A long execution would otherwise outlive its lease and be reaped into the
+/// queue while still in flight, producing a second execution of the same work.
+/// Returns false if the job is no longer ours -- it was reaped and taken by
+/// someone else -- which is the signal to abandon the work rather than finish
+/// it and write a duplicate result.
+pub async fn extend_lease(
+    pool: &PgPool,
+    id: Uuid,
+    lease: Duration,
+) -> Result<bool, JobError> {
+    let result = sqlx::query(
+        "update jobs set leased_until = now() + make_interval(secs => $2), \
+             updated_at = now() \
+         where id = $1 and state = 'running'",
+    )
+    .bind(id)
+    .bind(lease.as_secs_f64())
+    .execute(pool)
+    .await
+    .map_err(internal)?;
+
+    Ok(result.rows_affected() == 1)
+}

@@ -50,7 +50,7 @@ impl Worker {
                         return;
                     }
                     _ = ticker.tick() => {
-                        if let Err(e) = self.tick().await {
+                        if let Err(e) = Arc::clone(&self).tick().await {
                             tracing::error!(error = %e, "chat worker tick failed");
                         }
                     }
@@ -59,36 +59,74 @@ impl Worker {
         });
     }
 
-    async fn tick(&self) -> anyhow::Result<()> {
+    async fn tick(self: Arc<Self>) -> anyhow::Result<()> {
         // Returning abandoned leases first means a crashed worker's turn is
         // retried rather than left hanging.
         jobs::reap_abandoned(&self.pool).await?;
 
         let claimed = jobs::claim(&self.pool, &[CHAT_TURN], 4, jobs::DEFAULT_LEASE).await?;
+
+        // Each turn runs on its own task: generation can take minutes, and
+        // awaiting it here would stall every other session behind it.
         for handle in claimed {
-            let id = handle.job.id;
-            match self.run_turn(&handle.job.payload).await {
-                Ok(()) => jobs::complete(&self.pool, id).await?,
-                Err(e) => {
-                    tracing::error!(job_id = %id, error = %e, "chat turn failed");
-                    // Tell the browser rather than leaving it polling forever.
-                    if let Ok(payload) =
-                        serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
-                    {
-                        let _ = events::append(
-                            &self.pool,
-                            payload.tenant_id,
-                            Some(payload.session_id),
-                            "chat.error",
-                            serde_json::json!({ "message": e.to_string() }),
-                        )
-                        .await;
+            let worker = Arc::clone(&self);
+            tokio::spawn(async move { worker.execute(handle).await });
+        }
+        Ok(())
+    }
+
+    async fn execute(self: Arc<Self>, handle: jobs::JobHandle) {
+        let id = handle.job.id;
+
+        // Keep the lease alive while this runs, so a slow generation is not
+        // reaped into the queue and executed a second time.
+        let heartbeat = {
+            let pool = self.pool.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    match jobs::extend_lease(&pool, id, jobs::DEFAULT_LEASE).await {
+                        Ok(true) => {}
+                        // The job is no longer ours; stop renewing.
+                        Ok(false) => return,
+                        Err(e) => tracing::warn!(job_id = %id, error = %e, "lease renewal failed"),
                     }
-                    jobs::fail(&self.pool, id, &e.to_string(), Duration::from_secs(5)).await?;
+                }
+            })
+        };
+
+        let result = self.run_turn(&handle.job.payload).await;
+        heartbeat.abort();
+
+        match result {
+            Ok(()) => {
+                if let Err(e) = jobs::complete(&self.pool, id).await {
+                    tracing::error!(job_id = %id, error = %e, "failed to complete job");
+                }
+            }
+            Err(e) => {
+                tracing::error!(job_id = %id, error = %e, "chat turn failed");
+                // Tell the browser rather than leaving it polling forever.
+                if let Ok(payload) =
+                    serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
+                {
+                    let _ = events::append(
+                        &self.pool,
+                        payload.tenant_id,
+                        Some(payload.session_id),
+                        "chat.error",
+                        serde_json::json!({ "message": e.to_string() }),
+                    )
+                    .await;
+                }
+                if let Err(e) = jobs::fail(&self.pool, id, &e.to_string(), Duration::from_secs(5)).await
+                {
+                    tracing::error!(job_id = %id, error = %e, "failed to record job failure");
                 }
             }
         }
-        Ok(())
     }
 
     async fn run_turn(&self, payload: &serde_json::Value) -> anyhow::Result<()> {

@@ -72,9 +72,10 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-6">
       <div className="w-full max-w-sm">
-        <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 text-center">
-          outturn
-        </h1>
+        <div className="flex flex-col items-center gap-3">
+          <img src="/favicon.svg" alt="" className="w-16 h-16" />
+          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">outturn</h1>
+        </div>
 
         {choices ? (
           <div className="mt-8 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">

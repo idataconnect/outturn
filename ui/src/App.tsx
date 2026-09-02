@@ -174,7 +174,8 @@ function Shell() {
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-950">
       <nav className="w-56 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-800">
+        <div className="flex items-center gap-2 p-4 border-b border-gray-200 dark:border-gray-800">
+          <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
           <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">outturn</h1>
         </div>
         <div className="p-2 border-b border-gray-200 dark:border-gray-800">

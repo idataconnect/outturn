@@ -16,6 +16,7 @@ async fn setup() -> Option<(PgPool, Uuid)> {
     common::assert_test_database(&url);
     let pool = db::connect(&url).await.expect("connect");
     db::migrate(&pool).await.expect("migrate");
+    common::reset(&pool).await;
 
     // Events and jobs are tenant-scoped by foreign key, so a tenant must exist.
     let tenant_id = Uuid::now_v7();
@@ -349,4 +350,92 @@ async fn enqueue_rolls_back_with_its_transaction() {
         .await
         .expect("claim");
     assert!(claimed.is_empty(), "rolled-back enqueue must leave no job");
+}
+
+#[tokio::test]
+async fn heartbeat_keeps_a_long_job_from_being_reaped() {
+    let (pool, tenant) = setup_or_skip!();
+    jobs::enqueue(&pool, tenant, "test.slow", serde_json::json!({}), None)
+        .await
+        .expect("enqueue");
+
+    // A short lease stands in for work that outlives its original claim: a
+    // local model generating a long reply has been measured at ~2 minutes
+    // against what was a 60 second lease.
+    let claimed = jobs::claim(&pool, &["test.slow"], 10, Duration::from_secs(1))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    let id = claimed[0].job.id;
+
+    // While the work is still running, the worker extends its own lease.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let still_ours = jobs::extend_lease(&pool, id, Duration::from_secs(60))
+        .await
+        .expect("extend");
+    assert!(still_ours, "a running job must be able to renew its lease");
+
+    // The reaper must now leave it alone.
+    let reaped = jobs::reap_abandoned(&pool).await.expect("reap");
+    assert_eq!(reaped, 0, "a heartbeating job must not be reaped");
+
+    let stolen = jobs::claim(&pool, &["test.slow"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert!(
+        stolen.is_empty(),
+        "a job whose lease is being renewed must not be claimable"
+    );
+}
+
+#[tokio::test]
+async fn extend_lease_reports_when_the_job_was_taken_away() {
+    let (pool, tenant) = setup_or_skip!();
+    jobs::enqueue(&pool, tenant, "test.lost", serde_json::json!({}), None)
+        .await
+        .expect("enqueue");
+
+    let claimed = jobs::claim(&pool, &["test.lost"], 10, Duration::from_secs(0))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    let id = claimed[0].job.id;
+
+    // The lease expires and another worker takes the job.
+    jobs::reap_abandoned(&pool).await.expect("reap");
+    let other = jobs::claim(&pool, &["test.lost"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(other.len(), 1);
+
+    // The original worker completes its own execution and renews -- which
+    // succeeds, because the job is running again under a new owner. This is
+    // the case a heartbeat cannot detect on its own, and is why the lease must
+    // exceed the longest legitimate execution rather than relying on renewal.
+    let renewed = jobs::extend_lease(&pool, id, jobs::DEFAULT_LEASE)
+        .await
+        .expect("extend");
+    assert!(renewed, "the row is running, so renewal reports success");
+}
+
+#[test]
+fn lease_and_heartbeat_are_consistent() {
+    // The heartbeat must fire several times within a lease: a single delayed
+    // renewal must not let the lease lapse under a job that is still running.
+    assert!(
+        jobs::LEASE_HEARTBEAT * 3 <= jobs::DEFAULT_LEASE,
+        "heartbeat {:?} must be well under the lease {:?}",
+        jobs::LEASE_HEARTBEAT,
+        jobs::DEFAULT_LEASE,
+    );
+
+    // And the lease must stay short. When a worker dies its heartbeat dies
+    // with it, so the last renewal it wrote strands the job for the remainder
+    // of the lease -- a long lease means slow recovery from a crash, which is
+    // the failure the lease exists to detect.
+    assert!(
+        jobs::DEFAULT_LEASE <= Duration::from_secs(60),
+        "lease {:?} is too long: a crashed worker's job stays unreachable for this long",
+        jobs::DEFAULT_LEASE,
+    );
 }
