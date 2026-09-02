@@ -69,10 +69,21 @@ impl Sandbox {
         self.link_storage_functions(&mut linker)?;
         super::intrinsic::link_all(&mut linker)?;
 
+        // The guest's only route to a model. It never holds the token: the
+        // host attaches it, so the credential cannot leave this process.
+        super::llm::link(
+            &mut linker,
+            super::llm::LlmContext::new(
+                self.config.gateway_url.clone(),
+                self.config.gateway_token.clone(),
+            ),
+        )?;
+
+        // GATEWAY_TOKEN is deliberately not exported to the guest: calls go
+        // through the llm_chat import, which attaches the credential host-side.
         let wasi = WasiCtxBuilder::new()
-            .env("GATEWAY_TOKEN", &self.config.gateway_token)
-            .env("GATEWAY_URL", &self.config.gateway_url)
             .env("SESSION_ID", self.config.session_id.to_string())
+            .env("TENANT_ID", self.config.tenant_id.to_string())
             .build_p1();
 
         let state = SandboxState {

@@ -22,6 +22,8 @@ tracing-opentelemetry = "0.33.0"
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
+futures = "0.3"
+bytes = "1"
 wasmtime = "48.0.1"
 wasmtime-wasi = "48.0.1"
 anyhow = "1"

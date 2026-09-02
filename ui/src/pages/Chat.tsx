@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Plus } from 'lucide-react'
 
@@ -16,28 +17,37 @@ import { useSession } from '../lib/session'
 
 export default function Chat() {
   const state = useSession()
+  const navigate = useNavigate()
+  // The URL owns the selection, so a session can be linked to, reloaded, and
+  // reached with the back button.
+  const { sessionId } = useParams<{ sessionId?: string }>()
   const [agents, setAgents] = useState<Agent[]>([])
   const [sessions, setSessions] = useState<AgentSession[]>([])
-  const [active, setActive] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const active = sessionId ?? null
   const { runtime, error: chatError } = useChatRuntime(active)
 
   // Agents and sessions are tenant-scoped, so switching tenant reloads both.
+  // Selecting a session does not: that only changes which one is shown.
   const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const [loaded, setLoaded] = useState(false)
+
   useEffect(() => {
     let cancelled = false
+    setLoaded(false)
     void (async () => {
       try {
         const [a, s] = await Promise.all([listAgents(), listSessions()])
         if (cancelled) return
         setAgents(a)
         setSessions(s)
-        setActive(s[0]?.id ?? null)
         setError(null)
       } catch (e) {
         if (cancelled) return
         setError(e instanceof ApiError ? e.message : 'failed to load')
+      } finally {
+        if (!cancelled) setLoaded(true)
       }
     })()
     return () => {
@@ -45,11 +55,34 @@ export default function Chat() {
     }
   }, [tenantId])
 
+  // Reconcile the URL against what this tenant can actually see, once loaded.
+  useEffect(() => {
+    if (!loaded) return
+
+    // Land on the most recent session when none was named. Replace rather than
+    // push, so the back button does not return to an empty /sessions that
+    // immediately redirects here again.
+    if (!sessionId) {
+      if (sessions.length > 0) {
+        void navigate(`/sessions/${sessions[0].id}`, { replace: true })
+      }
+      return
+    }
+
+    // A session in the URL this tenant cannot see -- a stale link, or one left
+    // behind by a tenant switch -- would otherwise leave a blank pane with no
+    // explanation.
+    if (!sessions.some((session) => session.id === sessionId)) {
+      setError('That session is not available in this tenant.')
+      void navigate('/sessions', { replace: true })
+    }
+  }, [loaded, sessionId, sessions, navigate])
+
   async function start(agentId: string) {
     try {
       const session = await createSession(agentId)
       setSessions((prev) => [session, ...prev])
-      setActive(session.id)
+      void navigate(`/sessions/${session.id}`)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to start session')
@@ -87,17 +120,19 @@ export default function Chat() {
         </div>
         <div className="flex-1 overflow-auto p-2 space-y-1">
           {sessions.map((session) => (
-            <button
+            <NavLink
               key={session.id}
-              onClick={() => setActive(session.id)}
-              className={`w-full px-2 py-1.5 rounded-md text-sm text-left truncate ${
-                session.id === active
-                  ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-                  : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
-              }`}
+              to={`/sessions/${session.id}`}
+              className={({ isActive }) =>
+                `block w-full px-2 py-1.5 rounded-md text-sm text-left truncate ${
+                  isActive
+                    ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                }`
+              }
             >
               {session.title || agentName(session.agent_id)}
-            </button>
+            </NavLink>
           ))}
         </div>
       </aside>

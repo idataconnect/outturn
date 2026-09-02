@@ -206,6 +206,7 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />
+          <Route path="/sessions/:sessionId" element={<Chat />} />
           <Route
             path="/agents"
             element={
