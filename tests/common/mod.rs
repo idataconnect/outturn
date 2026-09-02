@@ -31,3 +31,18 @@ pub async fn reset(pool: &PgPool) {
     .await
     .expect("truncate");
 }
+
+/// The database these tests run against.
+///
+/// Panics rather than skipping when unset: the suite only builds under the
+/// integration-tests feature, so reaching here without a database configured
+/// is a misconfiguration, and a silent skip would report success having tested
+/// nothing.
+pub fn database_url() -> String {
+    let url = std::env::var("TEST_DATABASE_URL").expect(
+        "TEST_DATABASE_URL must be set to run integration tests, e.g. \
+         postgres://outturn:outturn-dev@localhost:15432/outturn_test",
+    );
+    assert_test_database(&url);
+    url
+}

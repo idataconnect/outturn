@@ -1,9 +1,11 @@
 //! Runs the default agent component against a live gateway.
 //!
-//! Needs GATEWAY_URL (and a reachable model), so it skips by default:
+//! Built only under the integration-tests feature. Needs GATEWAY_URL and a
+//! reachable model:
 //!
 //!   kubectl port-forward svc/outturn-gateway 18091:8081
-//!   GATEWAY_URL=http://localhost:18091 cargo test --test agent_component -- --nocapture
+//!   GATEWAY_URL=http://localhost:18091 \\
+//!     cargo test --features integration-tests --test agent_component
 
 use std::sync::{Arc, Mutex};
 
@@ -26,10 +28,12 @@ fn dev_token(session_id: Uuid, tenant_id: Uuid) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn component_runs_a_turn_and_streams_progress() {
-    let Ok(gateway_url) = std::env::var("GATEWAY_URL") else {
-        eprintln!("skipping: GATEWAY_URL not set");
-        return;
-    };
+    // Panics rather than skipping: this suite only builds under the
+    // integration-tests feature, so a missing gateway is a misconfiguration.
+    let gateway_url = std::env::var("GATEWAY_URL").expect(
+        "GATEWAY_URL must be set, e.g. http://localhost:18091 with \
+         `kubectl port-forward svc/outturn-gateway 18091:8081` running",
+    );
 
     let component = std::fs::read("tests/fixtures/agent_default.wasm").expect("component");
     let runner = AgentRunner::new().expect("runner");

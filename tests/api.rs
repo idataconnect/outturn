@@ -1,8 +1,7 @@
 //! Integration tests against a real Postgres.
 //!
-//! These TRUNCATE every table, so they refuse to run unless the database name
-//! contains "test". Set TEST_DATABASE_URL to run them; without it each test
-//! skips, so the suite stays runnable on a machine with no database.
+//! Built only under the integration-tests feature. They TRUNCATE every table,
+//! so they refuse to run unless the database name contains "test".
 //!
 //! `skaffold dev` already forwards postgres to 15432; otherwise run
 //! `kubectl port-forward svc/postgres 15432:5432` yourself.
@@ -38,10 +37,8 @@ struct Harness {
     agents: Arc<dyn AgentStore>,
 }
 
-/// Returns None when TEST_DATABASE_URL is unset, so callers skip.
-async fn harness() -> Option<Harness> {
-    let url = std::env::var("TEST_DATABASE_URL").ok()?;
-    common::assert_test_database(&url);
+async fn harness() -> Harness {
+    let url = common::database_url();
     let pool: PgPool = db::connect(&url).await.expect("connect");
     db::migrate(&pool).await.expect("migrate");
     common::reset(&pool).await;
@@ -68,24 +65,18 @@ async fn harness() -> Option<Harness> {
         Arc::new(tokio::sync::Notify::new()),
     ));
 
-    Some(Harness {
+    Harness {
         app: routes(state),
         users,
         tenants,
         sessions,
         agents,
-    })
+    }
 }
 
 macro_rules! harness_or_skip {
     () => {
-        match harness().await {
-            Some(h) => h,
-            None => {
-                eprintln!("skipping: TEST_DATABASE_URL not set");
-                return;
-            }
-        }
+        harness().await
     };
 }
 

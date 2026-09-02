@@ -1,5 +1,7 @@
 //! Event feed and job queue against a real Postgres.
-//! Needs TEST_DATABASE_URL naming a test database; see tests/api.rs.
+//!
+//! Built only under the integration-tests feature; needs TEST_DATABASE_URL
+//! naming a test database. See tests/api.rs.
 
 use std::time::Duration;
 
@@ -11,9 +13,8 @@ use uuid::Uuid;
 
 mod common;
 
-async fn setup() -> Option<(PgPool, Uuid)> {
-    let url = std::env::var("TEST_DATABASE_URL").ok()?;
-    common::assert_test_database(&url);
+async fn setup() -> (PgPool, Uuid) {
+    let url = common::database_url();
     let pool = db::connect(&url).await.expect("connect");
     db::migrate(&pool).await.expect("migrate");
     common::reset(&pool).await;
@@ -28,18 +29,12 @@ async fn setup() -> Option<(PgPool, Uuid)> {
         .await
         .expect("tenant");
 
-    Some((pool, tenant_id))
+    (pool, tenant_id)
 }
 
 macro_rules! setup_or_skip {
     () => {
-        match setup().await {
-            Some(v) => v,
-            None => {
-                eprintln!("skipping: TEST_DATABASE_URL not set");
-                return;
-            }
-        }
+        setup().await
     };
 }
 

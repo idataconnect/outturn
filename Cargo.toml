@@ -39,3 +39,22 @@ rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rus
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[features]
+# Tests that need services running: Postgres for the database suites, a
+# gateway and model for the agent component. Gated so `cargo test` on a bare
+# checkout builds and runs only what needs nothing, rather than silently
+# skipping and reporting success.
+integration-tests = []
+
+[[test]]
+name = "api"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "queue_and_events"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "agent_component"
+required-features = ["integration-tests"]
