@@ -44,7 +44,8 @@ tower = { version = "0.5", features = ["util"] }
 # Tests that need services running: Postgres for the database suites, a
 # gateway and model for the agent component. Gated so `cargo test` on a bare
 # checkout builds and runs only what needs nothing, rather than silently
-# skipping and reporting success.
+# skipping and reporting success. Each database test runs in its own schema,
+# so they are safe to run in parallel.
 integration-tests = []
 
 [[test]]

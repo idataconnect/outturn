@@ -1,7 +1,7 @@
 //! Integration tests against a real Postgres.
 //!
-//! Built only under the integration-tests feature. They TRUNCATE every table,
-//! so they refuse to run unless the database name contains "test".
+//! Built only under the integration-tests feature. Each test runs in its own
+//! schema, so they are isolated from each other and safe to run in parallel.
 //!
 //! `skaffold dev` already forwards postgres to 15432; otherwise run
 //! `kubectl port-forward svc/postgres 15432:5432` yourself.
@@ -20,7 +20,6 @@ use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::session::{PostgresSessionStore, SessionStore};
 use outturn::api::{ApiState, routes};
 use outturn::auth::{Role, TokenMinter, TokenValidator};
-use outturn::db;
 use serde_json::Value;
 use sqlx::postgres::PgPool;
 use tower::ServiceExt;
@@ -35,13 +34,14 @@ struct Harness {
     #[allow(dead_code)]
     sessions: Arc<dyn SessionStore>,
     agents: Arc<dyn AgentStore>,
+    db: common::TestDb,
 }
 
 async fn harness() -> Harness {
-    let url = common::database_url();
-    let pool: PgPool = db::connect(&url).await.expect("connect");
-    db::migrate(&pool).await.expect("migrate");
-    common::reset(&pool).await;
+    // A private schema per test, so tests do not see each other's rows and can
+    // run in parallel.
+    let db = common::TestDb::new().await;
+    let pool: PgPool = db.pool.clone();
 
     let (minter, public_bytes) = TokenMinter::generate().expect("keypair");
     let validator =
@@ -71,12 +71,21 @@ async fn harness() -> Harness {
         tenants,
         sessions,
         agents,
+        db,
     }
 }
 
 macro_rules! harness_or_skip {
     () => {
         harness().await
+    };
+}
+
+/// Drops the test's schema. Skipped on failure, so a failing test leaves its
+/// rows behind to inspect.
+macro_rules! finish {
+    ($h:expr) => {
+        $h.db.cleanup().await
     };
 }
 
@@ -215,6 +224,8 @@ async fn login_without_tenant_returns_picker() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("select_tenant"), "body: {body}");
     assert!(body.contains("acme"), "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -238,6 +249,8 @@ async fn bad_password_is_unauthorized() {
         )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -263,6 +276,8 @@ async fn system_admin_sees_all_tenants_and_manages_them() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -280,6 +295,8 @@ async fn tenant_admin_cannot_manage_tenants() {
         .post("/v1/tenants", Some(&token), r#"{"name":"X","slug":"x"}"#)
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -302,6 +319,8 @@ async fn tenant_admin_can_manage_users() {
     let (status, body) = h.get("/v1/users", Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("new@acme.example"), "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -314,6 +333,8 @@ async fn viewer_cannot_manage_users() {
 
     let (status, _) = h.get("/v1/users", Some(&token)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -346,6 +367,8 @@ async fn login_to_unaffiliated_tenant_is_forbidden() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -377,6 +400,8 @@ async fn tenant_switch_remints_for_new_tenant() {
     assert_eq!(status, StatusCode::OK);
     let session: Value = serde_json::from_str(&body).expect("json");
     assert_eq!(session["tenant_id"].as_str().unwrap(), globex.to_string());
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -393,6 +418,8 @@ async fn duplicate_email_conflicts() {
 
     let (status, _) = h.post("/v1/users", Some(&token), body).await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -400,6 +427,8 @@ async fn missing_token_is_unauthorized() {
     let h = harness_or_skip!();
     let (status, _) = h.get("/v1/tenants", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -445,6 +474,8 @@ async fn account_can_have_several_emails() {
         );
         assert!(body.contains("admin"), "{email} keeps its roles: {body}");
     }
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -477,6 +508,8 @@ async fn identities_are_globally_unique() {
         .add_password_identity(second.id, "taken@example.com", "correct-horse")
         .await;
     assert!(result.is_err(), "duplicate address must be refused");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -515,6 +548,8 @@ async fn last_identity_cannot_be_removed() {
         .remove_identity(user.id, fetched.identities[0].id)
         .await
         .expect("remove once another exists");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -568,6 +603,8 @@ async fn removed_identity_can_no_longer_sign_in() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -618,6 +655,8 @@ async fn session_cookie_is_httponly_and_samesite() {
         .expect("body");
     let body = String::from_utf8_lossy(&bytes);
     assert!(!body.contains("\"token\""), "token must not be in the body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -639,6 +678,8 @@ async fn cookie_authenticates_subsequent_requests() {
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("admin"), "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -661,6 +702,8 @@ async fn logout_clears_the_cookie() {
         .to_str()
         .expect("utf8");
     assert!(set_cookie.contains("Max-Age=0"), "got: {set_cookie}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -683,6 +726,8 @@ async fn refresh_outlives_the_access_token() {
         outturn::api::session::REFRESH_LIFETIME_SECS,
         outturn::auth::SESSION_TOKEN_LIFETIME_SECS,
     );
+
+    finish!(h);
 }
 
 /// Extracts one named cookie from all Set-Cookie headers on a response.
@@ -759,6 +804,8 @@ async fn login_issues_a_path_scoped_refresh_cookie() {
     assert!(raw.contains("Secure"), "got: {raw}");
     // Confined to the refresh endpoint, so it is not sent on ordinary calls.
     assert!(raw.contains("Path=/v1/session/refresh"), "got: {raw}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -790,6 +837,8 @@ async fn refresh_rotates_and_returns_a_working_access_token() {
         .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("admin"), "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -817,6 +866,8 @@ async fn replaying_a_rotated_refresh_token_revokes_the_family() {
         StatusCode::UNAUTHORIZED,
         "replay must revoke the entire family"
     );
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -840,6 +891,8 @@ async fn logout_revokes_the_refresh_token_server_side() {
     // Clearing the cookie is not enough: the token itself must be dead.
     let after = refresh_with(&h, &refresh).await;
     assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -869,6 +922,8 @@ async fn refresh_picks_up_revoked_roles() {
     // Roles are re-read on refresh, so the session cannot outlive the grant.
     let after = refresh_with(&h, &refresh).await;
     assert_eq!(after.status(), StatusCode::FORBIDDEN);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -881,6 +936,8 @@ async fn refresh_without_a_cookie_is_unauthorized() {
         .expect("request");
     let response = h.app.clone().oneshot(req).await.expect("response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -903,6 +960,8 @@ async fn operator_can_manage_agents_in_own_tenant() {
     let (status, body) = h.get("/v1/agents", Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Support"), "body: {body}");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -942,6 +1001,8 @@ async fn agents_are_invisible_across_tenants() {
         StatusCode::NOT_FOUND,
         "another tenant's agent must read as absent"
     );
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -975,6 +1036,8 @@ async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
         !body.contains("Globex Bot"),
         "scoped token must not cross tenants: {body}"
     );
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -993,6 +1056,8 @@ async fn viewer_cannot_create_agents() {
     // Reading is still allowed.
     let (status, _) = h.get("/v1/agents", Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -1025,6 +1090,8 @@ async fn operator_cannot_delete_agents() {
         .expect("request");
     let (status, _) = h.send(req).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -1047,6 +1114,8 @@ async fn slugs_are_unique_per_tenant_not_globally() {
     // But not twice within one tenant.
     let dup = h.agents.create(acme, make()).await;
     assert!(dup.is_err(), "duplicate slug within a tenant must be refused");
+
+    finish!(h);
 }
 
 #[tokio::test]
@@ -1084,4 +1153,6 @@ async fn partial_update_leaves_other_fields_intact() {
     assert!(body.contains("Renamed"), "body: {body}");
     assert!(body.contains("keep me"), "description must survive: {body}");
     assert!(body.contains("keep this too"), "prompt must survive: {body}");
+
+    finish!(h);
 }
