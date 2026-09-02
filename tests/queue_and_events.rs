@@ -121,19 +121,31 @@ async fn long_poll_returns_empty_on_timeout() {
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
+    // Paused only now that connecting is done. Starting paused would trip
+    // sqlx's acquire timeout, since the virtual clock races past it while the
+    // real socket is still opening -- the clock is virtual, the network is not.
+    tokio::time::pause();
+
+    // With time virtual, a realistic 25 second poll times out instantly rather
+    // than being shortened to keep the suite fast.
+    let started = tokio::time::Instant::now();
     let found = events::wait_for(pool,
         &bus,
         tenant,
         None,
         0,
         100,
-        Duration::from_millis(500),
+        Duration::from_secs(25),
         std::future::pending(),
     )
     .await
     .expect("wait");
 
     assert!(found.is_empty());
+    assert!(
+        started.elapsed() >= Duration::from_secs(25),
+        "the poll must wait out its timeout before giving up"
+    );
 
     finish!(db);
 }
@@ -146,12 +158,18 @@ async fn shutdown_releases_parked_poll() {
 
     let notify = std::sync::Arc::new(tokio::sync::Notify::new());
     let fire = notify.clone();
+
+    // Real time here, unlike the timeout test. Under a virtual clock the timer
+    // and the parked poll race: tokio advances time whenever nothing is
+    // runnable, which can fire the shutdown before wait_for begins awaiting it.
+    // The wait is short, and what is being checked is the ordering of two
+    // real concurrent tasks rather than the passage of time.
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
         fire.notify_waiters();
     });
 
-    let start = std::time::Instant::now();
+    let started = std::time::Instant::now();
     let found = events::wait_for(pool,
         &bus,
         tenant,
@@ -165,10 +183,13 @@ async fn shutdown_releases_parked_poll() {
     .expect("wait");
 
     assert!(found.is_empty());
+    // Returned when shutdown fired rather than waiting out the timeout: a
+    // draining service must not hold every parked poll open for its full
+    // duration.
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(5),
         "shutdown must not wait out the full timeout: {:?}",
-        start.elapsed()
+        started.elapsed()
     );
 
     finish!(db);

@@ -39,6 +39,9 @@ rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rus
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# test-util provides the virtual clock, so tests that only wait need not
+# spend real time doing it.
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 
 [features]
 # Tests that need services running: Postgres for the database suites, a
