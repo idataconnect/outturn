@@ -59,3 +59,8 @@ required-features = ["integration-tests"]
 [[test]]
 name = "agent_component"
 required-features = ["integration-tests"]
+
+# Uses a scripted gateway rather than a live model, so it needs no services
+# beyond what cargo provides.
+[[test]]
+name = "agent_component_fake"

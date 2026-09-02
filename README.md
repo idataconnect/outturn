@@ -6,7 +6,10 @@ A multitenant agent platform.
 
 ## Tests
 
-`cargo test` runs only what needs nothing external.
+`cargo test` runs only what needs nothing external. That includes the agent
+component tests, which run against a scripted in-process gateway rather than a
+live model -- fast, deterministic, and able to arrange failures a real provider
+makes awkward, such as a 503 or a stream truncated mid-generation.
 
 The suites that need running services are gated behind a feature flag, so a
 bare checkout builds and runs the fast tests without silently skipping the

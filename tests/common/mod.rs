@@ -1,5 +1,7 @@
 //! Shared setup for the integration tests.
 
+pub mod fake_gateway;
+
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use uuid::Uuid;
 
