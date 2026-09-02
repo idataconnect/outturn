@@ -1,0 +1,65 @@
+package outturn:agent@0.1.0;
+
+/// What the host provides to a guest.
+interface host {
+    /// A message in the conversation.
+    record message {
+        role: string,
+        content: string,
+    }
+
+    /// A model call the guest wants made.
+    record completion-request {
+        messages: list<message>,
+        /// Omitted means the agent's configured default.
+        model: option<string>,
+        temperature: option<f32>,
+        max-tokens: option<u32>,
+    }
+
+    record usage {
+        prompt-tokens: u32,
+        completion-tokens: u32,
+    }
+
+    record completion {
+        content: string,
+        finish-reason: option<string>,
+        usage: option<usage>,
+    }
+
+    /// Calls a model.
+    ///
+    /// The credential is attached host-side, so the guest names a request and
+    /// receives a reply without ever handling the token that authorises it.
+    /// The host consumes the provider's stream and returns the whole reply:
+    /// the guest stays synchronous, and cancellation is the host dropping the
+    /// stream rather than something the guest must handle.
+    chat: func(request: completion-request) -> result<completion, string>;
+
+    /// Emits progress for the user to see before the turn finishes.
+    ///
+    /// Distinct from the reply itself: a guest may narrate what it is doing
+    /// without that narration becoming part of the conversation.
+    progress: func(text: string);
+
+    /// Writes a line to the host's log, tagged with this session.
+    log: func(level: string, message: string);
+}
+
+/// What a guest must provide.
+interface agent {
+    use host.{message};
+
+    /// Runs one turn.
+    ///
+    /// Receives the conversation so far and returns the assistant's reply.
+    /// Returning an error fails the turn; the host records it and tells the
+    /// browser, rather than leaving the caller waiting.
+    run: func(conversation: list<message>, system-prompt: string) -> result<string, string>;
+}
+
+world agent-world {
+    import host;
+    export agent;
+}

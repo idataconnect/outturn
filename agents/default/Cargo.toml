@@ -1,0 +1,19 @@
+[package]
+name = "outturn-agent-default"
+version = "0.1.0"
+edition = "2021"
+description = "Default agent: runs one conversational turn against the host's model"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Matched to what cargo-component 0.21 generates.
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+[package.metadata.component]
+package = "outturn:agent"
+
+[package.metadata.component.target]
+path = "../../wit"

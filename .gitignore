@@ -1,3 +1,6 @@
 /target
 ui/node_modules/
 ui/dist/
+
+# Built agent components; the artifact is committed under tests/fixtures.
+agents/*/target/
