@@ -7,16 +7,29 @@ use futures::StreamExt;
 use crate::auth::{self, TokenValidator, SessionClaims};
 
 use super::breaker;
+use super::routing::{self, Route};
 use super::llm::provider::{LlmProvider, ProviderError};
 use super::llm::types::{ChatCompletionRequest, ChatCompletionResponse};
 
 pub struct GatewayState {
     providers: Vec<Arc<dyn LlmProvider>>,
     auth: TokenValidator,
-    /// Backs the shared circuit breaker. Optional so the gateway still runs
-    /// without a database -- it simply calls every provider, which is the
-    /// behaviour it had before the breaker existed.
+    /// Backs the shared circuit breaker and traffic routing. Optional so the
+    /// gateway still runs without a database -- it falls back to the
+    /// statically configured providers, which is what it did before either
+    /// existed.
     health: Option<sqlx::postgres::PgPool>,
+    providers_by_endpoint: routing::ProviderCache,
+}
+
+/// One thing to try: a provider, and the model to ask it for.
+///
+/// The model is carried alongside because a route decides it. When routing is
+/// not configured the caller's own choice stands, which is how this behaved
+/// before traffic types existed.
+struct Attempt {
+    provider: Arc<dyn LlmProvider>,
+    model: Option<String>,
 }
 
 impl GatewayState {
@@ -25,12 +38,48 @@ impl GatewayState {
             providers,
             auth,
             health: None,
+            providers_by_endpoint: routing::ProviderCache::default(),
         }
     }
 
     pub fn with_health(mut self, pool: sqlx::postgres::PgPool) -> Self {
         self.health = Some(pool);
         self
+    }
+
+    /// What to try, in order of precedence.
+    ///
+    /// A configured route list wins. With none -- no database, or nothing
+    /// configured for this traffic type -- the statically built providers are
+    /// used in their configured order, so an unconfigured system behaves as it
+    /// always has rather than refusing to serve.
+    async fn attempts(&self, tenant_id: uuid::Uuid, traffic_type: &str) -> Vec<Attempt> {
+        if let Some(pool) = &self.health {
+            match routing::routes_for(pool, tenant_id, traffic_type).await {
+                Ok(routes) if !routes.is_empty() => {
+                    let mut attempts = Vec::with_capacity(routes.len());
+                    for route in routes {
+                        if let Some(provider) = self.providers_by_endpoint.get(&route).await {
+                            attempts.push(Attempt {
+                                provider,
+                                model: Some(route.model),
+                            });
+                        }
+                    }
+                    return attempts;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "could not read routes, using static providers"),
+            }
+        }
+
+        self.providers
+            .iter()
+            .map(|p| Attempt {
+                provider: Arc::clone(p),
+                model: None,
+            })
+            .collect()
     }
 
     /// Whether this provider may be called, and who owns the next probe.
@@ -56,6 +105,23 @@ impl GatewayState {
             Err(_) => {}
         }
     }
+}
+
+/// The class of traffic this request belongs to.
+///
+/// A header rather than a body field: the request body is serialised straight
+/// through to the provider, so anything added there leaks upstream. Routing is
+/// also not something a model should be told about.
+const TRAFFIC_HEADER: &str = "x-outturn-traffic";
+
+fn traffic_type(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get(TRAFFIC_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(routing::DEFAULT_TRAFFIC_TYPE)
+        .to_string()
 }
 
 fn authenticate(
@@ -92,10 +158,19 @@ async fn chat_completions(
     );
 
     let mut last_error = None;
+    let traffic = traffic_type(&headers);
 
-    for provider in &state.providers {
+    for attempt in state.attempts(claims.tenant_id, &traffic).await {
+        let provider = &attempt.provider;
         if !provider.is_available().await || !state.admits(provider).await {
             continue;
+        }
+
+        // The route decides the model when there is one; otherwise the
+        // caller's choice stands.
+        let mut request = request.clone();
+        if let Some(model) = &attempt.model {
+            request.model = model.clone();
         }
 
         match provider.chat_completion(&request).await {
@@ -138,9 +213,17 @@ async fn chat_completions_stream(
         "streaming chat completion request"
     );
 
-    for provider in &state.providers {
+    let traffic = traffic_type(&headers);
+
+    for attempt in state.attempts(claims.tenant_id, &traffic).await {
+        let provider = &attempt.provider;
         if !provider.is_available().await || !state.admits(provider).await {
             continue;
+        }
+
+        let mut request = request.clone();
+        if let Some(model) = &attempt.model {
+            request.model = model.clone();
         }
 
         match provider.chat_completion_stream(&request).await {

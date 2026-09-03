@@ -49,6 +49,9 @@ pub struct ExecuteRequest {
     /// From the agent's policy. "none" disables thinking where supported.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// What this turn is for. The gateway resolves it to a route.
+    #[serde(default)]
+    pub traffic_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +172,9 @@ pub async fn execute(
         fuel: FUEL_PER_TURN,
         timezone: request.timezone,
         reasoning_effort: request.reasoning_effort,
+        traffic_type: request
+            .traffic_type
+            .unwrap_or_else(|| crate::gateway::routing::DEFAULT_TRAFFIC_TYPE.to_string()),
         idle_timeout: crate::http_client::IDLE_TIMEOUT,
     };
 

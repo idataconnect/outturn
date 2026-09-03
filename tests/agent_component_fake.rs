@@ -28,6 +28,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_tool: None,
         timezone: None,
         reasoning_effort: None,
+        traffic_type: "assistant".into(),
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
         fuel: 10_000_000_000,

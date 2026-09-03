@@ -46,6 +46,10 @@ pub struct AgentHost {
     /// IANA zone of the user this turn belongs to. None when the client did
     /// not say, in which case the clock answers in UTC rather than guessing.
     timezone: Option<chrono_tz::Tz>,
+    /// What this turn's work is for, so the gateway can route it. Pinned by
+    /// the runtime and resolved there: the agent asks for a completion, not
+    /// for a particular endpoint.
+    traffic_type: String,
     /// How much the model should deliberate, when the provider offers the
     /// choice. Attached here rather than in the guest: which models think, and
     /// what the knob is called, is a provider detail an agent should not have
@@ -139,6 +143,7 @@ impl outturn::agent::host::Host for AgentHost {
             &self.http,
             &self.gateway_url,
             &self.gateway_token,
+            &self.traffic_type,
             body,
             self.progress.as_ref(),
         )
@@ -206,6 +211,7 @@ async fn stream_completion(
     http: &reqwest::Client,
     gateway_url: &str,
     token: &str,
+    traffic_type: &str,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
 ) -> anyhow::Result<Completion> {
@@ -214,6 +220,7 @@ async fn stream_completion(
     let response = http
         .post(format!("{gateway_url}/v1/chat/completions/stream"))
         .bearer_auth(token)
+        .header("x-outturn-traffic", traffic_type)
         .json(&body)
         .send()
         .await?;
@@ -332,6 +339,8 @@ pub struct RunOptions {
     pub timezone: Option<String>,
     /// Passed to providers that support it; ignored by those that do not.
     pub reasoning_effort: Option<String>,
+    /// Names the class of traffic, which the gateway resolves to a route.
+    pub traffic_type: String,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -380,6 +389,7 @@ impl AgentRunner {
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.
             reasoning_effort: options.reasoning_effort,
+            traffic_type: options.traffic_type,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

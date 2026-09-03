@@ -171,6 +171,7 @@ impl Worker {
         system_prompt: &str,
         model: &str,
         reasoning_effort: Option<&str>,
+        traffic_type: &str,
         message_id: Uuid,
     ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
@@ -187,6 +188,7 @@ impl Worker {
                 "model": model,
                 "timezone": payload.timezone,
                 "reasoning_effort": reasoning_effort,
+                "traffic_type": traffic_type,
             }))
             .send()
             .await?;
@@ -327,6 +329,7 @@ impl Worker {
                 &agent.system_prompt,
                 &model_for(&agent.policy),
                 reasoning_effort_for(&agent.policy).as_deref(),
+                &traffic_type_for(&agent.policy),
                 placeholder.id,
             )
             .await;
@@ -387,6 +390,18 @@ fn reasoning_effort_for(policy: &serde_json::Value) -> Option<String> {
         .get("reasoning_effort")
         .and_then(|e| e.as_str())
         .map(str::to_string)
+}
+
+/// What class of traffic this agent's turns are, from its policy.
+///
+/// Names the work rather than the destination: the gateway decides where
+/// "assistant" traffic goes, and can move it without the agent changing.
+fn traffic_type_for(policy: &serde_json::Value) -> String {
+    policy
+        .get("traffic_type")
+        .and_then(|t| t.as_str())
+        .unwrap_or(crate::gateway::routing::DEFAULT_TRAFFIC_TYPE)
+        .to_string()
 }
 
 fn model_for(policy: &serde_json::Value) -> String {

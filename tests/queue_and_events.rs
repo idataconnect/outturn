@@ -940,3 +940,122 @@ async fn client_errors_and_rate_limits_do_not_count_against_a_provider() {
         "408: request timeout".into()
     )));
 }
+
+// -- Traffic routing -----------------------------------------------------------
+
+use outturn::gateway::routing;
+
+async fn add_route(
+    pool: &PgPool,
+    tenant: Option<Uuid>,
+    traffic: &str,
+    priority: i32,
+    base_url: &str,
+    model: &str,
+) {
+    sqlx::query(
+        "insert into traffic_routes \
+             (id, tenant_id, traffic_type, priority, provider, base_url, model) \
+         values (uuidv7(), $1, $2, $3, 'openai', $4, $5)",
+    )
+    .bind(tenant)
+    .bind(traffic)
+    .bind(priority)
+    .bind(base_url)
+    .bind(model)
+    .execute(pool)
+    .await
+    .expect("route");
+}
+
+/// Routes come back in precedence order, not insertion order.
+#[tokio::test]
+async fn routes_are_ordered_by_precedence() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 30, "http://third", "c").await;
+    add_route(pool, None, "assistant", 10, "http://first", "a").await;
+    add_route(pool, None, "assistant", 20, "http://second", "b").await;
+
+    let routes = routing::routes_for(pool, tenant, "assistant")
+        .await
+        .expect("routes");
+    let models: Vec<&str> = routes.iter().map(|r| r.model.as_str()).collect();
+    assert_eq!(models, ["a", "b", "c"]);
+
+    finish!(db);
+}
+
+/// A tenant's own routes replace the system defaults rather than extending
+/// them, so its traffic cannot quietly fall through to somebody else's
+/// endpoint once it has said where it wants to go.
+#[tokio::test]
+async fn tenant_routes_replace_the_system_defaults() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://shared", "default").await;
+    let inherited = routing::routes_for(pool, tenant, "assistant")
+        .await
+        .expect("routes");
+    assert_eq!(inherited.len(), 1, "a tenant with no routes uses the defaults");
+    assert_eq!(inherited[0].model, "default");
+
+    add_route(pool, Some(tenant), "assistant", 10, "http://theirs", "theirs").await;
+    let own = routing::routes_for(pool, tenant, "assistant")
+        .await
+        .expect("routes");
+    assert_eq!(own.len(), 1, "configured routes replace, not extend");
+    assert_eq!(own[0].model, "theirs");
+
+    finish!(db);
+}
+
+/// Traffic types are independent: one class of work being configured says
+/// nothing about another.
+#[tokio::test]
+async fn traffic_types_route_separately() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://good", "expensive").await;
+    add_route(pool, None, "title", 10, "http://cheap", "small").await;
+
+    let assistant = routing::routes_for(pool, tenant, "assistant").await.expect("a");
+    let title = routing::routes_for(pool, tenant, "title").await.expect("t");
+    let unknown = routing::routes_for(pool, tenant, "nothing-here").await.expect("u");
+
+    assert_eq!(assistant[0].model, "expensive");
+    assert_eq!(title[0].model, "small");
+    assert!(unknown.is_empty(), "an unrouted type falls back to static providers");
+
+    finish!(db);
+}
+
+/// The breaker and the route list meet: a destination whose circuit is open is
+/// skipped, and the next in precedence order serves the request.
+#[tokio::test]
+async fn an_open_circuit_removes_a_destination_from_the_list() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://primary", "a").await;
+    add_route(pool, None, "assistant", 20, "http://fallback", "b").await;
+
+    let routes = routing::routes_for(pool, tenant, "assistant").await.expect("routes");
+    for _ in 0..5 {
+        breaker::record_failure(pool, &routes[0].endpoint(), "down").await;
+    }
+
+    let mut usable = Vec::new();
+    for route in &routes {
+        if breaker::check(pool, &route.endpoint()).await == Verdict::Allow {
+            usable.push(route.model.as_str());
+        }
+    }
+
+    assert_eq!(usable, ["b"], "the failed destination drops out of the list");
+
+    finish!(db);
+}
