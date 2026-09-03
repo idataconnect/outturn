@@ -83,28 +83,28 @@ export default function Agents() {
 
   return (
     <div className="p-6 max-w-3xl">
-      <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Agents</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-400">
+      <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
+      <p className="mt-2 text-surface-600 dark:text-surface-400">
         Agents belong to the tenant you are currently viewing.
       </p>
 
       {canCreate && (
         <form
           onSubmit={onCreate}
-          className="mt-6 space-y-3 p-4 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+          className="mt-6 space-y-3 p-4 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900"
         >
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex-1 min-w-44">
-              <span className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Name</span>
+              <span className="block text-sm text-surface-700 dark:text-surface-300 mb-1">Name</span>
               <input
                 value={form.name}
                 onChange={(e) => onNameChange(e.target.value)}
                 required
-                className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100"
+                className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
               />
             </label>
             <label className="flex-1 min-w-44">
-              <span className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Slug</span>
+              <span className="block text-sm text-surface-700 dark:text-surface-300 mb-1">Slug</span>
               <input
                 value={form.slug}
                 onChange={(e) => {
@@ -113,25 +113,25 @@ export default function Agents() {
                 }}
                 required
                 pattern="[a-z0-9\-]+"
-                className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 font-mono text-sm"
+                className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 font-mono text-sm"
               />
             </label>
           </div>
           <label className="block">
-            <span className="block text-sm text-gray-700 dark:text-gray-300 mb-1">
+            <span className="block text-sm text-surface-700 dark:text-surface-300 mb-1">
               System prompt
             </span>
             <textarea
               value={form.system_prompt}
               onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
               rows={3}
-              className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100"
+              className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
             />
           </label>
           <button
             type="submit"
             disabled={creating}
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-sm font-medium disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
           >
             <Plus size={16} />
             {creating ? 'Creating…' : 'Create agent'}
@@ -145,30 +145,30 @@ export default function Agents() {
         </p>
       )}
 
-      <div className="mt-6 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
+      <div className="mt-6 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
         {loading ? (
-          <p className="p-4 text-sm text-gray-500 dark:text-gray-400">Loading…</p>
+          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">Loading…</p>
         ) : agents.length === 0 ? (
-          <p className="p-4 text-sm text-gray-500 dark:text-gray-400">No agents yet.</p>
+          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">No agents yet.</p>
         ) : (
-          <ul className="divide-y divide-gray-200 dark:divide-gray-800">
+          <ul className="divide-y divide-surface-200 dark:divide-surface-800">
             {agents.map((agent) => (
               <li key={agent.id} className="flex items-start gap-4 p-4">
-                <Bot size={16} className="mt-1 shrink-0 text-gray-400" />
+                <Bot size={16} className="mt-1 shrink-0 text-surface-400" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                  <p className="text-sm font-medium text-surface-900 dark:text-surface-100 truncate">
                     {agent.name}
                     {!agent.enabled && (
-                      <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                      <span className="ml-2 text-xs text-surface-600 dark:text-surface-400">
                         disabled
                       </span>
                     )}
                   </p>
-                  <p className="text-xs font-mono text-gray-500 dark:text-gray-400 truncate">
+                  <p className="text-xs font-mono text-surface-600 dark:text-surface-400 truncate">
                     {agent.slug}
                   </p>
                   {agent.system_prompt && (
-                    <p className="mt-1 text-xs text-gray-600 dark:text-gray-400 line-clamp-2">
+                    <p className="mt-1 text-xs text-surface-600 dark:text-surface-400 line-clamp-2">
                       {agent.system_prompt}
                     </p>
                   )}
@@ -177,7 +177,7 @@ export default function Agents() {
                   <button
                     onClick={() => void onDelete(agent.id)}
                     aria-label={`Delete ${agent.name}`}
-                    className="p-2 rounded-md text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                    className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
                   >
                     <Trash2 size={16} />
                   </button>

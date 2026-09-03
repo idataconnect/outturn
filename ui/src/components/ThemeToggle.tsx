@@ -20,7 +20,7 @@ export default function ThemeToggle() {
     <div
       role="radiogroup"
       aria-label="Colour theme"
-      className="flex gap-0.5 p-0.5 rounded-md bg-gray-100 dark:bg-gray-800"
+      className="flex gap-0.5 p-0.5 rounded-md bg-surface-100 dark:bg-surface-800"
     >
       {options.map(({ value, icon: Icon, label }) => (
         <button
@@ -32,8 +32,8 @@ export default function ThemeToggle() {
           onClick={() => setTheme(value)}
           className={`flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
             theme === value
-              ? 'bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 shadow-sm'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
+              ? 'bg-white dark:bg-surface-950 text-surface-900 dark:text-surface-100 shadow-sm'
+              : 'text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100'
           }`}
         >
           <Icon size={14} />

@@ -30,8 +30,8 @@ function Dashboard() {
   const state = useSession()
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Dashboard</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-400">
+      <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Dashboard</h1>
+      <p className="mt-2 text-surface-600 dark:text-surface-400">
         {state.status === 'authenticated'
           ? `Signed in as ${state.displayName}.`
           : 'Overview coming soon.'}
@@ -43,8 +43,8 @@ function Dashboard() {
 function SettingsPage() {
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Settings</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-400">Configuration coming soon.</p>
+      <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Settings</h1>
+      <p className="mt-2 text-surface-600 dark:text-surface-400">Configuration coming soon.</p>
     </div>
   )
 }
@@ -170,11 +170,11 @@ function Shell() {
   const visible = navItems.filter((item) => !item.authority || authorities.includes(item.authority))
 
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-950">
-      <nav className="w-56 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col">
-        <div className="flex items-center gap-2 p-4 border-b border-gray-200 dark:border-gray-800">
+    <div className="flex h-screen bg-surface-100 dark:bg-surface-950">
+      <nav className="w-56 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex flex-col">
+        <div className="flex items-center gap-2 p-4 border-b border-surface-200 dark:border-surface-800">
           <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
-          <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">outturn</h1>
+          <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-100">outturn</h1>
         </div>
         <div className="flex-1 p-2 space-y-1">
           {visible.map(({ to, icon: Icon, label }) => (
@@ -185,8 +185,8 @@ function Shell() {
               className={({ isActive }) =>
                 `flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
                   isActive
-                    ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                    ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200 font-medium'
+                    : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
                 }`
               }
             >
@@ -195,11 +195,11 @@ function Shell() {
             </NavLink>
           ))}
         </div>
-        <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+        <div className="p-2 border-t border-surface-200 dark:border-surface-800">
           <AccountMenu />
         </div>
       </nav>
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-900">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />

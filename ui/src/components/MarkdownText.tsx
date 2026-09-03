@@ -31,7 +31,7 @@ const components = unstable_memoizeMarkdownComponents({
   ol: (props) => <ol className="mb-2 ml-5 list-decimal space-y-1" {...props} />,
   blockquote: (props) => (
     <blockquote
-      className="mb-2 border-l-2 border-gray-300 dark:border-gray-700 pl-3 italic"
+      className="mb-2 border-l-2 border-surface-300 dark:border-surface-700 pl-3 italic"
       {...props}
     />
   ),
@@ -44,17 +44,17 @@ const components = unstable_memoizeMarkdownComponents({
   ),
   th: (props) => (
     <th
-      className="border border-gray-300 dark:border-gray-700 px-2 py-1 text-left font-semibold bg-gray-100 dark:bg-gray-800"
+      className="border border-surface-300 dark:border-surface-700 px-2 py-1 text-left font-semibold bg-surface-100 dark:bg-surface-800"
       {...props}
     />
   ),
   td: (props) => (
-    <td className="border border-gray-300 dark:border-gray-700 px-2 py-1" {...props} />
+    <td className="border border-surface-300 dark:border-surface-700 px-2 py-1" {...props} />
   ),
 
   pre: (props) => (
     <pre
-      className="mb-2 overflow-x-auto rounded-md bg-gray-100 dark:bg-gray-950 p-3 text-xs"
+      className="mb-2 overflow-x-auto rounded-md bg-surface-100 dark:bg-surface-950 p-3 text-xs"
       {...props}
     />
   ),
@@ -66,14 +66,14 @@ const components = unstable_memoizeMarkdownComponents({
       <code
         className={
           inline
-            ? 'rounded bg-gray-100 dark:bg-gray-800 px-1 py-0.5 font-mono text-[0.9em]'
+            ? 'rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 font-mono text-[0.9em]'
             : 'font-mono'
         }
         {...props}
       />
     )
   },
-  hr: () => <hr className="my-4 border-gray-200 dark:border-gray-800" />,
+  hr: () => <hr className="my-4 border-surface-200 dark:border-surface-800" />,
 })
 
 export default function MarkdownText() {

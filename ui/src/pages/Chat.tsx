@@ -94,13 +94,13 @@ export default function Chat() {
 
   return (
     <div className="flex h-full">
-      <aside className="w-64 border-r border-gray-200 dark:border-gray-800 flex flex-col">
-        <div className="p-3 border-b border-gray-200 dark:border-gray-800">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">
+      <aside className="w-64 border-r border-surface-200 dark:border-surface-800 flex flex-col">
+        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
+          <p className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-2">
             Start a session
           </p>
           {agents.length === 0 ? (
-            <p className="text-xs text-gray-500 dark:text-gray-400">
+            <p className="text-xs text-surface-600 dark:text-surface-400">
               No agents yet — create one first.
             </p>
           ) : (
@@ -109,9 +109,9 @@ export default function Chat() {
                 <button
                   key={agent.id}
                   onClick={() => void start(agent.id)}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800"
                 >
-                  <Plus size={14} className="shrink-0 text-gray-400" />
+                  <Plus size={14} className="shrink-0 text-surface-400" />
                   <span className="truncate">{agent.name}</span>
                 </button>
               ))}
@@ -126,8 +126,8 @@ export default function Chat() {
               className={({ isActive }) =>
                 `block w-full px-2 py-1.5 rounded-md text-sm text-left truncate ${
                   isActive
-                    ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                    ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
+                    : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
                 }`
               }
             >
@@ -140,7 +140,7 @@ export default function Chat() {
       <div className="flex-1 flex flex-col min-w-0">
         {shown && (
           <p
-            className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-gray-200 dark:border-gray-800"
+            className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
             role="alert"
           >
             {shown}

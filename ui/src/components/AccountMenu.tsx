@@ -79,31 +79,31 @@ export default function AccountMenu() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="w-full flex items-center gap-2 p-2 rounded-md text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+        className="w-full flex items-center gap-2 p-2 rounded-md text-left hover:bg-surface-100 dark:hover:bg-surface-800"
       >
         <span
           aria-hidden
-          className="shrink-0 w-8 h-8 rounded-full bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-medium flex items-center justify-center"
+          className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-brand-600 to-orange-500 text-white text-xs font-medium flex items-center justify-center"
         >
           {initials(name)}
         </span>
         <span className="flex-1 min-w-0">
-          <span className="block text-sm text-gray-900 dark:text-gray-100 truncate">{name}</span>
-          <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">
+          <span className="block text-sm text-surface-900 dark:text-surface-100 truncate">{name}</span>
+          <span className="block text-xs text-surface-600 dark:text-surface-400 truncate">
             {current?.name ?? 'No tenant'}
           </span>
         </span>
-        <ChevronsUpDown size={14} className="shrink-0 text-gray-400" />
+        <ChevronsUpDown size={14} className="shrink-0 text-surface-400" />
       </button>
 
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full left-0 right-0 mb-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg overflow-hidden"
+          className="absolute bottom-full left-0 right-0 mb-1 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg overflow-hidden"
         >
           {state.tenants.length > 1 && (
-            <div className="p-1 border-b border-gray-200 dark:border-gray-800">
-              <p className="px-2 py-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+            <div className="p-1 border-b border-surface-200 dark:border-surface-800">
+              <p className="px-2 py-1 text-xs font-medium text-surface-600 dark:text-surface-400">
                 Tenant
               </p>
               <ul className="max-h-48 overflow-auto">
@@ -115,11 +115,11 @@ export default function AccountMenu() {
                         role="menuitem"
                         disabled={switching}
                         onClick={() => void selectTenant(tenant.tenant_id)}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800 disabled:opacity-50"
                       >
-                        <Building2 size={14} className="shrink-0 text-gray-400" />
+                        <Building2 size={14} className="shrink-0 text-surface-400" />
                         <span className="flex-1 min-w-0 truncate">{tenant.name}</span>
-                        {active && <Check size={14} className="shrink-0 text-gray-400" />}
+                        {active && <Check size={14} className="shrink-0 text-surface-400" />}
                       </button>
                     </li>
                   )
@@ -128,14 +128,14 @@ export default function AccountMenu() {
             </div>
           )}
 
-          <div className="p-1 border-b border-gray-200 dark:border-gray-800">
-            <p className="px-2 py-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+          <div className="p-1 border-b border-surface-200 dark:border-surface-800">
+            <p className="px-2 py-1 text-xs font-medium text-surface-600 dark:text-surface-400">
               Appearance
             </p>
             <div
               role="radiogroup"
               aria-label="Colour theme"
-              className="flex gap-0.5 p-0.5 m-1 rounded-md bg-gray-100 dark:bg-gray-800"
+              className="flex gap-0.5 p-0.5 m-1 rounded-md bg-surface-100 dark:bg-surface-800"
             >
               {themes.map(({ value, icon: Icon, label }) => (
                 <button
@@ -147,8 +147,8 @@ export default function AccountMenu() {
                   onClick={() => setTheme(value)}
                   className={`flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
                     theme === value
-                      ? 'bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 shadow-sm'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
+                      ? 'bg-white dark:bg-surface-950 text-surface-900 dark:text-surface-100 shadow-sm'
+                      : 'text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100'
                   }`}
                 >
                   <Icon size={14} />
@@ -158,15 +158,15 @@ export default function AccountMenu() {
           </div>
 
           <div className="p-1">
-            <p className="px-2 pb-1 text-xs text-gray-500 dark:text-gray-400 truncate">
+            <p className="px-2 pb-1 text-xs text-surface-600 dark:text-surface-400 truncate">
               {state.session.roles.join(', ')}
             </p>
             <button
               role="menuitem"
               onClick={signOut}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800"
             >
-              <LogOut size={14} className="shrink-0 text-gray-400" />
+              <LogOut size={14} className="shrink-0 text-surface-400" />
               Sign out
             </button>
           </div>

@@ -71,7 +71,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-6">
+    <div className="min-h-screen flex items-center justify-center bg-surface-50 dark:bg-surface-950 p-6">
       <div className="w-full max-w-sm">
         <div className="flex justify-end mb-4">
           <div className="w-28">
@@ -80,28 +80,28 @@ export default function Login() {
         </div>
         <div className="flex flex-col items-center gap-3">
           <img src="/favicon.svg" alt="" className="w-16 h-16" />
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">outturn</h1>
+          <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">outturn</h1>
         </div>
 
         {choices ? (
-          <div className="mt-8 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
-            <p className="p-4 text-sm text-gray-600 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800">
+          <div className="mt-8 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
+            <p className="p-4 text-sm text-surface-600 dark:text-surface-400 border-b border-surface-200 dark:border-surface-800">
               Choose a tenant
             </p>
-            <ul className="divide-y divide-gray-200 dark:divide-gray-800">
+            <ul className="divide-y divide-surface-200 dark:divide-surface-800">
               {choices.map((tenant) => (
                 <li key={tenant.tenant_id}>
                   <button
                     onClick={() => void submit(tenant.tenant_id)}
                     disabled={pending}
-                    className="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 disabled:opacity-50"
+                    className="w-full flex items-center gap-3 p-4 text-left hover:bg-surface-50 dark:hover:bg-surface-800/50 disabled:opacity-50"
                   >
-                    <Building2 size={16} className="text-gray-400 shrink-0" />
+                    <Building2 size={16} className="text-surface-400 shrink-0" />
                     <span className="flex-1 min-w-0">
-                      <span className="block text-sm text-gray-900 dark:text-gray-100 truncate">
+                      <span className="block text-sm text-surface-900 dark:text-surface-100 truncate">
                         {tenant.name}
                       </span>
-                      <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">
+                      <span className="block text-xs text-surface-600 dark:text-surface-400 truncate">
                         {tenant.roles.join(', ') || 'system access'}
                       </span>
                     </span>
@@ -116,10 +116,10 @@ export default function Login() {
               e.preventDefault()
               void submit()
             }}
-            className="mt-8 space-y-4 p-6 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+            className="mt-8 space-y-4 p-6 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900"
           >
             <label className="block">
-              <span className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Email</span>
+              <span className="block text-sm text-surface-700 dark:text-surface-300 mb-1">Email</span>
               <input
                 type="email"
                 value={email}
@@ -127,24 +127,24 @@ export default function Login() {
                 required
                 autoFocus
                 autoComplete="username"
-                className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100"
+                className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
               />
             </label>
             <label className="block">
-              <span className="block text-sm text-gray-700 dark:text-gray-300 mb-1">Password</span>
+              <span className="block text-sm text-surface-700 dark:text-surface-300 mb-1">Password</span>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
-                className="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100"
+                className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
               />
             </label>
             <button
               type="submit"
               disabled={pending}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-sm font-medium disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
             >
               <LogIn size={16} />
               {pending ? 'Signing in…' : 'Sign in'}
