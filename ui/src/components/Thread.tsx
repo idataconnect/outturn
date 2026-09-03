@@ -11,6 +11,16 @@ import ToolCall from './ToolCall'
  * styling convention for no benefit here.
  */
 
+/** Shown in the reply's own bubble until its first token arrives. */
+function Thinking() {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-surface-500 dark:text-surface-400">
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden />
+      Thinking&hellip;
+    </span>
+  )
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="flex justify-end">
@@ -28,9 +38,20 @@ function AssistantMessage() {
         {/* Only the assistant's text is markdown: rendering what the user
             typed would mangle anything that resembled syntax. */}
         {/* One fallback for every tool: they all render the same way, and a
-            tool with no renderer of its own should still be visible. */}
+            tool with no renderer of its own should still be visible.
+
+            Empty fills the reply while it is still being generated. The reply
+            row exists from the moment the turn starts so deltas have somewhere
+            to attach, and an empty message renders as an empty bubble -- so it
+            says what it is doing instead. The first delta replaces this in the
+            same bubble, which is why the indicator belongs here rather than
+            beside the thread: one object throughout, nothing swapped. */}
         <MessagePrimitive.Parts
-          components={{ Text: MarkdownText, tools: { Fallback: ToolCall } }}
+          components={{
+            Text: MarkdownText,
+            Empty: Thinking,
+            tools: { Fallback: ToolCall },
+          }}
         />
       </div>
     </MessagePrimitive.Root>
@@ -53,10 +74,6 @@ export default function Thread({ disabled }: { disabled?: boolean }) {
             AssistantMessage,
           }}
         />
-
-        <ThreadPrimitive.If running>
-          <p className="text-xs text-surface-600 dark:text-surface-400">Thinking…</p>
-        </ThreadPrimitive.If>
       </ThreadPrimitive.Viewport>
 
       <ComposerPrimitive.Root className="flex gap-2 p-4 border-t border-surface-200 dark:border-surface-800">
