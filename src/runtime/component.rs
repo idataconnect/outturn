@@ -17,10 +17,15 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-pub use outturn::agent::host::{Completion, CompletionRequest, Message, Usage};
+pub use outturn::agent::host::{
+    Clock, Completion, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition, Usage,
+};
 
 /// Reports text as the model produces it, before the turn finishes.
 pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Reports a tool call as the guest starts it.
+pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
@@ -38,6 +43,10 @@ pub struct AgentHost {
     http: reqwest::Client,
     progress: Option<ProgressSink>,
     session_id: uuid::Uuid,
+    /// IANA zone of the user this turn belongs to. None when the client did
+    /// not say, in which case the clock answers in UTC rather than guessing.
+    timezone: Option<chrono_tz::Tz>,
+    on_tool: Option<ToolSink>,
 }
 
 impl WasiView for AgentHost {
@@ -59,15 +68,63 @@ impl outturn::agent::host::Host for AgentHost {
         // but cannot take the token elsewhere.
         let model = request.model.unwrap_or_else(|| self.default_model.clone());
 
-        let body = serde_json::json!({
+        let messages = request
+            .messages
+            .iter()
+            .map(|m| {
+                let mut value = serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                });
+                if !m.tool_calls.is_empty() {
+                    value["tool_calls"] = serde_json::json!(
+                        m.tool_calls
+                            .iter()
+                            .map(|c| serde_json::json!({
+                                "id": c.id,
+                                "type": "function",
+                                "function": { "name": c.name, "arguments": c.arguments },
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                if let Some(id) = &m.tool_call_id {
+                    value["tool_call_id"] = serde_json::json!(id);
+                }
+                value
+            })
+            .collect::<Vec<_>>();
+
+        let mut body = serde_json::json!({
             "model": model,
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-            })).collect::<Vec<_>>(),
+            "messages": messages,
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         });
+
+        // Omitted rather than sent empty: offering no tools is the common
+        // case, and some providers reject an empty array.
+        if !request.tools.is_empty() {
+            body["tools"] = serde_json::json!(
+                request
+                    .tools
+                    .iter()
+                    .map(|t| serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            // Schemas cross as text because WIT has no JSON
+                            // type. Unparseable ones degrade to an empty
+                            // object, so a malformed schema costs the tool its
+                            // arguments rather than failing the whole turn.
+                            "parameters": serde_json::from_str::<serde_json::Value>(&t.parameters)
+                                .unwrap_or_else(|_| serde_json::json!({"type": "object"})),
+                        },
+                    }))
+                    .collect::<Vec<_>>()
+            );
+        }
 
         stream_completion(
             &self.http,
@@ -78,6 +135,33 @@ impl outturn::agent::host::Host for AgentHost {
         )
         .await
         .map_err(|e| e.to_string())
+    }
+
+    async fn tool_started(&mut self, activity: ToolActivity) {
+        tracing::info!(
+            session_id = %self.session_id,
+            tool = %activity.name,
+            "guest is running a tool"
+        );
+        if let Some(sink) = &self.on_tool {
+            sink(&activity);
+        }
+    }
+
+    async fn current_time(&mut self) -> Clock {
+        // The zone belongs to the user, not to this machine: the runtime runs
+        // in a container that is almost certainly UTC, so answering from its
+        // own locale would be confidently wrong for everyone.
+        match self.timezone {
+            Some(tz) => Clock {
+                now: chrono::Utc::now().with_timezone(&tz).to_rfc3339(),
+                timezone: tz.name().to_string(),
+            },
+            None => Clock {
+                now: chrono::Utc::now().to_rfc3339(),
+                timezone: String::new(),
+            },
+        }
     }
 
     async fn progress(&mut self, text: String) {
@@ -124,6 +208,11 @@ async fn stream_completion(
     let mut content = String::new();
     let mut finish_reason = None;
     let mut usage = None;
+    // Tool calls arrive in fragments keyed by index, and the arguments are a
+    // JSON string spread across chunks. Kept sparse by index rather than
+    // pushed, since a provider is free to interleave two calls.
+    let mut partial_calls: std::collections::BTreeMap<u32, PartialToolCall> =
+        std::collections::BTreeMap::new();
 
     while let Some(bytes) = stream.next().await {
         buffer.push_str(std::str::from_utf8(&bytes?)?);
@@ -152,6 +241,21 @@ async fn stream_completion(
                     sink(text);
                 }
             }
+            if let Some(calls) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
+                for call in calls {
+                    let index = call["index"].as_u64().unwrap_or(0) as u32;
+                    let entry = partial_calls.entry(index).or_default();
+                    if let Some(id) = call["id"].as_str() {
+                        entry.id = id.to_string();
+                    }
+                    if let Some(name) = call["function"]["name"].as_str() {
+                        entry.name.push_str(name);
+                    }
+                    if let Some(args) = call["function"]["arguments"].as_str() {
+                        entry.arguments.push_str(args);
+                    }
+                }
+            }
             if let Some(reason) = chunk["choices"][0]["finish_reason"].as_str() {
                 finish_reason = Some(reason.to_string());
             }
@@ -166,9 +270,28 @@ async fn stream_completion(
 
     Ok(Completion {
         content,
+        tool_calls: partial_calls
+            .into_values()
+            // A call with no name is a fragment of something that never
+            // arrived; passing it on would have the guest dispatch on "".
+            .filter(|c| !c.name.is_empty())
+            .map(|c| ToolCall {
+                id: c.id,
+                name: c.name,
+                arguments: c.arguments,
+            })
+            .collect(),
         finish_reason,
         usage,
     })
+}
+
+/// One tool call being assembled from stream fragments.
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 pub struct AgentRunner {
@@ -181,7 +304,11 @@ pub struct RunOptions {
     pub gateway_token: String,
     pub default_model: String,
     pub progress: Option<ProgressSink>,
+    pub on_tool: Option<ToolSink>,
     pub fuel: u64,
+    /// IANA zone of the user this turn belongs to, as the client reported it.
+    /// Unrecognised or absent means the clock answers in UTC.
+    pub timezone: Option<String>,
 }
 
 impl AgentRunner {
@@ -222,7 +349,15 @@ impl AgentRunner {
             default_model: options.default_model,
             http: reqwest::Client::new(),
             progress: options.progress,
+            on_tool: options.on_tool,
             session_id: options.session_id,
+            // Parsed here so a bad zone from a client degrades to UTC once,
+            // rather than on every call the guest makes.
+            timezone: options.timezone.as_deref().and_then(|tz| {
+                tz.parse::<chrono_tz::Tz>()
+                    .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
+                    .ok()
+            }),
         };
 
         let mut store = Store::new(&self.engine, host);

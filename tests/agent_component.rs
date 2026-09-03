@@ -57,6 +57,8 @@ async fn component_runs_a_turn_and_streams_progress() {
             vec![outturn::runtime::component::Message {
                 role: "user".into(),
                 content: "Count from one to twenty in words, separated by commas.".into(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             }],
             "You are concise but complete.".into(),
             RunOptions {
@@ -66,6 +68,8 @@ async fn component_runs_a_turn_and_streams_progress() {
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
                     .unwrap_or_else(|_| "llama3.1".into()),
                 progress: Some(sink),
+                on_tool: None,
+                timezone: None,
                 fuel: 10_000_000_000,
             },
         )

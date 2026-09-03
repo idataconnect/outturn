@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::auth::{self, Authority, Role, TokenMinter, TokenValidator};
 
-use super::component::{AgentRunner, Message, ProgressSink, RunOptions};
+use super::component::{AgentRunner, Message, ProgressSink, RunOptions, ToolActivity, ToolSink};
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
 /// a loop cannot occupy the service indefinitely.
@@ -42,6 +42,10 @@ pub struct ExecuteRequest {
     pub system_prompt: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// IANA zone of the user this turn belongs to, e.g. "Europe/London".
+    /// Absent means the guest's clock answers in UTC.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +64,8 @@ pub struct ConversationMessage {
 pub enum ExecuteEvent {
     /// A fragment of the reply, in order.
     Delta { idx: i64, text: String },
+    /// The guest started a tool, with the model's reason for it.
+    Tool { id: String, name: String, reason: String },
     /// Generation finished; the reply is complete.
     Done { content: String },
     /// The turn failed.
@@ -99,6 +105,10 @@ pub async fn execute(
         .map(|m| Message {
             role: m.role,
             content: m.content,
+            // Stored history holds no tool calls: a turn's tool round trips
+            // live and die inside it, and only the reply is kept.
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         })
         .collect();
 
@@ -124,6 +134,17 @@ pub async fn execute(
         })
     };
 
+    let tool_sink: ToolSink = {
+        let tx = tx.clone();
+        Arc::new(move |activity: &ToolActivity| {
+            let _ = tx.send(ExecuteEvent::Tool {
+                id: activity.id.clone(),
+                name: activity.name.clone(),
+                reason: activity.reason.clone(),
+            });
+        })
+    };
+
     tracing::info!(
         session_id = %request.session_id,
         tenant_id = %request.tenant_id,
@@ -141,7 +162,9 @@ pub async fn execute(
             .model
             .unwrap_or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into())),
         progress: Some(sink),
+        on_tool: Some(tool_sink),
         fuel: FUEL_PER_TURN,
+        timezone: request.timezone,
     };
 
     tokio::spawn(async move {

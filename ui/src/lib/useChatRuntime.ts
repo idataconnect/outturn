@@ -5,7 +5,13 @@ import {
   type ThreadMessageLike,
 } from '@assistant-ui/react'
 
-import { loadHistory, pollEvents, sendMessage, type Message } from './chat'
+import {
+  loadHistory,
+  pollEvents,
+  sendMessage,
+  type Message,
+  type ToolCallRecord,
+} from './chat'
 
 /**
  * Our stored message, mapped to what assistant-ui renders.
@@ -18,7 +24,20 @@ import { loadHistory, pollEvents, sendMessage, type Message } from './chat'
 const convertMessage = (message: Message): ThreadMessageLike => ({
   id: message.id,
   role: message.role === 'tool' ? 'assistant' : message.role,
-  content: [{ type: 'text', text: message.content }],
+  content: [
+    // Tools lead the reply, because that is the order they happened in: the
+    // agent went and looked something up, then answered.
+    ...(message.metadata.tool_calls ?? []).map((call) => ({
+      type: 'tool-call' as const,
+      toolCallId: call.id,
+      toolName: call.name,
+      // The reason is the model's own account of why it made the call, and it
+      // is the only argument the user is shown.
+      args: { reason: call.reason },
+      argsText: JSON.stringify({ reason: call.reason }),
+    })),
+    { type: 'text' as const, text: message.content },
+  ],
 })
 
 /** Ids are UUIDv7, so lexical order is insertion order. */
@@ -97,6 +116,27 @@ export function useChatRuntime(sessionId: string | null) {
               .filter((e) => e.kind === 'chat.message')
               .map((e) => e.payload as Message),
           )
+
+          // A tool announces itself before the reply that used it, so it
+          // lands on the message already on screen rather than appearing
+          // after the answer it explains.
+          for (const event of result.events) {
+            if (event.kind !== 'chat.tool') continue
+            const { message_id, call } = event.payload as {
+              message_id: string
+              call: ToolCallRecord
+            }
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== message_id) return m
+                const calls = m.metadata.tool_calls ?? []
+                // The same call can arrive twice if a poll overlaps a
+                // reload, and a tool run once must not be drawn twice.
+                if (calls.some((c) => c.id === call.id)) return m
+                return { ...m, metadata: { ...m.metadata, tool_calls: [...calls, call] } }
+              }),
+            )
+          }
 
           // Deltas append to a message that already exists, so what is on
           // screen during generation is the same object that remains after,

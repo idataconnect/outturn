@@ -574,7 +574,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     }
     let full = fragments.concat();
     store
-        .set_message_content(reply.id, &full, None)
+        .set_message_content(reply.id, &full, None, serde_json::json!({}))
         .await
         .expect("finalise");
 

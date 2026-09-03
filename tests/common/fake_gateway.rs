@@ -30,6 +30,17 @@ pub enum Behaviour {
     Status(StatusCode, String),
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
+    /// Ask for a tool on the first request, then answer with text.
+    ///
+    /// Two phases because that is what a tool loop is: the model asks, the
+    /// guest runs the tool, the model answers with the result in hand.
+    ToolThenReply {
+        name: String,
+        /// Sent split across chunks, as a provider does, so a caller that
+        /// fails to reassemble the fragments is caught.
+        arguments: String,
+        reply: String,
+    },
 }
 
 #[derive(Clone)]
@@ -40,6 +51,9 @@ pub struct FakeGateway {
 
 struct GatewayInner {
     behaviour: Mutex<Behaviour>,
+    /// Requests answered so far, so a two-phase behaviour knows which turn
+    /// of the loop it is serving.
+    calls: Mutex<usize>,
     /// Requests received, for asserting what the caller actually sent.
     seen: Mutex<Vec<serde_json::Value>>,
 }
@@ -49,6 +63,7 @@ impl FakeGateway {
     pub async fn start(behaviour: Behaviour) -> Self {
         let inner = Arc::new(GatewayInner {
             behaviour: Mutex::new(behaviour),
+            calls: Mutex::new(0),
             seen: Mutex::new(Vec::new()),
         });
 
@@ -107,14 +122,75 @@ fn chunk_json(text: &str, finish: Option<&str>) -> String {
     .to_string()
 }
 
+/// One chunk of a tool call being streamed in pieces.
+fn tool_chunk(id: Option<&str>, name: Option<&str>, arguments: &str) -> String {
+    let mut call = serde_json::json!({ "index": 0 });
+    if let Some(id) = id {
+        call["id"] = serde_json::json!(id);
+        call["type"] = serde_json::json!("function");
+    }
+    let mut function = serde_json::json!({ "arguments": arguments });
+    if let Some(name) = name {
+        function["name"] = serde_json::json!(name);
+    }
+    call["function"] = function;
+
+    serde_json::json!({
+        "id": "chatcmpl-fake",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "fake",
+        "choices": [{
+            "index": 0,
+            "delta": { "role": "assistant", "tool_calls": [call] },
+            "finish_reason": null,
+        }],
+    })
+    .to_string()
+}
+
 async fn completions_stream(
     State(state): State<Arc<GatewayInner>>,
     Json(request): Json<serde_json::Value>,
 ) -> Response {
     state.seen.lock().unwrap().push(request);
     let behaviour = state.behaviour.lock().unwrap().clone();
+    let call_number = {
+        let mut calls = state.calls.lock().unwrap();
+        *calls += 1;
+        *calls
+    };
 
     match behaviour {
+        Behaviour::ToolThenReply {
+            name,
+            arguments,
+            reply,
+        } => {
+            // The second request is the model answering with the tool result
+            // in hand, so it replies with prose and asks for nothing more.
+            if call_number > 1 {
+                let mut lines: Vec<String> = chunk_text(&reply)
+                    .iter()
+                    .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                    .collect();
+                lines.push(format!("{}\n", chunk_json("", Some("stop"))));
+                return ndjson(lines);
+            }
+
+            let mut lines = vec![format!(
+                "{}\n",
+                tool_chunk(Some("call_fake_1"), Some(&name), "")
+            )];
+            // Arguments in pieces: a caller that reads only the first chunk
+            // ends up with a fragment of JSON rather than an argument object.
+            for piece in arguments.as_bytes().chunks(7) {
+                let piece = String::from_utf8_lossy(piece).to_string();
+                lines.push(format!("{}\n", tool_chunk(None, None, &piece)));
+            }
+            lines.push(format!("{}\n", chunk_json("", Some("tool_calls"))));
+            ndjson(lines)
+        }
         Behaviour::Status(code, message) => (code, message).into_response(),
 
         Behaviour::Hang => {
@@ -153,6 +229,7 @@ async fn completions(
 
     let text = match behaviour {
         Behaviour::Reply(text) => text,
+        Behaviour::ToolThenReply { reply, .. } => reply,
         Behaviour::TruncateAfter { text, .. } => text,
         Behaviour::Status(code, message) => return (code, message).into_response(),
         Behaviour::Hang => {

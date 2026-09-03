@@ -184,6 +184,11 @@ create table agent_messages (
     role         text        not null check (role in ('system', 'user', 'assistant', 'tool')),
     content      text        not null,
 
+    -- What the agent did on the way to this reply: tool calls, each with the
+    -- model's own reason for making it. Kept with the message rather than as
+    -- events, so reopening a session shows the work and not just the answer.
+    metadata     jsonb       not null default '{}'::jsonb,
+
     -- Usage attribution. Null until a provider reports it; the model is
     -- recorded per message because an agent's model may change between turns.
     model        text,

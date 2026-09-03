@@ -23,6 +23,18 @@ pub struct ChatTurnPayload {
     pub tenant_id: Uuid,
     pub session_id: Uuid,
     pub agent_id: Uuid,
+    /// IANA zone the sender was in, e.g. "Europe/London". Carried on the turn
+    /// rather than the account: it is where the user is now, and a laptop that
+    /// crosses a border should not keep answering in the zone it left.
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+/// What a completed turn produced.
+struct TurnOutcome {
+    content: String,
+    /// Tool calls the agent made, in order, each with the model's reason.
+    tools: Vec<serde_json::Value>,
 }
 
 pub struct Worker {
@@ -143,7 +155,7 @@ impl Worker {
         system_prompt: &str,
         model: &str,
         message_id: Uuid,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
 
         let response = self
@@ -156,6 +168,7 @@ impl Worker {
                 "conversation": conversation,
                 "system_prompt": system_prompt,
                 "model": model,
+                "timezone": payload.timezone,
             }))
             .send()
             .await?;
@@ -168,6 +181,7 @@ impl Worker {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut tools: Vec<serde_json::Value> = Vec::new();
 
         while let Some(bytes) = stream.next().await {
             buffer.push_str(std::str::from_utf8(&bytes?)?);
@@ -195,7 +209,32 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Done { content }) => return Ok(content),
+                    Ok(ExecuteEvent::Tool { id, name, reason }) => {
+                        let call = serde_json::json!({
+                            "id": id,
+                            "name": name,
+                            "reason": reason,
+                        });
+                        // Announced live so the browser can show the work as
+                        // it happens, and kept so the finished message can
+                        // record it -- the event feed is prunable, the
+                        // transcript is not.
+                        tools.push(call.clone());
+                        events::append(
+                            &self.pool,
+                            payload.tenant_id,
+                            Some(payload.session_id),
+                            "chat.tool",
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "call": call,
+                            }),
+                        )
+                        .await?;
+                    }
+                    Ok(ExecuteEvent::Done { content }) => {
+                        return Ok(TurnOutcome { content, tools });
+                    }
                     Ok(ExecuteEvent::Failed { message }) => {
                         anyhow::bail!("guest failed: {message}")
                     }
@@ -280,9 +319,20 @@ impl Worker {
             }
         };
 
+        let metadata = if reply.tools.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({ "tool_calls": reply.tools })
+        };
+
         let finished = self
             .chat
-            .set_message_content(placeholder.id, &reply, Some(&model_for(&agent.policy)))
+            .set_message_content(
+                placeholder.id,
+                &reply.content,
+                Some(&model_for(&agent.policy)),
+                metadata,
+            )
             .await
             .map_err(|e| anyhow::anyhow!("finalise: {e}"))?;
 

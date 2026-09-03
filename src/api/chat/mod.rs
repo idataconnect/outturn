@@ -20,6 +20,9 @@ pub struct Message {
     pub session_id: Uuid,
     pub role: String,
     pub content: String,
+    /// What the agent did to produce this: `{"tool_calls": [...]}`, empty
+    /// when it simply answered.
+    pub metadata: serde_json::Value,
     /// How many `chat.delta` fragments this content already accounts for.
     ///
     /// A reply is created empty and streamed into, so while a turn is running
@@ -98,6 +101,7 @@ pub trait ChatStore: Send + Sync {
         message_id: Uuid,
         content: &str,
         model: Option<&str>,
+        metadata: serde_json::Value,
     ) -> Result<Message, ChatError>;
 
     /// Removes a message. Used to clear a placeholder whose turn failed, which

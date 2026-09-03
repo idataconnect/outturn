@@ -2,6 +2,7 @@ import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive } from '@assistant
 import { Send } from 'lucide-react'
 
 import MarkdownText from './MarkdownText'
+import ToolCall from './ToolCall'
 
 /**
  * Thread built from assistant-ui primitives directly, using this project's
@@ -26,7 +27,11 @@ function AssistantMessage() {
       <div className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100">
         {/* Only the assistant's text is markdown: rendering what the user
             typed would mangle anything that resembled syntax. */}
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        {/* One fallback for every tool: they all render the same way, and a
+            tool with no renderer of its own should still be visible. */}
+        <MessagePrimitive.Parts
+          components={{ Text: MarkdownText, tools: { Fallback: ToolCall } }}
+        />
       </div>
     </MessagePrimitive.Root>
   )

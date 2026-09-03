@@ -12,11 +12,59 @@ pub mod outturn {
             #[doc(hidden)]
             static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
             use super::super::super::_rt;
+            /// A request from the model to run a tool.
+            #[derive(Clone)]
+            pub struct ToolCall {
+                /// The model's id for this call. A result must quote it back, so the
+                /// model can match answers to questions when it asks several at once.
+                pub id: _rt::String,
+                pub name: _rt::String,
+                /// Arguments as a JSON object, exactly as the model produced them.
+                /// Unparsed on purpose: a model may emit invalid JSON, and the guest
+                /// is better placed than the host to decide what to do about it.
+                pub arguments: _rt::String,
+            }
+            impl ::core::fmt::Debug for ToolCall {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("ToolCall")
+                        .field("id", &self.id)
+                        .field("name", &self.name)
+                        .field("arguments", &self.arguments)
+                        .finish()
+                }
+            }
+            /// A tool offered to the model.
+            #[derive(Clone)]
+            pub struct ToolDefinition {
+                pub name: _rt::String,
+                pub description: _rt::String,
+                /// JSON Schema for the arguments object.
+                pub parameters: _rt::String,
+            }
+            impl ::core::fmt::Debug for ToolDefinition {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("ToolDefinition")
+                        .field("name", &self.name)
+                        .field("description", &self.description)
+                        .field("parameters", &self.parameters)
+                        .finish()
+                }
+            }
             /// A message in the conversation.
             #[derive(Clone)]
             pub struct Message {
                 pub role: _rt::String,
                 pub content: _rt::String,
+                /// On an assistant message, the tools it asked for.
+                pub tool_calls: _rt::Vec<ToolCall>,
+                /// On a tool message, which call this answers.
+                pub tool_call_id: Option<_rt::String>,
             }
             impl ::core::fmt::Debug for Message {
                 fn fmt(
@@ -26,6 +74,8 @@ pub mod outturn {
                     f.debug_struct("Message")
                         .field("role", &self.role)
                         .field("content", &self.content)
+                        .field("tool-calls", &self.tool_calls)
+                        .field("tool-call-id", &self.tool_call_id)
                         .finish()
                 }
             }
@@ -33,6 +83,8 @@ pub mod outturn {
             #[derive(Clone)]
             pub struct CompletionRequest {
                 pub messages: _rt::Vec<Message>,
+                /// Tools the model may call. Empty offers none.
+                pub tools: _rt::Vec<ToolDefinition>,
                 /// Omitted means the agent's configured default.
                 pub model: Option<_rt::String>,
                 pub temperature: Option<f32>,
@@ -45,6 +97,7 @@ pub mod outturn {
                 ) -> ::core::fmt::Result {
                     f.debug_struct("CompletionRequest")
                         .field("messages", &self.messages)
+                        .field("tools", &self.tools)
                         .field("model", &self.model)
                         .field("temperature", &self.temperature)
                         .field("max-tokens", &self.max_tokens)
@@ -71,6 +124,10 @@ pub mod outturn {
             #[derive(Clone)]
             pub struct Completion {
                 pub content: _rt::String,
+                /// Tools the model wants run before it can answer. When this is not
+                /// empty the turn is unfinished: run them, append the results, and
+                /// call again.
+                pub tool_calls: _rt::Vec<ToolCall>,
                 pub finish_reason: Option<_rt::String>,
                 pub usage: Option<Usage>,
             }
@@ -81,9 +138,110 @@ pub mod outturn {
                 ) -> ::core::fmt::Result {
                     f.debug_struct("Completion")
                         .field("content", &self.content)
+                        .field("tool-calls", &self.tool_calls)
                         .field("finish-reason", &self.finish_reason)
                         .field("usage", &self.usage)
                         .finish()
+                }
+            }
+            /// A tool call about to run, for the user to watch.
+            #[derive(Clone)]
+            pub struct ToolActivity {
+                /// The model's id for the call this describes.
+                pub id: _rt::String,
+                pub name: _rt::String,
+                /// The model's own one-line justification, written for the user.
+                ///
+                /// Never sent back to the model: it is the model's account of itself,
+                /// and feeding it back costs tokens on every later turn while telling
+                /// the model only what it already decided.
+                pub reason: _rt::String,
+            }
+            impl ::core::fmt::Debug for ToolActivity {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("ToolActivity")
+                        .field("id", &self.id)
+                        .field("name", &self.name)
+                        .field("reason", &self.reason)
+                        .finish()
+                }
+            }
+            /// The wall clock of whoever is being talked to.
+            #[derive(Clone)]
+            pub struct Clock {
+                /// The current time in `timezone`, as RFC 3339.
+                pub now: _rt::String,
+                /// IANA name, e.g. "America/Los_Angeles". Empty when the caller's zone
+                /// is unknown, in which case `now` is UTC.
+                pub timezone: _rt::String,
+            }
+            impl ::core::fmt::Debug for Clock {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("Clock")
+                        .field("now", &self.now)
+                        .field("timezone", &self.timezone)
+                        .finish()
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Announces a tool call before it runs.
+            ///
+            /// Separate from `progress` because this is structured: the browser draws
+            /// it as an action with a reason attached, not as prose in the reply. It
+            /// is also recorded with the message, so reopening the session shows what
+            /// the agent did rather than only what it concluded.
+            pub fn tool_started(activity: &ToolActivity) -> () {
+                unsafe {
+                    let ToolActivity { id: id0, name: name0, reason: reason0 } = activity;
+                    let vec1 = id0;
+                    let ptr1 = vec1.as_ptr().cast::<u8>();
+                    let len1 = vec1.len();
+                    let vec2 = name0;
+                    let ptr2 = vec2.as_ptr().cast::<u8>();
+                    let len2 = vec2.len();
+                    let vec3 = reason0;
+                    let ptr3 = vec3.as_ptr().cast::<u8>();
+                    let len3 = vec3.len();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "tool-started"]
+                        fn wit_import4(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import4(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import4(
+                            ptr1.cast_mut(),
+                            len1,
+                            ptr2.cast_mut(),
+                            len2,
+                            ptr3.cast_mut(),
+                            len3,
+                        )
+                    };
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -94,45 +252,60 @@ pub mod outturn {
             /// The host consumes the provider's stream and returns the whole reply:
             /// the guest stays synchronous, and cancellation is the host dropping the
             /// stream rather than something the guest must handle.
+            ///
+            /// Every call streams its content to the user as it arrives, including a
+            /// call that turns out to want tools. The host cannot know a tool call is
+            /// coming until the stream is over and cannot retract what it has already
+            /// shown, so the rule is the other way around: whatever streamed is part
+            /// of the message. A guest that runs several rounds must therefore return
+            /// the content of all of them, or the browser will hold text the stored
+            /// transcript does not.
             pub fn chat(request: &CompletionRequest) -> Result<Completion, _rt::String> {
                 unsafe {
+                    let mut cleanup_list = _rt::Vec::new();
                     #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
                     #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
                     struct RetArea(
                         [::core::mem::MaybeUninit<
                             u8,
-                        >; 8 + 7 * ::core::mem::size_of::<*const u8>()],
+                        >; 8 + 9 * ::core::mem::size_of::<*const u8>()],
                     );
                     let mut ret_area = RetArea(
                         [::core::mem::MaybeUninit::uninit(); 8
-                            + 7 * ::core::mem::size_of::<*const u8>()],
+                            + 9 * ::core::mem::size_of::<*const u8>()],
                     );
                     let CompletionRequest {
                         messages: messages0,
+                        tools: tools0,
                         model: model0,
                         temperature: temperature0,
                         max_tokens: max_tokens0,
                     } = request;
-                    let vec4 = messages0;
-                    let len4 = vec4.len();
-                    let layout4 = _rt::alloc::Layout::from_size_align_unchecked(
-                        vec4.len() * (4 * ::core::mem::size_of::<*const u8>()),
+                    let vec10 = messages0;
+                    let len10 = vec10.len();
+                    let layout10 = _rt::alloc::Layout::from_size_align_unchecked(
+                        vec10.len() * (9 * ::core::mem::size_of::<*const u8>()),
                         ::core::mem::size_of::<*const u8>(),
                     );
-                    let result4 = if layout4.size() != 0 {
-                        let ptr = _rt::alloc::alloc(layout4).cast::<u8>();
+                    let result10 = if layout10.size() != 0 {
+                        let ptr = _rt::alloc::alloc(layout10).cast::<u8>();
                         if ptr.is_null() {
-                            _rt::alloc::handle_alloc_error(layout4);
+                            _rt::alloc::handle_alloc_error(layout10);
                         }
                         ptr
                     } else {
                         ::core::ptr::null_mut()
                     };
-                    for (i, e) in vec4.into_iter().enumerate() {
-                        let base = result4
-                            .add(i * (4 * ::core::mem::size_of::<*const u8>()));
+                    for (i, e) in vec10.into_iter().enumerate() {
+                        let base = result10
+                            .add(i * (9 * ::core::mem::size_of::<*const u8>()));
                         {
-                            let Message { role: role1, content: content1 } = e;
+                            let Message {
+                                role: role1,
+                                content: content1,
+                                tool_calls: tool_calls1,
+                                tool_call_id: tool_call_id1,
+                            } = e;
                             let vec2 = role1;
                             let ptr2 = vec2.as_ptr().cast::<u8>();
                             let len2 = vec2.len();
@@ -149,31 +322,163 @@ pub mod outturn {
                             *base
                                 .add(2 * ::core::mem::size_of::<*const u8>())
                                 .cast::<*mut u8>() = ptr3.cast_mut();
+                            let vec8 = tool_calls1;
+                            let len8 = vec8.len();
+                            let layout8 = _rt::alloc::Layout::from_size_align_unchecked(
+                                vec8.len() * (6 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let result8 = if layout8.size() != 0 {
+                                let ptr = _rt::alloc::alloc(layout8).cast::<u8>();
+                                if ptr.is_null() {
+                                    _rt::alloc::handle_alloc_error(layout8);
+                                }
+                                ptr
+                            } else {
+                                ::core::ptr::null_mut()
+                            };
+                            for (i, e) in vec8.into_iter().enumerate() {
+                                let base = result8
+                                    .add(i * (6 * ::core::mem::size_of::<*const u8>()));
+                                {
+                                    let ToolCall {
+                                        id: id4,
+                                        name: name4,
+                                        arguments: arguments4,
+                                    } = e;
+                                    let vec5 = id4;
+                                    let ptr5 = vec5.as_ptr().cast::<u8>();
+                                    let len5 = vec5.len();
+                                    *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>() = len5;
+                                    *base.add(0).cast::<*mut u8>() = ptr5.cast_mut();
+                                    let vec6 = name4;
+                                    let ptr6 = vec6.as_ptr().cast::<u8>();
+                                    let len6 = vec6.len();
+                                    *base
+                                        .add(3 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>() = len6;
+                                    *base
+                                        .add(2 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<*mut u8>() = ptr6.cast_mut();
+                                    let vec7 = arguments4;
+                                    let ptr7 = vec7.as_ptr().cast::<u8>();
+                                    let len7 = vec7.len();
+                                    *base
+                                        .add(5 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>() = len7;
+                                    *base
+                                        .add(4 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<*mut u8>() = ptr7.cast_mut();
+                                }
+                            }
+                            *base
+                                .add(5 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len8;
+                            *base
+                                .add(4 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = result8;
+                            match tool_call_id1 {
+                                Some(e) => {
+                                    *base
+                                        .add(6 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<u8>() = (1i32) as u8;
+                                    let vec9 = e;
+                                    let ptr9 = vec9.as_ptr().cast::<u8>();
+                                    let len9 = vec9.len();
+                                    *base
+                                        .add(8 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>() = len9;
+                                    *base
+                                        .add(7 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<*mut u8>() = ptr9.cast_mut();
+                                }
+                                None => {
+                                    *base
+                                        .add(6 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<u8>() = (0i32) as u8;
+                                }
+                            };
+                            cleanup_list.extend_from_slice(&[(result8, layout8)]);
                         }
                     }
-                    let (result6_0, result6_1, result6_2) = match model0 {
+                    let vec15 = tools0;
+                    let len15 = vec15.len();
+                    let layout15 = _rt::alloc::Layout::from_size_align_unchecked(
+                        vec15.len() * (6 * ::core::mem::size_of::<*const u8>()),
+                        ::core::mem::size_of::<*const u8>(),
+                    );
+                    let result15 = if layout15.size() != 0 {
+                        let ptr = _rt::alloc::alloc(layout15).cast::<u8>();
+                        if ptr.is_null() {
+                            _rt::alloc::handle_alloc_error(layout15);
+                        }
+                        ptr
+                    } else {
+                        ::core::ptr::null_mut()
+                    };
+                    for (i, e) in vec15.into_iter().enumerate() {
+                        let base = result15
+                            .add(i * (6 * ::core::mem::size_of::<*const u8>()));
+                        {
+                            let ToolDefinition {
+                                name: name11,
+                                description: description11,
+                                parameters: parameters11,
+                            } = e;
+                            let vec12 = name11;
+                            let ptr12 = vec12.as_ptr().cast::<u8>();
+                            let len12 = vec12.len();
+                            *base
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len12;
+                            *base.add(0).cast::<*mut u8>() = ptr12.cast_mut();
+                            let vec13 = description11;
+                            let ptr13 = vec13.as_ptr().cast::<u8>();
+                            let len13 = vec13.len();
+                            *base
+                                .add(3 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len13;
+                            *base
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = ptr13.cast_mut();
+                            let vec14 = parameters11;
+                            let ptr14 = vec14.as_ptr().cast::<u8>();
+                            let len14 = vec14.len();
+                            *base
+                                .add(5 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>() = len14;
+                            *base
+                                .add(4 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>() = ptr14.cast_mut();
+                        }
+                    }
+                    let (result17_0, result17_1, result17_2) = match model0 {
                         Some(e) => {
-                            let vec5 = e;
-                            let ptr5 = vec5.as_ptr().cast::<u8>();
-                            let len5 = vec5.len();
-                            (1i32, ptr5.cast_mut(), len5)
+                            let vec16 = e;
+                            let ptr16 = vec16.as_ptr().cast::<u8>();
+                            let len16 = vec16.len();
+                            (1i32, ptr16.cast_mut(), len16)
                         }
                         None => (0i32, ::core::ptr::null_mut(), 0usize),
                     };
-                    let (result7_0, result7_1) = match temperature0 {
+                    let (result18_0, result18_1) = match temperature0 {
                         Some(e) => (1i32, _rt::as_f32(e)),
                         None => (0i32, 0.0f32),
                     };
-                    let (result8_0, result8_1) = match max_tokens0 {
+                    let (result19_0, result19_1) = match max_tokens0 {
                         Some(e) => (1i32, _rt::as_i32(e)),
                         None => (0i32, 0i32),
                     };
-                    let ptr9 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    let ptr20 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
                     #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
                     unsafe extern "C" {
                         #[link_name = "chat"]
-                        fn wit_import10(
+                        fn wit_import21(
+                            _: *mut u8,
+                            _: usize,
                             _: *mut u8,
                             _: usize,
                             _: i32,
@@ -187,7 +492,9 @@ pub mod outturn {
                         );
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    unsafe extern "C" fn wit_import10(
+                    unsafe extern "C" fn wit_import21(
+                        _: *mut u8,
+                        _: usize,
                         _: *mut u8,
                         _: usize,
                         _: i32,
@@ -202,82 +509,145 @@ pub mod outturn {
                         unreachable!()
                     }
                     unsafe {
-                        wit_import10(
-                            result4,
-                            len4,
-                            result6_0,
-                            result6_1,
-                            result6_2,
-                            result7_0,
-                            result7_1,
-                            result8_0,
-                            result8_1,
-                            ptr9,
+                        wit_import21(
+                            result10,
+                            len10,
+                            result15,
+                            len15,
+                            result17_0,
+                            result17_1,
+                            result17_2,
+                            result18_0,
+                            result18_1,
+                            result19_0,
+                            result19_1,
+                            ptr20,
                         )
                     };
-                    let l11 = i32::from(*ptr9.add(0).cast::<u8>());
-                    let result25 = match l11 {
+                    let l22 = i32::from(*ptr20.add(0).cast::<u8>());
+                    let result48 = match l22 {
                         0 => {
                             let e = {
-                                let l12 = *ptr9
+                                let l23 = *ptr20
                                     .add(::core::mem::size_of::<*const u8>())
                                     .cast::<*mut u8>();
-                                let l13 = *ptr9
+                                let l24 = *ptr20
                                     .add(2 * ::core::mem::size_of::<*const u8>())
                                     .cast::<usize>();
-                                let len14 = l13;
-                                let bytes14 = _rt::Vec::from_raw_parts(
-                                    l12.cast(),
-                                    len14,
-                                    len14,
+                                let len25 = l24;
+                                let bytes25 = _rt::Vec::from_raw_parts(
+                                    l23.cast(),
+                                    len25,
+                                    len25,
                                 );
-                                let l15 = i32::from(
-                                    *ptr9
-                                        .add(3 * ::core::mem::size_of::<*const u8>())
+                                let l26 = *ptr20
+                                    .add(3 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l27 = *ptr20
+                                    .add(4 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let base37 = l26;
+                                let len37 = l27;
+                                let mut result37 = _rt::Vec::with_capacity(len37);
+                                for i in 0..len37 {
+                                    let base = base37
+                                        .add(i * (6 * ::core::mem::size_of::<*const u8>()));
+                                    let e37 = {
+                                        let l28 = *base.add(0).cast::<*mut u8>();
+                                        let l29 = *base
+                                            .add(::core::mem::size_of::<*const u8>())
+                                            .cast::<usize>();
+                                        let len30 = l29;
+                                        let bytes30 = _rt::Vec::from_raw_parts(
+                                            l28.cast(),
+                                            len30,
+                                            len30,
+                                        );
+                                        let l31 = *base
+                                            .add(2 * ::core::mem::size_of::<*const u8>())
+                                            .cast::<*mut u8>();
+                                        let l32 = *base
+                                            .add(3 * ::core::mem::size_of::<*const u8>())
+                                            .cast::<usize>();
+                                        let len33 = l32;
+                                        let bytes33 = _rt::Vec::from_raw_parts(
+                                            l31.cast(),
+                                            len33,
+                                            len33,
+                                        );
+                                        let l34 = *base
+                                            .add(4 * ::core::mem::size_of::<*const u8>())
+                                            .cast::<*mut u8>();
+                                        let l35 = *base
+                                            .add(5 * ::core::mem::size_of::<*const u8>())
+                                            .cast::<usize>();
+                                        let len36 = l35;
+                                        let bytes36 = _rt::Vec::from_raw_parts(
+                                            l34.cast(),
+                                            len36,
+                                            len36,
+                                        );
+                                        ToolCall {
+                                            id: _rt::string_lift(bytes30),
+                                            name: _rt::string_lift(bytes33),
+                                            arguments: _rt::string_lift(bytes36),
+                                        }
+                                    };
+                                    result37.push(e37);
+                                }
+                                _rt::cabi_dealloc(
+                                    base37,
+                                    len37 * (6 * ::core::mem::size_of::<*const u8>()),
+                                    ::core::mem::size_of::<*const u8>(),
+                                );
+                                let l38 = i32::from(
+                                    *ptr20
+                                        .add(5 * ::core::mem::size_of::<*const u8>())
                                         .cast::<u8>(),
                                 );
-                                let l19 = i32::from(
-                                    *ptr9
-                                        .add(6 * ::core::mem::size_of::<*const u8>())
+                                let l42 = i32::from(
+                                    *ptr20
+                                        .add(8 * ::core::mem::size_of::<*const u8>())
                                         .cast::<u8>(),
                                 );
                                 Completion {
-                                    content: _rt::string_lift(bytes14),
-                                    finish_reason: match l15 {
+                                    content: _rt::string_lift(bytes25),
+                                    tool_calls: result37,
+                                    finish_reason: match l38 {
                                         0 => None,
                                         1 => {
                                             let e = {
-                                                let l16 = *ptr9
-                                                    .add(4 * ::core::mem::size_of::<*const u8>())
+                                                let l39 = *ptr20
+                                                    .add(6 * ::core::mem::size_of::<*const u8>())
                                                     .cast::<*mut u8>();
-                                                let l17 = *ptr9
-                                                    .add(5 * ::core::mem::size_of::<*const u8>())
+                                                let l40 = *ptr20
+                                                    .add(7 * ::core::mem::size_of::<*const u8>())
                                                     .cast::<usize>();
-                                                let len18 = l17;
-                                                let bytes18 = _rt::Vec::from_raw_parts(
-                                                    l16.cast(),
-                                                    len18,
-                                                    len18,
+                                                let len41 = l40;
+                                                let bytes41 = _rt::Vec::from_raw_parts(
+                                                    l39.cast(),
+                                                    len41,
+                                                    len41,
                                                 );
-                                                _rt::string_lift(bytes18)
+                                                _rt::string_lift(bytes41)
                                             };
                                             Some(e)
                                         }
                                         _ => _rt::invalid_enum_discriminant(),
                                     },
-                                    usage: match l19 {
+                                    usage: match l42 {
                                         0 => None,
                                         1 => {
                                             let e = {
-                                                let l20 = *ptr9
-                                                    .add(4 + 6 * ::core::mem::size_of::<*const u8>())
+                                                let l43 = *ptr20
+                                                    .add(4 + 8 * ::core::mem::size_of::<*const u8>())
                                                     .cast::<i32>();
-                                                let l21 = *ptr9
-                                                    .add(8 + 6 * ::core::mem::size_of::<*const u8>())
+                                                let l44 = *ptr20
+                                                    .add(8 + 8 * ::core::mem::size_of::<*const u8>())
                                                     .cast::<i32>();
                                                 Usage {
-                                                    prompt_tokens: l20 as u32,
-                                                    completion_tokens: l21 as u32,
+                                                    prompt_tokens: l43 as u32,
+                                                    completion_tokens: l44 as u32,
                                                 }
                                             };
                                             Some(e)
@@ -290,28 +660,93 @@ pub mod outturn {
                         }
                         1 => {
                             let e = {
-                                let l22 = *ptr9
+                                let l45 = *ptr20
                                     .add(::core::mem::size_of::<*const u8>())
                                     .cast::<*mut u8>();
-                                let l23 = *ptr9
+                                let l46 = *ptr20
                                     .add(2 * ::core::mem::size_of::<*const u8>())
                                     .cast::<usize>();
-                                let len24 = l23;
-                                let bytes24 = _rt::Vec::from_raw_parts(
-                                    l22.cast(),
-                                    len24,
-                                    len24,
+                                let len47 = l46;
+                                let bytes47 = _rt::Vec::from_raw_parts(
+                                    l45.cast(),
+                                    len47,
+                                    len47,
                                 );
-                                _rt::string_lift(bytes24)
+                                _rt::string_lift(bytes47)
                             };
                             Err(e)
                         }
                         _ => _rt::invalid_enum_discriminant(),
                     };
-                    if layout4.size() != 0 {
-                        _rt::alloc::dealloc(result4.cast(), layout4);
+                    if layout10.size() != 0 {
+                        _rt::alloc::dealloc(result10.cast(), layout10);
                     }
-                    result25
+                    if layout15.size() != 0 {
+                        _rt::alloc::dealloc(result15.cast(), layout15);
+                    }
+                    for (ptr, layout) in cleanup_list {
+                        if layout.size() != 0 {
+                            _rt::alloc::dealloc(ptr.cast(), layout);
+                        }
+                    }
+                    result48
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// The current time, in the timezone of the user this turn belongs to.
+            ///
+            /// A host import rather than something the guest reads for itself: the
+            /// zone belongs to the user, not the machine, and the sandbox has neither
+            /// a clock nor a locale of its own.
+            ///
+            /// Kept out of the system prompt deliberately. A date in the prompt sits
+            /// in the cacheable prefix, so it either invalidates that cache on every
+            /// turn or goes stale; asked for on demand, it costs nothing until it is
+            /// wanted.
+            pub fn current_time() -> Clock {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 4 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 4
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "current-time"]
+                        fn wit_import1(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = *ptr0.add(0).cast::<*mut u8>();
+                    let l3 = *ptr0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let len4 = l3;
+                    let bytes4 = _rt::Vec::from_raw_parts(l2.cast(), len4, len4);
+                    let l5 = *ptr0
+                        .add(2 * ::core::mem::size_of::<*const u8>())
+                        .cast::<*mut u8>();
+                    let l6 = *ptr0
+                        .add(3 * ::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let len7 = l6;
+                    let bytes7 = _rt::Vec::from_raw_parts(l5.cast(), len7, len7);
+                    let result8 = Clock {
+                        now: _rt::string_lift(bytes4),
+                        timezone: _rt::string_lift(bytes7),
+                    };
+                    result8
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -390,13 +825,13 @@ pub mod exports {
                     arg3: usize,
                 ) -> *mut u8 {
                     #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
-                    let base6 = arg0;
-                    let len6 = arg1;
-                    let mut result6 = _rt::Vec::with_capacity(len6);
-                    for i in 0..len6 {
-                        let base = base6
-                            .add(i * (4 * ::core::mem::size_of::<*const u8>()));
-                        let e6 = {
+                    let base22 = arg0;
+                    let len22 = arg1;
+                    let mut result22 = _rt::Vec::with_capacity(len22);
+                    for i in 0..len22 {
+                        let base = base22
+                            .add(i * (9 * ::core::mem::size_of::<*const u8>()));
+                        let e22 = {
                             let l0 = *base.add(0).cast::<*mut u8>();
                             let l1 = *base
                                 .add(::core::mem::size_of::<*const u8>())
@@ -411,51 +846,139 @@ pub mod exports {
                                 .cast::<usize>();
                             let len5 = l4;
                             let bytes5 = _rt::Vec::from_raw_parts(l3.cast(), len5, len5);
+                            let l6 = *base
+                                .add(4 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l7 = *base
+                                .add(5 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base17 = l6;
+                            let len17 = l7;
+                            let mut result17 = _rt::Vec::with_capacity(len17);
+                            for i in 0..len17 {
+                                let base = base17
+                                    .add(i * (6 * ::core::mem::size_of::<*const u8>()));
+                                let e17 = {
+                                    let l8 = *base.add(0).cast::<*mut u8>();
+                                    let l9 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len10 = l9;
+                                    let bytes10 = _rt::Vec::from_raw_parts(
+                                        l8.cast(),
+                                        len10,
+                                        len10,
+                                    );
+                                    let l11 = *base
+                                        .add(2 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<*mut u8>();
+                                    let l12 = *base
+                                        .add(3 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len13 = l12;
+                                    let bytes13 = _rt::Vec::from_raw_parts(
+                                        l11.cast(),
+                                        len13,
+                                        len13,
+                                    );
+                                    let l14 = *base
+                                        .add(4 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<*mut u8>();
+                                    let l15 = *base
+                                        .add(5 * ::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len16 = l15;
+                                    let bytes16 = _rt::Vec::from_raw_parts(
+                                        l14.cast(),
+                                        len16,
+                                        len16,
+                                    );
+                                    super::super::super::super::outturn::agent::host::ToolCall {
+                                        id: _rt::string_lift(bytes10),
+                                        name: _rt::string_lift(bytes13),
+                                        arguments: _rt::string_lift(bytes16),
+                                    }
+                                };
+                                result17.push(e17);
+                            }
+                            _rt::cabi_dealloc(
+                                base17,
+                                len17 * (6 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l18 = i32::from(
+                                *base
+                                    .add(6 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<u8>(),
+                            );
                             super::super::super::super::outturn::agent::host::Message {
                                 role: _rt::string_lift(bytes2),
                                 content: _rt::string_lift(bytes5),
+                                tool_calls: result17,
+                                tool_call_id: match l18 {
+                                    0 => None,
+                                    1 => {
+                                        let e = {
+                                            let l19 = *base
+                                                .add(7 * ::core::mem::size_of::<*const u8>())
+                                                .cast::<*mut u8>();
+                                            let l20 = *base
+                                                .add(8 * ::core::mem::size_of::<*const u8>())
+                                                .cast::<usize>();
+                                            let len21 = l20;
+                                            let bytes21 = _rt::Vec::from_raw_parts(
+                                                l19.cast(),
+                                                len21,
+                                                len21,
+                                            );
+                                            _rt::string_lift(bytes21)
+                                        };
+                                        Some(e)
+                                    }
+                                    _ => _rt::invalid_enum_discriminant(),
+                                },
                             }
                         };
-                        result6.push(e6);
+                        result22.push(e22);
                     }
                     _rt::cabi_dealloc(
-                        base6,
-                        len6 * (4 * ::core::mem::size_of::<*const u8>()),
+                        base22,
+                        len22 * (9 * ::core::mem::size_of::<*const u8>()),
                         ::core::mem::size_of::<*const u8>(),
                     );
-                    let len7 = arg3;
-                    let bytes7 = _rt::Vec::from_raw_parts(arg2.cast(), len7, len7);
-                    let result8 = T::run(result6, _rt::string_lift(bytes7));
-                    let ptr9 = (&raw mut _RET_AREA.0).cast::<u8>();
-                    match result8 {
+                    let len23 = arg3;
+                    let bytes23 = _rt::Vec::from_raw_parts(arg2.cast(), len23, len23);
+                    let result24 = T::run(result22, _rt::string_lift(bytes23));
+                    let ptr25 = (&raw mut _RET_AREA.0).cast::<u8>();
+                    match result24 {
                         Ok(e) => {
-                            *ptr9.add(0).cast::<u8>() = (0i32) as u8;
-                            let vec10 = (e.into_bytes()).into_boxed_slice();
-                            let ptr10 = vec10.as_ptr().cast::<u8>();
-                            let len10 = vec10.len();
-                            ::core::mem::forget(vec10);
-                            *ptr9
+                            *ptr25.add(0).cast::<u8>() = (0i32) as u8;
+                            let vec26 = (e.into_bytes()).into_boxed_slice();
+                            let ptr26 = vec26.as_ptr().cast::<u8>();
+                            let len26 = vec26.len();
+                            ::core::mem::forget(vec26);
+                            *ptr25
                                 .add(2 * ::core::mem::size_of::<*const u8>())
-                                .cast::<usize>() = len10;
-                            *ptr9
+                                .cast::<usize>() = len26;
+                            *ptr25
                                 .add(::core::mem::size_of::<*const u8>())
-                                .cast::<*mut u8>() = ptr10.cast_mut();
+                                .cast::<*mut u8>() = ptr26.cast_mut();
                         }
                         Err(e) => {
-                            *ptr9.add(0).cast::<u8>() = (1i32) as u8;
-                            let vec11 = (e.into_bytes()).into_boxed_slice();
-                            let ptr11 = vec11.as_ptr().cast::<u8>();
-                            let len11 = vec11.len();
-                            ::core::mem::forget(vec11);
-                            *ptr9
+                            *ptr25.add(0).cast::<u8>() = (1i32) as u8;
+                            let vec27 = (e.into_bytes()).into_boxed_slice();
+                            let ptr27 = vec27.as_ptr().cast::<u8>();
+                            let len27 = vec27.len();
+                            ::core::mem::forget(vec27);
+                            *ptr25
                                 .add(2 * ::core::mem::size_of::<*const u8>())
-                                .cast::<usize>() = len11;
-                            *ptr9
+                                .cast::<usize>() = len27;
+                            *ptr25
                                 .add(::core::mem::size_of::<*const u8>())
-                                .cast::<*mut u8>() = ptr11.cast_mut();
+                                .cast::<*mut u8>() = ptr27.cast_mut();
                         }
                     };
-                    ptr9
+                    ptr25
                 }
                 #[doc(hidden)]
                 #[allow(non_snake_case)]
@@ -612,6 +1135,13 @@ mod _rt {
             String::from_utf8_unchecked(bytes)
         }
     }
+    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
+        if size == 0 {
+            return;
+        }
+        let layout = alloc::Layout::from_size_align_unchecked(size, align);
+        alloc::dealloc(ptr, layout);
+    }
     pub unsafe fn invalid_enum_discriminant<T>() -> T {
         if cfg!(debug_assertions) {
             panic!("invalid enum discriminant")
@@ -622,13 +1152,6 @@ mod _rt {
     #[cfg(target_arch = "wasm32")]
     pub fn run_ctors_once() {
         wit_bindgen_rt::run_ctors_once();
-    }
-    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
-        if size == 0 {
-            return;
-        }
-        let layout = alloc::Layout::from_size_align_unchecked(size, align);
-        alloc::dealloc(ptr, layout);
     }
     extern crate alloc as alloc_crate;
 }
@@ -668,21 +1191,27 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 613] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe3\x03\x01A\x02\x01\
-A\x05\x01B\x14\x01r\x02\x04roles\x07contents\x04\0\x07message\x03\0\0\x01p\x01\x01\
-ks\x01kv\x01ky\x01r\x04\x08messages\x02\x05model\x03\x0btemperature\x04\x0amax-t\
-okens\x05\x04\0\x12completion-request\x03\0\x06\x01r\x02\x0dprompt-tokensy\x11co\
-mpletion-tokensy\x04\0\x05usage\x03\0\x08\x01k\x09\x01r\x03\x07contents\x0dfinis\
-h-reason\x03\x05usage\x0a\x04\0\x0acompletion\x03\0\x0b\x01j\x01\x0c\x01s\x01@\x01\
-\x07request\x07\0\x0d\x04\0\x04chat\x01\x0e\x01@\x01\x04texts\x01\0\x04\0\x08pro\
-gress\x01\x0f\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01\x10\x03\0\x18\
-outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\
-\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0d\
-system-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\
-\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\
-\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10\
-wit-bindgen-rust\x060.41.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 881] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xef\x05\x01A\x02\x01\
+A\x05\x01B\"\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
+\x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
+\x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
+\x05tools\x09\x05model\x05\x0btemperature\x0a\x0amax-tokens\x0b\x04\0\x12complet\
+ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
+usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
+\x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06reas\
+ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x02\x03nows\x08timezones\x04\0\x05cloc\
+k\x03\0\x15\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x17\x01j\x01\
+\x12\x01s\x01@\x01\x07request\x0d\0\x18\x04\0\x04chat\x01\x19\x01@\0\0\x16\x04\0\
+\x0ccurrent-time\x01\x1a\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01\x1b\x01@\x02\
+\x05levels\x07messages\x01\0\x04\0\x03log\x01\x1c\x03\0\x18outturn:agent/host@0.\
+1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\
+\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\
+\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1fouttur\
+n:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09produ\
+cers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
+0.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -3,11 +3,20 @@ import { api } from './api'
 export type Agent = { id: string; name: string; slug: string }
 export type AgentSession = { id: string; agent_id: string; title: string }
 
+/** A tool the agent ran, with the model's own reason for running it. */
+export type ToolCallRecord = {
+  id: string
+  name: string
+  reason: string
+}
+
 export type Message = {
   /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  /** What the agent did on the way to this reply. */
+  metadata: { tool_calls?: ToolCallRecord[] }
   /** How many deltas `content` already accounts for. */
   delta_next: number
   model: string | null
@@ -39,6 +48,12 @@ export type ChatEvent =
    * the deltas, and re-sending the text would invite a replace that flashes if
    * the two ever differed.
    */
+  /** The agent started a tool. Arrives before the reply that used it. */
+  | {
+      id: string
+      kind: 'chat.tool'
+      payload: { message_id: string; call: ToolCallRecord }
+    }
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
   | { id: string; kind: 'chat.error'; payload: { message: string } }
 
@@ -59,10 +74,27 @@ export const createSession = (agentId: string, title = '') =>
 export const loadHistory = (sessionId: string) =>
   api<History>(`/v1/agent-sessions/${sessionId}/messages`)
 
+/**
+ * The sender's IANA timezone, as the browser understands it.
+ *
+ * Sent with each message rather than stored on the account: it is where the
+ * user is now, and the agent's clock should follow them rather than follow
+ * where they signed up.
+ */
+const timezone = (): string | undefined => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined
+  } catch {
+    // A browser without a resolvable zone leaves the agent on UTC, which is
+    // wrong but honest -- better than sending a guess.
+    return undefined
+  }
+}
+
 export const sendMessage = (sessionId: string, content: string) =>
   api<Message>(`/v1/agent-sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, timezone: timezone() }),
   })
 
 /**

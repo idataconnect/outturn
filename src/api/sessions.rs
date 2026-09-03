@@ -74,6 +74,11 @@ pub async fn delete_session(
 #[derive(Debug, Deserialize)]
 pub struct SendMessage {
     pub content: String,
+    /// The sender's IANA timezone, e.g. "Europe/London". Sent per message
+    /// rather than held on the account, so the agent answers in the zone the
+    /// user is in now. Absent means the agent's clock reads UTC.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// Records the user's message and queues the turn.
@@ -105,6 +110,7 @@ pub async fn send_message(
         tenant_id: claims.tenant_id,
         session_id: id,
         agent_id: session.agent_id,
+        timezone: input.timezone,
     })
     .map_err(internal)?;
     let event = serde_json::to_value(&message).map_err(internal)?;

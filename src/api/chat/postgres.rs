@@ -34,6 +34,7 @@ fn read_message(row: &sqlx::postgres::PgRow) -> Message {
         session_id: row.get("session_id"),
         role: row.get("role"),
         content: row.get("content"),
+        metadata: row.get("metadata"),
         // Only the history read reconstructs this; elsewhere the content is
         // whatever is stored, which by then accounts for every delta.
         delta_next: row.try_get("delta_next").unwrap_or(0),
@@ -154,7 +155,7 @@ impl ChatStore for PostgresChatStore {
                  where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
                  group by 1 \
              ) \
-             select m.id, m.session_id, m.role, \
+             select m.id, m.session_id, m.role, m.metadata, \
                     case when m.content = '' then coalesce(s.text, '') else m.content end \
                         as content, \
                     coalesce(s.delta_next, 0) as delta_next, \
@@ -187,16 +188,19 @@ impl ChatStore for PostgresChatStore {
         message_id: Uuid,
         content: &str,
         model: Option<&str>,
+        metadata: serde_json::Value,
     ) -> Result<Message, ChatError> {
         let row = sqlx::query(
-            "update agent_messages set content = $2, model = coalesce($3, model) \
+            "update agent_messages \
+             set content = $2, model = coalesce($3, model), metadata = $4 \
              where id = $1 \
-             returning id, session_id, role, content, model, prompt_tokens, \
-                       completion_tokens",
+             returning id, session_id, role, content, metadata, model, \
+                       prompt_tokens, completion_tokens",
         )
         .bind(message_id)
         .bind(content)
         .bind(model)
+        .bind(metadata)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
@@ -228,8 +232,8 @@ impl ChatStore for PostgresChatStore {
             "insert into agent_messages \
                  (id, session_id, role, content, model, prompt_tokens, completion_tokens) \
              values ($1, $2, $3, $4, $5, $6, $7) \
-             returning id, session_id, role, content, model, prompt_tokens, \
-                       completion_tokens",
+             returning id, session_id, role, content, metadata, model, \
+                       prompt_tokens, completion_tokens",
         )
         .bind(Uuid::now_v7())
         .bind(session_id)

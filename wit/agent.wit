@@ -2,15 +2,41 @@ package outturn:agent@0.1.0;
 
 /// What the host provides to a guest.
 interface host {
+    /// A request from the model to run a tool.
+    record tool-call {
+        /// The model's id for this call. A result must quote it back, so the
+        /// model can match answers to questions when it asks several at once.
+        id: string,
+        name: string,
+        /// Arguments as a JSON object, exactly as the model produced them.
+        /// Unparsed on purpose: a model may emit invalid JSON, and the guest
+        /// is better placed than the host to decide what to do about it.
+        arguments: string,
+    }
+
+    /// A tool offered to the model.
+    record tool-definition {
+        name: string,
+        description: string,
+        /// JSON Schema for the arguments object.
+        parameters: string,
+    }
+
     /// A message in the conversation.
     record message {
         role: string,
         content: string,
+        /// On an assistant message, the tools it asked for.
+        tool-calls: list<tool-call>,
+        /// On a tool message, which call this answers.
+        tool-call-id: option<string>,
     }
 
     /// A model call the guest wants made.
     record completion-request {
         messages: list<message>,
+        /// Tools the model may call. Empty offers none.
+        tools: list<tool-definition>,
         /// Omitted means the agent's configured default.
         model: option<string>,
         temperature: option<f32>,
@@ -24,8 +50,42 @@ interface host {
 
     record completion {
         content: string,
+        /// Tools the model wants run before it can answer. When this is not
+        /// empty the turn is unfinished: run them, append the results, and
+        /// call again.
+        tool-calls: list<tool-call>,
         finish-reason: option<string>,
         usage: option<usage>,
+    }
+
+    /// A tool call about to run, for the user to watch.
+    record tool-activity {
+        /// The model's id for the call this describes.
+        id: string,
+        name: string,
+        /// The model's own one-line justification, written for the user.
+        ///
+        /// Never sent back to the model: it is the model's account of itself,
+        /// and feeding it back costs tokens on every later turn while telling
+        /// the model only what it already decided.
+        reason: string,
+    }
+
+    /// Announces a tool call before it runs.
+    ///
+    /// Separate from `progress` because this is structured: the browser draws
+    /// it as an action with a reason attached, not as prose in the reply. It
+    /// is also recorded with the message, so reopening the session shows what
+    /// the agent did rather than only what it concluded.
+    tool-started: func(activity: tool-activity);
+
+    /// The wall clock of whoever is being talked to.
+    record clock {
+        /// The current time in `timezone`, as RFC 3339.
+        now: string,
+        /// IANA name, e.g. "America/Los_Angeles". Empty when the caller's zone
+        /// is unknown, in which case `now` is UTC.
+        timezone: string,
     }
 
     /// Calls a model.
@@ -35,7 +95,27 @@ interface host {
     /// The host consumes the provider's stream and returns the whole reply:
     /// the guest stays synchronous, and cancellation is the host dropping the
     /// stream rather than something the guest must handle.
+    ///
+    /// Every call streams its content to the user as it arrives, including a
+    /// call that turns out to want tools. The host cannot know a tool call is
+    /// coming until the stream is over and cannot retract what it has already
+    /// shown, so the rule is the other way around: whatever streamed is part
+    /// of the message. A guest that runs several rounds must therefore return
+    /// the content of all of them, or the browser will hold text the stored
+    /// transcript does not.
     chat: func(request: completion-request) -> result<completion, string>;
+
+    /// The current time, in the timezone of the user this turn belongs to.
+    ///
+    /// A host import rather than something the guest reads for itself: the
+    /// zone belongs to the user, not the machine, and the sandbox has neither
+    /// a clock nor a locale of its own.
+    ///
+    /// Kept out of the system prompt deliberately. A date in the prompt sits
+    /// in the cacheable prefix, so it either invalidates that cache on every
+    /// turn or goes stale; asked for on demand, it costs nothing until it is
+    /// wanted.
+    current-time: func() -> clock;
 
     /// Emits progress for the user to see before the turn finishes.
     ///

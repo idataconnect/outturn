@@ -25,6 +25,8 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         gateway_token: "test-token".into(),
         default_model: "fake".into(),
         progress,
+        on_tool: None,
+        timezone: None,
         fuel: 10_000_000_000,
     }
 }
@@ -33,6 +35,8 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message {
         role: "user".into(),
         content: text.into(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
     }]
 }
 
@@ -155,5 +159,131 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
     assert!(
         gateway.requests().is_empty(),
         "the guest should refuse before calling the model"
+    );
+}
+
+// -- Tools --------------------------------------------------------------------
+
+/// The whole tool loop, end to end against a scripted provider.
+///
+/// Covers what only shows up when the pieces run together: the host reassembles
+/// a tool call arriving in fragments, the guest reads the model's reason out of
+/// the arguments and announces it, the clock answers in the user's zone, and
+/// the reason is stripped before the call goes back to the model.
+#[tokio::test(flavor = "multi_thread")]
+async fn runs_a_tool_and_answers_with_its_result() {
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"reason":"Checking today's date for you."}"#.into(),
+        reply: "It is Tuesday.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |activity: &outturn::runtime::component::ToolActivity| {
+            seen.lock()
+                .unwrap()
+                .push((activity.name.clone(), activity.reason.clone()));
+        })
+    };
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.on_tool = Some(on_tool);
+    options.timezone = Some("Australia/Brisbane".into());
+
+    let reply = runner
+        .run(
+            &component(),
+            user("What day is it?"),
+            "You are helpful.".into(),
+            options,
+        )
+        .await
+        .expect("run");
+
+    assert_eq!(reply, "It is Tuesday.");
+
+    // The guest announced the call, with the model's own reason attached --
+    // reassembled from arguments that arrived seven bytes at a time.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(
+            "get_current_time".to_string(),
+            "Checking today's date for you.".to_string()
+        )]
+    );
+
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 2, "one call to ask, one to answer");
+
+    // The tool was offered on the first request.
+    let offered = requests[0]["tools"][0]["function"]["name"]
+        .as_str()
+        .expect("a tool was offered");
+    assert_eq!(offered, "get_current_time");
+
+    // The second request carries the model's request and the answer to it.
+    let messages = requests[1]["messages"].as_array().expect("messages");
+    let assistant = messages
+        .iter()
+        .find(|m| m["tool_calls"].is_array())
+        .expect("the assistant's tool call went back to the model");
+    let echoed = assistant["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !echoed.contains("reason"),
+        "the reason is written for the user and must not be resent to the model, got {echoed:?}"
+    );
+
+    let result = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the tool result went back to the model");
+    assert_eq!(result["tool_call_id"], "call_fake_1");
+    let content = result["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("Australia/Brisbane"),
+        "the clock answers in the user's zone, got {content:?}"
+    );
+}
+
+/// Without a zone the clock says so rather than passing off UTC as local.
+#[tokio::test(flavor = "multi_thread")]
+async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"reason":"Need the date."}"#.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    // An unparseable zone must degrade the same way an absent one does; a
+    // client sending nonsense should not put the agent in a random timezone.
+    options.timezone = Some("Mars/Olympus_Mons".into());
+
+    runner
+        .run(&component(), user("When?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let content = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content.contains("UTC"),
+        "an unknown zone must read as UTC, got {content:?}"
     );
 }
