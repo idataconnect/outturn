@@ -61,7 +61,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   let response: Response
   try {
-    response = await fetch(`/api${path}`, {
+    response = await fetch(path, {
       ...init,
       headers,
       credentials: 'include',
