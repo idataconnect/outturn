@@ -175,12 +175,12 @@ create table agent_sessions (
 create index agent_sessions_tenant_idx on agent_sessions (tenant_id, created_at desc);
 create index agent_sessions_agent_idx on agent_sessions (agent_id);
 
--- The conversation itself. Ordered by `seq` within a session rather than by
--- timestamp, so concurrent inserts cannot interleave ambiguously.
+-- The conversation itself. Ordered by `id`, which is a UUIDv7: the ordering
+-- is carried by the key itself, so there is no separate sequence to assign and
+-- concurrent inserts cannot interleave ambiguously.
 create table agent_messages (
     id           uuid        primary key,
     session_id   uuid        not null references agent_sessions (id) on delete cascade,
-    seq          bigint      not null,
     role         text        not null check (role in ('system', 'user', 'assistant', 'tool')),
     content      text        not null,
 
@@ -190,8 +190,7 @@ create table agent_messages (
     prompt_tokens     int,
     completion_tokens int,
 
-    created_at   timestamptz not null default now(),
-    unique (session_id, seq)
+    created_at   timestamptz not null default now()
 );
 
-create index agent_messages_session_idx on agent_messages (session_id, seq);
+create index agent_messages_session_idx on agent_messages (session_id, id);

@@ -21,10 +21,10 @@ const MAX_LIMIT: i64 = 500;
 
 #[derive(Debug, Deserialize)]
 pub struct PollQuery {
-    /// Cursor: return events with seq greater than this. Absent means "from
-    /// the beginning".
+    /// Cursor: return events whose id sorts above this. Absent means "from the
+    /// beginning", since a nil UUID sorts below every UUIDv7.
     #[serde(default)]
-    pub after: i64,
+    pub after: Uuid,
     pub session_id: Option<Uuid>,
     pub limit: Option<i64>,
 }
@@ -34,7 +34,7 @@ pub struct PollResponse {
     pub events: Vec<events::Event>,
     /// Cursor to pass as `after` on the next request. Unchanged when the poll
     /// timed out with nothing new.
-    pub cursor: i64,
+    pub cursor: Uuid,
 }
 
 pub async fn poll(
@@ -64,7 +64,7 @@ pub async fn poll(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let cursor = found.last().map(|e| e.seq).unwrap_or(query.after);
+    let cursor = found.last().map(|e| e.id).unwrap_or(query.after);
 
     Ok(Json(PollResponse {
         events: found,

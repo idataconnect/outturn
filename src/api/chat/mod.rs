@@ -18,12 +18,31 @@ pub struct AgentSession {
 pub struct Message {
     pub id: Uuid,
     pub session_id: Uuid,
-    pub seq: i64,
     pub role: String,
     pub content: String,
+    /// How many `chat.delta` fragments this content already accounts for.
+    ///
+    /// A reply is created empty and streamed into, so while a turn is running
+    /// the content is assembled from deltas rather than stored. This is where
+    /// the next delta belongs, which is what lets a client resume a stream it
+    /// reconnected to -- and refuse a fragment it has already folded in.
+    pub delta_next: i32,
     pub model: Option<String>,
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
+}
+
+/// A session's transcript, with the event cursor it was read at.
+///
+/// The two come from one statement, so they share a snapshot: every event at
+/// or below `cursor` is already reflected in `messages`, and everything above
+/// it is still to come over the feed. Polling from here is what stops history
+/// and stream from overlapping -- the bug that appended a message's own text
+/// to itself on reload.
+#[derive(Debug, Clone, Serialize)]
+pub struct History {
+    pub messages: Vec<Message>,
+    pub cursor: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +89,7 @@ pub trait ChatStore: Send + Sync {
 
     async fn delete_session(&self, tenant_id: Uuid, session_id: Uuid) -> Result<(), ChatError>;
 
-    async fn messages(&self, session_id: Uuid) -> Result<Vec<Message>, ChatError>;
+    async fn messages(&self, session_id: Uuid) -> Result<History, ChatError>;
 
     /// Replaces a message's content, for a reply that was created empty and
     /// streamed into.

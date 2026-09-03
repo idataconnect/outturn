@@ -227,6 +227,7 @@ impl Worker {
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
 
         let conversation: Vec<serde_json::Value> = history
+            .messages
             .iter()
             .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
             .collect();
@@ -295,7 +296,6 @@ impl Worker {
             "chat.done",
             serde_json::json!({
                 "message_id": finished.id,
-                "seq": finished.seq,
             }),
         )
         .await?;

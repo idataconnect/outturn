@@ -4,19 +4,33 @@ export type Agent = { id: string; name: string; slug: string }
 export type AgentSession = { id: string; agent_id: string; title: string }
 
 export type Message = {
+  /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
   id: string
-  seq: number
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
+  /** How many deltas `content` already accounts for. */
+  delta_next: number
   model: string | null
+}
+
+/**
+ * A transcript and the event cursor it was read at.
+ *
+ * Both come from one snapshot on the server, so polling from `cursor` picks up
+ * exactly where the content stops -- no event is replayed into a message that
+ * already contains it, and none is skipped.
+ */
+export type History = {
+  messages: Message[]
+  cursor: string
 }
 
 export type ChatEvent =
   /** A message exists. Assistant replies arrive empty and are streamed into. */
-  | { seq: number; kind: 'chat.message'; payload: Message }
+  | { id: string; kind: 'chat.message'; payload: Message }
   /** A fragment of a message's content, in order. */
   | {
-      seq: number
+      id: string
       kind: 'chat.delta'
       payload: { message_id: string; idx: number; text: string }
     }
@@ -25,12 +39,12 @@ export type ChatEvent =
    * the deltas, and re-sending the text would invite a replace that flashes if
    * the two ever differed.
    */
-  | { seq: number; kind: 'chat.done'; payload: { message_id: string; seq: number } }
-  | { seq: number; kind: 'chat.error'; payload: { message: string } }
+  | { id: string; kind: 'chat.done'; payload: { message_id: string } }
+  | { id: string; kind: 'chat.error'; payload: { message: string } }
 
 type PollResponse = {
   events: ChatEvent[]
-  cursor: number
+  cursor: string
 }
 
 export const listAgents = () => api<Agent[]>('/v1/agents')
@@ -42,8 +56,8 @@ export const createSession = (agentId: string, title = '') =>
     body: JSON.stringify({ agent_id: agentId, title }),
   })
 
-export const loadMessages = (sessionId: string) =>
-  api<Message[]>(`/v1/agent-sessions/${sessionId}/messages`)
+export const loadHistory = (sessionId: string) =>
+  api<History>(`/v1/agent-sessions/${sessionId}/messages`)
 
 export const sendMessage = (sessionId: string, content: string) =>
   api<Message>(`/v1/agent-sessions/${sessionId}/messages`, {
@@ -59,5 +73,5 @@ export const sendMessage = (sessionId: string, content: string) =>
  * harmless: the next call asks for everything newer than what was seen, so a
  * miss costs one poll interval rather than an update.
  */
-export const pollEvents = (sessionId: string, after: number, signal?: AbortSignal) =>
+export const pollEvents = (sessionId: string, after: string, signal?: AbortSignal) =>
   api<PollResponse>(`/v1/events?session_id=${sessionId}&after=${after}`, { signal })

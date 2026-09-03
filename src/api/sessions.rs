@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::auth::Authority;
 use crate::{events, jobs};
 
-use super::chat::{AgentSession, ChatError, CreateSession, Message, Usage};
+use super::chat::{AgentSession, ChatError, CreateSession, History, Usage};
 use super::router::{ApiError, ApiState, authorize};
 use super::worker::{CHAT_TURN, ChatTurnPayload};
 
@@ -53,7 +53,7 @@ pub async fn get_messages(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<Message>>, ApiError> {
+) -> Result<Json<History>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead)?;
     // Ownership is checked before reading messages, which are not themselves
     // tenant-scoped.

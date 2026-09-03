@@ -10,7 +10,7 @@ use super::notify::{CHANNEL, EventBus};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Event {
-    pub seq: i64,
+    pub id: Uuid,
     pub tenant_id: Uuid,
     pub session_id: Option<Uuid>,
     pub kind: String,
@@ -37,14 +37,16 @@ pub async fn append<'e, E>(
     session_id: Option<Uuid>,
     kind: &str,
     payload: serde_json::Value,
-) -> Result<i64, EventError>
+) -> Result<Uuid, EventError>
 where
     E: Executor<'e, Database = Postgres> + Copy,
 {
+    let id = Uuid::now_v7();
     let row = sqlx::query(
-        "insert into events (tenant_id, session_id, kind, payload) \
-         values ($1, $2, $3, $4) returning seq",
+        "insert into events (id, tenant_id, session_id, kind, payload) \
+         values ($1, $2, $3, $4, $5) returning id",
     )
+    .bind(id)
     .bind(tenant_id)
     .bind(session_id)
     .bind(kind)
@@ -53,7 +55,7 @@ where
     .await
     .map_err(internal)?;
 
-    let seq: i64 = row.get("seq");
+    let id: Uuid = row.get("id");
 
     // pg_notify rather than NOTIFY: the channel payload is parameterised, and
     // it is transactional either way.
@@ -68,23 +70,26 @@ where
         .await
         .map_err(internal)?;
 
-    Ok(seq)
+    Ok(id)
 }
 
 /// Events newer than `after` for a tenant, optionally narrowed to one session.
+///
+/// `after` is the last event id the caller saw. `Uuid::nil()` sorts below every
+/// UUIDv7, so it reads as "from the beginning".
 pub async fn since(
     pool: &PgPool,
     tenant_id: Uuid,
     session_id: Option<Uuid>,
-    after: i64,
+    after: Uuid,
     limit: i64,
 ) -> Result<Vec<Event>, EventError> {
     let rows = match session_id {
         Some(sid) => {
             sqlx::query(
-                "select seq, tenant_id, session_id, kind, payload from events \
-                 where tenant_id = $1 and session_id = $2 and seq > $3 \
-                 order by seq limit $4",
+                "select id, tenant_id, session_id, kind, payload from events \
+                 where tenant_id = $1 and session_id = $2 and id > $3 \
+                 order by id limit $4",
             )
             .bind(tenant_id)
             .bind(sid)
@@ -95,8 +100,8 @@ pub async fn since(
         }
         None => {
             sqlx::query(
-                "select seq, tenant_id, session_id, kind, payload from events \
-                 where tenant_id = $1 and seq > $2 order by seq limit $3",
+                "select id, tenant_id, session_id, kind, payload from events \
+                 where tenant_id = $1 and id > $2 order by id limit $3",
             )
             .bind(tenant_id)
             .bind(after)
@@ -110,7 +115,7 @@ pub async fn since(
     Ok(rows
         .iter()
         .map(|r| Event {
-            seq: r.get("seq"),
+            id: r.get("id"),
             tenant_id: r.get("tenant_id"),
             session_id: r.get("session_id"),
             kind: r.get("kind"),
@@ -130,7 +135,7 @@ pub async fn wait_for(
     bus: &EventBus,
     tenant_id: Uuid,
     session_id: Option<Uuid>,
-    after: i64,
+    after: Uuid,
     limit: i64,
     timeout: Duration,
     shutdown: impl std::future::Future<Output = ()>,

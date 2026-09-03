@@ -61,7 +61,7 @@ async fn events_return_immediately_when_already_present() {
         &bus,
         tenant,
         None,
-        0,
+        Uuid::nil(),
         100,
         Duration::from_secs(5),
         std::future::pending(),
@@ -97,7 +97,7 @@ async fn long_poll_wakes_on_notify() {
         &bus,
         tenant,
         None,
-        0,
+        Uuid::nil(),
         100,
         Duration::from_secs(10),
         std::future::pending(),
@@ -133,7 +133,7 @@ async fn long_poll_returns_empty_on_timeout() {
         &bus,
         tenant,
         None,
-        0,
+        Uuid::nil(),
         100,
         Duration::from_secs(25),
         std::future::pending(),
@@ -174,7 +174,7 @@ async fn shutdown_releases_parked_poll() {
         &bus,
         tenant,
         None,
-        0,
+        Uuid::nil(),
         100,
         Duration::from_secs(30),
         async move { notify.notified().await },
@@ -211,7 +211,7 @@ async fn session_scoped_poll_ignores_other_sessions() {
         &bus,
         tenant,
         Some(mine),
-        0,
+        Uuid::nil(),
         100,
         Duration::from_millis(500),
         std::future::pending(),
@@ -498,4 +498,189 @@ fn lease_and_heartbeat_are_consistent() {
         "lease {:?} is too long: a crashed worker's job stays unreachable for this long",
         jobs::DEFAULT_LEASE,
     );
+}
+
+// -- Transcript / stream boundary ---------------------------------------------
+
+/// Builds a session with one finished reply that was streamed in, so its
+/// deltas are still in the event log behind it.
+async fn streamed_session(
+    pool: &PgPool,
+    tenant: Uuid,
+) -> (Uuid, std::sync::Arc<dyn outturn::api::chat::ChatStore>) {
+    let user_id = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, $2)")
+        .bind(user_id)
+        .bind("Test")
+        .execute(pool)
+        .await
+        .expect("user");
+
+    let agent_id = Uuid::now_v7();
+    sqlx::query("insert into agents (id, tenant_id, name, slug) values ($1, $2, $3, $4)")
+        .bind(agent_id)
+        .bind(tenant)
+        .bind("A")
+        .bind(format!("a-{}", agent_id.simple()))
+        .execute(pool)
+        .await
+        .expect("agent");
+
+    let store: std::sync::Arc<dyn outturn::api::chat::ChatStore> =
+        std::sync::Arc::new(outturn::api::chat::PostgresChatStore::new(pool.clone()));
+    let session = store
+        .create_session(
+            tenant,
+            user_id,
+            outturn::api::chat::CreateSession {
+                agent_id,
+                title: String::new(),
+            },
+        )
+        .await
+        .expect("session");
+
+    (session.id, store)
+}
+
+/// A reply that was streamed and then completed must read back exactly once.
+///
+/// The deltas stay in the event log after the turn ends. A client that loaded
+/// the transcript and then replayed those deltas would append a message's text
+/// to itself -- which is what happened, visibly, in the browser. The cursor
+/// returned with the transcript is what forecloses it.
+#[tokio::test]
+async fn transcript_cursor_excludes_deltas_already_in_content() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    let reply = store
+        .append_message(session_id, "assistant", "", None, Default::default())
+        .await
+        .expect("reply");
+
+    let fragments = ["Small ", "task ", "indeed", "."];
+    for (idx, text) in fragments.iter().enumerate() {
+        events::append(
+            pool,
+            tenant,
+            Some(session_id),
+            "chat.delta",
+            serde_json::json!({ "message_id": reply.id, "idx": idx, "text": text }),
+        )
+        .await
+        .expect("delta");
+    }
+    let full = fragments.concat();
+    store
+        .set_message_content(reply.id, &full, None)
+        .await
+        .expect("finalise");
+
+    let history = store.messages(session_id).await.expect("history");
+    assert_eq!(history.messages.len(), 1);
+    assert_eq!(history.messages[0].content, full);
+    assert_eq!(
+        history.messages[0].delta_next,
+        fragments.len() as i32,
+        "content already accounts for every delta"
+    );
+
+    // The client polls from the cursor the transcript was read at. Nothing
+    // behind it may come back, or the content would be appended to itself.
+    let replayed = events::since(pool, tenant, Some(session_id), history.cursor, 100)
+        .await
+        .expect("since");
+    assert!(
+        replayed.is_empty(),
+        "cursor must exclude the deltas already folded into content, got {} event(s)",
+        replayed.len()
+    );
+
+    finish!(db);
+}
+
+/// Reconnecting mid-turn resumes the stream rather than restarting it.
+#[tokio::test]
+async fn transcript_mid_stream_returns_partial_content_and_resumes() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    // Created empty and streamed into; content is not stored until the turn
+    // ends, so the transcript must assemble it from the deltas so far.
+    let reply = store
+        .append_message(session_id, "assistant", "", None, Default::default())
+        .await
+        .expect("reply");
+
+    for (idx, text) in ["Half ", "a "].iter().enumerate() {
+        events::append(
+            pool,
+            tenant,
+            Some(session_id),
+            "chat.delta",
+            serde_json::json!({ "message_id": reply.id, "idx": idx, "text": text }),
+        )
+        .await
+        .expect("delta");
+    }
+
+    let history = store.messages(session_id).await.expect("history");
+    assert_eq!(history.messages[0].content, "Half a ");
+    assert_eq!(history.messages[0].delta_next, 2, "next delta is idx 2");
+
+    // The rest of the turn arrives over the feed, and only the rest.
+    events::append(
+        pool,
+        tenant,
+        Some(session_id),
+        "chat.delta",
+        serde_json::json!({ "message_id": reply.id, "idx": 2, "text": "thought." }),
+    )
+    .await
+    .expect("delta");
+
+    let arrived = events::since(pool, tenant, Some(session_id), history.cursor, 100)
+        .await
+        .expect("since");
+    assert_eq!(arrived.len(), 1, "only what the content does not already cover");
+    assert_eq!(arrived[0].payload["idx"], 2);
+
+    let resumed = format!(
+        "{}{}",
+        history.messages[0].content,
+        arrived[0].payload["text"].as_str().unwrap()
+    );
+    assert_eq!(resumed, "Half a thought.");
+
+    finish!(db);
+}
+
+/// Messages read back in the order they were appended, ordered by their
+/// UUIDv7 keys rather than a separate sequence column.
+#[tokio::test]
+async fn transcript_orders_by_uuidv7_key() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    for n in 0..5 {
+        store
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default())
+            .await
+            .expect("append");
+    }
+
+    let history = store.messages(session_id).await.expect("history");
+    let contents: Vec<&str> = history.messages.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(contents, ["m0", "m1", "m2", "m3", "m4"]);
+
+    let ids: Vec<Uuid> = history.messages.iter().map(|m| m.id).collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "key order is transcript order");
+
+    finish!(db);
 }

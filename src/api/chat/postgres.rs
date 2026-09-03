@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::{AgentSession, ChatError, ChatStore, CreateSession, Message, Usage};
+use super::{AgentSession, ChatError, ChatStore, CreateSession, History, Message, Usage};
 
 pub struct PostgresChatStore {
     pool: PgPool,
@@ -32,9 +32,11 @@ fn read_message(row: &sqlx::postgres::PgRow) -> Message {
     Message {
         id: row.get("id"),
         session_id: row.get("session_id"),
-        seq: row.get("seq"),
         role: row.get("role"),
         content: row.get("content"),
+        // Only the history read reconstructs this; elsewhere the content is
+        // whatever is stored, which by then accounts for every delta.
+        delta_next: row.try_get("delta_next").unwrap_or(0),
         model: row.get("model"),
         prompt_tokens: row.get("prompt_tokens"),
         completion_tokens: row.get("completion_tokens"),
@@ -126,18 +128,58 @@ impl ChatStore for PostgresChatStore {
         Ok(())
     }
 
-    async fn messages(&self, session_id: Uuid) -> Result<Vec<Message>, ChatError> {
+    /// The transcript as of one event cursor.
+    ///
+    /// Deliberately a single statement: the cursor and the content it accounts
+    /// for must come from the same snapshot, or a client polling from the
+    /// cursor would either replay a delta already folded into the content or
+    /// skip one that was not.
+    ///
+    /// A reply that is still streaming has no stored content yet, so its text
+    /// is assembled from the deltas visible in this snapshot. That is what
+    /// makes reconnecting mid-turn resume rather than restart.
+    async fn messages(&self, session_id: Uuid) -> Result<History, ChatError> {
         let rows = sqlx::query(
-            "select id, session_id, seq, role, content, model, prompt_tokens, \
-                    completion_tokens \
-             from agent_messages where session_id = $1 order by seq",
+            "with bound as ( \
+                 select coalesce( \
+                     (select id from events where session_id = $1 order by id desc limit 1), \
+                     '00000000-0000-0000-0000-000000000000'::uuid \
+                 ) as cursor \
+             ), \
+             streamed as ( \
+                 select (e.payload->>'message_id')::uuid as message_id, \
+                        count(*)::int as delta_next, \
+                        string_agg(e.payload->>'text', '' order by e.id) as text \
+                 from events e, bound \
+                 where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
+                 group by 1 \
+             ) \
+             select m.id, m.session_id, m.role, \
+                    case when m.content = '' then coalesce(s.text, '') else m.content end \
+                        as content, \
+                    coalesce(s.delta_next, 0) as delta_next, \
+                    m.model, m.prompt_tokens, m.completion_tokens, \
+                    bound.cursor \
+             from agent_messages m \
+             cross join bound \
+             left join streamed s on s.message_id = m.id \
+             where m.session_id = $1 \
+             order by m.id",
         )
         .bind(session_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
 
-        Ok(rows.iter().map(read_message).collect())
+        // With no messages there is nothing a replay could corrupt, so a nil
+        // cursor is safe -- and avoids a second query racing a message that
+        // arrives between the two.
+        let cursor = rows.first().map(|r| r.get("cursor")).unwrap_or_else(Uuid::nil);
+
+        Ok(History {
+            messages: rows.iter().map(read_message).collect(),
+            cursor,
+        })
     }
 
     async fn set_message_content(
@@ -149,7 +191,7 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "update agent_messages set content = $2, model = coalesce($3, model) \
              where id = $1 \
-             returning id, session_id, seq, role, content, model, prompt_tokens, \
+             returning id, session_id, role, content, model, prompt_tokens, \
                        completion_tokens",
         )
         .bind(message_id)
@@ -180,15 +222,13 @@ impl ChatStore for PostgresChatStore {
         model: Option<&str>,
         usage: Usage,
     ) -> Result<Message, ChatError> {
-        // The sequence is derived inside the insert so two concurrent appends
-        // cannot pick the same number; the unique constraint is the backstop.
+        // Ordering rides on the UUIDv7 key, so there is no sequence to derive
+        // and concurrent appends cannot contend over one.
         let row = sqlx::query(
             "insert into agent_messages \
-                 (id, session_id, seq, role, content, model, prompt_tokens, completion_tokens) \
-             select $1, $2, \
-                    coalesce((select max(seq) from agent_messages where session_id = $2), 0) + 1, \
-                    $3, $4, $5, $6, $7 \
-             returning id, session_id, seq, role, content, model, prompt_tokens, \
+                 (id, session_id, role, content, model, prompt_tokens, completion_tokens) \
+             values ($1, $2, $3, $4, $5, $6, $7) \
+             returning id, session_id, role, content, model, prompt_tokens, \
                        completion_tokens",
         )
         .bind(Uuid::now_v7())

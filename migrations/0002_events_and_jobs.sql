@@ -1,10 +1,15 @@
 -- Event log ------------------------------------------------------------------
 
--- Append-only feed the UI long-polls. `seq` is a bigserial so clients can hold
--- a simple monotonic cursor and ask for anything newer; it also means a missed
--- NOTIFY costs one poll cycle rather than a lost update.
+-- Append-only feed the UI long-polls. `id` is a UUIDv7, so it is both the key
+-- and the cursor: clients ask for anything greater than the last id they saw,
+-- and a missed NOTIFY costs one poll cycle rather than a lost update.
+--
+-- Cursors are safe here because writes to a single session's feed are
+-- serialised by the job lease -- one worker owns a session's turn at a time.
+-- Without that, a row could commit below a cursor another poller had already
+-- passed, and be missed.
 create table events (
-    seq         bigserial primary key,
+    id          uuid        primary key,
     tenant_id   uuid        not null references tenants (id) on delete cascade,
     session_id  uuid,
     kind        text        not null,
@@ -12,8 +17,8 @@ create table events (
     created_at  timestamptz not null default now()
 );
 
-create index events_tenant_seq_idx on events (tenant_id, seq);
-create index events_session_seq_idx on events (session_id, seq) where session_id is not null;
+create index events_tenant_id_idx on events (tenant_id, id);
+create index events_session_id_idx on events (session_id, id) where session_id is not null;
 
 -- Job queue ------------------------------------------------------------------
 
