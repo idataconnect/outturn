@@ -29,8 +29,8 @@ patches:
             value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
           - name: OUTTURN_DEV_SEED
             value: "1"
-          - name: OUTTURN_GATEWAY_URL
-            value: "http://outturn-gateway:8081"
+          - name: OUTTURN_RUNTIME_URL
+            value: "http://outturn-runtime:8082"
           - name: OUTTURN_DEFAULT_MODEL
             value: "llama3.1"
   - target:
@@ -73,5 +73,8 @@ patches:
             value: "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887"
           - name: OUTTURN_TOKEN_PUBLIC_KEY
             value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
-          - name: DATABASE_URL
-            value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
+          # Agents execute here, so this is the tier that reaches the gateway.
+          - name: OUTTURN_GATEWAY_URL
+            value: "http://outturn-gateway:8081"
+          - name: OUTTURN_DEFAULT_MODEL
+            value: "llama3.1"

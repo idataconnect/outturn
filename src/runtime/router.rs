@@ -1,40 +1,69 @@
+//! HTTP surface of the runtime service.
+//!
+//! Executes an agent as a WebAssembly component and streams its progress back
+//! to the caller. The runtime holds no database: it is given a conversation and
+//! returns a reply, so the tier that owns the transcript stays the only writer.
+
 use std::sync::Arc;
 
+use axum::body::Body;
+use futures::StreamExt;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{self, Authority, TokenMinter, TokenValidator};
+use crate::auth::{self, Authority, Role, TokenMinter, TokenValidator};
 
-use super::sandbox::{Sandbox, SandboxConfig, SecurityTier};
-use super::storage::StorageBackend;
+use super::component::{AgentRunner, Message, ProgressSink, RunOptions};
+
+/// Bounds a runaway guest. Generous enough for a long conversation, finite so
+/// a loop cannot occupy the service indefinitely.
+const FUEL_PER_TURN: u64 = 50_000_000_000;
 
 pub struct RuntimeState {
-    pub storage: Arc<dyn StorageBackend>,
     pub auth: TokenValidator,
-    /// Mints the short-lived token the sandbox hands to the gateway on the
-    /// guest's behalf. Separate from the caller's token so a guest's reach is
-    /// bounded by what the runtime grants, not by what the API holds.
+    /// Mints the token the guest's model calls travel with. Minted here rather
+    /// than forwarded from the caller, so a guest's reach is bounded by what
+    /// the runtime grants rather than by whatever the API happened to hold.
     pub minter: TokenMinter,
     pub gateway_url: String,
-    /// WASM executed when an agent has no module of its own.
-    pub default_module: Option<Vec<u8>>,
+    pub runner: Arc<AgentRunner>,
+    /// The component every agent currently runs.
+    pub agent_module: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ExecuteRequest {
     pub session_id: Uuid,
     pub tenant_id: Uuid,
-    /// The chat request the guest should issue, as OpenAI-compatible JSON.
-    pub request: serde_json::Value,
+    pub conversation: Vec<ConversationMessage>,
     #[serde(default)]
-    pub security_tier: Option<String>,
+    pub system_prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ExecuteResponse {
-    /// The gateway's reply, passed through unchanged.
-    pub response: serde_json::Value,
+#[derive(Debug, Deserialize)]
+pub struct ConversationMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// One line of the response stream.
+///
+/// Newline-delimited JSON rather than Server-Sent Events: the caller is the
+/// API, not a browser, and the deltas it receives are written to the event feed
+/// rather than forwarded as-is.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecuteEvent {
+    /// A fragment of the reply, in order.
+    Delta { idx: i64, text: String },
+    /// Generation finished; the reply is complete.
+    Done { content: String },
+    /// The turn failed.
+    Failed { message: String },
 }
 
 type ApiError = (StatusCode, String);
@@ -43,8 +72,7 @@ pub async fn execute(
     State(state): State<Arc<RuntimeState>>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ExecuteRequest>,
-) -> Result<Json<ExecuteResponse>, ApiError> {
-    // The caller must be authorised to run agents in this tenant.
+) -> Result<Response, ApiError> {
     let token = auth::extract_bearer(&headers)
         .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
     let claims = state
@@ -57,7 +85,7 @@ pub async fn execute(
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
 
     // The tenant on the token wins over the one in the body, so a caller
-    // cannot run work against a tenant it does not hold a token for.
+    // cannot run work against a tenant it holds no token for.
     if claims.tenant_id != request.tenant_id {
         return Err((
             StatusCode::FORBIDDEN,
@@ -65,44 +93,90 @@ pub async fn execute(
         ));
     }
 
-    let Some(module) = state.default_module.as_ref() else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no agent module configured".into(),
-        ));
-    };
+    let conversation: Vec<Message> = request
+        .conversation
+        .into_iter()
+        .map(|m| Message {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
 
-    // A fresh token per execution, carrying only what the guest needs.
     let gateway_token = state
         .minter
-        .mint(request.session_id, request.tenant_id, &claims.roles)
+        .mint(request.session_id, request.tenant_id, &[Role::Operator])
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let config = SandboxConfig {
-        session_id: request.session_id,
-        tenant_id: request.tenant_id,
-        security_tier: match request.security_tier.as_deref() {
-            Some("trusted") => SecurityTier::Trusted,
-            _ => SecurityTier::Standard,
-        },
-        gateway_token,
-        gateway_url: state.gateway_url.clone(),
-        memory_limit_bytes: 128 * 1024 * 1024,
-        fuel_limit: 10_000_000_000,
+    // Deltas are forwarded down the response as the guest produces them. An
+    // unbounded channel because the sink is synchronous -- it is called while
+    // the guest is blocked and cannot wait for a slow reader.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ExecuteEvent>();
+
+    let sink: ProgressSink = {
+        let tx = tx.clone();
+        let index = std::sync::atomic::AtomicI64::new(0);
+        Arc::new(move |text: &str| {
+            let idx = index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = tx.send(ExecuteEvent::Delta {
+                idx,
+                text: text.to_string(),
+            });
+        })
     };
 
-    let sandbox = Sandbox::new(config, Arc::clone(&state.storage))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    tracing::info!(
+        session_id = %request.session_id,
+        tenant_id = %request.tenant_id,
+        messages = conversation.len(),
+        "executing agent"
+    );
 
-    sandbox
-        .run(module)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("guest failed: {e}")))?;
+    let runner = Arc::clone(&state.runner);
+    let module = Arc::clone(&state.agent_module);
+    let options = RunOptions {
+        session_id: request.session_id,
+        gateway_url: state.gateway_url.clone(),
+        gateway_token,
+        default_model: request
+            .model
+            .unwrap_or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into())),
+        progress: Some(sink),
+        fuel: FUEL_PER_TURN,
+    };
 
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        "guest ran, but returning its output is not wired yet".into(),
-    ))
+    tokio::spawn(async move {
+        let outcome = runner
+            .run(&module, conversation, request.system_prompt, options)
+            .await;
+
+        let _ = match outcome {
+            Ok(content) => {
+                tracing::info!(chars = content.len(), "agent finished");
+                tx.send(ExecuteEvent::Done { content })
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "agent failed");
+                tx.send(ExecuteEvent::Failed {
+                    message: e.to_string(),
+                })
+            }
+        };
+    });
+
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(|event| {
+        serde_json::to_string(&event)
+            .map(|mut line| {
+                line.push('\n');
+                axum::body::Bytes::from(line)
+            })
+            .map_err(std::io::Error::other)
+    });
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 pub fn routes(state: Arc<RuntimeState>) -> Router {

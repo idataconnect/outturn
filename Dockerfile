@@ -26,7 +26,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:trixie-slim AS api
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
-COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["api"]
@@ -41,6 +40,7 @@ ENTRYPOINT ["gateway"]
 FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates poppler-utils && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/runtime /usr/local/bin/runtime
+COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8082
 EXPOSE 8082
 ENTRYPOINT ["runtime"]

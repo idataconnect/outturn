@@ -10,9 +10,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use crate::auth::{Role, TokenMinter};
 use crate::events;
 use crate::jobs;
-use crate::runtime::component::{
-    AgentRunner, Message as GuestMessage, ProgressSink, RunOptions,
-};
+use crate::runtime::router::ExecuteEvent;
 
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
@@ -27,20 +25,15 @@ pub struct ChatTurnPayload {
     pub agent_id: Uuid,
 }
 
-/// Bounds a runaway guest. Generous enough for a long conversation, finite so
-/// a loop cannot occupy a worker indefinitely.
-const FUEL_PER_TURN: u64 = 50_000_000_000;
-
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
     pub chat: Arc<dyn ChatStore>,
     pub minter: Arc<TokenMinter>,
-    pub gateway_url: String,
-    /// Compiled once and reused: instantiation is cheap, compilation is not.
-    pub runner: Arc<AgentRunner>,
-    /// The component every agent currently runs.
-    pub agent_module: Arc<Vec<u8>>,
+    /// Where agents execute. A separate service so a runaway guest competes
+    /// for its own CPU rather than the API's, and so the two scale apart.
+    pub runtime_url: String,
+    pub http: reqwest::Client,
 }
 
 impl Worker {
@@ -137,6 +130,83 @@ impl Worker {
         }
     }
 
+    /// Runs a turn on the runtime service, writing each delta to the event
+    /// feed as it arrives.
+    ///
+    /// The runtime holds no database, so the transcript stays owned by this
+    /// tier: deltas travel back over the response and are recorded here.
+    async fn execute_on_runtime(
+        &self,
+        token: &str,
+        payload: &ChatTurnPayload,
+        conversation: Vec<serde_json::Value>,
+        system_prompt: &str,
+        model: &str,
+        message_id: Uuid,
+    ) -> anyhow::Result<String> {
+        use futures::StreamExt;
+
+        let response = self
+            .http
+            .post(format!("{}/v1/execute", self.runtime_url))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "session_id": payload.session_id,
+                "tenant_id": payload.tenant_id,
+                "conversation": conversation,
+                "system_prompt": system_prompt,
+                "model": model,
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            anyhow::bail!("runtime returned {status}: {detail}");
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+
+        while let Some(bytes) = stream.next().await {
+            buffer.push_str(std::str::from_utf8(&bytes?)?);
+
+            // An event may span reads, so only whole lines are parsed.
+            while let Some(index) = buffer.find('\n') {
+                let line = buffer[..index].trim().to_string();
+                buffer.drain(..=index);
+                if line.is_empty() {
+                    continue;
+                }
+
+                match serde_json::from_str::<ExecuteEvent>(&line) {
+                    Ok(ExecuteEvent::Delta { idx, text }) => {
+                        events::append(
+                            &self.pool,
+                            payload.tenant_id,
+                            Some(payload.session_id),
+                            "chat.delta",
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "idx": idx,
+                                "text": text,
+                            }),
+                        )
+                        .await?;
+                    }
+                    Ok(ExecuteEvent::Done { content }) => return Ok(content),
+                    Ok(ExecuteEvent::Failed { message }) => {
+                        anyhow::bail!("guest failed: {message}")
+                    }
+                    Err(e) => tracing::warn!(error = %e, "malformed event from runtime"),
+                }
+            }
+        }
+
+        anyhow::bail!("runtime stream ended without a result")
+    }
+
     async fn run_turn(&self, payload: &serde_json::Value) -> anyhow::Result<()> {
         let payload: ChatTurnPayload = serde_json::from_value(payload.clone())?;
 
@@ -156,12 +226,9 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
 
-        let conversation: Vec<GuestMessage> = history
+        let conversation: Vec<serde_json::Value> = history
             .iter()
-            .map(|m| GuestMessage {
-                role: m.role.clone(),
-                content: m.content.clone(),
-            })
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
             .collect();
 
         // The assistant's message is created empty before generation starts, so
@@ -183,39 +250,9 @@ impl Worker {
         )
         .await?;
 
-        // Deltas are announced as they arrive, each carrying its index so a
-        // reader can tell a dropped one from a slow one.
-        let sink: ProgressSink = {
-            let pool = self.pool.clone();
-            let tenant_id = payload.tenant_id;
-            let session_id = payload.session_id;
-            let message_id = placeholder.id;
-            let index = Arc::new(AtomicI64::new(0));
-
-            Arc::new(move |text: &str| {
-                let pool = pool.clone();
-                let text = text.to_string();
-                let idx = index.fetch_add(1, Ordering::SeqCst);
-                // Spawned because the sink is synchronous: it is called from
-                // the host while the guest is blocked, and must not await.
-                tokio::spawn(async move {
-                    let _ = events::append(
-                        &pool,
-                        tenant_id,
-                        Some(session_id),
-                        "chat.delta",
-                        serde_json::json!({
-                            "message_id": message_id,
-                            "idx": idx,
-                            "text": text,
-                        }),
-                    )
-                    .await;
-                });
-            })
-        };
-
-        // A token minted for this turn, carrying only what the guest needs.
+        // The runtime executes the agent and streams its progress back. Each
+        // delta is announced as it arrives, carrying an index so a reader can
+        // tell a dropped one from a slow one.
         let token = self.minter.mint(
             payload.session_id,
             payload.tenant_id,
@@ -223,19 +260,13 @@ impl Worker {
         )?;
 
         let reply = self
-            .runner
-            .run(
-                &self.agent_module,
+            .execute_on_runtime(
+                &token,
+                &payload,
                 conversation,
-                agent.system_prompt.clone(),
-                RunOptions {
-                    session_id: payload.session_id,
-                    gateway_url: self.gateway_url.clone(),
-                    gateway_token: token,
-                    default_model: model_for(&agent.policy),
-                    progress: Some(sink),
-                    fuel: FUEL_PER_TURN,
-                },
+                &agent.system_prompt,
+                &model_for(&agent.policy),
+                placeholder.id,
             )
             .await;
 
