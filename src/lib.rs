@@ -3,6 +3,7 @@ pub mod auth;
 pub mod db;
 pub mod events;
 pub mod gateway;
+pub mod http_client;
 pub mod jobs;
 pub mod lifecycle;
 pub mod runtime;

@@ -169,6 +169,7 @@ pub async fn execute(
         fuel: FUEL_PER_TURN,
         timezone: request.timezone,
         reasoning_effort: request.reasoning_effort,
+        idle_timeout: crate::http_client::IDLE_TIMEOUT,
     };
 
     tokio::spawn(async move {

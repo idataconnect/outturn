@@ -28,6 +28,8 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_tool: None,
         timezone: None,
         reasoning_effort: None,
+        // Production waits five minutes; a test cannot.
+        idle_timeout: std::time::Duration::from_secs(2),
         fuel: 10_000_000_000,
     }
 }
@@ -303,5 +305,37 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     assert!(
         content.contains("UTC"),
         "an unknown zone must read as UTC, got {content:?}"
+    );
+}
+
+/// A provider that accepts the request and then goes silent is abandoned.
+///
+/// TCP will not save us here: the connection is healthy and keepalive probes
+/// are answered, so nothing below the application layer has anything to
+/// complain about. Left alone the turn never ends -- and because the job
+/// heartbeat renews the lease while the worker waits, it would not even be
+/// reclaimed as abandoned work.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
+    let gateway = FakeGateway::start(Behaviour::Hang).await;
+    let runner = AgentRunner::new().expect("runner");
+
+    let started = std::time::Instant::now();
+    let outcome = runner
+        .run(
+            &component(),
+            user("Are you there?"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await;
+
+    assert!(outcome.is_err(), "a silent provider must not hang the turn");
+    // Comfortably inside the 30s a stalled turn would otherwise sit for, and
+    // safely outside the 2s deadline plus scheduling.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "gave up after {:?}, which suggests no deadline applied",
+        started.elapsed()
     );
 }

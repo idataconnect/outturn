@@ -71,6 +71,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_tool: None,
                 timezone: None,
                 reasoning_effort: None,
+                idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 fuel: 10_000_000_000,
             },
         )

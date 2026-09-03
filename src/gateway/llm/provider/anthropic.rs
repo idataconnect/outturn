@@ -13,7 +13,7 @@ impl AnthropicProvider {
         Self {
             base_url,
             api_key,
-            client: reqwest::Client::new(),
+            client: crate::http_client::streaming_client(crate::http_client::IDLE_TIMEOUT),
         }
     }
 }

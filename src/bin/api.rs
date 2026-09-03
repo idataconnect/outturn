@@ -96,7 +96,7 @@ async fn main() {
         minter: Arc::new(worker_minter),
         runtime_url: std::env::var("OUTTURN_RUNTIME_URL")
             .unwrap_or_else(|_| "http://outturn-runtime:8082".into()),
-        http: reqwest::Client::new(),
+        http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
     })
     .spawn(health.shutdown_signal());
 

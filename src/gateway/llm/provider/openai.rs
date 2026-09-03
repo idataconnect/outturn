@@ -26,7 +26,7 @@ impl OpenAiProvider {
             // route differently and others reject outright.
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
-            client: reqwest::Client::new(),
+            client: crate::http_client::streaming_client(crate::http_client::IDLE_TIMEOUT),
         }
     }
 

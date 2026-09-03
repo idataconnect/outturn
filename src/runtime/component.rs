@@ -332,6 +332,9 @@ pub struct RunOptions {
     pub timezone: Option<String>,
     /// Passed to providers that support it; ignored by those that do not.
     pub reasoning_effort: Option<String>,
+    /// How long the gateway's stream may go silent before the turn is
+    /// abandoned. A parameter so a test can prove it fires.
+    pub idle_timeout: std::time::Duration,
 }
 
 impl AgentRunner {
@@ -370,7 +373,7 @@ impl AgentRunner {
             gateway_url: options.gateway_url,
             gateway_token: options.gateway_token,
             default_model: options.default_model,
-            http: reqwest::Client::new(),
+            http: crate::http_client::streaming_client(options.idle_timeout),
             progress: options.progress,
             on_tool: options.on_tool,
             session_id: options.session_id,
