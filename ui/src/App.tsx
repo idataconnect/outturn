@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import TenantSwitcher from './components/TenantSwitcher'
+import ThemeToggle from './components/ThemeToggle'
 import { api } from './lib/api'
 import {
   SessionActionsContext,
@@ -244,7 +245,8 @@ function SignOut() {
   if (state.status !== 'authenticated') return null
 
   return (
-    <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+    <div className="p-2 border-t border-gray-200 dark:border-gray-800 space-y-2">
+      <ThemeToggle />
       <p className="px-3 pt-1 pb-2 text-xs text-gray-500 dark:text-gray-400 truncate">
         {state.session.roles.join(', ')}
       </p>

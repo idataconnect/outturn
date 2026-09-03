@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Building2, LogIn } from 'lucide-react'
 
+import ThemeToggle from '../components/ThemeToggle'
 import { ApiError, NetworkError, api } from '../lib/api'
 import { useSessionActions, type TenantMembership } from '../lib/session'
 
@@ -72,6 +73,11 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-6">
       <div className="w-full max-w-sm">
+        <div className="flex justify-end mb-4">
+          <div className="w-28">
+            <ThemeToggle />
+          </div>
+        </div>
         <div className="flex flex-col items-center gap-3">
           <img src="/favicon.svg" alt="" className="w-16 h-16" />
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">outturn</h1>

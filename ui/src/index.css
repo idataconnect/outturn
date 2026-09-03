@@ -1,1 +1,20 @@
 @import "tailwindcss";
+
+/*
+ * Dark mode follows a `dark` class on <html> rather than the media query
+ * alone, so a chosen theme can override the operating system's. The system
+ * setting is honoured by the app applying the class itself -- see lib/theme.ts.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Tells the browser which built-in colours to use for scrollbars, form
+ * controls and the like. Without it those stay light in a dark page.
+ */
+:root {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+}

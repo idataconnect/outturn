@@ -158,7 +158,7 @@ export function useChatRuntime(sessionId: string | null) {
       stopped = true
       controller.abort()
     }
-  }, [sessionId, merge])
+  }, [sessionId, merge, applyDelta])
 
   const onNew = useCallback(
     async (message: AppendMessage) => {

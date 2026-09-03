@@ -9,6 +9,22 @@
     <title>outturn</title>
   </head>
   <body>
+    <script>
+      // Inline and blocking, so the class is on <html> before anything paints.
+      // Deferring this to React would show a light background for one frame.
+      (function () {
+        try {
+          var stored = localStorage.getItem('outturn.theme') || 'system';
+          var dark =
+            stored === 'dark' ||
+            (stored === 'system' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', dark);
+        } catch (e) {
+          // A private window can refuse storage; the stylesheet default stands.
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
