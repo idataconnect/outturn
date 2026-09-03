@@ -1,3 +1,4 @@
+pub mod breaker;
 pub mod llm;
 mod router;
 

@@ -6,17 +6,55 @@ use futures::StreamExt;
 
 use crate::auth::{self, TokenValidator, SessionClaims};
 
+use super::breaker;
 use super::llm::provider::{LlmProvider, ProviderError};
 use super::llm::types::{ChatCompletionRequest, ChatCompletionResponse};
 
 pub struct GatewayState {
     providers: Vec<Arc<dyn LlmProvider>>,
     auth: TokenValidator,
+    /// Backs the shared circuit breaker. Optional so the gateway still runs
+    /// without a database -- it simply calls every provider, which is the
+    /// behaviour it had before the breaker existed.
+    health: Option<sqlx::postgres::PgPool>,
 }
 
 impl GatewayState {
     pub fn new(providers: Vec<Arc<dyn LlmProvider>>, auth: TokenValidator) -> Self {
-        Self { providers, auth }
+        Self {
+            providers,
+            auth,
+            health: None,
+        }
+    }
+
+    pub fn with_health(mut self, pool: sqlx::postgres::PgPool) -> Self {
+        self.health = Some(pool);
+        self
+    }
+
+    /// Whether this provider may be called, and who owns the next probe.
+    async fn admits(&self, provider: &Arc<dyn LlmProvider>) -> bool {
+        let Some(pool) = &self.health else {
+            return true;
+        };
+        breaker::check(pool, &provider.endpoint()).await == breaker::Verdict::Allow
+    }
+
+    /// Feeds the outcome of a call back into the shared breaker.
+    async fn observe(&self, provider: &Arc<dyn LlmProvider>, outcome: Result<(), &ProviderError>) {
+        let Some(pool) = &self.health else {
+            return;
+        };
+        let endpoint = provider.endpoint();
+        match outcome {
+            Ok(()) => breaker::record_success(pool, &endpoint).await,
+            Err(e) if breaker::counts_as_failure(e) => {
+                breaker::record_failure(pool, &endpoint, &e.to_string()).await
+            }
+            // A rejected request or a rate limit says the provider is alive.
+            Err(_) => {}
+        }
     }
 }
 
@@ -56,22 +94,18 @@ async fn chat_completions(
     let mut last_error = None;
 
     for provider in &state.providers {
-        if !provider.is_available().await {
+        if !provider.is_available().await || !state.admits(provider).await {
             continue;
         }
 
         match provider.chat_completion(&request).await {
-            Ok(response) => return Ok(Json(response)),
-            Err(ProviderError::RateLimited) | Err(ProviderError::Unavailable) => {
-                tracing::warn!(
-                    provider = ?provider.provider(),
-                    "provider unavailable, trying next"
-                );
-                last_error = Some(ProviderError::Unavailable);
-                continue;
+            Ok(response) => {
+                state.observe(provider, Ok(())).await;
+                return Ok(Json(response));
             }
             Err(e) => {
-                tracing::error!(provider = ?provider.provider(), error = %e, "provider error");
+                tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");
+                state.observe(provider, Err(&e)).await;
                 last_error = Some(e);
                 continue;
             }
@@ -105,12 +139,17 @@ async fn chat_completions_stream(
     );
 
     for provider in &state.providers {
-        if !provider.is_available().await {
+        if !provider.is_available().await || !state.admits(provider).await {
             continue;
         }
 
         match provider.chat_completion_stream(&request).await {
             Ok(chunks) => {
+                // Recorded once the provider has accepted and begun
+                // streaming. A stream that dies partway is not seen here --
+                // the body is handed to the caller and this scope ends -- so
+                // the breaker measures reachability, not completion.
+                state.observe(provider, Ok(())).await;
                 let body = chunks.map(|chunk| match chunk {
                     Ok(chunk) => serde_json::to_string(&chunk)
                         .map(|mut line| {
@@ -129,6 +168,7 @@ async fn chat_completions_stream(
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "stream failed");
+                state.observe(provider, Err(&e)).await;
                 continue;
             }
         }

@@ -113,6 +113,10 @@ impl LlmProvider for OpenAiProvider {
         Ok(Box::pin(unwrap_sse(stream)))
     }
 
+    fn endpoint(&self) -> String {
+        format!("openai:{}", self.base_url)
+    }
+
     async fn is_available(&self) -> bool {
         // No cheap health check is common to every endpoint speaking this
         // protocol, so availability is assumed and a failure falls through to

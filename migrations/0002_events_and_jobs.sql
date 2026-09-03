@@ -20,6 +20,31 @@ create table events (
 create index events_tenant_id_idx on events (tenant_id, id);
 create index events_session_id_idx on events (session_id, id) where session_id is not null;
 
+-- Provider health -------------------------------------------------------------
+
+-- A circuit breaker shared by every replica.
+--
+-- Held in the database rather than in each process because the failure it
+-- guards against is collective: a provider goes down, and every gateway pod
+-- independently discovers it and independently keeps probing. One pod backing
+-- off achieves nothing while its neighbours hammer the same dead endpoint.
+--
+-- Keyed on protocol *and* base URL. Provider names a wire format now, not a
+-- vendor -- api.openai.com and a local ollama both speak the OpenAI protocol,
+-- and one being down says nothing about the other.
+create table provider_health (
+    endpoint     text        primary key,
+    state        text        not null default 'closed'
+                 check (state in ('closed', 'open', 'half_open')),
+    failures     int         not null default 0,
+    -- When a probe may next be attempted. Moved forward by whichever replica
+    -- claims the probe, so the others keep rejecting rather than joining in.
+    probe_after  timestamptz,
+    last_error   text,
+    opened_at    timestamptz,
+    updated_at   timestamptz not null default now()
+);
+
 -- Job queue ------------------------------------------------------------------
 
 -- Worked with SELECT ... FOR UPDATE SKIP LOCKED. Enqueue happens in the same

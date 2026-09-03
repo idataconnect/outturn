@@ -823,3 +823,120 @@ async fn an_abandoned_reply_refuses_further_messages() {
 
     finish!(db);
 }
+
+// -- Provider circuit breaker --------------------------------------------------
+
+use outturn::gateway::breaker::{self, Verdict};
+
+/// The circuit opens only after repeated failures, not on the first one.
+#[tokio::test]
+async fn the_circuit_opens_after_repeated_failures() {
+    let (db, _tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+
+    // A single failure is often a blip or a bad request, so it must not stop
+    // every replica from calling the provider.
+    breaker::record_failure(pool, &endpoint, "boom").await;
+    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Allow);
+
+    for _ in 0..4 {
+        breaker::record_failure(pool, &endpoint, "boom").await;
+    }
+    assert_eq!(
+        breaker::check(pool, &endpoint).await,
+        Verdict::Reject,
+        "five consecutive failures should open the circuit"
+    );
+
+    finish!(db);
+}
+
+/// Exactly one replica probes a recovering provider.
+///
+/// This is the whole point of putting the breaker in the database: without a
+/// shared claim, every pod would probe at once and the outage would be met
+/// with a storm rather than a single request.
+#[tokio::test]
+async fn only_one_replica_claims_the_probe() {
+    let (db, _tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+
+    for _ in 0..5 {
+        breaker::record_failure(pool, &endpoint, "boom").await;
+    }
+    // Bring the probe forward rather than waiting out the backoff.
+    sqlx::query("update provider_health set probe_after = now() - interval '1 second' where endpoint = $1")
+        .bind(&endpoint)
+        .execute(pool)
+        .await
+        .expect("age the circuit");
+
+    // Ten replicas reach the breaker at once.
+    let mut checks = Vec::new();
+    for _ in 0..10 {
+        checks.push(breaker::check(pool, &endpoint));
+    }
+    let verdicts = futures::future::join_all(checks).await;
+    let allowed = verdicts.iter().filter(|v| **v == Verdict::Allow).count();
+
+    assert_eq!(allowed, 1, "exactly one replica may probe, got {allowed}");
+
+    finish!(db);
+}
+
+/// A success closes the circuit and clears the history behind it.
+#[tokio::test]
+async fn a_success_closes_the_circuit() {
+    let (db, _tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+
+    for _ in 0..5 {
+        breaker::record_failure(pool, &endpoint, "boom").await;
+    }
+    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Reject);
+
+    breaker::record_success(pool, &endpoint).await;
+    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Allow);
+
+    // The count resets too, so an old outage does not shorten the fuse on the
+    // next unrelated one.
+    for _ in 0..4 {
+        breaker::record_failure(pool, &endpoint, "boom").await;
+    }
+    assert_eq!(
+        breaker::check(pool, &endpoint).await,
+        Verdict::Allow,
+        "four failures after a success must not reopen the circuit"
+    );
+
+    finish!(db);
+}
+
+/// Being told off is not the same as being down.
+#[tokio::test]
+async fn client_errors_and_rate_limits_do_not_count_against_a_provider() {
+    use outturn::gateway::llm::provider::ProviderError;
+
+    assert!(!breaker::counts_as_failure(&ProviderError::RateLimited));
+    assert!(!breaker::counts_as_failure(&ProviderError::Upstream(
+        "400: model does not support tools".into()
+    )));
+    assert!(!breaker::counts_as_failure(&ProviderError::Upstream(
+        "404: no such model".into()
+    )));
+
+    assert!(breaker::counts_as_failure(&ProviderError::Unavailable));
+    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
+        "503: upstream connect error".into()
+    )));
+    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
+        "error sending request for url".into()
+    )));
+    // A timeout is the provider failing to answer, not refusing.
+    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
+        "408: request timeout".into()
+    )));
+}

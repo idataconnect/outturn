@@ -104,6 +104,10 @@ impl LlmProvider for MockProvider {
         })
     }
 
+    fn endpoint(&self) -> String {
+        "mock".to_string()
+    }
+
     async fn is_available(&self) -> bool {
         true
     }

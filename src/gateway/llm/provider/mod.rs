@@ -69,6 +69,13 @@ pub trait LlmProvider: Send + Sync {
     }
 
     async fn is_available(&self) -> bool;
+
+    /// Identifies this provider's endpoint for health tracking.
+    ///
+    /// Protocol and base URL, not just protocol: api.openai.com and a local
+    /// ollama both speak OpenAI's format, and one being down says nothing
+    /// about the other.
+    fn endpoint(&self) -> String;
 }
 
 #[derive(Debug)]

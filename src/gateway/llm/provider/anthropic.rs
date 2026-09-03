@@ -59,6 +59,10 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| ProviderError::Translation(e.to_string()))
     }
 
+    fn endpoint(&self) -> String {
+        format!("anthropic:{}", self.base_url)
+    }
+
     async fn is_available(&self) -> bool {
         true
     }

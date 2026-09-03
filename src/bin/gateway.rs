@@ -33,7 +33,20 @@ async fn main() {
         providers.push(Arc::new(MockProvider::new()));
     }
 
-    let state = Arc::new(gateway::GatewayState::new(providers, auth));
+    // The breaker is shared state, so it needs the database. Optional on
+    // purpose: without DATABASE_URL the gateway behaves exactly as it did
+    // before the breaker existed, calling every provider in turn. A gateway
+    // that refused to start without Postgres would make the credential tier
+    // depend on the storage tier for no gain.
+    let mut state = gateway::GatewayState::new(providers, auth);
+    match outturn::db::connect_from_env().await {
+        Ok(pool) => {
+            tracing::info!("provider circuit breaker enabled");
+            state = state.with_health(pool);
+        }
+        Err(e) => tracing::warn!(error = %e, "no database; provider health is not shared"),
+    }
+    let state = Arc::new(state);
 
     let app = Router::new()
         .merge(gateway::routes(state))
