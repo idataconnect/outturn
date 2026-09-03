@@ -1,0 +1,141 @@
+# Working on outturn
+
+outturn is a multitenant agent platform: tenants deploy agents that serve their
+own customers, with isolation, usage attribution and security boundaries built
+in rather than added later. Rust, Axum, Tokio, PostgreSQL, WASM sandboxing,
+Kubernetes. Apache-2.0, edition 2024.
+
+This file is for anyone — human or agent — picking the project up. It records
+what is true today, what is intended, and the traps that have already cost
+someone a night.
+
+## The tiers
+
+Three binaries, deployed as three services:
+
+| binary | does |
+|---|---|
+| `api` | HTTP API, auth, transcripts, the job queue and its worker |
+| `gateway` | Talks to model providers. Holds the credentials; nothing else does |
+| `runtime` | Runs agent components in a WASM sandbox |
+
+The split is a security boundary, not a packaging one. An agent runs in the
+runtime with no filesystem, no sockets and no credentials — every capability it
+has is an explicit host import declared in `wit/agent.wit`. When it wants a
+model it calls `chat`, and the host attaches the token. A compromised agent can
+spend its session's allowance and nothing more.
+
+The gateway speaks *protocols*, not vendors. `provider/openai.rs` is the OpenAI
+chat-completions protocol, which ollama, Groq, OpenRouter and most others also
+speak — they differ in base URL and credential, which is configuration. Only
+Anthropic earns its own file, because its wire format genuinely differs. Adding
+a vendor should not mean adding a file.
+
+## Running it locally
+
+Start the cluster with the Control API open, so a build and deploy can be
+triggered without hitting Enter:
+
+```bash
+skaffold dev --auto-build=false --auto-deploy=false --auto-sync=false --rpc-http-port=50052
+curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
+```
+
+Build and deploy must go in **one** request; a lone deploy can softlock the
+loop (skaffold #4886). `--trigger=manual` on its own does not work — it gates
+file watching, not the API. Check `buildState.autoTrigger` in `/v1/state`:
+`true` means `/v1/execute` returns `{}` and silently does nothing.
+
+Skaffold forwards 18080 (api), 18081 (gateway), 18082 (runtime) and 15432
+(postgres), and keeps them alive across redeploys. **Do not start your own
+`kubectl port-forward`** — it will not reconnect, and it pushes skaffold onto
+different ports without saying so.
+
+The UI runs outside the cluster:
+
+```bash
+cd ui && npm run dev     # :3000, proxies /v1 to localhost:18080
+```
+
+The proxy mounts the API at `/v1`, matching production. Do not introduce a
+prefix: the refresh cookie is `Path`-scoped to `/v1/session/refresh`, and a
+browser matches `Path` against the URL it requests, not the one a proxy
+forwards. A `/api` prefix means refresh silently never works.
+
+Local dev seeds `admin@outturn.local` / `outturn-dev`.
+
+## Models
+
+Local development runs against ollama through the OpenAI protocol
+(`OPENAI_BASE_URL`, no key). **Use gemma4.** The agent offers tools on every
+turn, and a model whose template stops streaming when tools are present
+collapses a reply to three chunks — llama3.1 and mistral both do this, gemma4
+does not. It is per-model template behaviour, not an ollama or gateway
+property. olmo-3 cannot do tools at all.
+
+Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
+where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
+It hangs off the agent's policy, beside `model`.
+
+## Tests
+
+```bash
+TEST_DATABASE_URL='postgres://outturn:outturn-dev@localhost:15432/outturn_test' \
+GATEWAY_URL=http://localhost:18081 \
+cargo test --features integration-tests
+```
+
+Every test gets a private Postgres schema, so the suite is safe to run in
+parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`
+serves scripted responses — including a tool call, a truncated stream and a
+connection that hangs — so the tiers above the provider can be tested for
+behaviour rather than for whatever a model happened to say. Only
+`tests/agent_component.rs` needs a live model.
+
+## Invariants worth knowing before you change things
+
+These are load-bearing. Each has already caused a visible bug.
+
+**Streamed deltas concatenate to stored content.** What the browser renders
+during a turn must be exactly what the transcript holds afterwards, or the
+message changes under the reader when the turn ends. Every round of a tool loop
+streams, so the guest returns the content of all of them.
+
+**The transcript read returns its own cursor.** History and the event cursor
+come from one statement so they share a snapshot: everything at or below the
+cursor is already in the content, everything above is still to come. Read them
+separately and a reload replays deltas into content that already contains them
+— a message appends itself.
+
+**A reply hangs off the prompt it answers.** `agent_messages.replies_to`, with
+a unique index. A turn creates its reply empty and streams into it; when a
+worker dies mid-generation the job is retried, and the constraint makes the
+retry take back the reply it already made rather than orphaning it. Ownership
+is on the prompt rather than the session because two turns in one session run
+concurrently and must not claim each other's.
+
+**Ordering rides on UUIDv7 keys.** No sequence columns, no offset pagination.
+Cursors are the last id seen; `Uuid::nil()` means the beginning.
+
+**Streaming calls need a read timeout, not a total one.** A generation running
+for minutes while producing tokens is fine; silence is not. TCP keepalive
+catches a dead peer in about a minute, but a peer that is alive and silent is
+invisible below the application layer — and the job heartbeat renews the lease
+while a worker waits, so nothing else would ever reclaim it.
+
+**Pods can silently predate your edits.** When behaviour contradicts the
+source, check pod age before theorising.
+
+## Direction
+
+Intended but not yet built, so that nobody mistakes these for facts about the
+code: Redis caching, KEDA queue-depth scaling, pull-based session assignment,
+per-tenant usage attribution, OpenTelemetry, and workflows as scripted tasks in
+sub-sessions.
+
+The gateway must eventually support mid-session provider failover — an
+Anthropic outage substituting Gemini and continuing. That requires separating
+the durable transcript from the projection sent to a model, so provider-specific
+artifacts (Gemini thought signatures, Anthropic thinking blocks, differing tool
+call shapes) are annotations filtered per target rather than facts about
+storage. Lossy parts should degrade, never fail the turn.
