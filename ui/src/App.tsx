@@ -4,20 +4,17 @@ import {
   Bot,
   Building2,
   LayoutDashboard,
-  LogOut,
   MessageSquare,
   Settings,
   Users as UsersIcon,
 } from 'lucide-react'
 
-import TenantSwitcher from './components/TenantSwitcher'
-import ThemeToggle from './components/ThemeToggle'
+import AccountMenu from './components/AccountMenu'
 import { api } from './lib/api'
 import {
   SessionActionsContext,
   SessionContext,
   useSession,
-  useSessionActions,
   type Session,
   type SessionActions,
   type SessionState,
@@ -179,9 +176,6 @@ function Shell() {
           <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
           <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">outturn</h1>
         </div>
-        <div className="p-2 border-b border-gray-200 dark:border-gray-800">
-          <TenantSwitcher />
-        </div>
         <div className="flex-1 p-2 space-y-1">
           {visible.map(({ to, icon: Icon, label }) => (
             <NavLink
@@ -201,7 +195,9 @@ function Shell() {
             </NavLink>
           ))}
         </div>
-        <SignOut />
+        <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+          <AccountMenu />
+        </div>
       </nav>
       <main className="flex-1 overflow-auto">
         <Routes>
@@ -239,27 +235,6 @@ function Shell() {
   )
 }
 
-function SignOut() {
-  const state = useSession()
-  const { signOut } = useSessionActions()
-  if (state.status !== 'authenticated') return null
-
-  return (
-    <div className="p-2 border-t border-gray-200 dark:border-gray-800 space-y-2">
-      <ThemeToggle />
-      <p className="px-3 pt-1 pb-2 text-xs text-gray-500 dark:text-gray-400 truncate">
-        {state.session.roles.join(', ')}
-      </p>
-      <button
-        onClick={signOut}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800/50"
-      >
-        <LogOut size={16} />
-        Sign out
-      </button>
-    </div>
-  )
-}
 
 function App() {
   const [state, actions] = useSessionState()
