@@ -15,7 +15,7 @@ use super::tenant::{CreateTenant, Tenant, TenantError, TenantStore};
 use super::agent::AgentStore;
 use super::chat::ChatStore;
 use super::session::SessionStore;
-use super::user::{CreateUser, Identity, User, UserStore};
+use super::user::{CreateUser, Identity, TenantMembership, User, UserStore};
 
 pub struct ApiState {
     pub(super) tenants: Arc<dyn TenantStore>,
@@ -103,13 +103,20 @@ impl From<TenantError> for ApiError {
     }
 }
 
-/// What the UI needs to decide which navigation it can show.
+/// Everything the UI needs to restore a session on a cold load.
+///
+/// Deliberately includes the display name and memberships, not just ids: a
+/// reload has only this endpoint to work from, and a client left to stitch the
+/// identity together from several calls renders a signed-in user as nameless
+/// and tenantless until they all land -- which is precisely what it did.
 #[derive(Debug, Serialize)]
 struct SessionInfo {
     session_id: Uuid,
     tenant_id: Uuid,
+    display_name: String,
     roles: Vec<String>,
     authorities: Vec<String>,
+    tenants: Vec<TenantMembership>,
 }
 
 async fn session_info(
@@ -123,11 +130,18 @@ async fn session_info(
         .collect();
     authorities.sort();
 
+    // The session id is the account id, which is what the login response is
+    // built from too.
+    let user = state.users.get(claims.session_id).await?;
+    let tenants = state.users.memberships(claims.session_id).await?;
+
     Ok(Json(SessionInfo {
         session_id: claims.session_id,
         tenant_id: claims.tenant_id,
+        display_name: user.display_name,
         roles: claims.roles.iter().map(|r| r.to_string()).collect(),
         authorities,
+        tenants,
     }))
 }
 

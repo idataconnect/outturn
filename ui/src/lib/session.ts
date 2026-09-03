@@ -10,12 +10,19 @@ export type TenantMembership = {
 export type Session = {
   session_id: string
   tenant_id: string
+  display_name: string
   roles: string[]
   authorities: string[]
+  tenants: TenantMembership[]
 }
 
 export type SessionState =
-  | { status: 'loading' }
+  /**
+   * Nothing is known yet. `reconnecting` means the API did not answer and is
+   * being retried -- a down backend says nothing about whether there is a
+   * session, so it must not be mistaken for being signed out.
+   */
+  | { status: 'loading'; reconnecting?: boolean }
   | { status: 'anonymous' }
   | {
       status: 'authenticated'
@@ -25,7 +32,9 @@ export type SessionState =
     }
 
 export type SessionActions = {
-  signIn: (displayName: string, tenants: TenantMembership[]) => void
+  /** Called once the credentials are accepted; the session is read back from
+   *  the API rather than passed in, so every entry point agrees on it. */
+  signIn: () => void
   signOut: () => void
   switchTenant: (tenantId: string) => Promise<void>
 }

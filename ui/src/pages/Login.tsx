@@ -54,7 +54,7 @@ export default function Login() {
       }
 
       // The token arrived as an HttpOnly cookie, not in this response.
-      signIn(result.display_name, result.tenants)
+      signIn()
     } catch (e) {
       setError(
         e instanceof NetworkError

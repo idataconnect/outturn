@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router'
 import {
   Bot,
@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 
 import AccountMenu from './components/AccountMenu'
-import { api } from './lib/api'
+import { ApiError, api } from './lib/api'
 import {
   SessionActionsContext,
   SessionContext,
@@ -18,7 +18,6 @@ import {
   type Session,
   type SessionActions,
   type SessionState,
-  type TenantMembership,
 } from './lib/session'
 import Login from './pages/Login'
 import Agents from './pages/Agents'
@@ -59,61 +58,72 @@ const navItems = [
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
-type LoginResult = {
-  display_name: string
-  tenants: TenantMembership[]
-}
-
 function useSessionState(): [SessionState, SessionActions] {
   const [state, setState] = useState<SessionState>({ status: 'loading' })
-  const [displayName, setDisplayName] = useState('')
-  const [tenants, setTenants] = useState<TenantMembership[]>([])
+
+  /**
+   * The one place a session becomes state.
+   *
+   * Every entry point -- first load, signing in, switching tenant -- reads the
+   * session back from the API rather than assembling it from whatever the
+   * calling response happened to contain. A cold load has only this endpoint,
+   * so anything it cannot supply is missing on every reload.
+   */
+  const load = useCallback(async () => {
+    // Only the API saying "not you" means signed out. A backend that is down,
+    // restarting or erroring says nothing about the session, and treating that
+    // as a logout throws away a session the server still holds -- during a
+    // redeploy every reload dropped the user at the login form while their
+    // refresh token stayed perfectly valid. So a 401 is decisive and anything
+    // else is retried.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // api() refreshes and retries on a 401, so a session whose access
+        // token expired while the tab was closed is restored rather than
+        // dropped.
+        const session = await api<Session>('/v1/session')
+        setState({
+          status: 'authenticated',
+          session,
+          displayName: session.display_name,
+          tenants: session.tenants,
+        })
+        return
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          setState({ status: 'anonymous' })
+          return
+        }
+        // Say so rather than sitting on a blank page: the retries take
+        // several seconds, and silence during them reads as a broken app.
+        setState((prev) =>
+          prev.status === 'loading' ? { status: 'loading', reconnecting: true } : prev,
+        )
+
+        if (attempt >= 4) {
+          // Out of patience. An unreachable API is indistinguishable from no
+          // session as far as this screen can tell.
+          setState({ status: 'anonymous' })
+          return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)))
+      }
+    }
+  }, [])
 
   // The session cookie is HttpOnly, so its presence cannot be checked here:
   // the API is the only thing that can say whether there is a session.
   useEffect(() => {
-    let cancelled = false
-    // api() refreshes and retries on a 401, so a session whose access token
-    // expired while the tab was closed is restored rather than dropped.
-    api<Session>('/v1/session')
-      .then((session) => {
-        if (cancelled) return
-        setState({ status: 'authenticated', session, displayName: '', tenants: [] })
-      })
-      .catch(() => {
-        if (cancelled) return
-        setState({ status: 'anonymous' })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    void load()
+  }, [load])
 
-  const signIn = useCallback(
-    (name: string, memberships: TenantMembership[]) => {
-      setDisplayName(name)
-      setTenants(memberships)
-      api<Session>('/v1/session')
-        .then((session) =>
-          setState({
-            status: 'authenticated',
-            session,
-            displayName: name,
-            tenants: memberships,
-          }),
-        )
-        .catch(() => {
-          setState({ status: 'anonymous' })
-        })
-    },
-    [],
-  )
+  const signIn = useCallback(() => {
+    void load()
+  }, [load])
 
   const signOut = useCallback(() => {
     // The cookie is HttpOnly, so only the server can clear it.
     void api<void>('/v1/logout', { method: 'POST' }).finally(() => {
-      setDisplayName('')
-      setTenants([])
       setState({ status: 'anonymous' })
     })
   }, [])
@@ -121,32 +131,16 @@ function useSessionState(): [SessionState, SessionActions] {
   const switchTenant = useCallback(
     async (tenantId: string) => {
       // The response re-sets the session cookie for the new tenant.
-      const result = await api<LoginResult>('/v1/session/tenant', {
+      await api<unknown>('/v1/session/tenant', {
         method: 'POST',
         body: JSON.stringify({ tenant_id: tenantId }),
       })
-      const session = await api<Session>('/v1/session')
-      setState({
-        status: 'authenticated',
-        session,
-        displayName: result.display_name,
-        tenants: result.tenants,
-      })
+      await load()
     },
-    [],
+    [load],
   )
 
-  // Keep name and tenant list across a session refetch that lacks them.
-  const merged: SessionState = useMemo(() => {
-    if (state.status !== 'authenticated') return state
-    return {
-      ...state,
-      displayName: state.displayName || displayName,
-      tenants: state.tenants.length ? state.tenants : tenants,
-    }
-  }, [state, displayName, tenants])
-
-  return [merged, { signIn, signOut, switchTenant }]
+  return [state, { signIn, signOut, switchTenant }]
 }
 
 function RequireAuthority({
@@ -236,13 +230,37 @@ function Shell() {
 }
 
 
+/**
+ * Shown while the session is being established.
+ *
+ * Deliberately not nothing: restoring a session can take a few seconds when
+ * the API is slow to answer, and an empty document is indistinguishable from
+ * a crash.
+ */
+function Loading({ reconnecting }: { reconnecting?: boolean }) {
+  return (
+    <div className="flex h-dvh flex-col items-center justify-center gap-3">
+      {/* The same mark the shell uses, so the app looks like itself while
+          it is still deciding what to show. */}
+      <img src="/favicon.svg" alt="" className="h-8 w-8 animate-pulse" />
+      {reconnecting && (
+        <p className="text-sm text-surface-600 dark:text-surface-400">
+          Reconnecting&hellip;
+        </p>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const [state, actions] = useSessionState()
 
   return (
     <SessionContext value={state}>
       <SessionActionsContext value={actions}>
-        {state.status === 'loading' ? null : state.status === 'anonymous' ? (
+        {state.status === 'loading' ? (
+          <Loading reconnecting={state.reconnecting} />
+        ) : state.status === 'anonymous' ? (
           <Login />
         ) : (
           <BrowserRouter>
