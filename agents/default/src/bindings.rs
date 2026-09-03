@@ -170,13 +170,25 @@ pub mod outturn {
                 }
             }
             /// The wall clock of whoever is being talked to.
+            ///
+            /// Carries the day name and zone abbreviation rather than only a
+            /// timestamp. Deriving a weekday from a date is calendar arithmetic, and a
+            /// model asked to do it will sometimes get it wrong -- gemma4 read a
+            /// correct 2026-09-02 and answered Tuesday. Anything the host can compute
+            /// exactly is the host's job.
             #[derive(Clone)]
             pub struct Clock {
-                /// The current time in `timezone`, as RFC 3339.
+                /// The current time in `timezone`, as RFC 3339 to the second.
+                /// Fractional seconds are omitted: nine digits of nanoseconds are
+                /// noise in a prompt and invite the model to repeat them.
                 pub now: _rt::String,
+                /// Day name, e.g. "Wednesday".
+                pub weekday: _rt::String,
                 /// IANA name, e.g. "America/Los_Angeles". Empty when the caller's zone
-                /// is unknown, in which case `now` is UTC.
+                /// is unknown, in which case the clock reads UTC.
                 pub timezone: _rt::String,
+                /// Short zone name a person expects quoted back, e.g. "PDT".
+                pub abbreviation: _rt::String,
             }
             impl ::core::fmt::Debug for Clock {
                 fn fmt(
@@ -185,7 +197,9 @@ pub mod outturn {
                 ) -> ::core::fmt::Result {
                     f.debug_struct("Clock")
                         .field("now", &self.now)
+                        .field("weekday", &self.weekday)
                         .field("timezone", &self.timezone)
+                        .field("abbreviation", &self.abbreviation)
                         .finish()
                 }
             }
@@ -710,10 +724,10 @@ pub mod outturn {
                     struct RetArea(
                         [::core::mem::MaybeUninit<
                             u8,
-                        >; 4 * ::core::mem::size_of::<*const u8>()],
+                        >; 8 * ::core::mem::size_of::<*const u8>()],
                     );
                     let mut ret_area = RetArea(
-                        [::core::mem::MaybeUninit::uninit(); 4
+                        [::core::mem::MaybeUninit::uninit(); 8
                             * ::core::mem::size_of::<*const u8>()],
                     );
                     let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
@@ -742,11 +756,29 @@ pub mod outturn {
                         .cast::<usize>();
                     let len7 = l6;
                     let bytes7 = _rt::Vec::from_raw_parts(l5.cast(), len7, len7);
-                    let result8 = Clock {
+                    let l8 = *ptr0
+                        .add(4 * ::core::mem::size_of::<*const u8>())
+                        .cast::<*mut u8>();
+                    let l9 = *ptr0
+                        .add(5 * ::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let len10 = l9;
+                    let bytes10 = _rt::Vec::from_raw_parts(l8.cast(), len10, len10);
+                    let l11 = *ptr0
+                        .add(6 * ::core::mem::size_of::<*const u8>())
+                        .cast::<*mut u8>();
+                    let l12 = *ptr0
+                        .add(7 * ::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let len13 = l12;
+                    let bytes13 = _rt::Vec::from_raw_parts(l11.cast(), len13, len13);
+                    let result14 = Clock {
                         now: _rt::string_lift(bytes4),
-                        timezone: _rt::string_lift(bytes7),
+                        weekday: _rt::string_lift(bytes7),
+                        timezone: _rt::string_lift(bytes10),
+                        abbreviation: _rt::string_lift(bytes13),
                     };
-                    result8
+                    result14
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -1191,8 +1223,8 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 881] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xef\x05\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 904] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x86\x06\x01A\x02\x01\
 A\x05\x01B\"\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
@@ -1201,17 +1233,17 @@ r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02
 ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
 usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
 \x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06reas\
-ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x02\x03nows\x08timezones\x04\0\x05cloc\
-k\x03\0\x15\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x17\x01j\x01\
-\x12\x01s\x01@\x01\x07request\x0d\0\x18\x04\0\x04chat\x01\x19\x01@\0\0\x16\x04\0\
-\x0ccurrent-time\x01\x1a\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01\x1b\x01@\x02\
-\x05levels\x07messages\x01\0\x04\0\x03log\x01\x1c\x03\0\x18outturn:agent/host@0.\
-1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\
-\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\
-\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1fouttur\
-n:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09produ\
-cers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
-0.41.0";
+ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x04\x03nows\x07weekdays\x08timezones\x0c\
+abbreviations\x04\0\x05clock\x03\0\x15\x01@\x01\x08activity\x14\x01\0\x04\0\x0ct\
+ool-started\x01\x17\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\0\x18\x04\0\x04cha\
+t\x01\x19\x01@\0\0\x16\x04\0\x0ccurrent-time\x01\x1a\x01@\x01\x04texts\x01\0\x04\
+\0\x08progress\x01\x1b\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01\x1c\
+\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\
+\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconver\
+sation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/a\
+gent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0b\
+agent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
+0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

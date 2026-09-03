@@ -218,6 +218,44 @@ impl ChatStore for PostgresChatStore {
         Ok(())
     }
 
+    async fn claim_placeholder(
+        &self,
+        replies_to: Uuid,
+        session_id: Uuid,
+    ) -> Result<Message, ChatError> {
+        // The unique index on replies_to is what makes this idempotent: a
+        // retry of the same turn collides and takes the row it already made,
+        // rather than leaving the first behind. Doing it in one statement
+        // means a worker that dies mid-way leaves nothing half-done.
+        let row = sqlx::query(
+            "insert into agent_messages (id, session_id, role, content, replies_to) \
+             values ($1, $2, 'assistant', '', $3) \
+             on conflict (replies_to) where replies_to is not null \
+             do update set replies_to = excluded.replies_to \
+             returning id, session_id, role, content, metadata, model, \
+                       prompt_tokens, completion_tokens",
+        )
+        .bind(Uuid::now_v7())
+        .bind(session_id)
+        .bind(replies_to)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        Ok(read_message(&row))
+    }
+
+    async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError> {
+        // Only while still empty: a turn that failed after writing its reply
+        // must not have that reply deleted.
+        sqlx::query("delete from agent_messages where replies_to = $1 and content = ''")
+            .bind(replies_to)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
     async fn append_message(
         &self,
         session_id: Uuid,
@@ -226,6 +264,28 @@ impl ChatStore for PostgresChatStore {
         model: Option<&str>,
         usage: Usage,
     ) -> Result<Message, ChatError> {
+        // An empty assistant message is legitimate only while a job is
+        // filling it. One with no live job means a turn died without
+        // cleaning up, and writing past it would bury it in the transcript
+        // where it is replayed to the model on every later turn.
+        let abandoned: Option<Uuid> = sqlx::query_scalar(
+            "select m.id from agent_messages m \
+             left join jobs j \
+                    on (j.payload->>'message_id')::uuid = m.replies_to \
+                   and j.state in ('pending', 'running') \
+             where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
+               and j.id is null \
+             limit 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        if abandoned.is_some() {
+            return Err(ChatError::Abandoned(session_id));
+        }
+
         // Ordering rides on the UUIDv7 key, so there is no sequence to derive
         // and concurrent appends cannot contend over one.
         let row = sqlx::query(

@@ -10,6 +10,13 @@ pub struct ChatCompletionRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+    /// OpenAI's knob for how much the model deliberates before answering.
+    /// "none" turns thinking off where a provider honours it -- ollama does,
+    /// and it cuts a gemma4 tool turn from 113 completion tokens to 24.
+    /// Passed through rather than interpreted: providers that do not know it
+    /// ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub stream: bool,
 }

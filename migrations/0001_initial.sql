@@ -184,6 +184,15 @@ create table agent_messages (
     role         text        not null check (role in ('system', 'user', 'assistant', 'tool')),
     content      text        not null,
 
+    -- The message this one answers, for a reply. A turn is retried when a
+    -- worker dies mid-generation, and without this the retry would create a
+    -- second empty reply and orphan the first -- which then sits in the
+    -- transcript being replayed to the model forever. The unique index makes
+    -- that impossible in the database rather than by remembering to check,
+    -- and it scopes ownership to the prompt, so two turns running at once in
+    -- one session cannot claim each other's reply.
+    replies_to   uuid        references agent_messages (id) on delete cascade,
+
     -- What the agent did on the way to this reply: tool calls, each with the
     -- model's own reason for making it. Kept with the message rather than as
     -- events, so reopening a session shows the work and not just the answer.
@@ -199,3 +208,7 @@ create table agent_messages (
 );
 
 create index agent_messages_session_idx on agent_messages (session_id, id);
+
+-- One reply per prompt. This is the constraint that makes a retry idempotent.
+create unique index agent_messages_replies_to_idx
+    on agent_messages (replies_to) where replies_to is not null;

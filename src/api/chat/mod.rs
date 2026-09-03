@@ -67,6 +67,12 @@ pub struct Usage {
 pub enum ChatError {
     #[error("session not found")]
     NotFound,
+    /// An empty assistant message exists that no live job is filling, so a
+    /// turn died without cleaning up. Refused loudly rather than written
+    /// around: an empty message is replayed to the model on every later turn,
+    /// and silently tolerating one hides the failure that produced it.
+    #[error("session {0} has an abandoned empty reply; refusing to write past it")]
+    Abandoned(Uuid),
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error("chat store error: {0}")]
@@ -107,6 +113,25 @@ pub trait ChatStore: Send + Sync {
     /// Removes a message. Used to clear a placeholder whose turn failed, which
     /// would otherwise sit empty in the transcript forever.
     async fn delete_message(&self, message_id: Uuid) -> Result<(), ChatError>;
+
+    /// The empty assistant message a job streams into, created once.
+    ///
+    /// A job that is retried must fill the message it already created rather
+    /// than making another: a worker killed mid-turn never runs its own
+    /// cleanup, so a second placeholder would leave the first behind forever.
+    /// Ownership is recorded on the job, so concurrent turns in one session
+    /// cannot claim each other's.
+    async fn claim_placeholder(
+        &self,
+        replies_to: Uuid,
+        session_id: Uuid,
+    ) -> Result<Message, ChatError>;
+
+    /// Discards a job's placeholder, for a turn that will never be retried.
+    ///
+    /// Without this a permanently failed turn leaves an empty message that
+    /// `append_message` then refuses to follow, which would wedge the session.
+    async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError>;
 
     /// Appends a message, assigning the next sequence number for the session.
     async fn append_message(

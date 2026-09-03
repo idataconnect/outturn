@@ -18,6 +18,8 @@ use super::worker::{CHAT_TURN, ChatTurnPayload};
 impl From<ChatError> for ApiError {
     fn from(e: ChatError) -> Self {
         let status = match e {
+            // A stuck session is a server-side fault, not a bad request.
+            ChatError::Abandoned(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ChatError::NotFound => StatusCode::NOT_FOUND,
             ChatError::Invalid(_) => StatusCode::BAD_REQUEST,
             ChatError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -110,6 +112,7 @@ pub async fn send_message(
         tenant_id: claims.tenant_id,
         session_id: id,
         agent_id: session.agent_id,
+        message_id: message.id,
         timezone: input.timezone,
     })
     .map_err(internal)?;

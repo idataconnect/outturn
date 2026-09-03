@@ -27,6 +27,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         progress,
         on_tool: None,
         timezone: None,
+        reasoning_effort: None,
         fuel: 10_000_000_000,
     }
 }
@@ -249,6 +250,23 @@ async fn runs_a_tool_and_answers_with_its_result() {
         content.contains("Australia/Brisbane"),
         "the clock answers in the user's zone, got {content:?}"
     );
+
+    // The weekday is supplied, and agrees with the timestamp beside it. A
+    // model asked to derive it from the date gets it wrong -- which is the
+    // whole reason the host computes it.
+    let clock: serde_json::Value = serde_json::from_str(content).expect("the result is JSON");
+    let stamp = clock["now"].as_str().expect("now");
+    let parsed = chrono::DateTime::parse_from_rfc3339(stamp).expect("now is RFC 3339");
+    assert_eq!(
+        clock["weekday"].as_str().expect("weekday"),
+        parsed.format("%A").to_string(),
+        "weekday must match the timestamp it is sent with"
+    );
+    assert!(
+        !stamp.contains('.'),
+        "fractional seconds are noise in a prompt, got {stamp:?}"
+    );
+    assert_eq!(clock["abbreviation"], "AEST");
 }
 
 /// Without a zone the clock says so rather than passing off UTC as local.

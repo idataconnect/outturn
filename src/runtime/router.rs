@@ -46,6 +46,9 @@ pub struct ExecuteRequest {
     /// Absent means the guest's clock answers in UTC.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// From the agent's policy. "none" disables thinking where supported.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +168,7 @@ pub async fn execute(
         on_tool: Some(tool_sink),
         fuel: FUEL_PER_TURN,
         timezone: request.timezone,
+        reasoning_effort: request.reasoning_effort,
     };
 
     tokio::spawn(async move {

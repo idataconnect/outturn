@@ -684,3 +684,142 @@ async fn transcript_orders_by_uuidv7_key() {
 
     finish!(db);
 }
+
+/// A retried turn fills the reply it already created rather than orphaning it.
+///
+/// This is what a worker killed mid-generation does: the placeholder is
+/// already in the transcript, the lease expires, and another worker claims the
+/// same job. Creating a second reply would leave the first empty forever,
+/// where it is replayed to the model on every later turn -- which is exactly
+/// what a redeploy during a turn produced.
+#[tokio::test]
+async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    let prompt = store
+        .append_message(session_id, "user", "hello", None, Default::default())
+        .await
+        .expect("prompt");
+
+    let first = store
+        .claim_placeholder(prompt.id, session_id)
+        .await
+        .expect("first attempt");
+    // The worker dies here: no cleanup runs, the lease expires, another
+    // worker claims the same job.
+    let second = store
+        .claim_placeholder(prompt.id, session_id)
+        .await
+        .expect("retry");
+
+    assert_eq!(first.id, second.id, "a retry must take back the same reply");
+
+    let history = store.messages(session_id).await.expect("history");
+    assert_eq!(
+        history.messages.len(),
+        2,
+        "one prompt and one reply, not two replies: {:?}",
+        history
+            .messages
+            .iter()
+            .map(|m| (&m.role, m.content.len()))
+            .collect::<Vec<_>>()
+    );
+
+    finish!(db);
+}
+
+/// Two turns at once in one session get their own replies.
+///
+/// Ownership hangs off the prompt rather than the session, so a second turn
+/// starting while the first is still generating cannot claim the first's
+/// reply -- which a "reuse the newest empty message" rule would have done.
+#[tokio::test]
+async fn concurrent_turns_do_not_claim_each_others_reply() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    let first_prompt = store
+        .append_message(session_id, "user", "one", None, Default::default())
+        .await
+        .expect("first prompt");
+    // A real turn enqueues its job alongside the message, which is what marks
+    // the reply as one somebody is still filling.
+    jobs::enqueue(
+        pool,
+        tenant,
+        "chat.turn",
+        serde_json::json!({ "message_id": first_prompt.id }),
+        None,
+    )
+    .await
+    .expect("first job");
+    let first_reply = store
+        .claim_placeholder(first_prompt.id, session_id)
+        .await
+        .expect("first reply");
+
+    // The second message arrives while the first turn is still generating.
+    let second_prompt = store
+        .append_message(session_id, "user", "two", None, Default::default())
+        .await
+        .expect("second prompt");
+    let second_reply = store
+        .claim_placeholder(second_prompt.id, session_id)
+        .await
+        .expect("second reply");
+
+    assert_ne!(
+        first_reply.id, second_reply.id,
+        "each turn must fill its own reply"
+    );
+
+    finish!(db);
+}
+
+/// An empty reply nobody is filling is refused rather than buried.
+///
+/// Writing past one would leave it in the transcript, where every later turn
+/// replays it to the model as an empty assistant message.
+#[tokio::test]
+async fn an_abandoned_reply_refuses_further_messages() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    let prompt = store
+        .append_message(session_id, "user", "hello", None, Default::default())
+        .await
+        .expect("prompt");
+    // No job was ever enqueued for this prompt, so nothing is filling the
+    // reply -- the state a worker that died without retrying leaves behind.
+    store
+        .claim_placeholder(prompt.id, session_id)
+        .await
+        .expect("reply");
+
+    let refused = store
+        .append_message(session_id, "user", "anyone there?", None, Default::default())
+        .await;
+
+    assert!(
+        matches!(refused, Err(outturn::api::chat::ChatError::Abandoned(_))),
+        "expected the abandoned reply to be refused, got {refused:?}"
+    );
+
+    // Discarding it unwedges the session, which is what a permanently failed
+    // turn does.
+    store
+        .discard_placeholder(prompt.id)
+        .await
+        .expect("discard");
+    store
+        .append_message(session_id, "user", "anyone there?", None, Default::default())
+        .await
+        .expect("the session is writable again");
+
+    finish!(db);
+}

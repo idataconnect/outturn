@@ -70,6 +70,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 progress: Some(sink),
                 on_tool: None,
                 timezone: None,
+                reasoning_effort: None,
                 fuel: 10_000_000_000,
             },
         )

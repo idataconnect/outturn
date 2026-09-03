@@ -23,6 +23,10 @@ pub struct ChatTurnPayload {
     pub tenant_id: Uuid,
     pub session_id: Uuid,
     pub agent_id: Uuid,
+    /// The user message this turn answers. The reply hangs off it, so a
+    /// retried turn fills the reply it already created instead of orphaning
+    /// it, and two turns running at once in one session cannot collide.
+    pub message_id: Uuid,
     /// IANA zone the sender was in, e.g. "Europe/London". Carried on the turn
     /// rather than the account: it is where the user is now, and a laptop that
     /// crosses a border should not keep answering in the zone it left.
@@ -121,6 +125,18 @@ impl Worker {
             }
             Err(e) => {
                 tracing::error!(job_id = %id, error = %e, "chat turn failed");
+                // The last attempt is giving up, so the empty reply it left
+                // has to go: nothing will fill it, and an abandoned one wedges
+                // the session against further messages.
+                let final_attempt = handle.job.attempts >= handle.job.max_attempts;
+                if final_attempt
+                    && let Ok(payload) =
+                        serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
+                    && let Err(e) = self.chat.discard_placeholder(payload.message_id).await
+                {
+                    tracing::error!(job_id = %id, error = %e, "failed to discard placeholder");
+                }
+
                 // Tell the browser rather than leaving it polling forever.
                 if let Ok(payload) =
                     serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
@@ -154,6 +170,7 @@ impl Worker {
         conversation: Vec<serde_json::Value>,
         system_prompt: &str,
         model: &str,
+        reasoning_effort: Option<&str>,
         message_id: Uuid,
     ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
@@ -169,6 +186,7 @@ impl Worker {
                 "system_prompt": system_prompt,
                 "model": model,
                 "timezone": payload.timezone,
+                "reasoning_effort": reasoning_effort,
             }))
             .send()
             .await?;
@@ -275,9 +293,11 @@ impl Worker {
         // deltas attach to a row that already exists. Without this the browser
         // would render a streaming buffer and then swap it for a loaded
         // message, and any difference between the two would flash.
+        // Idempotent: a retry after a worker died mid-turn takes back the
+        // reply it already created rather than starting a second one.
         let placeholder = self
             .chat
-            .append_message(payload.session_id, "assistant", "", None, Usage::default())
+            .claim_placeholder(payload.message_id, payload.session_id)
             .await
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
 
@@ -306,6 +326,7 @@ impl Worker {
                 conversation,
                 &agent.system_prompt,
                 &model_for(&agent.policy),
+                reasoning_effort_for(&agent.policy).as_deref(),
                 placeholder.id,
             )
             .await;
@@ -313,8 +334,9 @@ impl Worker {
         let reply = match reply {
             Ok(reply) => reply,
             Err(e) => {
-                // The placeholder would otherwise sit empty forever.
-                let _ = self.chat.delete_message(placeholder.id).await;
+                // Left in place when the turn will be retried -- the retry
+                // fills it. Only a turn that is giving up discards it, which
+                // happens where the job is marked permanently failed.
                 return Err(e);
             }
         };
@@ -355,6 +377,18 @@ impl Worker {
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.
+/// How much the model should deliberate, from the agent's policy.
+///
+/// Absent leaves the provider's default alone. "none" turns thinking off where
+/// it is supported, which is worth doing for agents whose work does not need
+/// it: it cuts a gemma4 tool turn from 113 completion tokens to 24.
+fn reasoning_effort_for(policy: &serde_json::Value) -> Option<String> {
+    policy
+        .get("reasoning_effort")
+        .and_then(|e| e.as_str())
+        .map(str::to_string)
+}
+
 fn model_for(policy: &serde_json::Value) -> String {
     policy
         .get("model")

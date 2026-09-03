@@ -80,12 +80,24 @@ interface host {
     tool-started: func(activity: tool-activity);
 
     /// The wall clock of whoever is being talked to.
+    ///
+    /// Carries the day name and zone abbreviation rather than only a
+    /// timestamp. Deriving a weekday from a date is calendar arithmetic, and a
+    /// model asked to do it will sometimes get it wrong -- gemma4 read a
+    /// correct 2026-09-02 and answered Tuesday. Anything the host can compute
+    /// exactly is the host's job.
     record clock {
-        /// The current time in `timezone`, as RFC 3339.
+        /// The current time in `timezone`, as RFC 3339 to the second.
+        /// Fractional seconds are omitted: nine digits of nanoseconds are
+        /// noise in a prompt and invite the model to repeat them.
         now: string,
+        /// Day name, e.g. "Wednesday".
+        weekday: string,
         /// IANA name, e.g. "America/Los_Angeles". Empty when the caller's zone
-        /// is unknown, in which case `now` is UTC.
+        /// is unknown, in which case the clock reads UTC.
         timezone: string,
+        /// Short zone name a person expects quoted back, e.g. "PDT".
+        abbreviation: string,
     }
 
     /// Calls a model.

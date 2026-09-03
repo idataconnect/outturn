@@ -57,14 +57,16 @@ fn run_tool(call: &ToolCall) -> Message {
     let content = match call.name.as_str() {
         CURRENT_TIME => {
             let clock = host::current_time();
-            if clock.timezone.is_empty() {
-                format!(r#"{{"now":"{}","timezone":"UTC"}}"#, clock.now)
-            } else {
-                format!(
-                    r#"{{"now":"{}","timezone":"{}"}}"#,
-                    clock.now, clock.timezone
-                )
-            }
+            // The weekday is given rather than left to be worked out: a model
+            // doing calendar arithmetic on a date gets it wrong often enough
+            // to matter, and the host already knows the answer exactly.
+            format!(
+                r#"{{"now":"{}","weekday":"{}","timezone":"{}","abbreviation":"{}"}}"#,
+                clock.now,
+                clock.weekday,
+                if clock.timezone.is_empty() { "UTC" } else { &clock.timezone },
+                clock.abbreviation,
+            )
         }
         // Reported to the model rather than failing the turn: it can recover
         // by answering without the tool, where an error ends the conversation.

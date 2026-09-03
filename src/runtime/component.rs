@@ -46,6 +46,11 @@ pub struct AgentHost {
     /// IANA zone of the user this turn belongs to. None when the client did
     /// not say, in which case the clock answers in UTC rather than guessing.
     timezone: Option<chrono_tz::Tz>,
+    /// How much the model should deliberate, when the provider offers the
+    /// choice. Attached here rather than in the guest: which models think, and
+    /// what the knob is called, is a provider detail an agent should not have
+    /// to know.
+    reasoning_effort: Option<String>,
     on_tool: Option<ToolSink>,
 }
 
@@ -102,6 +107,10 @@ impl outturn::agent::host::Host for AgentHost {
             "max_tokens": request.max_tokens,
         });
 
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+
         // Omitted rather than sent empty: offering no tools is the common
         // case, and some providers reject an empty array.
         if !request.tools.is_empty() {
@@ -152,15 +161,27 @@ impl outturn::agent::host::Host for AgentHost {
         // The zone belongs to the user, not to this machine: the runtime runs
         // in a container that is almost certainly UTC, so answering from its
         // own locale would be confidently wrong for everyone.
+        use chrono::SecondsFormat;
+
         match self.timezone {
-            Some(tz) => Clock {
-                now: chrono::Utc::now().with_timezone(&tz).to_rfc3339(),
-                timezone: tz.name().to_string(),
-            },
-            None => Clock {
-                now: chrono::Utc::now().to_rfc3339(),
-                timezone: String::new(),
-            },
+            Some(tz) => {
+                let now = chrono::Utc::now().with_timezone(&tz);
+                Clock {
+                    now: now.to_rfc3339_opts(SecondsFormat::Secs, false),
+                    weekday: now.format("%A").to_string(),
+                    timezone: tz.name().to_string(),
+                    abbreviation: now.format("%Z").to_string(),
+                }
+            }
+            None => {
+                let now = chrono::Utc::now();
+                Clock {
+                    now: now.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    weekday: now.format("%A").to_string(),
+                    timezone: String::new(),
+                    abbreviation: "UTC".to_string(),
+                }
+            }
         }
     }
 
@@ -309,6 +330,8 @@ pub struct RunOptions {
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
     pub timezone: Option<String>,
+    /// Passed to providers that support it; ignored by those that do not.
+    pub reasoning_effort: Option<String>,
 }
 
 impl AgentRunner {
@@ -353,6 +376,7 @@ impl AgentRunner {
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.
+            reasoning_effort: options.reasoning_effort,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
