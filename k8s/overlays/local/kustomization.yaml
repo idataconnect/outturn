@@ -31,8 +31,12 @@ patches:
             value: "1"
           - name: OUTTURN_RUNTIME_URL
             value: "http://outturn-runtime:8082"
+          # gemma4 rather than llama3.1: the agent offers tools on every
+          # turn, and llama3.1's template stops streaming when tools are
+          # present -- a reply collapses from ~26 chunks to 3. gemma4 streams
+          # either way. Per-model behaviour, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
-            value: "llama3.1"
+            value: "gemma4"
   - target:
       kind: Deployment
       name: outturn-gateway
@@ -76,5 +80,9 @@ patches:
           # Agents execute here, so this is the tier that reaches the gateway.
           - name: OUTTURN_GATEWAY_URL
             value: "http://outturn-gateway:8081"
+          # gemma4 rather than llama3.1: the agent offers tools on every
+          # turn, and llama3.1's template stops streaming when tools are
+          # present -- a reply collapses from ~26 chunks to 3. gemma4 streams
+          # either way. Per-model behaviour, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
-            value: "llama3.1"
+            value: "gemma4"
