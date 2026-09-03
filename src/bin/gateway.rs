@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use outturn::auth::TokenValidator;
 use outturn::gateway;
-use outturn::gateway::llm::provider::{LlmProvider, mock::MockProvider, ollama::OllamaProvider};
+use outturn::gateway::llm::provider::{LlmProvider, mock::MockProvider, openai::OpenAiProvider};
 use outturn::lifecycle::{self, Health};
 
 #[tokio::main]
@@ -20,9 +20,12 @@ async fn main() {
 
     let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
 
-    if let Some(ollama) = OllamaProvider::from_env() {
-        tracing::info!("ollama provider enabled");
-        providers.push(Arc::new(ollama));
+    // One protocol, pointed wherever OPENAI_BASE_URL says: api.openai.com in
+    // production, a local ollama in development, anything else that speaks the
+    // same wire format without needing its own implementation.
+    if let Some(openai) = OpenAiProvider::from_env() {
+        tracing::info!("openai-protocol provider enabled");
+        providers.push(Arc::new(openai));
     }
 
     if providers.is_empty() {

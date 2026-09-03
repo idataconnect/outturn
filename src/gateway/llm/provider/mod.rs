@@ -1,6 +1,5 @@
 pub mod anthropic;
 pub mod mock;
-pub mod ollama;
 pub mod openai;
 
 use futures::stream::BoxStream;
@@ -10,10 +9,14 @@ use super::types::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The wire protocol a provider speaks, not the vendor behind it.
+///
+/// Most vendors -- ollama, Groq, OpenRouter, Together -- speak the OpenAI
+/// chat-completions protocol and differ only in base URL and credential, which
+/// is configuration rather than code.
 pub enum Provider {
     OpenAi,
     Anthropic,
-    Ollama,
     Mock,
 }
 

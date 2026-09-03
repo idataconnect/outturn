@@ -218,8 +218,28 @@ export function useChatRuntime(sessionId: string | null) {
     [sessionId, merge],
   )
 
+  /**
+   * What the thread should draw.
+   *
+   * An assistant reply is created empty so deltas have a row to attach to,
+   * but an empty message still renders as an empty bubble -- a blank pill
+   * sitting above "Thinking...". It is withheld until it has something to
+   * say. A tool call counts: the agent announcing what it is doing is worth
+   * showing before any text arrives.
+   */
+  const visible = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          m.content !== '' ||
+          (m.metadata.tool_calls?.length ?? 0) > 0 ||
+          m.role !== 'assistant',
+      ),
+    [messages],
+  )
+
   const runtime = useExternalStoreRuntime({
-    messages,
+    messages: visible,
     isRunning,
     convertMessage,
     onNew,

@@ -53,7 +53,10 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
-          - name: OLLAMA_URL
+          # ollama speaks the OpenAI chat-completions protocol, so it is
+          # reached through the same provider as api.openai.com -- only the
+          # base URL differs, and no key is wanted.
+          - name: OPENAI_BASE_URL
             value: "http://172.18.0.1:11434"
           - name: OUTTURN_TOKEN_PUBLIC_KEY
             value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
