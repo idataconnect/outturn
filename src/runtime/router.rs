@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use crate::auth::{self, Authority, Role, TokenMinter, TokenValidator};
 
-use super::component::{AgentRunner, Message, ProgressSink, RunOptions, ToolActivity, ToolSink};
+use super::component::{
+    AgentRunner, Message, ProgressSink, RunOptions, ToolActivity, ToolOutcome, ToolResultSink,
+    ToolSink,
+};
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
 /// a loop cannot occupy the service indefinitely.
@@ -88,6 +91,13 @@ pub enum ExecuteEvent {
     /// The guest started a tool, with the model's own label for what it is
     /// doing.
     Tool { id: String, name: String, action: String },
+    /// A tool finished. Carries what the reader may look at, which the model
+    /// was never sent.
+    ToolResult {
+        id: String,
+        details: String,
+        is_error: bool,
+    },
     /// Generation finished; the reply is complete, and this is what it cost.
     Done {
         content: String,
@@ -179,6 +189,17 @@ pub async fn execute(
         })
     };
 
+    let tool_result_sink: ToolResultSink = {
+        let tx = tx.clone();
+        Arc::new(move |outcome: &ToolOutcome| {
+            let _ = tx.send(ExecuteEvent::ToolResult {
+                id: outcome.id.clone(),
+                details: outcome.details.clone(),
+                is_error: outcome.is_error,
+            });
+        })
+    };
+
     tracing::info!(
         session_id = %request.session_id,
         tenant_id = %request.tenant_id,
@@ -197,6 +218,7 @@ pub async fn execute(
             .unwrap_or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into())),
         progress: Some(sink),
         on_tool: Some(tool_sink),
+        on_tool_result: Some(tool_result_sink),
         fuel: FUEL_PER_TURN,
         timezone: request.timezone,
         reasoning_effort: request.reasoning_effort,

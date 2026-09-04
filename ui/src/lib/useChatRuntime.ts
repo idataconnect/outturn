@@ -33,7 +33,7 @@ const convertMessage = (message: Message): ThreadMessageLike => ({
       toolName: call.name,
       // The action is the model's own account of what it is doing, and the
       // only argument the user is shown.
-      args: { action: call.action },
+      args: { action: call.action, details: call.details, isError: call.is_error },
       argsText: JSON.stringify({ action: call.action }),
     })),
     { type: 'text' as const, text: message.content },
@@ -134,6 +134,27 @@ export function useChatRuntime(sessionId: string | null) {
                 // reload, and a tool run once must not be drawn twice.
                 if (calls.some((c) => c.id === call.id)) return m
                 return { ...m, metadata: { ...m.metadata, tool_calls: [...calls, call] } }
+              }),
+            )
+          }
+
+          // A tool's result lands on the call it answers, so the browser
+          // holds one object per tool rather than two to reconcile.
+          for (const event of result.events) {
+            if (event.kind !== 'chat.tool_result') continue
+            const { message_id, id, details, is_error } = event.payload as {
+              message_id: string
+              id: string
+              details: string
+              is_error: boolean
+            }
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== message_id) return m
+                const calls = (m.metadata.tool_calls ?? []).map((c) =>
+                  c.id === id ? { ...c, details, is_error } : c,
+                )
+                return { ...m, metadata: { ...m.metadata, tool_calls: calls } }
               }),
             )
           }

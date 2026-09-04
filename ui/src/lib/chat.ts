@@ -9,6 +9,10 @@ export type ToolCallRecord = {
   name: string
   /** Present continuous, written for the user: "Checking today's date". */
   action: string
+  /** What came back, in full. Never sent to the model. Absent until the
+   *  tool finishes, and empty for tools with nothing worth showing. */
+  details?: string
+  is_error?: boolean
 }
 
 export type Message = {
@@ -54,6 +58,17 @@ export type ChatEvent =
       id: string
       kind: 'chat.tool'
       payload: { message_id: string; call: ToolCallRecord }
+    }
+  /** That tool finished, with what it produced. */
+  | {
+      id: string
+      kind: 'chat.tool_result'
+      payload: {
+        message_id: string
+        id: string
+        details: string
+        is_error: boolean
+      }
     }
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
   | { id: string; kind: 'chat.error'; payload: { message: string } }

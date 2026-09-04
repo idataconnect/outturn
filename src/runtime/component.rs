@@ -19,7 +19,7 @@ wasmtime::component::bindgen!({
 
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, Limits, Message, ToolActivity, ToolCall,
-    ToolDefinition, Usage,
+    ToolDefinition, ToolOutcome, Usage,
 };
 
 /// Reports text as the model produces it, before the turn finishes.
@@ -27,6 +27,9 @@ pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Reports a tool call as the guest starts it.
 pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
+
+/// Reports what a tool produced, for the reader rather than the model.
+pub type ToolResultSink = Arc<dyn Fn(&ToolOutcome) + Send + Sync>;
 
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
@@ -57,6 +60,7 @@ pub struct AgentHost {
     /// to know.
     reasoning_effort: Option<String>,
     on_tool: Option<ToolSink>,
+    on_tool_result: Option<ToolResultSink>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
     /// Model calls made so far this turn, counted host-side so a guest that
@@ -219,6 +223,12 @@ impl outturn::agent::host::Host for AgentHost {
         }
 
         Ok(completion)
+    }
+
+    async fn tool_finished(&mut self, outcome: ToolOutcome) {
+        if let Some(sink) = &self.on_tool_result {
+            sink(&outcome);
+        }
     }
 
     async fn pending_input(&mut self) -> Vec<Arrival> {
@@ -455,6 +465,7 @@ pub struct RunOptions {
     pub default_model: String,
     pub progress: Option<ProgressSink>,
     pub on_tool: Option<ToolSink>,
+    pub on_tool_result: Option<ToolResultSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -511,6 +522,7 @@ impl AgentRunner {
             http: crate::http_client::streaming_client(options.idle_timeout),
             progress: options.progress,
             on_tool: options.on_tool,
+            on_tool_result: options.on_tool_result,
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.

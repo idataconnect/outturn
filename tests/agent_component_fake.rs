@@ -26,6 +26,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         default_model: "fake".into(),
         progress,
         on_tool: None,
+        on_tool_result: None,
         timezone: None,
         reasoning_effort: None,
         traffic_type: "assistant".into(),
@@ -556,4 +557,47 @@ async fn a_turn_reports_what_it_spent() {
     // Thinking is billed as output and reported apart, so it is inside the
     // completion total as well as recorded on its own.
     assert_eq!(cost.reasoning_tokens, 6);
+}
+
+/// A tool's full result reaches the reader, and a cut-down one reaches the model.
+///
+/// The split is what lets a tool return a file or a table without paying for
+/// it in every later prompt: the model is told enough to reason over, and the
+/// browser gets the rest.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking the clock"}"#.into(),
+        reply: "Tuesday.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock()
+                .unwrap()
+                .push((outcome.details.clone(), outcome.is_error));
+        })
+    };
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+
+    runner
+        .run(&component(), user("What day is it?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let reported = seen.lock().unwrap().clone();
+    assert_eq!(reported.len(), 1, "the tool reported its outcome once");
+    let (details, is_error) = &reported[0];
+    assert!(
+        details.contains("weekday"),
+        "the reader gets what the tool actually produced, got {details:?}"
+    );
+    assert!(!is_error, "a clock reading is not a failure");
 }

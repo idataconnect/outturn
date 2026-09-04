@@ -14,7 +14,7 @@ mod bindings;
 
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
-    self, Arrival, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition,
+    self, Arrival, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition, ToolOutcome,
 };
 
 struct Component;
@@ -62,6 +62,45 @@ fn injected(arrivals: &[Arrival]) -> Vec<Message> {
         .collect()
 }
 
+/// Two independent ceilings on what a tool may put in front of the model.
+///
+/// Whichever is reached first wins, because they fail differently: a single
+/// enormous line passes any line count, and a hundred thousand short ones pass
+/// any byte count.
+const MAX_TOOL_LINES: usize = 2000;
+const MAX_TOOL_BYTES: usize = 50 * 1024;
+
+/// Cuts a result down to what the model should see.
+///
+/// Never mid-line: half a line of JSON or code reads as though it were whole,
+/// and a model will act on it. What was removed is described rather than
+/// silently dropped, so the model can ask for it differently instead of
+/// concluding the file was short.
+fn for_the_model(full: &str) -> String {
+    let total_lines = full.lines().count();
+    let total_bytes = full.len();
+    if total_lines <= MAX_TOOL_LINES && total_bytes <= MAX_TOOL_BYTES {
+        return full.to_string();
+    }
+
+    let mut kept = String::new();
+    let mut lines = 0usize;
+    for line in full.lines() {
+        if lines >= MAX_TOOL_LINES || kept.len() + line.len() + 1 > MAX_TOOL_BYTES {
+            break;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+        lines += 1;
+    }
+
+    format!(
+        "{kept}\n[truncated: showing {lines} of {total_lines} lines, \
+         {} of {total_bytes} bytes]",
+        kept.len()
+    )
+}
+
 /// Runs one tool call and returns the message answering it.
 fn run_tool(call: &ToolCall) -> Message {
     let content = match call.name.as_str() {
@@ -83,9 +122,19 @@ fn run_tool(call: &ToolCall) -> Message {
         other => format!(r#"{{"error":"no such tool: {other}"}}"#),
     };
 
+    // The reader gets everything; the model gets what fits. For the clock
+    // these are the same string, but the shape is what a file read or a
+    // query needs, and it costs nothing to be right about it now.
+    let is_error = content.contains("\"error\"");
+    host::tool_finished(&ToolOutcome {
+        id: call.id.clone(),
+        details: content.clone(),
+        is_error,
+    });
+
     Message {
         role: "tool".to_string(),
-        content,
+        content: for_the_model(&content),
         tool_calls: Vec::new(),
         tool_call_id: Some(call.id.clone()),
     }

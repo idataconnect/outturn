@@ -259,6 +259,35 @@ impl Worker {
                         )
                         .await?;
                     }
+                    Ok(ExecuteEvent::ToolResult {
+                        id,
+                        details,
+                        is_error,
+                    }) => {
+                        // Attached to the call it answers rather than sent as
+                        // its own thing, so the browser has one object per
+                        // tool: what it was doing, and what came back.
+                        if let Some(call) = tools
+                            .iter_mut()
+                            .find(|c| c["id"].as_str() == Some(id.as_str()))
+                        {
+                            call["details"] = serde_json::json!(details);
+                            call["is_error"] = serde_json::json!(is_error);
+                        }
+                        events::append(
+                            &self.pool,
+                            payload.tenant_id,
+                            Some(payload.session_id),
+                            "chat.tool_result",
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "id": id,
+                                "details": details,
+                                "is_error": is_error,
+                            }),
+                        )
+                        .await?;
+                    }
                     Ok(ExecuteEvent::Done {
                         content,
                         prompt_tokens,
