@@ -263,6 +263,9 @@ impl Worker {
                         content,
                         prompt_tokens,
                         completion_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        reasoning_tokens,
                         provider,
                     }) => {
                         return Ok(TurnOutcome {
@@ -274,6 +277,9 @@ impl Worker {
                                 // than as zero spend.
                                 prompt_tokens: Some(prompt_tokens as i32),
                                 completion_tokens: Some(completion_tokens as i32),
+                                cache_read_tokens: Some(cache_read_tokens as i32),
+                                cache_write_tokens: Some(cache_write_tokens as i32),
+                                reasoning_tokens: Some(reasoning_tokens as i32),
                             },
                             provider,
                         });

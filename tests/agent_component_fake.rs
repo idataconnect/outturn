@@ -540,9 +540,20 @@ async fn a_turn_reports_what_it_spent() {
         .await
         .expect("run");
 
+    // Two rounds at 11 prompt tokens each, of which 4 were cached: 7 billed
+    // at full rate per round. Folding the cache back in would overstate the
+    // bill, which is the mistake the split exists to prevent.
     assert_eq!(
-        cost.prompt_tokens, 22,
+        cost.prompt_tokens, 14,
+        "cached tokens are not billed as fresh input"
+    );
+    assert_eq!(cost.cache_read_tokens, 8);
+    assert_eq!(cost.cache_write_tokens, 4);
+    assert_eq!(
+        cost.completion_tokens, 14,
         "a turn costs every round it made, not just the last"
     );
-    assert_eq!(cost.completion_tokens, 14);
+    // Thinking is billed as output and reported apart, so it is inside the
+    // completion total as well as recorded on its own.
+    assert_eq!(cost.reasoning_tokens, 6);
 }

@@ -104,11 +104,26 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// What a model call cost, in the units it is billed in.
+            ///
+            /// Split because the parts carry different prices and none of them can be
+            /// derived from the text: a cached prompt is cheaper than a fresh one, and
+            /// thinking is billed as output while being reported separately. A count
+            /// taken locally could never tell these apart.
             #[repr(C)]
             #[derive(Clone, Copy)]
             pub struct Usage {
+                /// Input billed at full rate. Excludes anything served from cache,
+                /// which providers vary about including in their own totals.
                 pub prompt_tokens: u32,
+                /// All output, including any thinking.
                 pub completion_tokens: u32,
+                /// Input served from cache, billed lower.
+                pub cache_read_tokens: u32,
+                /// Input written to cache, which some providers charge a premium for.
+                pub cache_write_tokens: u32,
+                /// The part of the output that was thinking.
+                pub reasoning_tokens: u32,
             }
             impl ::core::fmt::Debug for Usage {
                 fn fmt(
@@ -118,6 +133,9 @@ pub mod outturn {
                     f.debug_struct("Usage")
                         .field("prompt-tokens", &self.prompt_tokens)
                         .field("completion-tokens", &self.completion_tokens)
+                        .field("cache-read-tokens", &self.cache_read_tokens)
+                        .field("cache-write-tokens", &self.cache_write_tokens)
+                        .field("reasoning-tokens", &self.reasoning_tokens)
                         .finish()
                 }
             }
@@ -423,11 +441,11 @@ pub mod outturn {
                     struct RetArea(
                         [::core::mem::MaybeUninit<
                             u8,
-                        >; 8 + 9 * ::core::mem::size_of::<*const u8>()],
+                        >; 24 + 8 * ::core::mem::size_of::<*const u8>()],
                     );
                     let mut ret_area = RetArea(
-                        [::core::mem::MaybeUninit::uninit(); 8
-                            + 9 * ::core::mem::size_of::<*const u8>()],
+                        [::core::mem::MaybeUninit::uninit(); 24
+                            + 8 * ::core::mem::size_of::<*const u8>()],
                     );
                     let CompletionRequest {
                         messages: messages0,
@@ -680,7 +698,7 @@ pub mod outturn {
                         )
                     };
                     let l22 = i32::from(*ptr20.add(0).cast::<u8>());
-                    let result48 = match l22 {
+                    let result51 = match l22 {
                         0 => {
                             let e = {
                                 let l23 = *ptr20
@@ -800,9 +818,21 @@ pub mod outturn {
                                                 let l44 = *ptr20
                                                     .add(8 + 8 * ::core::mem::size_of::<*const u8>())
                                                     .cast::<i32>();
+                                                let l45 = *ptr20
+                                                    .add(12 + 8 * ::core::mem::size_of::<*const u8>())
+                                                    .cast::<i32>();
+                                                let l46 = *ptr20
+                                                    .add(16 + 8 * ::core::mem::size_of::<*const u8>())
+                                                    .cast::<i32>();
+                                                let l47 = *ptr20
+                                                    .add(20 + 8 * ::core::mem::size_of::<*const u8>())
+                                                    .cast::<i32>();
                                                 Usage {
                                                     prompt_tokens: l43 as u32,
                                                     completion_tokens: l44 as u32,
+                                                    cache_read_tokens: l45 as u32,
+                                                    cache_write_tokens: l46 as u32,
+                                                    reasoning_tokens: l47 as u32,
                                                 }
                                             };
                                             Some(e)
@@ -815,19 +845,19 @@ pub mod outturn {
                         }
                         1 => {
                             let e = {
-                                let l45 = *ptr20
+                                let l48 = *ptr20
                                     .add(::core::mem::size_of::<*const u8>())
                                     .cast::<*mut u8>();
-                                let l46 = *ptr20
+                                let l49 = *ptr20
                                     .add(2 * ::core::mem::size_of::<*const u8>())
                                     .cast::<usize>();
-                                let len47 = l46;
-                                let bytes47 = _rt::Vec::from_raw_parts(
-                                    l45.cast(),
-                                    len47,
-                                    len47,
+                                let len50 = l49;
+                                let bytes50 = _rt::Vec::from_raw_parts(
+                                    l48.cast(),
+                                    len50,
+                                    len50,
                                 );
-                                _rt::string_lift(bytes47)
+                                _rt::string_lift(bytes50)
                             };
                             Err(e)
                         }
@@ -844,7 +874,7 @@ pub mod outturn {
                             _rt::alloc::dealloc(ptr.cast(), layout);
                         }
                     }
-                    result48
+                    result51
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -1364,29 +1394,30 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1021] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfb\x06\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1078] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb4\x07\x01A\x02\x01\
 A\x05\x01B+\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
 \x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
 \x05tools\x09\x05model\x05\x0btemperature\x0a\x0amax-tokens\x0b\x04\0\x12complet\
-ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
-usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
-\x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06acti\
-ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x02\x07contents\x08deliverys\x04\0\x07\
-arrival\x03\0\x15\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limits\x03\0\x17\x01r\x04\
-\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0\x19\x01@\
-\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x1b\x01p\x16\x01@\0\0\x1c\x04\
-\0\x0dpending-input\x01\x1d\x01@\0\0\x18\x04\0\x0ecurrent-limits\x01\x1e\x01j\x01\
-\x12\x01s\x01@\x01\x07request\x0d\0\x1f\x04\0\x04chat\x01\x20\x01@\0\0\x1a\x04\0\
-\x0ccurrent-time\x01!\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01\"\x01@\x02\x05\
-levels\x07messages\x01\0\x04\0\x03log\x01#\x03\0\x18outturn:agent/host@0.1.0\x05\
-\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01\
-p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03\
-run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/ag\
-ent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0c\
-processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+ion-request\x03\0\x0c\x01r\x05\x0dprompt-tokensy\x11completion-tokensy\x11cache-\
+read-tokensy\x12cache-write-tokensy\x10reasoning-tokensy\x04\0\x05usage\x03\0\x0e\
+\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\x05\x05usage\x10\
+\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06actions\x04\0\x0dtool\
+-activity\x03\0\x13\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0\x15\
+\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limits\x03\0\x17\x01r\x04\x03nows\x07week\
+days\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0\x19\x01@\x01\x08activity\
+\x14\x01\0\x04\0\x0ctool-started\x01\x1b\x01p\x16\x01@\0\0\x1c\x04\0\x0dpending-\
+input\x01\x1d\x01@\0\0\x18\x04\0\x0ecurrent-limits\x01\x1e\x01j\x01\x12\x01s\x01\
+@\x01\x07request\x0d\0\x1f\x04\0\x04chat\x01\x20\x01@\0\0\x1a\x04\0\x0ccurrent-t\
+ime\x01!\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01\"\x01@\x02\x05levels\x07m\
+essages\x01\0\x04\0\x03log\x01#\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\
+\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01\
+j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\
+\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-wor\
+ld@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cproce\
+ssed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

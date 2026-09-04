@@ -87,10 +87,18 @@ pub struct CreateSession {
 
 /// Token counts reported by a provider, recorded per message so usage can be
 /// attributed to a tenant later.
+///
+/// Reported rather than counted. The breakdown is where the price differences
+/// live -- cached input is cheaper, thinking is billed as output -- and none
+/// of it is recoverable from the text, whatever tokenizer you own. A local
+/// count has its uses, but they are sizing and budgeting, never accounting.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Usage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
+    pub cache_read_tokens: Option<i32>,
+    pub cache_write_tokens: Option<i32>,
+    pub reasoning_tokens: Option<i32>,
 }
 
 #[derive(Debug, thiserror::Error)]

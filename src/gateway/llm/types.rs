@@ -19,6 +19,14 @@ pub struct ChatCompletionRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+}
+
+/// Streaming leaves usage out unless it is asked for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +124,38 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Carried through rather than dropped: the breakdown is where the price
+    /// differences live, and a field this type does not know about is a field
+    /// that vanishes on the way past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+/// How much of the prompt was served from cache, which is billed lower.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u32,
+    /// Input written into a cache. Not part of the OpenAI protocol, which
+    /// does not charge for writes -- Anthropic does, at a premium over a
+    /// fresh token, so a canonical form that could not carry it would lose
+    /// real money on every cached conversation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_creation_tokens: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// How much of the output was the model thinking. Billed as output, reported
+/// apart, and not derivable from the text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionTokensDetails {
+    #[serde(default)]
+    pub reasoning_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

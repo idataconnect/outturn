@@ -43,9 +43,24 @@ interface host {
         max-tokens: option<u32>,
     }
 
+    /// What a model call cost, in the units it is billed in.
+    ///
+    /// Split because the parts carry different prices and none of them can be
+    /// derived from the text: a cached prompt is cheaper than a fresh one, and
+    /// thinking is billed as output while being reported separately. A count
+    /// taken locally could never tell these apart.
     record usage {
+        /// Input billed at full rate. Excludes anything served from cache,
+        /// which providers vary about including in their own totals.
         prompt-tokens: u32,
+        /// All output, including any thinking.
         completion-tokens: u32,
+        /// Input served from cache, billed lower.
+        cache-read-tokens: u32,
+        /// Input written to cache, which some providers charge a premium for.
+        cache-write-tokens: u32,
+        /// The part of the output that was thinking.
+        reasoning-tokens: u32,
     }
 
     record completion {

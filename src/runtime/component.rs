@@ -85,6 +85,9 @@ pub struct AgentHost {
 pub struct TurnCost {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
+    pub reasoning_tokens: u32,
     pub provider: Option<String>,
 }
 
@@ -207,6 +210,9 @@ impl outturn::agent::host::Host for AgentHost {
         if let Some(usage) = &completion.usage {
             self.spent.prompt_tokens += usage.prompt_tokens;
             self.spent.completion_tokens += usage.completion_tokens;
+            self.spent.cache_read_tokens += usage.cache_read_tokens;
+            self.spent.cache_write_tokens += usage.cache_write_tokens;
+            self.spent.reasoning_tokens += usage.reasoning_tokens;
         }
         if served_by.is_some() {
             self.served_by = served_by;
@@ -389,9 +395,24 @@ async fn stream_completion(
                 finish_reason = Some(reason.to_string());
             }
             if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
+                let cached = u["prompt_tokens_details"]["cached_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32;
+                let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
                 usage = Some(Usage {
-                    prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                    // This protocol counts cached tokens inside the prompt
+                    // total, so they are taken back out: "prompt tokens" here
+                    // means the ones billed at full rate, whatever a given
+                    // provider chooses to fold together.
+                    prompt_tokens: prompt.saturating_sub(cached),
                     completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                    cache_read_tokens: cached,
+                    cache_write_tokens: u["prompt_tokens_details"]["cache_creation_tokens"]
+                        .as_u64()
+                        .unwrap_or(0) as u32,
+                    reasoning_tokens: u["completion_tokens_details"]["reasoning_tokens"]
+                        .as_u64()
+                        .unwrap_or(0) as u32,
                 });
             }
         }
@@ -502,6 +523,9 @@ impl AgentRunner {
             spent: Usage {
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
             },
             served_by: None,
             timezone: options.timezone.as_deref().and_then(|tz| {
@@ -528,6 +552,9 @@ impl AgentRunner {
         let cost = TurnCost {
             prompt_tokens: host.spent.prompt_tokens,
             completion_tokens: host.spent.completion_tokens,
+            cache_read_tokens: host.spent.cache_read_tokens,
+            cache_write_tokens: host.spent.cache_write_tokens,
+            reasoning_tokens: host.spent.reasoning_tokens,
             provider: host.served_by.clone(),
         };
 

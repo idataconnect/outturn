@@ -91,6 +91,13 @@ impl LlmProvider for OpenAiProvider {
     ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
         let mut streaming = request.clone();
         streaming.stream = true;
+        // Asked for explicitly, because a streamed response omits usage
+        // otherwise -- and a turn that cannot say what it cost is a turn
+        // nobody can be billed for. The final chunk carries it with an empty
+        // `choices`, which readers of the stream already tolerate.
+        streaming.stream_options = Some(crate::gateway::llm::types::StreamOptions {
+            include_usage: true,
+        });
 
         let response = self
             .request("/v1/chat/completions")

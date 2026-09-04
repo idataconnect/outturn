@@ -188,12 +188,29 @@ pub fn anthropic_to_openai(
         other => other.map(String::from),
     };
 
-    let usage = resp.get("usage").map(|u| Usage {
-            prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
-            completion_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
-            total_tokens: (u["input_tokens"].as_u64().unwrap_or(0)
-                + u["output_tokens"].as_u64().unwrap_or(0)) as u32,
-        });
+    // Anthropic reports cache reads and cache writes separately from input,
+    // and charges all three differently -- a write costs more than a fresh
+    // token, a read costs a fraction. `input_tokens` already excludes both,
+    // unlike the OpenAI protocol where cached tokens are folded into the
+    // prompt total, so nothing is subtracted here.
+    let usage = resp.get("usage").map(|u| {
+        let input = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+        let output = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+        let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
+        let cache_write = u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32;
+        Usage {
+            prompt_tokens: input,
+            completion_tokens: output,
+            total_tokens: input + output + cache_read + cache_write,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: cache_read,
+                cache_creation_tokens: cache_write,
+            }),
+            // Carried in the shape the OpenAI protocol uses, since that is the
+            // canonical form everything downstream reads.
+            completion_tokens_details: None,
+        }
+    });
 
     Ok(ChatCompletionResponse {
         id,

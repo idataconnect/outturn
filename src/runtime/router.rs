@@ -94,6 +94,12 @@ pub enum ExecuteEvent {
         prompt_tokens: u32,
         completion_tokens: u32,
         #[serde(default)]
+        cache_read_tokens: u32,
+        #[serde(default)]
+        cache_write_tokens: u32,
+        #[serde(default)]
+        reasoning_tokens: u32,
+        #[serde(default)]
         provider: Option<String>,
     },
     /// The turn failed.
@@ -226,6 +232,9 @@ pub async fn execute(
                     content,
                     prompt_tokens: cost.prompt_tokens,
                     completion_tokens: cost.completion_tokens,
+                    cache_read_tokens: cost.cache_read_tokens,
+                    cache_write_tokens: cost.cache_write_tokens,
+                    reasoning_tokens: cost.reasoning_tokens,
                     provider: cost.provider,
                 })
             }

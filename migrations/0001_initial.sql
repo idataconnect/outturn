@@ -229,8 +229,16 @@ create table agent_messages (
     -- Usage attribution. Null until a provider reports it; the model is
     -- recorded per message because an agent's model may change between turns.
     model        text,
-    prompt_tokens     int,
-    completion_tokens int,
+
+    -- Split because the parts are priced differently and none of them can be
+    -- worked out from the text. A cached prompt costs less than a fresh one;
+    -- thinking is billed as output but reported apart. Counting tokens here
+    -- could never tell them apart, which is why these come from the provider.
+    prompt_tokens       int,   -- billed at full rate, cache excluded
+    completion_tokens   int,   -- all output, thinking included
+    cache_read_tokens   int,
+    cache_write_tokens  int,
+    reasoning_tokens    int,
 
     created_at   timestamptz not null default now()
 );

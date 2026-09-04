@@ -197,7 +197,10 @@ impl ChatStore for PostgresChatStore {
              set content = $2, model = coalesce($3, model), metadata = $4, \
                  provider = coalesce($5, provider), \
                  prompt_tokens = coalesce($6, prompt_tokens), \
-                 completion_tokens = coalesce($7, completion_tokens) \
+                 completion_tokens = coalesce($7, completion_tokens), \
+                 cache_read_tokens = coalesce($8, cache_read_tokens), \
+                 cache_write_tokens = coalesce($9, cache_write_tokens), \
+                 reasoning_tokens = coalesce($10, reasoning_tokens) \
              where id = $1 \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens",
@@ -209,6 +212,9 @@ impl ChatStore for PostgresChatStore {
         .bind(provider)
         .bind(usage.prompt_tokens)
         .bind(usage.completion_tokens)
+        .bind(usage.cache_read_tokens)
+        .bind(usage.cache_write_tokens)
+        .bind(usage.reasoning_tokens)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?

@@ -141,10 +141,15 @@ fn chunk_json(text: &str, finish: Option<&str>) -> String {
     // Providers report usage on the final chunk, so the fake does too --
     // otherwise nothing here would exercise the accounting.
     if finish.is_some() {
+        // With the breakdown, so the split is exercised rather than assumed:
+        // this protocol folds cached tokens into the prompt total, and the
+        // reader is expected to take them back out.
         chunk["usage"] = serde_json::json!({
             "prompt_tokens": 11,
             "completion_tokens": 7,
             "total_tokens": 18,
+            "prompt_tokens_details": { "cached_tokens": 4, "cache_creation_tokens": 2 },
+            "completion_tokens_details": { "reasoning_tokens": 3 },
         });
     }
     chunk.to_string()
