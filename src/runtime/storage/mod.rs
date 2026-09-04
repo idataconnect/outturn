@@ -1,4 +1,5 @@
 pub mod memory;
+pub mod scope;
 pub mod s3;
 
 use async_trait::async_trait;

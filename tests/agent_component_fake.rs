@@ -27,6 +27,8 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         progress,
         on_tool: None,
         on_tool_result: None,
+        storage: None,
+        tenant_id: Uuid::now_v7(),
         timezone: None,
         reasoning_effort: None,
         traffic_type: "assistant".into(),
@@ -230,11 +232,19 @@ async fn runs_a_tool_and_answers_with_its_result() {
     let requests = gateway.requests();
     assert_eq!(requests.len(), 2, "one call to ask, one to answer");
 
-    // The tool was offered on the first request.
-    let offered = requests[0]["tools"][0]["function"]["name"]
-        .as_str()
-        .expect("a tool was offered");
-    assert_eq!(offered, "get_current_time");
+    // The tool was among those offered on the first request. Which position
+    // it holds is not meaningful, and asserting one made this break the
+    // moment another tool was added.
+    let offered: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .expect("tools were offered")
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(
+        offered.contains(&"get_current_time"),
+        "the clock should be on offer, got {offered:?}"
+    );
 
     // The second request carries the model's request and the answer to it.
     let messages = requests[1]["messages"].as_array().expect("messages");
@@ -600,4 +610,61 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
         "the reader gets what the tool actually produced, got {details:?}"
     );
     assert!(!is_error, "a clock reading is not a failure");
+}
+
+// -- Object storage -----------------------------------------------------------
+
+/// An agent reads and writes only within its own tenant's space.
+///
+/// The guest is never told which tenant it belongs to, so it cannot name
+/// another; and the host resolves every path rather than trusting one, so a
+/// component that tries to climb out is refused rather than quietly corrected.
+#[tokio::test(flavor = "multi_thread")]
+async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let ours = Uuid::now_v7();
+    let theirs = Uuid::now_v7();
+
+    // Somebody else's object, which our agent must not be able to reach.
+    store
+        .write(&scope::resolve(theirs, "secrets.txt").unwrap(), 0, b"not yours")
+        .await
+        .expect("seed");
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "write_object".into(),
+        arguments: r#"{"path":"notes/hello.txt","content":"written by the agent","action":"Saving a note"}"#.into(),
+        reply: "Saved.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.tenant_id = ours;
+
+    runner
+        .run(&component(), user("Write a note."), String::new(), options)
+        .await
+        .expect("run");
+
+    // It landed under our tenant, not at the path the guest named.
+    let written = store
+        .read(&scope::resolve(ours, "notes/hello.txt").unwrap(), 0, u32::MAX)
+        .await
+        .expect("the agent's own file");
+    assert_eq!(written, b"written by the agent");
+
+    // And the neighbour's file is untouched and unreachable by name.
+    assert!(
+        scope::resolve(ours, "../{theirs}/secrets.txt").is_err(),
+        "a path climbing out of the tenant root must be refused"
+    );
+    let theirs_still = store
+        .read(&scope::resolve(theirs, "secrets.txt").unwrap(), 0, u32::MAX)
+        .await
+        .expect("still there");
+    assert_eq!(theirs_still, b"not yours");
 }

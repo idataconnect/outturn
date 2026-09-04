@@ -189,6 +189,26 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// One stored object, as the guest sees it.
+            #[derive(Clone)]
+            pub struct ObjectInfo {
+                /// Relative to the agent's own space. Never the real key: where an
+                /// object lives is the host's business, and a guest that learned the
+                /// layout could describe it to someone.
+                pub path: _rt::String,
+                pub size: u64,
+            }
+            impl ::core::fmt::Debug for ObjectInfo {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("ObjectInfo")
+                        .field("path", &self.path)
+                        .field("size", &self.size)
+                        .finish()
+                }
+            }
             /// What a tool produced.
             #[derive(Clone)]
             pub struct ToolOutcome {
@@ -291,6 +311,275 @@ pub mod outturn {
                         .field("timezone", &self.timezone)
                         .field("abbreviation", &self.abbreviation)
                         .finish()
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Reads part of an object.
+            ///
+            /// Ranged rather than whole-file, because a guest reading a large object
+            /// pulls it into linear memory and a sandbox has less of that than the
+            /// store has objects. Paths are relative and rooted: a guest is never told
+            /// which tenant it belongs to, so it cannot name another one, and anything
+            /// that tries to climb out is refused rather than quietly corrected.
+            pub fn read_object(
+                path: &str,
+                offset: u64,
+                len: u32,
+            ) -> Result<_rt::Vec<u8>, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "read-object"]
+                        fn wit_import2(_: *mut u8, _: usize, _: i64, _: i32, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(
+                        _: *mut u8,
+                        _: usize,
+                        _: i64,
+                        _: i32,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import2(
+                            ptr0.cast_mut(),
+                            len0,
+                            _rt::as_i64(&offset),
+                            _rt::as_i32(&len),
+                            ptr1,
+                        )
+                    };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result10 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len6 = l5;
+                                _rt::Vec::from_raw_parts(l4.cast(), len6, len6)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l7 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l8 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len9 = l8;
+                                let bytes9 = _rt::Vec::from_raw_parts(
+                                    l7.cast(),
+                                    len9,
+                                    len9,
+                                );
+                                _rt::string_lift(bytes9)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result10
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Writes an object, replacing anything already there.
+            pub fn write_object(path: &str, data: &[u8]) -> Result<u64, _rt::String> {
+                unsafe {
+                    #[repr(align(8))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 8 + 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 8
+                            + 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let vec1 = data;
+                    let ptr1 = vec1.as_ptr().cast::<u8>();
+                    let len1 = vec1.len();
+                    let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "write-object"]
+                        fn wit_import3(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import3(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import3(ptr0.cast_mut(), len0, ptr1.cast_mut(), len1, ptr2)
+                    };
+                    let l4 = i32::from(*ptr2.add(0).cast::<u8>());
+                    let result9 = match l4 {
+                        0 => {
+                            let e = {
+                                let l5 = *ptr2.add(8).cast::<i64>();
+                                l5 as u64
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l6 = *ptr2.add(8).cast::<*mut u8>();
+                                let l7 = *ptr2
+                                    .add(8 + 1 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len8 = l7;
+                                let bytes8 = _rt::Vec::from_raw_parts(
+                                    l6.cast(),
+                                    len8,
+                                    len8,
+                                );
+                                _rt::string_lift(bytes8)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result9
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Lists objects beneath a prefix.
+            pub fn list_objects(
+                prefix: &str,
+            ) -> Result<_rt::Vec<ObjectInfo>, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = prefix;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "list-objects"]
+                        fn wit_import2(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import2(ptr0.cast_mut(), len0, ptr1) };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result14 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let base10 = l4;
+                                let len10 = l5;
+                                let mut result10 = _rt::Vec::with_capacity(len10);
+                                for i in 0..len10 {
+                                    let base = base10
+                                        .add(i * (8 + 2 * ::core::mem::size_of::<*const u8>()));
+                                    let e10 = {
+                                        let l6 = *base.add(0).cast::<*mut u8>();
+                                        let l7 = *base
+                                            .add(::core::mem::size_of::<*const u8>())
+                                            .cast::<usize>();
+                                        let len8 = l7;
+                                        let bytes8 = _rt::Vec::from_raw_parts(
+                                            l6.cast(),
+                                            len8,
+                                            len8,
+                                        );
+                                        let l9 = *base
+                                            .add(2 * ::core::mem::size_of::<*const u8>())
+                                            .cast::<i64>();
+                                        ObjectInfo {
+                                            path: _rt::string_lift(bytes8),
+                                            size: l9 as u64,
+                                        }
+                                    };
+                                    result10.push(e10);
+                                }
+                                _rt::cabi_dealloc(
+                                    base10,
+                                    len10 * (8 + 2 * ::core::mem::size_of::<*const u8>()),
+                                    8,
+                                );
+                                result10
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l11 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l12 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len13 = l12;
+                                let bytes13 = _rt::Vec::from_raw_parts(
+                                    l11.cast(),
+                                    len13,
+                                    len13,
+                                );
+                                _rt::string_lift(bytes13)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result14
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -1336,36 +1625,27 @@ mod _rt {
     #![allow(dead_code, clippy::all)]
     pub use alloc_crate::string::String;
     pub use alloc_crate::vec::Vec;
-    pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
-        if cfg!(debug_assertions) {
-            String::from_utf8(bytes).unwrap()
-        } else {
-            String::from_utf8_unchecked(bytes)
+    pub fn as_i64<T: AsI64>(t: T) -> i64 {
+        t.as_i64()
+    }
+    pub trait AsI64 {
+        fn as_i64(self) -> i64;
+    }
+    impl<'a, T: Copy + AsI64> AsI64 for &'a T {
+        fn as_i64(self) -> i64 {
+            (*self).as_i64()
         }
     }
-    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
-        if size == 0 {
-            return;
-        }
-        let layout = alloc::Layout::from_size_align_unchecked(size, align);
-        alloc::dealloc(ptr, layout);
-    }
-    pub use alloc_crate::alloc;
-    pub fn as_f32<T: AsF32>(t: T) -> f32 {
-        t.as_f32()
-    }
-    pub trait AsF32 {
-        fn as_f32(self) -> f32;
-    }
-    impl<'a, T: Copy + AsF32> AsF32 for &'a T {
-        fn as_f32(self) -> f32 {
-            (*self).as_f32()
-        }
-    }
-    impl AsF32 for f32 {
+    impl AsI64 for i64 {
         #[inline]
-        fn as_f32(self) -> f32 {
-            self as f32
+        fn as_i64(self) -> i64 {
+            self as i64
+        }
+    }
+    impl AsI64 for u64 {
+        #[inline]
+        fn as_i64(self) -> i64 {
+            self as i64
         }
     }
     pub fn as_i32<T: AsI32>(t: T) -> i32 {
@@ -1427,11 +1707,43 @@ mod _rt {
             self as i32
         }
     }
+    pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
+        if cfg!(debug_assertions) {
+            String::from_utf8(bytes).unwrap()
+        } else {
+            String::from_utf8_unchecked(bytes)
+        }
+    }
     pub unsafe fn invalid_enum_discriminant<T>() -> T {
         if cfg!(debug_assertions) {
             panic!("invalid enum discriminant")
         } else {
             unsafe { core::hint::unreachable_unchecked() }
+        }
+    }
+    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
+        if size == 0 {
+            return;
+        }
+        let layout = alloc::Layout::from_size_align_unchecked(size, align);
+        alloc::dealloc(ptr, layout);
+    }
+    pub use alloc_crate::alloc;
+    pub fn as_f32<T: AsF32>(t: T) -> f32 {
+        t.as_f32()
+    }
+    pub trait AsF32 {
+        fn as_f32(self) -> f32;
+    }
+    impl<'a, T: Copy + AsF32> AsF32 for &'a T {
+        fn as_f32(self) -> f32 {
+            (*self).as_f32()
+        }
+    }
+    impl AsF32 for f32 {
+        #[inline]
+        fn as_f32(self) -> f32 {
+            self as f32
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -1476,9 +1788,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1154] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x80\x08\x01A\x02\x01\
-A\x05\x01B/\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1314] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa0\x09\x01A\x02\x01\
+A\x05\x01B<\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
 \x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
@@ -1487,21 +1799,24 @@ ion-request\x03\0\x0c\x01r\x05\x0dprompt-tokensy\x11completion-tokensy\x11cache-
 read-tokensy\x12cache-write-tokensy\x10reasoning-tokensy\x04\0\x05usage\x03\0\x0e\
 \x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\x05\x05usage\x10\
 \x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06actions\x04\0\x0dtool\
--activity\x03\0\x13\x01r\x03\x02ids\x07detailss\x08is-error\x7f\x04\0\x0ctool-ou\
-tcome\x03\0\x15\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0\x17\x01\
-r\x01\x0fmax-tool-roundsy\x04\0\x06limits\x03\0\x19\x01r\x04\x03nows\x07weekdays\
-\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0\x1b\x01@\x01\x07outcome\x16\x01\
-\0\x04\0\x0dtool-finished\x01\x1d\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-s\
-tarted\x01\x1e\x01p\x18\x01@\0\0\x1f\x04\0\x0dpending-input\x01\x20\x01@\0\0\x1a\
-\x04\0\x0ecurrent-limits\x01!\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\0\"\x04\0\
-\x04chat\x01#\x01@\0\0\x1c\x04\0\x0ccurrent-time\x01$\x01@\x01\x04texts\x01\0\x04\
-\0\x08progress\x01%\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01&\x03\0\
-\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\
-\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\
-\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\
-\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-w\
-orld\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\
-\x10wit-bindgen-rust\x060.41.0";
+-activity\x03\0\x13\x01r\x02\x04paths\x04sizew\x04\0\x0bobject-info\x03\0\x15\x01\
+r\x03\x02ids\x07detailss\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0\x17\x01r\x02\
+\x07contents\x08deliverys\x04\0\x07arrival\x03\0\x19\x01r\x01\x0fmax-tool-rounds\
+y\x04\0\x06limits\x03\0\x1b\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbrevi\
+ations\x04\0\x05clock\x03\0\x1d\x01p}\x01j\x01\x1f\x01s\x01@\x03\x04paths\x06off\
+setw\x03leny\0\x20\x04\0\x0bread-object\x01!\x01j\x01w\x01s\x01@\x02\x04paths\x04\
+data\x1f\0\"\x04\0\x0cwrite-object\x01#\x01p\x16\x01j\x01$\x01s\x01@\x01\x06pref\
+ixs\0%\x04\0\x0clist-objects\x01&\x01@\x01\x07outcome\x18\x01\0\x04\0\x0dtool-fi\
+nished\x01'\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01(\x01p\x1a\x01\
+@\0\0)\x04\0\x0dpending-input\x01*\x01@\0\0\x1c\x04\0\x0ecurrent-limits\x01+\x01\
+j\x01\x12\x01s\x01@\x01\x07request\x0d\0,\x04\0\x04chat\x01-\x01@\0\0\x1e\x04\0\x0c\
+current-time\x01.\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01/\x01@\x02\x05lev\
+els\x07messages\x01\0\x04\0\x03log\x010\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\
+\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\
+\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03ru\
+n\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agen\
+t-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0c\
+processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

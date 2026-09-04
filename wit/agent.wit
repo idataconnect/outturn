@@ -88,6 +88,30 @@ interface host {
         action: string,
     }
 
+    /// One stored object, as the guest sees it.
+    record object-info {
+        /// Relative to the agent's own space. Never the real key: where an
+        /// object lives is the host's business, and a guest that learned the
+        /// layout could describe it to someone.
+        path: string,
+        size: u64,
+    }
+
+    /// Reads part of an object.
+    ///
+    /// Ranged rather than whole-file, because a guest reading a large object
+    /// pulls it into linear memory and a sandbox has less of that than the
+    /// store has objects. Paths are relative and rooted: a guest is never told
+    /// which tenant it belongs to, so it cannot name another one, and anything
+    /// that tries to climb out is refused rather than quietly corrected.
+    read-object: func(path: string, offset: u64, len: u32) -> result<list<u8>, string>;
+
+    /// Writes an object, replacing anything already there.
+    write-object: func(path: string, data: list<u8>) -> result<u64, string>;
+
+    /// Lists objects beneath a prefix.
+    list-objects: func(prefix: string) -> result<list<object-info>, string>;
+
     /// What a tool produced.
     record tool-outcome {
         /// The call this answers.

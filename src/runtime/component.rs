@@ -18,8 +18,8 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Arrival, Clock, Completion, CompletionRequest, Limits, Message, ToolActivity, ToolCall,
-    ToolDefinition, ToolOutcome, Usage,
+    Arrival, Clock, Completion, CompletionRequest, Limits, Message, ObjectInfo, ToolActivity,
+    ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
 /// Reports text as the model produces it, before the turn finishes.
@@ -82,6 +82,30 @@ pub struct AgentHost {
     spent: Usage,
     /// Which endpoint served this turn, as the gateway reported it.
     served_by: Option<String>,
+    /// Object storage, and the tenant whose corner of it this turn may touch.
+    /// Absent leaves the guest with no storage at all rather than with
+    /// somebody else's.
+    storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    tenant_id: uuid::Uuid,
+}
+
+impl AgentHost {
+    /// Resolves a guest path, or refuses it.
+    ///
+    /// The check is here rather than in the guest for the same reason the
+    /// credential is: a component is deployed by a tenant, and a boundary it
+    /// enforces on itself is not a boundary.
+    fn object_at(
+        &self,
+        path: &str,
+    ) -> Result<(Arc<dyn crate::runtime::storage::StorageBackend>, String), String> {
+        let Some(storage) = self.storage.clone() else {
+            return Err("no object storage is configured".to_string());
+        };
+        let resolved = crate::runtime::storage::scope::resolve(self.tenant_id, path)
+            .map_err(|_| format!("path is not allowed: {path}"))?;
+        Ok((storage, resolved))
+    }
 }
 
 /// What a turn cost, and who served it.
@@ -223,6 +247,53 @@ impl outturn::agent::host::Host for AgentHost {
         }
 
         Ok(completion)
+    }
+
+    async fn read_object(
+        &mut self,
+        path: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Vec<u8>, String> {
+        let (storage, resolved) = self.object_at(&path)?;
+        storage
+            .read(&resolved, offset, len)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn write_object(&mut self, path: String, data: Vec<u8>) -> Result<u64, String> {
+        let (storage, resolved) = self.object_at(&path)?;
+        storage
+            .write(&resolved, 0, &data)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
+        let Some(storage) = self.storage.clone() else {
+            return Err("no object storage is configured".to_string());
+        };
+        // An empty prefix means "everything I have", which resolve would
+        // reject as a path -- so the root is built directly rather than
+        // through it.
+        let root = crate::runtime::storage::scope::root_for(self.tenant_id);
+        let resolved = if prefix.trim().is_empty() {
+            root
+        } else {
+            crate::runtime::storage::scope::resolve(self.tenant_id, &prefix)
+                .map_err(|e| e.to_string())?
+        };
+
+        let found = storage.list(&resolved).await.map_err(|e| e.to_string())?;
+        Ok(found
+            .iter()
+            .filter(|f| !f.is_dir)
+            .map(|f| ObjectInfo {
+                path: crate::runtime::storage::scope::strip_root(self.tenant_id, &f.path),
+                size: f.size,
+            })
+            .collect())
     }
 
     async fn tool_finished(&mut self, outcome: ToolOutcome) {
@@ -478,6 +549,10 @@ pub struct RunOptions {
     pub max_tool_rounds: u32,
     /// The reply being written, so messages absorbed mid-turn can name it.
     pub reply_id: uuid::Uuid,
+    /// Object storage the guest may reach, within its tenant's own space.
+    pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    /// Whose space that is. The guest is never told.
+    pub tenant_id: uuid::Uuid,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -540,6 +615,8 @@ impl AgentRunner {
                 reasoning_tokens: 0,
             },
             served_by: None,
+            storage: options.storage,
+            tenant_id: options.tenant_id,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

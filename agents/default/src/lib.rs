@@ -21,6 +21,16 @@ struct Component;
 
 /// The model's name for the clock tool.
 const CURRENT_TIME: &str = "get_current_time";
+const READ_OBJECT: &str = "read_object";
+const WRITE_OBJECT: &str = "write_object";
+const LIST_OBJECTS: &str = "list_objects";
+
+/// How much of an object a single read may pull back.
+///
+/// The host reads a range rather than a whole object, because a large one
+/// would arrive in the sandbox's linear memory. This is what the tool asks
+/// for; what reaches the model is cut down further still.
+const READ_WINDOW: u32 = 256 * 1024;
 
 /// The argument every tool carries so the user can see what is happening.
 ///
@@ -30,7 +40,33 @@ const CURRENT_TIME: &str = "get_current_time";
 const ACTION: &str = "action";
 
 fn tools() -> Vec<ToolDefinition> {
-    vec![ToolDefinition {
+    vec![
+    ToolDefinition {
+        name: READ_OBJECT.to_string(),
+        description: "Read a stored file. Paths are relative to this agent's \
+                      own storage -- there is nothing above it to reach, so \
+                      do not try. Large files come back truncated; read again \
+                      from a later offset to continue."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: WRITE_OBJECT.to_string(),
+        description: "Write a file to this agent's storage, replacing whatever \
+                      was there. Paths are relative to its own space."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/summary.md"},"content":{"type":"string","description":"The complete new contents."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","content","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: LIST_OBJECTS.to_string(),
+        description: "List stored files. Omit the prefix to see everything."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Relative prefix, e.g. reports/. Omit for everything."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking through the stored files."}},"required":["action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
         name: CURRENT_TIME.to_string(),
         description: "The current date and time in the user's own timezone. \
                       Call this whenever the answer depends on what time it is \
@@ -42,7 +78,13 @@ fn tools() -> Vec<ToolDefinition> {
         // `action` is the one thing asked of it, and it is for the user.
         parameters: r#"{"type":"object","properties":{"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking today's date. Not an explanation of why."}},"required":["action"]}"#
             .to_string(),
-    }]
+    },
+    ]
+}
+
+/// Reads a JSON string argument, or an empty string if it is missing.
+fn arg<'a>(args: &'a serde_json::Value, name: &str) -> &'a str {
+    args.get(name).and_then(|v| v.as_str()).unwrap_or("")
 }
 
 /// Turns what the user said mid-turn into messages for the model.
@@ -101,9 +143,66 @@ fn for_the_model(full: &str) -> String {
     )
 }
 
+/// Reads part of an object and describes what came back.
+///
+/// Bytes that are not text are reported as such rather than mangled into
+/// replacement characters: a model told "42KB of binary" can decide what to do,
+/// where a model shown mojibake will try to read it.
+fn read_object(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    match host::read_object(path, offset, READ_WINDOW) {
+        Ok(bytes) => match String::from_utf8(bytes.clone()) {
+            Ok(text) => serde_json::json!({
+                "path": path,
+                "offset": offset,
+                "bytes": bytes.len(),
+                "content": text,
+            })
+            .to_string(),
+            Err(_) => serde_json::json!({
+                "path": path,
+                "offset": offset,
+                "bytes": bytes.len(),
+                "error": "this file is not text and cannot be shown",
+            })
+            .to_string(),
+        },
+        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    }
+}
+
+fn write_object(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    match host::write_object(path, arg(args, "content").as_bytes()) {
+        Ok(written) => serde_json::json!({ "path": path, "bytes": written }).to_string(),
+        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    }
+}
+
+fn list_objects(args: &serde_json::Value) -> String {
+    match host::list_objects(arg(args, "prefix")) {
+        Ok(found) => serde_json::json!({
+            "files": found
+                .iter()
+                .map(|f| serde_json::json!({ "path": f.path, "size": f.size }))
+                .collect::<Vec<_>>(),
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
 /// Runs one tool call and returns the message answering it.
 fn run_tool(call: &ToolCall) -> Message {
+    let args: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+
     let content = match call.name.as_str() {
+        READ_OBJECT => read_object(&args),
+        WRITE_OBJECT => write_object(&args),
+        LIST_OBJECTS => list_objects(&args),
         CURRENT_TIME => {
             let clock = host::current_time();
             // The weekday is given rather than left to be worked out: a model

@@ -70,6 +70,8 @@ async fn component_runs_a_turn_and_streams_progress() {
                 progress: Some(sink),
                 on_tool: None,
                 on_tool_result: None,
+                storage: None,
+                tenant_id,
                 timezone: None,
                 reasoning_effort: None,
                 traffic_type: "assistant".into(),

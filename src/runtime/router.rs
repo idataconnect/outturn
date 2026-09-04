@@ -42,6 +42,9 @@ pub struct RuntimeState {
     pub runner: Arc<AgentRunner>,
     /// The component every agent currently runs.
     pub agent_module: Arc<Vec<u8>>,
+    /// Object storage, shared by every tenant and partitioned by prefix. The
+    /// host resolves which part a turn may touch; the guest never learns.
+    pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,6 +236,10 @@ pub async fn execute(
             None => DEFAULT_MAX_TOOL_ROUNDS,
         },
         reply_id: request.reply_id,
+        storage: state.storage.clone(),
+        // Taken from the token rather than the body, so a caller cannot ask
+        // for another tenant's objects by saying it is one.
+        tenant_id: claims.tenant_id,
         idle_timeout: crate::http_client::IDLE_TIMEOUT,
     };
 
