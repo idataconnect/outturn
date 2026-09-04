@@ -406,6 +406,84 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// How large an object is, without reading it.
+            ///
+            /// Needed before a ranged read can be sensible: a caller that does not
+            /// know the size cannot ask for the end, and cannot tell whether what it
+            /// got back was everything.
+            pub fn stat_object(path: &str) -> Result<ObjectInfo, _rt::String> {
+                unsafe {
+                    #[repr(align(8))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 16 + 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 16
+                            + 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "stat-object"]
+                        fn wit_import2(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import2(ptr0.cast_mut(), len0, ptr1) };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result11 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1.add(8).cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(8 + 1 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len6 = l5;
+                                let bytes6 = _rt::Vec::from_raw_parts(
+                                    l4.cast(),
+                                    len6,
+                                    len6,
+                                );
+                                let l7 = *ptr1
+                                    .add(8 + 2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<i64>();
+                                ObjectInfo {
+                                    path: _rt::string_lift(bytes6),
+                                    size: l7 as u64,
+                                }
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l8 = *ptr1.add(8).cast::<*mut u8>();
+                                let l9 = *ptr1
+                                    .add(8 + 1 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len10 = l9;
+                                let bytes10 = _rt::Vec::from_raw_parts(
+                                    l8.cast(),
+                                    len10,
+                                    len10,
+                                );
+                                _rt::string_lift(bytes10)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result11
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// Writes an object, replacing anything already there.
             pub fn write_object(path: &str, data: &[u8]) -> Result<u64, _rt::String> {
                 unsafe {
@@ -1788,9 +1866,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1314] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa0\x09\x01A\x02\x01\
-A\x05\x01B<\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1347] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xc1\x09\x01A\x02\x01\
+A\x05\x01B?\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
 \x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
@@ -1804,19 +1882,20 @@ r\x03\x02ids\x07detailss\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0\x17\x01r\x0
 \x07contents\x08deliverys\x04\0\x07arrival\x03\0\x19\x01r\x01\x0fmax-tool-rounds\
 y\x04\0\x06limits\x03\0\x1b\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbrevi\
 ations\x04\0\x05clock\x03\0\x1d\x01p}\x01j\x01\x1f\x01s\x01@\x03\x04paths\x06off\
-setw\x03leny\0\x20\x04\0\x0bread-object\x01!\x01j\x01w\x01s\x01@\x02\x04paths\x04\
-data\x1f\0\"\x04\0\x0cwrite-object\x01#\x01p\x16\x01j\x01$\x01s\x01@\x01\x06pref\
-ixs\0%\x04\0\x0clist-objects\x01&\x01@\x01\x07outcome\x18\x01\0\x04\0\x0dtool-fi\
-nished\x01'\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01(\x01p\x1a\x01\
-@\0\0)\x04\0\x0dpending-input\x01*\x01@\0\0\x1c\x04\0\x0ecurrent-limits\x01+\x01\
-j\x01\x12\x01s\x01@\x01\x07request\x0d\0,\x04\0\x04chat\x01-\x01@\0\0\x1e\x04\0\x0c\
-current-time\x01.\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01/\x01@\x02\x05lev\
-els\x07messages\x01\0\x04\0\x03log\x010\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\
-\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\
-\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03ru\
-n\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agen\
-t-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0c\
-processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+setw\x03leny\0\x20\x04\0\x0bread-object\x01!\x01j\x01\x16\x01s\x01@\x01\x04paths\
+\0\"\x04\0\x0bstat-object\x01#\x01j\x01w\x01s\x01@\x02\x04paths\x04data\x1f\0$\x04\
+\0\x0cwrite-object\x01%\x01p\x16\x01j\x01&\x01s\x01@\x01\x06prefixs\0'\x04\0\x0c\
+list-objects\x01(\x01@\x01\x07outcome\x18\x01\0\x04\0\x0dtool-finished\x01)\x01@\
+\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01*\x01p\x1a\x01@\0\0+\x04\0\x0d\
+pending-input\x01,\x01@\0\0\x1c\x04\0\x0ecurrent-limits\x01-\x01j\x01\x12\x01s\x01\
+@\x01\x07request\x0d\0.\x04\0\x04chat\x01/\x01@\0\0\x1e\x04\0\x0ccurrent-time\x01\
+0\x01@\x01\x04texts\x01\0\x04\0\x08progress\x011\x01@\x02\x05levels\x07messages\x01\
+\0\x04\0\x03log\x012\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07mess\
+age\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01\
+s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\
+\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\
+\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

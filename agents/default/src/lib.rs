@@ -25,12 +25,20 @@ const READ_OBJECT: &str = "read_object";
 const WRITE_OBJECT: &str = "write_object";
 const LIST_OBJECTS: &str = "list_objects";
 
-/// How much of an object a single read may pull back.
+/// How much of a file a single read puts in front of the model.
 ///
-/// The host reads a range rather than a whole object, because a large one
-/// would arrive in the sandbox's linear memory. This is what the tool asks
-/// for; what reaches the model is cut down further still.
-const READ_WINDOW: u32 = 256 * 1024;
+/// Comfortably under the generic tool ceiling, so an assembled head-and-tail
+/// is not then cut in half again by the truncator that follows it.
+const READ_BUDGET: u64 = 32 * 1024;
+
+/// How that budget splits when both ends are worth having.
+///
+/// Head-heavy because a file's beginning usually establishes what it is --
+/// headers, imports, structure -- while its end is only sometimes the
+/// interesting part. Where the end is what matters, as in a log, the model
+/// asks for it directly rather than relying on this number, which is why the
+/// ratio can afford to be a guess.
+const HEAD_SHARE: u64 = 70;
 
 /// The argument every tool carries so the user can see what is happening.
 ///
@@ -45,10 +53,11 @@ fn tools() -> Vec<ToolDefinition> {
         name: READ_OBJECT.to_string(),
         description: "Read a stored file. Paths are relative to this agent's \
                       own storage -- there is nothing above it to reach, so \
-                      do not try. Large files come back truncated; read again \
-                      from a later offset to continue."
+                      do not try. A file too large to show comes back as its \
+                      start and its end, saying how much was skipped and at \
+                      what offset the rest begins."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -143,34 +152,116 @@ fn for_the_model(full: &str) -> String {
     )
 }
 
-/// Reads part of an object and describes what came back.
+/// Reads a range and turns the bytes into something a model can use.
 ///
-/// Bytes that are not text are reported as such rather than mangled into
-/// replacement characters: a model told "42KB of binary" can decide what to do,
-/// where a model shown mojibake will try to read it.
+/// Not text is reported as not text, rather than mangled into replacement
+/// characters: a model told "42KB of binary" can decide what to do, where a
+/// model shown mojibake will try to read it.
+fn slice(path: &str, offset: u64, len: u64) -> Result<String, String> {
+    let bytes = host::read_object(path, offset, len.min(u32::MAX as u64) as u32)?;
+    String::from_utf8(bytes).map_err(|_| "this file is not text and cannot be shown".to_string())
+}
+
+/// Trims a fragment back to whole lines.
+///
+/// A range lands wherever the byte count says, which is usually mid-line. Half
+/// a line reads as though it were whole and a model will act on it, so the
+/// partial line at the cut is dropped -- from the end of a head, from the
+/// start of a tail.
+fn whole_lines(fragment: &str, drop_from_start: bool) -> &str {
+    if drop_from_start {
+        match fragment.find('\n') {
+            Some(at) => &fragment[at + 1..],
+            None => fragment,
+        }
+    } else {
+        match fragment.rfind('\n') {
+            Some(at) => &fragment[..at],
+            None => fragment,
+        }
+    }
+}
+
+/// Reads a file, showing both ends when it will not fit.
+///
+/// Head-only truncation loses exactly the part that matters in a log or a
+/// stack trace, where the setup is at the top and the failure at the bottom.
+/// Both ends are shown instead, and what was skipped is described precisely
+/// enough to go and get: a model that wants the middle can ask for it by
+/// offset rather than guessing.
 fn read_object(args: &serde_json::Value) -> String {
     let path = arg(args, "path");
     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+    let from_end = args.get("from_end").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    match host::read_object(path, offset, READ_WINDOW) {
-        Ok(bytes) => match String::from_utf8(bytes.clone()) {
-            Ok(text) => serde_json::json!({
-                "path": path,
-                "offset": offset,
-                "bytes": bytes.len(),
-                "content": text,
-            })
-            .to_string(),
-            Err(_) => serde_json::json!({
-                "path": path,
-                "offset": offset,
-                "bytes": bytes.len(),
-                "error": "this file is not text and cannot be shown",
-            })
-            .to_string(),
-        },
-        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    let size = match host::stat_object(path) {
+        Ok(info) => info.size,
+        Err(e) => return serde_json::json!({ "path": path, "error": e }).to_string(),
+    };
+
+    // The end, asked for directly. Possible only because the size is known
+    // here -- a caller cannot name an offset it would have to have measured.
+    if from_end {
+        let start = size.saturating_sub(READ_BUDGET);
+        return match slice(path, start, READ_BUDGET) {
+            Ok(text) => {
+                let shown = if start > 0 { whole_lines(&text, true) } else { &text[..] };
+                serde_json::json!({
+                    "path": path, "size": size, "showing": "end",
+                    "content": if start > 0 {
+                        format!("[{start} earlier bytes not shown]\n{shown}")
+                    } else {
+                        shown.to_string()
+                    },
+                })
+                .to_string()
+            }
+            Err(e) => serde_json::json!({ "path": path, "size": size, "error": e }).to_string(),
+        };
     }
+
+    let remaining = size.saturating_sub(offset);
+    if remaining <= READ_BUDGET {
+        return match slice(path, offset, remaining.max(1)) {
+            Ok(text) => serde_json::json!({
+                "path": path, "size": size, "offset": offset,
+                "showing": "all", "content": text,
+            })
+            .to_string(),
+            Err(e) => serde_json::json!({ "path": path, "size": size, "error": e }).to_string(),
+        };
+    }
+
+    let head_len = READ_BUDGET * HEAD_SHARE / 100;
+    let tail_len = READ_BUDGET - head_len;
+    let tail_start = size - tail_len;
+
+    let head = match slice(path, offset, head_len) {
+        Ok(text) => text,
+        Err(e) => return serde_json::json!({ "path": path, "size": size, "error": e }).to_string(),
+    };
+    let tail = match slice(path, tail_start, tail_len) {
+        Ok(text) => text,
+        Err(e) => return serde_json::json!({ "path": path, "size": size, "error": e }).to_string(),
+    };
+
+    let head = whole_lines(&head, false);
+    let tail = whole_lines(&tail, true);
+    let skipped_from = offset + head.len() as u64;
+    let skipped = tail_start.saturating_sub(skipped_from);
+
+    serde_json::json!({
+        "path": path,
+        "size": size,
+        "showing": "start and end",
+        // Said precisely enough to act on: a model wanting the middle reads
+        // again from this offset rather than guessing where it went.
+        "content": format!(
+            "{head}\n[{skipped} bytes not shown; read again with offset {skipped_from} \
+             for the middle]\n{tail}"
+        ),
+    })
+    .to_string()
 }
 
 fn write_object(args: &serde_json::Value) -> String {

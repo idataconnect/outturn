@@ -262,6 +262,16 @@ impl outturn::agent::host::Host for AgentHost {
             .map_err(|e| e.to_string())
     }
 
+    async fn stat_object(&mut self, path: String) -> Result<ObjectInfo, String> {
+        let (storage, resolved) = self.object_at(&path)?;
+        let found = storage.stat(&resolved).await.map_err(|e| e.to_string())?;
+        Ok(ObjectInfo {
+            // Handed back as the guest named it, not as it is stored.
+            path,
+            size: found.size,
+        })
+    }
+
     async fn write_object(&mut self, path: String, data: Vec<u8>) -> Result<u64, String> {
         let (storage, resolved) = self.object_at(&path)?;
         storage

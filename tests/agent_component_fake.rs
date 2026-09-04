@@ -668,3 +668,67 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
         .expect("still there");
     assert_eq!(theirs_still, b"not yours");
 }
+
+/// A file too large to show comes back as both ends, not just the start.
+///
+/// Head-only truncation loses exactly the part that matters in a log: the
+/// setup is at the top and what went wrong is at the bottom. What was skipped
+/// is described precisely enough to go and fetch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_file_is_read_from_both_ends() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let tenant = Uuid::now_v7();
+
+    // Distinctive first and last lines, with plenty of filler between.
+    let mut log = String::from("FIRST LINE: service starting\n");
+    for i in 0..5000 {
+        log.push_str(&format!("line {i} of unremarkable middle\n"));
+    }
+    log.push_str("LAST LINE: everything caught fire\n");
+    store
+        .write(&scope::resolve(tenant, "app.log").unwrap(), 0, log.as_bytes())
+        .await
+        .expect("seed");
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"app.log","action":"Reading the log"}"#.into(),
+        reply: "It caught fire.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.tenant_id = tenant;
+
+    runner
+        .run(&component(), user("What happened?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the read came back");
+    let content = result["content"].as_str().unwrap_or_default();
+
+    assert!(
+        content.contains("FIRST LINE"),
+        "the beginning should survive"
+    );
+    assert!(
+        content.contains("LAST LINE: everything caught fire"),
+        "the end is the part that matters in a log, and head-only truncation \
+         would have thrown it away"
+    );
+    assert!(
+        content.contains("not shown; read again with offset"),
+        "the gap should say where to continue, got {content:.400}"
+    );
+}

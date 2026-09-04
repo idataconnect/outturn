@@ -106,6 +106,13 @@ interface host {
     /// that tries to climb out is refused rather than quietly corrected.
     read-object: func(path: string, offset: u64, len: u32) -> result<list<u8>, string>;
 
+    /// How large an object is, without reading it.
+    ///
+    /// Needed before a ranged read can be sensible: a caller that does not
+    /// know the size cannot ask for the end, and cannot tell whether what it
+    /// got back was everything.
+    stat-object: func(path: string) -> result<object-info, string>;
+
     /// Writes an object, replacing anything already there.
     write-object: func(path: string, data: list<u8>) -> result<u64, string>;
 
