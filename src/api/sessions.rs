@@ -145,7 +145,16 @@ async fn enqueue_turn(
     payload: serde_json::Value,
     event: serde_json::Value,
 ) -> Result<(), String> {
-    jobs::enqueue(pool, tenant_id, CHAT_TURN, payload, None)
+    // Serialised on the session: a turn must see the previous reply, and two
+    // running at once would each answer against a history missing the other.
+    jobs::enqueue(
+        pool,
+        tenant_id,
+        CHAT_TURN,
+        payload,
+        None,
+        Some(&session_id.to_string()),
+    )
         .await
         .map_err(|e| e.to_string())?;
 

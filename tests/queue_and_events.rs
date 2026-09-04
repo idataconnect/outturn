@@ -261,7 +261,7 @@ async fn concurrent_workers_claim_disjoint_jobs() {
     let pool = &db.pool;
 
     for i in 0..10 {
-        jobs::enqueue(pool, tenant, "test.work", serde_json::json!({"i": i}), None)
+        jobs::enqueue(pool, tenant, "test.work", serde_json::json!({"i": i}), None, None)
             .await
             .expect("enqueue");
     }
@@ -289,7 +289,7 @@ async fn concurrent_workers_claim_disjoint_jobs() {
 async fn claimed_job_is_not_reclaimed_while_leased() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lease", serde_json::json!({}), None)
+    jobs::enqueue(pool, tenant, "test.lease", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
 
@@ -310,7 +310,7 @@ async fn claimed_job_is_not_reclaimed_while_leased() {
 async fn abandoned_lease_is_reaped_and_retried() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.reap", serde_json::json!({}), None)
+    jobs::enqueue(pool, tenant, "test.reap", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
 
@@ -336,7 +336,7 @@ async fn abandoned_lease_is_reaped_and_retried() {
 async fn job_fails_permanently_after_max_attempts() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    let id = jobs::enqueue(pool, tenant, "test.fail", serde_json::json!({}), None)
+    let id = jobs::enqueue(pool, tenant, "test.fail", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
 
@@ -375,6 +375,7 @@ async fn delayed_job_is_not_claimable_yet() {
         "test.delay",
         serde_json::json!({}),
         Some(Duration::from_secs(300)),
+        None,
     )
     .await
     .expect("enqueue");
@@ -393,7 +394,7 @@ async fn enqueue_rolls_back_with_its_transaction() {
     let pool = &db.pool;
 
     let mut tx = pool.begin().await.expect("begin");
-    jobs::enqueue(&mut *tx, tenant, "test.tx", serde_json::json!({}), None)
+    jobs::enqueue(&mut *tx, tenant, "test.tx", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
     tx.rollback().await.expect("rollback");
@@ -410,7 +411,7 @@ async fn enqueue_rolls_back_with_its_transaction() {
 async fn heartbeat_keeps_a_long_job_from_being_reaped() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.slow", serde_json::json!({}), None)
+    jobs::enqueue(pool, tenant, "test.slow", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
 
@@ -449,7 +450,7 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
 async fn extend_lease_reports_when_the_job_was_taken_away() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lost", serde_json::json!({}), None)
+    jobs::enqueue(pool, tenant, "test.lost", serde_json::json!({}), None, None)
         .await
         .expect("enqueue");
 
@@ -754,6 +755,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
         "chat.turn",
         serde_json::json!({ "message_id": first_prompt.id }),
         None,
+        None,
     )
     .await
     .expect("first job");
@@ -1056,6 +1058,137 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
     }
 
     assert_eq!(usable, ["b"], "the failed destination drops out of the list");
+
+    finish!(db);
+}
+
+// -- Serialised work ----------------------------------------------------------
+
+/// Two turns in one conversation are answered in order, never at once.
+///
+/// Concurrent turns each read a history that does not contain the other's
+/// reply, so the second answers a question without knowing what was just said
+/// -- and the stored transcript then implies a causality that never happened.
+#[tokio::test]
+async fn work_sharing_a_key_does_not_run_concurrently() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7().to_string();
+
+    for i in 0..3 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "test.serial",
+            serde_json::json!({ "i": i }),
+            None,
+            Some(&session),
+        )
+        .await
+        .expect("enqueue");
+    }
+
+    let first = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(first.len(), 1, "only one turn of a conversation may run");
+
+    // A second worker arriving mid-turn gets nothing, rather than starting a
+    // parallel reply.
+    let second = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert!(second.is_empty(), "the session is busy, so nothing is claimable");
+
+    // Once the turn finishes, the next is available.
+    jobs::complete(pool, first[0].job.id).await.expect("complete");
+    let third = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(third.len(), 1, "the queue resumes when the session frees up");
+
+    finish!(db);
+}
+
+/// Serialisation is per key: different conversations still run in parallel.
+#[tokio::test]
+async fn different_keys_still_run_in_parallel() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    for _ in 0..3 {
+        let session = Uuid::now_v7().to_string();
+        jobs::enqueue(
+            pool,
+            tenant,
+            "test.parallel",
+            serde_json::json!({}),
+            None,
+            Some(&session),
+        )
+        .await
+        .expect("enqueue");
+    }
+
+    let claimed = jobs::claim(pool, &["test.parallel"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 3, "separate conversations are independent");
+
+    finish!(db);
+}
+
+/// Work with no key is unconstrained, as it was before serialisation existed.
+#[tokio::test]
+async fn unkeyed_work_is_not_serialised() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    for i in 0..4 {
+        jobs::enqueue(pool, tenant, "test.unkeyed", serde_json::json!({ "i": i }), None, None)
+            .await
+            .expect("enqueue");
+    }
+
+    let claimed = jobs::claim(pool, &["test.unkeyed"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 4, "nothing without a key should be held back");
+
+    finish!(db);
+}
+
+/// Concurrent claimers cannot both take work for the same key.
+///
+/// The window between "is anything running for this key" and "mark it running"
+/// is where two workers would otherwise both decide yes.
+#[tokio::test]
+async fn racing_claimers_cannot_both_take_one_key() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7().to_string();
+
+    for i in 0..6 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "test.race",
+            serde_json::json!({ "i": i }),
+            None,
+            Some(&session),
+        )
+        .await
+        .expect("enqueue");
+    }
+
+    let mut claims = Vec::new();
+    for _ in 0..6 {
+        claims.push(jobs::claim(pool, &["test.race"], 10, jobs::DEFAULT_LEASE));
+    }
+    let results = futures::future::join_all(claims).await;
+    let taken: usize = results.iter().map(|r| r.as_ref().expect("claim").len()).sum();
+
+    assert_eq!(taken, 1, "six workers raced and {taken} turns started");
 
     finish!(db);
 }

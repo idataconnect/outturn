@@ -319,6 +319,12 @@ create table jobs (
     run_after     timestamptz not null default now(),
     -- Set when claimed; a claim older than the lease is considered abandoned.
     leased_until  timestamptz,
+    -- Work that must not run beside itself. At most one job per key is
+    -- running at a time, so turns in one conversation are answered in order
+    -- rather than in parallel -- two at once would each be generated against
+    -- a history that did not contain the other, and the transcript would
+    -- claim a causality that never happened. Null means unconstrained.
+    serial_key    text,
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
@@ -326,6 +332,11 @@ create table jobs (
 -- Supports the claim query: pending work whose time has come, oldest first.
 create index jobs_claimable_idx on jobs (run_after, id)
     where state = 'pending';
+
+-- Supports the serialisation check, which asks whether a key is already
+-- running before claiming another job for it.
+create index jobs_serial_running_idx on jobs (serial_key)
+    where state = 'running' and serial_key is not null;
 
 -- Supports reaping abandoned leases.
 create index jobs_lease_idx on jobs (leased_until)

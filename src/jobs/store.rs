@@ -55,6 +55,8 @@ pub async fn enqueue<'e, E>(
     kind: &str,
     payload: serde_json::Value,
     delay: Option<Duration>,
+    // Work sharing a key never runs concurrently. None leaves it unconstrained.
+    serial_key: Option<&str>,
 ) -> Result<Uuid, JobError>
 where
     E: Executor<'e, Database = Postgres>,
@@ -63,14 +65,15 @@ where
     let delay_secs = delay.map(|d| d.as_secs_f64()).unwrap_or(0.0);
 
     sqlx::query(
-        "insert into jobs (id, tenant_id, kind, payload, run_after) \
-         values ($1, $2, $3, $4, now() + make_interval(secs => $5))",
+        "insert into jobs (id, tenant_id, kind, payload, run_after, serial_key) \
+         values ($1, $2, $3, $4, now() + make_interval(secs => $5), $6)",
     )
     .bind(id)
     .bind(tenant_id)
     .bind(kind)
     .bind(&payload)
     .bind(delay_secs)
+    .bind(serial_key)
     .execute(executor)
     .await
     .map_err(internal)?;
@@ -89,15 +92,43 @@ pub async fn claim(
     limit: i64,
     lease: Duration,
 ) -> Result<Vec<JobHandle>, JobError> {
+    // Serialisation is enforced in two places because one is not enough. The
+    // `not exists` keeps a key from being claimed while it is already running;
+    // the advisory lock closes the window between that check and the update,
+    // where two transactions would otherwise both find nothing running and
+    // both claim. The lock is transaction-scoped, so it is released the moment
+    // the claim commits -- it guards the decision, not the work.
+    //
+    // The ranking handles the third case: two jobs for one key inside a single
+    // batch, where the advisory lock is held by the same transaction and so
+    // would admit both.
     let rows = sqlx::query(
-        "with claimed as ( \
-             select id from jobs \
+        "with candidate as ( \
+             select id, serial_key from jobs \
              where state = 'pending' \
                and run_after <= now() \
                and (cardinality($1::text[]) = 0 or kind = any($1)) \
              order by run_after, id \
              for update skip locked \
              limit $2 \
+         ), \
+         ranked as ( \
+             select id, serial_key, \
+                    row_number() over (partition by serial_key order by id) as rank \
+             from candidate \
+         ), \
+         claimed as ( \
+             select id from ranked \
+             where serial_key is null \
+                or ( \
+                     rank = 1 \
+                     and pg_try_advisory_xact_lock(hashtext(serial_key)) \
+                     and not exists ( \
+                         select 1 from jobs running \
+                         where running.state = 'running' \
+                           and running.serial_key = ranked.serial_key \
+                     ) \
+                   ) \
          ) \
          update jobs set \
              state = 'running', \
