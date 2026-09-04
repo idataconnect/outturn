@@ -69,6 +69,23 @@ pub struct AgentHost {
     /// The reply this turn is writing. Sent to the gateway so it can record
     /// which reply absorbed a message it handed over.
     reply_id: uuid::Uuid,
+    /// What this turn has spent, summed across every round.
+    ///
+    /// Counted by the host rather than reported by the guest, for the same
+    /// reason the round limit is enforced here: a component is deployed by a
+    /// tenant, and asking it to declare its own spend is asking the party
+    /// being billed to write the invoice.
+    spent: Usage,
+    /// Which endpoint served this turn, as the gateway reported it.
+    served_by: Option<String>,
+}
+
+/// What a turn cost, and who served it.
+#[derive(Debug, Clone, Default)]
+pub struct TurnCost {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub provider: Option<String>,
 }
 
 impl WasiView for AgentHost {
@@ -168,7 +185,7 @@ impl outturn::agent::host::Host for AgentHost {
             );
         }
 
-        let (completion, arrivals) = stream_completion(
+        let (completion, arrivals, served_by) = stream_completion(
             &self.http,
             &self.gateway_url,
             &self.gateway_token,
@@ -184,6 +201,16 @@ impl outturn::agent::host::Host for AgentHost {
         // chooses, which is the only point where injecting a message does not
         // corrupt a round already in flight.
         self.arrivals.extend(arrivals);
+
+        // Summed across rounds: a turn's cost is every call it made, not the
+        // last one. A provider that reports nothing simply adds nothing.
+        if let Some(usage) = &completion.usage {
+            self.spent.prompt_tokens += usage.prompt_tokens;
+            self.spent.completion_tokens += usage.completion_tokens;
+        }
+        if served_by.is_some() {
+            self.served_by = served_by;
+        }
 
         Ok(completion)
     }
@@ -262,7 +289,7 @@ async fn stream_completion(
     reply_id: &uuid::Uuid,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
-) -> anyhow::Result<(Completion, Vec<Arrival>)> {
+) -> anyhow::Result<(Completion, Vec<Arrival>, Option<String>)> {
     use futures::StreamExt;
 
     let response = http
@@ -281,6 +308,14 @@ async fn stream_completion(
         let detail = response.text().await.unwrap_or_default();
         anyhow::bail!("gateway returned {status}: {detail}");
     }
+
+    // Named by the gateway, so spend attaches to the endpoint that billed
+    // for it rather than to whichever one was configured first.
+    let served_by = response
+        .headers()
+        .get("x-outturn-provider")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -377,7 +412,7 @@ async fn stream_completion(
             .collect(),
         finish_reason,
         usage,
-    }, arrivals))
+    }, arrivals, served_by))
 }
 
 /// One tool call being assembled from stream fragments.
@@ -435,7 +470,7 @@ impl AgentRunner {
         conversation: Vec<Message>,
         system_prompt: String,
         options: RunOptions,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, TurnCost)> {
         let component = Component::new(&self.engine, component_bytes)?;
 
         let mut linker = Linker::new(&self.engine);
@@ -464,6 +499,11 @@ impl AgentRunner {
             rounds_used: 0,
             arrivals: Vec::new(),
             reply_id: options.reply_id,
+            spent: Usage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+            },
+            served_by: None,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
@@ -476,10 +516,21 @@ impl AgentRunner {
 
         let instance = AgentWorld::instantiate_async(&mut store, &component, &linker).await?;
 
-        instance
+        let reply = instance
             .outturn_agent_agent()
             .call_run(&mut store, &conversation, &system_prompt)
             .await?
-            .map_err(|e| anyhow::anyhow!("guest returned an error: {e}"))
+            .map_err(|e| anyhow::anyhow!("guest returned an error: {e}"))?;
+
+        // Read back from the host rather than returned by the guest: the
+        // guest never sees these numbers, which is the point.
+        let host = store.data();
+        let cost = TurnCost {
+            prompt_tokens: host.spent.prompt_tokens,
+            completion_tokens: host.spent.completion_tokens,
+            provider: host.served_by.clone(),
+        };
+
+        Ok((reply, cost))
     }
 }

@@ -116,6 +116,9 @@ pub async fn send_message(
             None,
             Usage::default(),
             input.delivery,
+            // The session id on a token is the account id, which is what the
+            // login path mints it from.
+            Some(claims.session_id),
         )
         .await?;
 

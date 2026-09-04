@@ -79,7 +79,8 @@ async fn component_runs_a_turn_and_streams_progress() {
             },
         )
         .await
-        .expect("component run");
+        .expect("component run")
+        .0;
 
     assert!(!reply.is_empty(), "the component returned nothing");
 

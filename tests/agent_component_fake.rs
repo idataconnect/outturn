@@ -65,7 +65,8 @@ async fn streams_deltas_and_returns_the_whole_reply() {
             options(&gateway, Some(sink)),
         )
         .await
-        .expect("run");
+        .expect("run")
+        .0;
 
     assert_eq!(reply, "one two three four");
 
@@ -89,7 +90,8 @@ async fn the_system_prompt_leads_the_conversation() {
             options(&gateway, None),
         )
         .await
-        .expect("run");
+        .expect("run")
+        .0;
 
     let sent = gateway.requests();
     assert_eq!(sent.len(), 1);
@@ -146,7 +148,8 @@ async fn a_truncated_stream_returns_what_arrived() {
             options(&gateway, None),
         )
         .await
-        .expect("a truncated stream should still yield its text");
+        .expect("a truncated stream should still yield its text")
+        .0;
 
     assert_eq!(reply, "one two ");
 }
@@ -208,7 +211,8 @@ async fn runs_a_tool_and_answers_with_its_result() {
             options,
         )
         .await
-        .expect("run");
+        .expect("run")
+        .0;
 
     assert_eq!(reply, "It is Tuesday.");
 
@@ -293,7 +297,8 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     runner
         .run(&component(), user("When?"), String::new(), options)
         .await
-        .expect("run");
+        .expect("run")
+        .0;
 
     let requests = gateway.requests();
     let content = requests[1]["messages"]
@@ -364,7 +369,8 @@ async fn a_looping_model_is_bounded_and_still_answers() {
     let reply = runner
         .run(&component(), user("Go forever."), String::new(), options)
         .await
-        .expect("a bounded turn still returns a reply");
+        .expect("a bounded turn still returns a reply")
+        .0;
 
     assert!(
         reply.contains("Working."),
@@ -475,7 +481,8 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
             options(&gateway, None),
         )
         .await
-        .expect("run");
+        .expect("run")
+        .0;
 
     assert_eq!(reply, "2026.");
 
@@ -502,4 +509,40 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
         "the model should know it was interrupted, got {:?}",
         injected["content"]
     );
+}
+
+// -- Accounting ---------------------------------------------------------------
+
+/// What a turn spent is counted by the host, across every round.
+///
+/// The guest never sees these numbers and cannot report them: asking a
+/// component deployed by a tenant to declare its own spend is asking the party
+/// being billed to write the invoice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_reports_what_it_spent() {
+    // Two rounds: a tool call, then the answer. Each reports usage, so a
+    // turn that only counted the last one would come up short.
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking the clock"}"#.into(),
+        reply: "Tuesday.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let (_reply, cost) = runner
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect("run");
+
+    assert_eq!(
+        cost.prompt_tokens, 22,
+        "a turn costs every round it made, not just the last"
+    );
+    assert_eq!(cost.completion_tokens, 14);
 }

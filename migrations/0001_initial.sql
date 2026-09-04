@@ -184,6 +184,19 @@ create table agent_messages (
     role         text        not null check (role in ('system', 'user', 'assistant', 'tool')),
     content      text        not null,
 
+    -- Who sent it. On the session too, but recorded per message because a
+    -- session can be posted into by more than one person and "who asked
+    -- this" is the question usage attribution actually needs answering.
+    -- Kept when the account goes away, like the session's own reference.
+    user_id      uuid        references users (id) on delete set null,
+
+    -- Which endpoint produced this reply: "openai:https://api.openai.com".
+    -- Protocol and base URL rather than a vendor name, because the same
+    -- protocol serves several, and spend attaches to the endpoint that
+    -- billed for it. Also what says whether a stored provider artifact --
+    -- a thought signature, a thinking block -- may be replayed.
+    provider     text,
+
     -- How this message should reach a turn that is already running.
     --
     -- "steer" is injected at the next round boundary, so the agent redirects

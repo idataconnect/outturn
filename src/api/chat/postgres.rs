@@ -188,11 +188,16 @@ impl ChatStore for PostgresChatStore {
         message_id: Uuid,
         content: &str,
         model: Option<&str>,
+        provider: Option<&str>,
+        usage: Usage,
         metadata: serde_json::Value,
     ) -> Result<Message, ChatError> {
         let row = sqlx::query(
             "update agent_messages \
-             set content = $2, model = coalesce($3, model), metadata = $4 \
+             set content = $2, model = coalesce($3, model), metadata = $4, \
+                 provider = coalesce($5, provider), \
+                 prompt_tokens = coalesce($6, prompt_tokens), \
+                 completion_tokens = coalesce($7, completion_tokens) \
              where id = $1 \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens",
@@ -201,6 +206,9 @@ impl ChatStore for PostgresChatStore {
         .bind(content)
         .bind(model)
         .bind(metadata)
+        .bind(provider)
+        .bind(usage.prompt_tokens)
+        .bind(usage.completion_tokens)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?
@@ -275,6 +283,7 @@ impl ChatStore for PostgresChatStore {
         model: Option<&str>,
         usage: Usage,
         delivery: Delivery,
+        user_id: Option<Uuid>,
     ) -> Result<Message, ChatError> {
         // An empty assistant message is legitimate only while a job is
         // filling it. One with no live job means a turn died without
@@ -303,8 +312,8 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "insert into agent_messages \
                  (id, session_id, role, content, model, prompt_tokens, completion_tokens, \
-                  delivery) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+                  delivery, user_id) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens",
         )
@@ -316,6 +325,7 @@ impl ChatStore for PostgresChatStore {
         .bind(usage.prompt_tokens)
         .bind(usage.completion_tokens)
         .bind(delivery.as_str())
+        .bind(user_id)
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;

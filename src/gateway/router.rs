@@ -294,8 +294,20 @@ async fn chat_completions_stream(
                 });
                 let body = body.chain(trailer);
 
+                // Named so spend attaches to the endpoint that billed for
+                // it, which failover makes different from the one configured
+                // first.
                 return Ok((
-                    [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+                    [
+                        (
+                            axum::http::header::CONTENT_TYPE,
+                            "application/x-ndjson".to_string(),
+                        ),
+                        (
+                            axum::http::HeaderName::from_static("x-outturn-provider"),
+                            provider.endpoint(),
+                        ),
+                    ],
                     axum::body::Body::from_stream(body),
                 )
                     .into_response());

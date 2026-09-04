@@ -127,7 +127,7 @@ fn chunk_text(text: &str) -> Vec<String> {
 }
 
 fn chunk_json(text: &str, finish: Option<&str>) -> String {
-    serde_json::json!({
+    let mut chunk = serde_json::json!({
         "id": "chatcmpl-fake",
         "object": "chat.completion.chunk",
         "created": 0,
@@ -137,8 +137,17 @@ fn chunk_json(text: &str, finish: Option<&str>) -> String {
             "delta": { "role": "assistant", "content": text },
             "finish_reason": finish,
         }],
-    })
-    .to_string()
+    });
+    // Providers report usage on the final chunk, so the fake does too --
+    // otherwise nothing here would exercise the accounting.
+    if finish.is_some() {
+        chunk["usage"] = serde_json::json!({
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        });
+    }
+    chunk.to_string()
 }
 
 /// One chunk of a tool call being streamed in pieces.

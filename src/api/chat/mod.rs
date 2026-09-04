@@ -132,11 +132,16 @@ pub trait ChatStore: Send + Sync {
 
     /// Replaces a message's content, for a reply that was created empty and
     /// streamed into.
+    ///
+    /// Usage is recorded here rather than when the reply was created, because
+    /// what a turn cost is only known once it has finished.
     async fn set_message_content(
         &self,
         message_id: Uuid,
         content: &str,
         model: Option<&str>,
+        provider: Option<&str>,
+        usage: Usage,
         metadata: serde_json::Value,
     ) -> Result<Message, ChatError>;
 
@@ -178,5 +183,8 @@ pub trait ChatStore: Send + Sync {
         model: Option<&str>,
         usage: Usage,
         delivery: Delivery,
+        // Who sent it, for a message with an author. None for anything the
+        // system produced.
+        user_id: Option<Uuid>,
     ) -> Result<Message, ChatError>;
 }

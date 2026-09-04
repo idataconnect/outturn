@@ -37,8 +37,12 @@ pub struct ChatTurnPayload {
 /// What a completed turn produced.
 struct TurnOutcome {
     content: String,
-    /// Tool calls the agent made, in order, each with the model's reason.
+    /// Tool calls the agent made, in order, each with the model's own label.
     tools: Vec<serde_json::Value>,
+    /// Summed across every round of the turn, counted by the runtime host.
+    usage: Usage,
+    /// The endpoint that served it, for attributing spend.
+    provider: Option<String>,
 }
 
 pub struct Worker {
@@ -255,8 +259,24 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Done { content }) => {
-                        return Ok(TurnOutcome { content, tools });
+                    Ok(ExecuteEvent::Done {
+                        content,
+                        prompt_tokens,
+                        completion_tokens,
+                        provider,
+                    }) => {
+                        return Ok(TurnOutcome {
+                            content,
+                            tools,
+                            usage: Usage {
+                                // Recorded as signed, since a provider that
+                                // reports nothing should read as absent rather
+                                // than as zero spend.
+                                prompt_tokens: Some(prompt_tokens as i32),
+                                completion_tokens: Some(completion_tokens as i32),
+                            },
+                            provider,
+                        });
                     }
                     Ok(ExecuteEvent::Failed { message }) => {
                         anyhow::bail!("guest failed: {message}")
@@ -377,6 +397,8 @@ impl Worker {
                 placeholder.id,
                 &reply.content,
                 Some(&model_for(&agent.policy)),
+                reply.provider.as_deref(),
+                reply.usage,
                 metadata,
             )
             .await

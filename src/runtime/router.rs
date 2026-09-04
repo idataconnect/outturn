@@ -88,8 +88,14 @@ pub enum ExecuteEvent {
     /// The guest started a tool, with the model's own label for what it is
     /// doing.
     Tool { id: String, name: String, action: String },
-    /// Generation finished; the reply is complete.
-    Done { content: String },
+    /// Generation finished; the reply is complete, and this is what it cost.
+    Done {
+        content: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        #[serde(default)]
+        provider: Option<String>,
+    },
     /// The turn failed.
     Failed { message: String },
 }
@@ -208,9 +214,20 @@ pub async fn execute(
             .await;
 
         let _ = match outcome {
-            Ok(content) => {
-                tracing::info!(chars = content.len(), "agent finished");
-                tx.send(ExecuteEvent::Done { content })
+            Ok((content, cost)) => {
+                tracing::info!(
+                    chars = content.len(),
+                    prompt_tokens = cost.prompt_tokens,
+                    completion_tokens = cost.completion_tokens,
+                    provider = cost.provider.as_deref().unwrap_or("unknown"),
+                    "agent finished"
+                );
+                tx.send(ExecuteEvent::Done {
+                    content,
+                    prompt_tokens: cost.prompt_tokens,
+                    completion_tokens: cost.completion_tokens,
+                    provider: cost.provider,
+                })
             }
             Err(e) => {
                 tracing::error!(error = %e, "agent failed");
