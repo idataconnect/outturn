@@ -403,3 +403,48 @@ async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
         "one round means one model call, regardless of what the guest asks for"
     );
 }
+
+/// Tool calls from a truncated reply are refused, not executed.
+///
+/// A "length" finish means the output was cut off at the token limit, so the
+/// arguments may be incomplete. Some truncations still parse as valid JSON --
+/// into something the model never meant -- which is exactly why the finish
+/// reason has to be checked rather than the arguments.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_truncated_reply_does_not_get_its_tools_run() {
+    let gateway = FakeGateway::start(Behaviour::TruncatedToolCall {
+        name: "get_current_time".into(),
+        // Valid JSON, but only because the truncation happened to land here.
+        arguments: r#"{"reason":"Checking"#.into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.max_tool_rounds = 2;
+
+    let _ = runner
+        .run(&component(), user("What time is it?"), String::new(), options)
+        .await;
+
+    // The second request carries the refusal rather than a clock reading, so
+    // the model learns its call was dropped instead of acting on a result it
+    // never asked for.
+    let requests = gateway.requests();
+    assert!(requests.len() >= 2, "the turn should continue after refusing");
+    let tool_result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the refusal went back to the model");
+    let content = tool_result["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("cut off"),
+        "the model should be told why, got {content:?}"
+    );
+    assert!(
+        !content.contains("timezone"),
+        "the clock must not have run, got {content:?}"
+    );
+}

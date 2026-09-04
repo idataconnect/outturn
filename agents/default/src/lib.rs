@@ -158,6 +158,33 @@ impl Guest for Component {
                 return Ok(reply);
             }
 
+            // A "length" finish means the output was cut off at the token
+            // limit, so every tool call in this message may carry arguments
+            // truncated mid-JSON. Some will still parse -- into something the
+            // model never meant -- so none of them are run. The model is told
+            // instead, and can ask again more briefly.
+            if completion.finish_reason.as_deref() == Some("length") {
+                host::log("warn", "reply was truncated; refusing its tool calls");
+                messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: completion.content,
+                    tool_calls: completion.tool_calls.clone(),
+                    tool_call_id: None,
+                });
+                for call in &completion.tool_calls {
+                    messages.push(Message {
+                        role: "tool".to_string(),
+                        content:
+                            r#"{"error":"not run: the message was cut off at the token limit and these arguments may be incomplete"}"#
+                                .to_string(),
+                        tool_calls: Vec::new(),
+                        tool_call_id: Some(call.id.clone()),
+                    });
+                }
+                round += 1;
+                continue;
+            }
+
             host::log(
                 "info",
                 &format!("running {} tool call(s)", completion.tool_calls.len()),

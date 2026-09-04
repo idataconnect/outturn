@@ -30,6 +30,9 @@ pub enum Behaviour {
     Status(StatusCode, String),
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
+    /// Ask for a tool in a reply that was cut off at the token limit, so the
+    /// arguments cannot be trusted.
+    TruncatedToolCall { name: String, arguments: String },
     /// Ask for a tool on every request, so only a limit ends the loop.
     AlwaysToolCall {
         name: String,
@@ -170,6 +173,16 @@ async fn completions_stream(
     };
 
     match behaviour {
+        Behaviour::TruncatedToolCall { name, arguments } => {
+            let mut lines = vec![format!(
+                "{}\n",
+                tool_chunk(Some("call_cut"), Some(&name), &arguments)
+            )];
+            // finish_reason "length": the model ran out of room mid-call.
+            lines.push(format!("{}\n", chunk_json("", Some("length"))));
+            ndjson(lines)
+        }
+
         Behaviour::AlwaysToolCall {
             name,
             arguments,
@@ -256,6 +269,7 @@ async fn completions(
         Behaviour::Reply(text) => text,
         Behaviour::ToolThenReply { reply, .. } => reply,
         Behaviour::AlwaysToolCall { content, .. } => content,
+        Behaviour::TruncatedToolCall { .. } => String::new(),
         Behaviour::TruncateAfter { text, .. } => text,
         Behaviour::Status(code, message) => return (code, message).into_response(),
         Behaviour::Hang => {

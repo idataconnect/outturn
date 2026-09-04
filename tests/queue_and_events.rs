@@ -557,7 +557,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     let (session_id, store) = streamed_session(pool, tenant).await;
 
     let reply = store
-        .append_message(session_id, "assistant", "", None, Default::default())
+        .append_message(session_id, "assistant", "", None, Default::default(), Default::default())
         .await
         .expect("reply");
 
@@ -612,7 +612,7 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     // Created empty and streamed into; content is not stored until the turn
     // ends, so the transcript must assemble it from the deltas so far.
     let reply = store
-        .append_message(session_id, "assistant", "", None, Default::default())
+        .append_message(session_id, "assistant", "", None, Default::default(), Default::default())
         .await
         .expect("reply");
 
@@ -669,7 +669,7 @@ async fn transcript_orders_by_uuidv7_key() {
 
     for n in 0..5 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default())
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default())
             .await
             .expect("append");
     }
@@ -700,7 +700,7 @@ async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
     let (session_id, store) = streamed_session(pool, tenant).await;
 
     let prompt = store
-        .append_message(session_id, "user", "hello", None, Default::default())
+        .append_message(session_id, "user", "hello", None, Default::default(), Default::default())
         .await
         .expect("prompt");
 
@@ -744,7 +744,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
     let (session_id, store) = streamed_session(pool, tenant).await;
 
     let first_prompt = store
-        .append_message(session_id, "user", "one", None, Default::default())
+        .append_message(session_id, "user", "one", None, Default::default(), Default::default())
         .await
         .expect("first prompt");
     // A real turn enqueues its job alongside the message, which is what marks
@@ -766,7 +766,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
 
     // The second message arrives while the first turn is still generating.
     let second_prompt = store
-        .append_message(session_id, "user", "two", None, Default::default())
+        .append_message(session_id, "user", "two", None, Default::default(), Default::default())
         .await
         .expect("second prompt");
     let second_reply = store
@@ -793,7 +793,7 @@ async fn an_abandoned_reply_refuses_further_messages() {
     let (session_id, store) = streamed_session(pool, tenant).await;
 
     let prompt = store
-        .append_message(session_id, "user", "hello", None, Default::default())
+        .append_message(session_id, "user", "hello", None, Default::default(), Default::default())
         .await
         .expect("prompt");
     // No job was ever enqueued for this prompt, so nothing is filling the
@@ -804,7 +804,7 @@ async fn an_abandoned_reply_refuses_further_messages() {
         .expect("reply");
 
     let refused = store
-        .append_message(session_id, "user", "anyone there?", None, Default::default())
+        .append_message(session_id, "user", "anyone there?", None, Default::default(), Default::default())
         .await;
 
     assert!(
@@ -819,7 +819,7 @@ async fn an_abandoned_reply_refuses_further_messages() {
         .await
         .expect("discard");
     store
-        .append_message(session_id, "user", "anyone there?", None, Default::default())
+        .append_message(session_id, "user", "anyone there?", None, Default::default(), Default::default())
         .await
         .expect("the session is writable again");
 

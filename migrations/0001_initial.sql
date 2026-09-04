@@ -184,6 +184,21 @@ create table agent_messages (
     role         text        not null check (role in ('system', 'user', 'assistant', 'tool')),
     content      text        not null,
 
+    -- How this message should reach a turn that is already running.
+    --
+    -- "steer" is injected at the next round boundary, so the agent redirects
+    -- mid-work. "follow_up" waits until the agent would otherwise stop and
+    -- extends the turn instead of ending it. The distinction only matters
+    -- while something is in flight; a message arriving into a quiet session
+    -- simply starts a turn either way.
+    delivery     text        not null default 'steer'
+                 check (delivery in ('steer', 'follow_up')),
+
+    -- The reply that took this message mid-turn, if one did. A steered
+    -- message is answered inside the turn it interrupted, so the turn queued
+    -- for it must know not to answer it again.
+    absorbed_by  uuid        references agent_messages (id) on delete set null,
+
     -- The message this one answers, for a reply. A turn is retried when a
     -- worker dies mid-generation, and without this the retry would create a
     -- second empty reply and orphan the first -- which then sits in the

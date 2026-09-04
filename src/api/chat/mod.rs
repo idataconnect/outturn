@@ -48,6 +48,36 @@ pub struct History {
     pub cursor: Uuid,
 }
 
+/// How a message reaches a turn that is already running.
+///
+/// Only meaningful while something is in flight. A message arriving into a
+/// quiet session starts a turn regardless of which this is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// Injected at the next round boundary, redirecting work in progress.
+    Steer,
+    /// Held until the agent would otherwise stop, then extends the turn.
+    FollowUp,
+}
+
+impl Default for Delivery {
+    /// Steering is the default because it is what someone typing during a
+    /// turn almost always means: they are reacting to what they can see.
+    fn default() -> Self {
+        Self::Steer
+    }
+}
+
+impl Delivery {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::FollowUp => "follow_up",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateSession {
     pub agent_id: Uuid,
@@ -141,5 +171,6 @@ pub trait ChatStore: Send + Sync {
         content: &str,
         model: Option<&str>,
         usage: Usage,
+        delivery: Delivery,
     ) -> Result<Message, ChatError>;
 }

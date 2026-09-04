@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::auth::Authority;
 use crate::{events, jobs};
 
-use super::chat::{AgentSession, ChatError, CreateSession, History, Usage};
+use super::chat::{AgentSession, ChatError, CreateSession, Delivery, History, Usage};
 use super::router::{ApiError, ApiState, authorize};
 use super::worker::{CHAT_TURN, ChatTurnPayload};
 
@@ -81,6 +81,10 @@ pub struct SendMessage {
     /// user is in now. Absent means the agent's clock reads UTC.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// How this should reach a turn that is already running. Defaults to
+    /// steering, which is what someone typing mid-turn usually means.
+    #[serde(default)]
+    pub delivery: Delivery,
 }
 
 /// Records the user's message and queues the turn.
@@ -105,7 +109,14 @@ pub async fn send_message(
 
     let message = state
         .chat
-        .append_message(id, "user", input.content.trim(), None, Usage::default())
+        .append_message(
+            id,
+            "user",
+            input.content.trim(),
+            None,
+            Usage::default(),
+            input.delivery,
+        )
         .await?;
 
     let payload = serde_json::to_value(ChatTurnPayload {

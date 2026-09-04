@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::{AgentSession, ChatError, ChatStore, CreateSession, History, Message, Usage};
+use super::{AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Usage};
 
 pub struct PostgresChatStore {
     pool: PgPool,
@@ -263,6 +263,7 @@ impl ChatStore for PostgresChatStore {
         content: &str,
         model: Option<&str>,
         usage: Usage,
+        delivery: Delivery,
     ) -> Result<Message, ChatError> {
         // An empty assistant message is legitimate only while a job is
         // filling it. One with no live job means a turn died without
@@ -290,8 +291,9 @@ impl ChatStore for PostgresChatStore {
         // and concurrent appends cannot contend over one.
         let row = sqlx::query(
             "insert into agent_messages \
-                 (id, session_id, role, content, model, prompt_tokens, completion_tokens) \
-             values ($1, $2, $3, $4, $5, $6, $7) \
+                 (id, session_id, role, content, model, prompt_tokens, completion_tokens, \
+                  delivery) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8) \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens",
         )
@@ -302,6 +304,7 @@ impl ChatStore for PostgresChatStore {
         .bind(model)
         .bind(usage.prompt_tokens)
         .bind(usage.completion_tokens)
+        .bind(delivery.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
