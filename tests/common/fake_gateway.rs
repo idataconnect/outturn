@@ -30,6 +30,14 @@ pub enum Behaviour {
     Status(StatusCode, String),
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
+    /// Ask for a tool on every request, so only a limit ends the loop.
+    AlwaysToolCall {
+        name: String,
+        arguments: String,
+        /// Said alongside the tool call, so a bounded turn has something to
+        /// show rather than ending empty.
+        content: String,
+    },
     /// Ask for a tool on the first request, then answer with text.
     ///
     /// Two phases because that is what a tool loop is: the model asks, the
@@ -162,6 +170,23 @@ async fn completions_stream(
     };
 
     match behaviour {
+        Behaviour::AlwaysToolCall {
+            name,
+            arguments,
+            content,
+        } => {
+            let mut lines = Vec::new();
+            if !content.is_empty() {
+                lines.push(format!("{}\n", chunk_json(&content, None)));
+            }
+            lines.push(format!(
+                "{}\n",
+                tool_chunk(Some("call_loop"), Some(&name), &arguments)
+            ));
+            lines.push(format!("{}\n", chunk_json("", Some("tool_calls"))));
+            ndjson(lines)
+        }
+
         Behaviour::ToolThenReply {
             name,
             arguments,
@@ -230,6 +255,7 @@ async fn completions(
     let text = match behaviour {
         Behaviour::Reply(text) => text,
         Behaviour::ToolThenReply { reply, .. } => reply,
+        Behaviour::AlwaysToolCall { content, .. } => content,
         Behaviour::TruncateAfter { text, .. } => text,
         Behaviour::Status(code, message) => return (code, message).into_response(),
         Behaviour::Hang => {

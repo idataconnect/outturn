@@ -169,6 +169,30 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// Bounds the host places on this turn.
+            ///
+            /// Read by a guest so it can wind down gracefully -- deliver what it has,
+            /// stop reaching for tools -- rather than being cut off mid-loop. They are
+            /// also enforced by the host, because a guest is not trusted to respect
+            /// them: components are deployed by tenants, and a limit that lives only
+            /// in the guest is a suggestion.
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            pub struct Limits {
+                /// How many times the model may be called in one turn. Zero means
+                /// unbounded, for work that legitimately runs long.
+                pub max_tool_rounds: u32,
+            }
+            impl ::core::fmt::Debug for Limits {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("Limits")
+                        .field("max-tool-rounds", &self.max_tool_rounds)
+                        .finish()
+                }
+            }
             /// The wall clock of whoever is being talked to.
             ///
             /// Carries the day name and zone abbreviation rather than only a
@@ -256,6 +280,26 @@ pub mod outturn {
                             len3,
                         )
                     };
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// What this turn is allowed to do.
+            pub fn current_limits() -> Limits {
+                unsafe {
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "current-limits"]
+                        fn wit_import0() -> i32;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import0() -> i32 {
+                        unreachable!()
+                    }
+                    let ret = unsafe { wit_import0() };
+                    Limits {
+                        max_tool_rounds: ret as u32,
+                    }
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -1223,9 +1267,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 904] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x86\x06\x01A\x02\x01\
-A\x05\x01B\"\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 960] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbe\x06\x01A\x02\x01\
+A\x05\x01B&\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
 \x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
@@ -1233,17 +1277,18 @@ r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02
 ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
 usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
 \x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06reas\
-ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x04\x03nows\x07weekdays\x08timezones\x0c\
-abbreviations\x04\0\x05clock\x03\0\x15\x01@\x01\x08activity\x14\x01\0\x04\0\x0ct\
-ool-started\x01\x17\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\0\x18\x04\0\x04cha\
-t\x01\x19\x01@\0\0\x16\x04\0\x0ccurrent-time\x01\x1a\x01@\x01\x04texts\x01\0\x04\
-\0\x08progress\x01\x1b\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01\x1c\
-\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\
-\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconver\
-sation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/a\
-gent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0b\
-agent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
-0.227.1\x10wit-bindgen-rust\x060.41.0";
+ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limit\
+s\x03\0\x15\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05\
+clock\x03\0\x17\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x19\x01\
+@\0\0\x16\x04\0\x0ecurrent-limits\x01\x1a\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\
+\0\x1b\x04\0\x04chat\x01\x1c\x01@\0\0\x18\x04\0\x0ccurrent-time\x01\x1d\x01@\x01\
+\x04texts\x01\0\x04\0\x08progress\x01\x1e\x01@\x02\x05levels\x07messages\x01\0\x04\
+\0\x03log\x01\x1f\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\
+\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01\
+@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19\
+outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\
+\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

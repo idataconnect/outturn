@@ -79,6 +79,22 @@ interface host {
     /// the agent did rather than only what it concluded.
     tool-started: func(activity: tool-activity);
 
+    /// Bounds the host places on this turn.
+    ///
+    /// Read by a guest so it can wind down gracefully -- deliver what it has,
+    /// stop reaching for tools -- rather than being cut off mid-loop. They are
+    /// also enforced by the host, because a guest is not trusted to respect
+    /// them: components are deployed by tenants, and a limit that lives only
+    /// in the guest is a suggestion.
+    record limits {
+        /// How many times the model may be called in one turn. Zero means
+        /// unbounded, for work that legitimately runs long.
+        max-tool-rounds: u32,
+    }
+
+    /// What this turn is allowed to do.
+    current-limits: func() -> limits;
+
     /// The wall clock of whoever is being talked to.
     ///
     /// Carries the day name and zone abbreviation rather than only a

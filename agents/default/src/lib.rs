@@ -29,13 +29,6 @@ const CURRENT_TIME: &str = "get_current_time";
 /// fiction attributed to the agent.
 const REASON: &str = "reason";
 
-/// How many times the model may call tools before the turn is abandoned.
-///
-/// A model that keeps asking for the same tool would otherwise loop until the
-/// host's fuel runs out, which reports as a crash rather than as the runaway
-/// it is.
-const MAX_TOOL_ROUNDS: usize = 5;
-
 fn tools() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: CURRENT_TIME.to_string(),
@@ -128,11 +121,19 @@ impl Guest for Component {
         // not have.
         let mut reply = String::new();
 
-        for round in 0..=MAX_TOOL_ROUNDS {
-            // The last permitted round offers no tools, so the model must
-            // answer with prose rather than asking for something it cannot be
-            // given -- otherwise the turn ends with nothing to show the user.
-            let exhausted = round == MAX_TOOL_ROUNDS;
+        // Asked of the host rather than decided here: the limit is the
+        // platform's to set, and the host enforces it whether or not a guest
+        // bothers to look. Reading it is what allows a graceful ending instead
+        // of being refused mid-loop.
+        let max_rounds = host::current_limits().max_tool_rounds;
+
+        let mut round: u32 = 0;
+        loop {
+            // On the last permitted round tools are withheld, so the model
+            // must answer in prose rather than asking for something it cannot
+            // be given -- otherwise the turn ends with nothing to show. Zero
+            // means unbounded, so that round never arrives.
+            let exhausted = max_rounds > 0 && round + 1 >= max_rounds;
 
             let completion = host::chat(&CompletionRequest {
                 messages: messages.clone(),
@@ -193,9 +194,15 @@ impl Guest for Component {
             for call in &completion.tool_calls {
                 messages.push(run_tool(call));
             }
-        }
 
-        Err("model kept asking for tools without answering".to_string())
+            round += 1;
+            if exhausted {
+                // The round that withheld tools still asked for them, which
+                // means the model ignored their absence. Nothing further can
+                // be offered, so the turn ends with whatever was said.
+                return Ok(reply);
+            }
+        }
     }
 }
 

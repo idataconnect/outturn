@@ -18,7 +18,8 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Clock, Completion, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition, Usage,
+    Clock, Completion, CompletionRequest, Limits, Message, ToolActivity, ToolCall, ToolDefinition,
+    Usage,
 };
 
 /// Reports text as the model produces it, before the turn finishes.
@@ -56,6 +57,11 @@ pub struct AgentHost {
     /// to know.
     reasoning_effort: Option<String>,
     on_tool: Option<ToolSink>,
+    /// Zero means unbounded.
+    max_tool_rounds: u32,
+    /// Model calls made so far this turn, counted host-side so a guest that
+    /// ignores `limits` still cannot exceed them.
+    rounds_used: u32,
 }
 
 impl WasiView for AgentHost {
@@ -72,6 +78,22 @@ impl outturn::agent::host::Host for AgentHost {
         &mut self,
         request: CompletionRequest,
     ) -> Result<Completion, String> {
+        // Counted before the call, not after: the limit is on what may be
+        // spent, and a guest that ignores what `limits` told it is refused
+        // here rather than politely asked again.
+        self.rounds_used += 1;
+        if self.max_tool_rounds > 0 && self.rounds_used > self.max_tool_rounds {
+            tracing::warn!(
+                session_id = %self.session_id,
+                limit = self.max_tool_rounds,
+                "guest exceeded its round limit"
+            );
+            return Err(format!(
+                "round limit reached: this turn may call the model {} times",
+                self.max_tool_rounds
+            ));
+        }
+
         // The credential is attached here rather than being handed to the
         // guest, so a compromised component can spend this session's allowance
         // but cannot take the token elsewhere.
@@ -149,6 +171,12 @@ impl outturn::agent::host::Host for AgentHost {
         )
         .await
         .map_err(|e| e.to_string())
+    }
+
+    async fn current_limits(&mut self) -> Limits {
+        Limits {
+            max_tool_rounds: self.max_tool_rounds,
+        }
     }
 
     async fn tool_started(&mut self, activity: ToolActivity) {
@@ -341,6 +369,8 @@ pub struct RunOptions {
     pub reasoning_effort: Option<String>,
     /// Names the class of traffic, which the gateway resolves to a route.
     pub traffic_type: String,
+    /// Model calls permitted in this turn; zero is unbounded.
+    pub max_tool_rounds: u32,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -390,6 +420,8 @@ impl AgentRunner {
             // rather than on every call the guest makes.
             reasoning_effort: options.reasoning_effort,
             traffic_type: options.traffic_type,
+            max_tool_rounds: options.max_tool_rounds,
+            rounds_used: 0,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

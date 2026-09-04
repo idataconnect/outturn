@@ -72,6 +72,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 timezone: None,
                 reasoning_effort: None,
                 traffic_type: "assistant".into(),
+                max_tool_rounds: 100,
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 fuel: 10_000_000_000,
             },

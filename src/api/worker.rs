@@ -172,6 +172,7 @@ impl Worker {
         model: &str,
         reasoning_effort: Option<&str>,
         traffic_type: &str,
+        max_tool_rounds: Option<i64>,
         message_id: Uuid,
     ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
@@ -189,6 +190,7 @@ impl Worker {
                 "timezone": payload.timezone,
                 "reasoning_effort": reasoning_effort,
                 "traffic_type": traffic_type,
+                "max_tool_rounds": max_tool_rounds,
             }))
             .send()
             .await?;
@@ -330,6 +332,7 @@ impl Worker {
                 &model_for(&agent.policy),
                 reasoning_effort_for(&agent.policy).as_deref(),
                 &traffic_type_for(&agent.policy),
+                max_tool_rounds_for(&agent.policy),
                 placeholder.id,
             )
             .await;
@@ -390,6 +393,14 @@ fn reasoning_effort_for(policy: &serde_json::Value) -> Option<String> {
         .get("reasoning_effort")
         .and_then(|e| e.as_str())
         .map(str::to_string)
+}
+
+/// How many model calls a turn of this agent may make.
+///
+/// Absent leaves the runtime's default. Zero or negative disables the limit,
+/// for agents whose work legitimately runs long.
+fn max_tool_rounds_for(policy: &serde_json::Value) -> Option<i64> {
+    policy.get("max_tool_rounds").and_then(|r| r.as_i64())
 }
 
 /// What class of traffic this agent's turns are, from its policy.

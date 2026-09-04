@@ -29,6 +29,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         timezone: None,
         reasoning_effort: None,
         traffic_type: "assistant".into(),
+        max_tool_rounds: 100,
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
         fuel: 10_000_000_000,
@@ -338,5 +339,67 @@ async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
         started.elapsed() < std::time::Duration::from_secs(20),
         "gave up after {:?}, which suggests no deadline applied",
         started.elapsed()
+    );
+}
+
+// -- Limits -------------------------------------------------------------------
+
+/// A model that keeps asking for tools is stopped, and the turn still ends
+/// with something to show rather than an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_looping_model_is_bounded_and_still_answers() {
+    // Asks for a tool on every single call, so only the limit ends it.
+    let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
+        name: "get_current_time".into(),
+        arguments: r#"{"reason":"Again."}"#.into(),
+        content: "Working.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.max_tool_rounds = 3;
+
+    let reply = runner
+        .run(&component(), user("Go forever."), String::new(), options)
+        .await
+        .expect("a bounded turn still returns a reply");
+
+    assert!(
+        reply.contains("Working."),
+        "the turn should end with what the model managed to say, got {reply:?}"
+    );
+    assert_eq!(
+        gateway.requests().len(),
+        3,
+        "the model was called more times than the limit allows"
+    );
+}
+
+/// The limit is the host's, not the guest's.
+///
+/// A component is deployed by a tenant, so a bound that lives only in guest
+/// code is a suggestion. The host counts the calls it makes and refuses.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
+    let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
+        name: "get_current_time".into(),
+        arguments: r#"{"reason":"Again."}"#.into(),
+        content: String::new(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let mut options = options(&gateway, None);
+    options.max_tool_rounds = 1;
+
+    let _ = runner
+        .run(&component(), user("Go forever."), String::new(), options)
+        .await;
+
+    assert_eq!(
+        gateway.requests().len(),
+        1,
+        "one round means one model call, regardless of what the guest asks for"
     );
 }

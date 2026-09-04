@@ -21,6 +21,14 @@ use super::component::{AgentRunner, Message, ProgressSink, RunOptions, ToolActiv
 /// a loop cannot occupy the service indefinitely.
 const FUEL_PER_TURN: u64 = 50_000_000_000;
 
+/// Model calls permitted in one turn when nothing says otherwise.
+///
+/// High on purpose. An agent working towards a goal legitimately reads,
+/// decides and reads again many times, and a cap tuned for a single-tool agent
+/// would end that work partway. This is a runaway guard, not a budget -- what
+/// costs money is tokens, and that bound belongs with the accounting.
+const DEFAULT_MAX_TOOL_ROUNDS: u32 = 100;
+
 pub struct RuntimeState {
     pub auth: TokenValidator,
     /// Mints the token the guest's model calls travel with. Minted here rather
@@ -52,6 +60,10 @@ pub struct ExecuteRequest {
     /// What this turn is for. The gateway resolves it to a route.
     #[serde(default)]
     pub traffic_type: Option<String>,
+    /// Model calls permitted in this turn. Zero or negative disables the
+    /// limit, for work that legitimately runs long.
+    #[serde(default)]
+    pub max_tool_rounds: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +187,13 @@ pub async fn execute(
         traffic_type: request
             .traffic_type
             .unwrap_or_else(|| crate::gateway::routing::DEFAULT_TRAFFIC_TYPE.to_string()),
+        max_tool_rounds: match request.max_tool_rounds {
+            // Negative and zero both mean unbounded, so a caller does not have
+            // to know which spelling this end prefers.
+            Some(n) if n <= 0 => 0,
+            Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
+            None => DEFAULT_MAX_TOOL_ROUNDS,
+        },
         idle_timeout: crate::http_client::IDLE_TIMEOUT,
     };
 
