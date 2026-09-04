@@ -179,7 +179,7 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
 async fn runs_a_tool_and_answers_with_its_result() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "get_current_time".into(),
-        arguments: r#"{"reason":"Checking today's date for you."}"#.into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
         reply: "It is Tuesday.".into(),
     })
     .await;
@@ -190,7 +190,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
         Arc::new(move |activity: &outturn::runtime::component::ToolActivity| {
             seen.lock()
                 .unwrap()
-                .push((activity.name.clone(), activity.reason.clone()));
+                .push((activity.name.clone(), activity.action.clone()));
         })
     };
 
@@ -217,7 +217,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
         *seen.lock().unwrap(),
         vec![(
             "get_current_time".to_string(),
-            "Checking today's date for you.".to_string()
+            "Checking today's date".to_string()
         )]
     );
 
@@ -240,8 +240,8 @@ async fn runs_a_tool_and_answers_with_its_result() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        !echoed.contains("reason"),
-        "the reason is written for the user and must not be resent to the model, got {echoed:?}"
+        !echoed.contains("action"),
+        "the label is written for the user and must not be resent to the model, got {echoed:?}"
     );
 
     let result = messages
@@ -278,7 +278,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
 async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "get_current_time".into(),
-        arguments: r#"{"reason":"Need the date."}"#.into(),
+        arguments: r#"{"action":"Reading the clock"}"#.into(),
         reply: "Done.".into(),
     })
     .await;
@@ -351,7 +351,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
     // Asks for a tool on every single call, so only the limit ends it.
     let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
         name: "get_current_time".into(),
-        arguments: r#"{"reason":"Again."}"#.into(),
+        arguments: r#"{"action":"Checking again"}"#.into(),
         content: "Working.".into(),
     })
     .await;
@@ -384,7 +384,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
 async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
     let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
         name: "get_current_time".into(),
-        arguments: r#"{"reason":"Again."}"#.into(),
+        arguments: r#"{"action":"Checking again"}"#.into(),
         content: String::new(),
     })
     .await;
@@ -415,7 +415,7 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
     let gateway = FakeGateway::start(Behaviour::TruncatedToolCall {
         name: "get_current_time".into(),
         // Valid JSON, but only because the truncation happened to land here.
-        arguments: r#"{"reason":"Checking"#.into(),
+        arguments: r#"{"action":"Checking"#.into(),
     })
     .await;
 

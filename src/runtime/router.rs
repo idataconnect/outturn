@@ -82,8 +82,9 @@ pub struct ConversationMessage {
 pub enum ExecuteEvent {
     /// A fragment of the reply, in order.
     Delta { idx: i64, text: String },
-    /// The guest started a tool, with the model's reason for it.
-    Tool { id: String, name: String, reason: String },
+    /// The guest started a tool, with the model's own label for what it is
+    /// doing.
+    Tool { id: String, name: String, action: String },
     /// Generation finished; the reply is complete.
     Done { content: String },
     /// The turn failed.
@@ -158,7 +159,7 @@ pub async fn execute(
             let _ = tx.send(ExecuteEvent::Tool {
                 id: activity.id.clone(),
                 name: activity.name.clone(),
-                reason: activity.reason.clone(),
+                action: activity.action.clone(),
             });
         })
     };

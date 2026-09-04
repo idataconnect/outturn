@@ -231,11 +231,11 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Tool { id, name, reason }) => {
+                    Ok(ExecuteEvent::Tool { id, name, action }) => {
                         let call = serde_json::json!({
                             "id": id,
                             "name": name,
-                            "reason": reason,
+                            "action": action,
                         });
                         // Announced live so the browser can show the work as
                         // it happens, and kept so the finished message can

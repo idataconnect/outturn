@@ -150,12 +150,14 @@ pub mod outturn {
                 /// The model's id for the call this describes.
                 pub id: _rt::String,
                 pub name: _rt::String,
-                /// The model's own one-line justification, written for the user.
+                /// What the agent is doing, in its own words, for the user to read
+                /// while it happens -- "Checking today's date", not an argument for
+                /// why the call was warranted.
                 ///
                 /// Never sent back to the model: it is the model's account of itself,
                 /// and feeding it back costs tokens on every later turn while telling
                 /// the model only what it already decided.
-                pub reason: _rt::String,
+                pub action: _rt::String,
             }
             impl ::core::fmt::Debug for ToolActivity {
                 fn fmt(
@@ -165,7 +167,7 @@ pub mod outturn {
                     f.debug_struct("ToolActivity")
                         .field("id", &self.id)
                         .field("name", &self.name)
-                        .field("reason", &self.reason)
+                        .field("action", &self.action)
                         .finish()
                 }
             }
@@ -236,14 +238,14 @@ pub mod outturn {
             /// the agent did rather than only what it concluded.
             pub fn tool_started(activity: &ToolActivity) -> () {
                 unsafe {
-                    let ToolActivity { id: id0, name: name0, reason: reason0 } = activity;
+                    let ToolActivity { id: id0, name: name0, action: action0 } = activity;
                     let vec1 = id0;
                     let ptr1 = vec1.as_ptr().cast::<u8>();
                     let len1 = vec1.len();
                     let vec2 = name0;
                     let ptr2 = vec2.as_ptr().cast::<u8>();
                     let len2 = vec2.len();
-                    let vec3 = reason0;
+                    let vec3 = action0;
                     let ptr3 = vec3.as_ptr().cast::<u8>();
                     let len3 = vec3.len();
                     #[cfg(target_arch = "wasm32")]
@@ -1276,7 +1278,7 @@ r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02
 \x05tools\x09\x05model\x05\x0btemperature\x0a\x0amax-tokens\x0b\x04\0\x12complet\
 ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
 usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
-\x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06reas\
+\x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06acti\
 ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limit\
 s\x03\0\x15\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05\
 clock\x03\0\x17\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x19\x01\

@@ -31,10 +31,10 @@ const convertMessage = (message: Message): ThreadMessageLike => ({
       type: 'tool-call' as const,
       toolCallId: call.id,
       toolName: call.name,
-      // The reason is the model's own account of why it made the call, and it
-      // is the only argument the user is shown.
-      args: { reason: call.reason },
-      argsText: JSON.stringify({ reason: call.reason }),
+      // The action is the model's own account of what it is doing, and the
+      // only argument the user is shown.
+      args: { action: call.action },
+      argsText: JSON.stringify({ action: call.action }),
     })),
     { type: 'text' as const, text: message.content },
   ],

@@ -22,12 +22,12 @@ struct Component;
 /// The model's name for the clock tool.
 const CURRENT_TIME: &str = "get_current_time";
 
-/// The argument every tool carries so the user learns why it ran.
+/// The argument every tool carries so the user can see what is happening.
 ///
-/// Asked of the model rather than inferred: only the model knows why it
-/// reached for a tool, and a guess written by the guest would be a plausible
-/// fiction attributed to the agent.
-const REASON: &str = "reason";
+/// Asked of the model rather than inferred: only the model knows what it is
+/// about to do, and a label written by the guest would be a plausible fiction
+/// attributed to the agent.
+const ACTION: &str = "action";
 
 fn tools() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
@@ -39,8 +39,8 @@ fn tools() -> Vec<ToolDefinition> {
             .to_string(),
         // No timezone argument: the zone is the user's, and letting the
         // model name one would invite it to invent a plausible wrong answer.
-        // `reason` is the one thing asked of it, and it is for the user.
-        parameters: r#"{"type":"object","properties":{"reason":{"type":"string","description":"One short sentence, addressed to the user, saying why you need this now."}},"required":["reason"]}"#
+        // `action` is the one thing asked of it, and it is for the user.
+        parameters: r#"{"type":"object","properties":{"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking today's date. Not an explanation of why."}},"required":["action"]}"#
             .to_string(),
     }]
 }
@@ -74,24 +74,24 @@ fn run_tool(call: &ToolCall) -> Message {
     }
 }
 
-/// Separates the user-facing reason from the arguments the model gets back.
+/// Separates the user-facing label from the arguments the model gets back.
 ///
-/// Returns the reason and the arguments without it. Unparseable arguments are
+/// Returns the label and the arguments without it. Unparseable arguments are
 /// passed through untouched: the model wrote them, and a tool that rejects
 /// them gives a better error than the guest silently rewriting them.
-fn split_reason(arguments: &str) -> (String, String) {
+fn split_action(arguments: &str) -> (String, String) {
     let Ok(serde_json::Value::Object(mut object)) =
         serde_json::from_str::<serde_json::Value>(arguments)
     else {
         return (String::new(), arguments.to_string());
     };
 
-    let reason = match object.remove(REASON) {
-        Some(serde_json::Value::String(reason)) => reason,
+    let action = match object.remove(ACTION) {
+        Some(serde_json::Value::String(action)) => action,
         _ => String::new(),
     };
     let rest = serde_json::to_string(&object).unwrap_or_else(|_| "{}".to_string());
-    (reason, rest)
+    (action, rest)
 }
 
 impl Guest for Component {
@@ -194,22 +194,22 @@ impl Guest for Component {
             // while it happens rather than explaining it afterwards.
             let mut echoed = Vec::with_capacity(completion.tool_calls.len());
             for call in &completion.tool_calls {
-                let (reason, without_reason) = split_reason(&call.arguments);
+                let (action, without_action) = split_action(&call.arguments);
                 host::tool_started(&ToolActivity {
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    reason,
+                    action,
                 });
                 echoed.push(ToolCall {
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    arguments: without_reason,
+                    arguments: without_action,
                 });
             }
 
             // The model's own request has to go back into the conversation
             // before its answers do, or the results refer to a call the model
-            // cannot see. It goes back without the reason: that was written
+            // cannot see. It goes back without the label: that was written
             // for the user, and replaying it would pay for those tokens on
             // every subsequent turn.
             messages.push(Message {

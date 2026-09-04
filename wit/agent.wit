@@ -63,12 +63,14 @@ interface host {
         /// The model's id for the call this describes.
         id: string,
         name: string,
-        /// The model's own one-line justification, written for the user.
+        /// What the agent is doing, in its own words, for the user to read
+        /// while it happens -- "Checking today's date", not an argument for
+        /// why the call was warranted.
         ///
         /// Never sent back to the model: it is the model's account of itself,
         /// and feeding it back costs tokens on every later turn while telling
         /// the model only what it already decided.
-        reason: string,
+        action: string,
     }
 
     /// Announces a tool call before it runs.

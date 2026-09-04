@@ -3,11 +3,12 @@ import { api } from './api'
 export type Agent = { id: string; name: string; slug: string }
 export type AgentSession = { id: string; agent_id: string; title: string }
 
-/** A tool the agent ran, with the model's own reason for running it. */
+/** A tool the agent ran, labelled by the agent with what it was doing. */
 export type ToolCallRecord = {
   id: string
   name: string
-  reason: string
+  /** Present continuous, written for the user: "Checking today's date". */
+  action: string
 }
 
 export type Message = {
