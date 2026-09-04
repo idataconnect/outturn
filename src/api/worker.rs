@@ -191,6 +191,7 @@ impl Worker {
                 "reasoning_effort": reasoning_effort,
                 "traffic_type": traffic_type,
                 "max_tool_rounds": max_tool_rounds,
+                "reply_id": message_id,
             }))
             .send()
             .await?;
@@ -297,6 +298,23 @@ impl Worker {
         // deltas attach to a row that already exists. Without this the browser
         // would render a streaming buffer and then swap it for a loaded
         // message, and any difference between the two would flash.
+        // A steered message was answered inside the turn it interrupted, so
+        // this queued turn has nothing left to do. Skipped rather than run,
+        // which would produce a second reply to a question already addressed.
+        if self
+            .chat
+            .was_absorbed(payload.message_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("absorbed: {e}"))?
+        {
+            tracing::info!(
+                session_id = %payload.session_id,
+                message_id = %payload.message_id,
+                "prompt was answered mid-turn; nothing to do"
+            );
+            return Ok(());
+        }
+
         // Idempotent: a retry after a worker died mid-turn takes back the
         // reply it already created rather than starting a second one.
         let placeholder = self

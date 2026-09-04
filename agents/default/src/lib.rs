@@ -14,7 +14,7 @@ mod bindings;
 
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
-    self, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition,
+    self, Arrival, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition,
 };
 
 struct Component;
@@ -43,6 +43,23 @@ fn tools() -> Vec<ToolDefinition> {
         parameters: r#"{"type":"object","properties":{"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking today's date. Not an explanation of why."}},"required":["action"]}"#
             .to_string(),
     }]
+}
+
+/// Turns what the user said mid-turn into messages for the model.
+///
+/// Marked as having arrived during the work, because that is true and the
+/// model should treat it as a correction to what it is doing rather than as
+/// the next question in an orderly exchange.
+fn injected(arrivals: &[Arrival]) -> Vec<Message> {
+    arrivals
+        .iter()
+        .map(|arrival| Message {
+            role: "user".to_string(),
+            content: format!("[mid-turn message from user] {}", arrival.content),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        })
+        .collect()
 }
 
 /// Runs one tool call and returns the message answering it.
@@ -155,6 +172,22 @@ impl Guest for Component {
             }
 
             if completion.tool_calls.is_empty() {
+                // The turn would end here. Anything the user has said since it
+                // began extends it instead of being answered separately --
+                // which is what makes a follow-up feel like part of the same
+                // exchange rather than a new one.
+                let waiting = host::pending_input();
+                if !waiting.is_empty() {
+                    messages.push(Message {
+                        role: "assistant".to_string(),
+                        content: completion.content,
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    });
+                    messages.extend(injected(&waiting));
+                    round += 1;
+                    continue;
+                }
                 return Ok(reply);
             }
 
@@ -221,6 +254,11 @@ impl Guest for Component {
             for call in &completion.tool_calls {
                 messages.push(run_tool(call));
             }
+
+            // Injected after the results and before the next model call: the
+            // only point in the loop where the conversation is consistent and
+            // nothing is half-done.
+            messages.extend(injected(&host::pending_input()));
 
             round += 1;
             if exhausted {

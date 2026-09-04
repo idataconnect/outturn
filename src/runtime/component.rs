@@ -18,8 +18,8 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Clock, Completion, CompletionRequest, Limits, Message, ToolActivity, ToolCall, ToolDefinition,
-    Usage,
+    Arrival, Clock, Completion, CompletionRequest, Limits, Message, ToolActivity, ToolCall,
+    ToolDefinition, Usage,
 };
 
 /// Reports text as the model produces it, before the turn finishes.
@@ -62,6 +62,13 @@ pub struct AgentHost {
     /// Model calls made so far this turn, counted host-side so a guest that
     /// ignores `limits` still cannot exceed them.
     rounds_used: u32,
+    /// What the user has said since this turn began, as reported by the
+    /// gateway on the responses it was already sending. Drained when the guest
+    /// asks, so each message is injected once.
+    arrivals: Vec<Arrival>,
+    /// The reply this turn is writing. Sent to the gateway so it can record
+    /// which reply absorbed a message it handed over.
+    reply_id: uuid::Uuid,
 }
 
 impl WasiView for AgentHost {
@@ -161,16 +168,28 @@ impl outturn::agent::host::Host for AgentHost {
             );
         }
 
-        stream_completion(
+        let (completion, arrivals) = stream_completion(
             &self.http,
             &self.gateway_url,
             &self.gateway_token,
             &self.traffic_type,
+            &self.reply_id,
             body,
             self.progress.as_ref(),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+        // Buffered rather than delivered: the guest asks at a boundary it
+        // chooses, which is the only point where injecting a message does not
+        // corrupt a round already in flight.
+        self.arrivals.extend(arrivals);
+
+        Ok(completion)
+    }
+
+    async fn pending_input(&mut self) -> Vec<Arrival> {
+        std::mem::take(&mut self.arrivals)
     }
 
     async fn current_limits(&mut self) -> Limits {
@@ -240,15 +259,19 @@ async fn stream_completion(
     gateway_url: &str,
     token: &str,
     traffic_type: &str,
+    reply_id: &uuid::Uuid,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
-) -> anyhow::Result<Completion> {
+) -> anyhow::Result<(Completion, Vec<Arrival>)> {
     use futures::StreamExt;
 
     let response = http
         .post(format!("{gateway_url}/v1/chat/completions/stream"))
         .bearer_auth(token)
         .header("x-outturn-traffic", traffic_type)
+        // Named so the gateway can record which reply took a message it hands
+        // back, rather than only that one was taken.
+        .header("x-outturn-reply", reply_id.to_string())
         .json(&body)
         .send()
         .await?;
@@ -269,6 +292,7 @@ async fn stream_completion(
     // pushed, since a provider is free to interleave two calls.
     let mut partial_calls: std::collections::BTreeMap<u32, PartialToolCall> =
         std::collections::BTreeMap::new();
+    let mut arrivals: Vec<Arrival> = Vec::new();
 
     while let Some(bytes) = stream.next().await {
         buffer.push_str(std::str::from_utf8(&bytes?)?);
@@ -297,6 +321,20 @@ async fn stream_completion(
                     sink(text);
                 }
             }
+            // The gateway appends its own line after the provider's chunks,
+            // carrying anything the user said while this call was in flight.
+            // It rides the response rather than needing a channel of its own,
+            // because the runtime holds no credentials and no database.
+            if let Some(pending) = chunk["outturn"]["pending"].as_array() {
+                for message in pending {
+                    arrivals.push(Arrival {
+                        content: message["content"].as_str().unwrap_or_default().to_string(),
+                        delivery: message["delivery"].as_str().unwrap_or("steer").to_string(),
+                    });
+                }
+                continue;
+            }
+
             if let Some(calls) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
                 for call in calls {
                     let index = call["index"].as_u64().unwrap_or(0) as u32;
@@ -324,7 +362,7 @@ async fn stream_completion(
         }
     }
 
-    Ok(Completion {
+    Ok((Completion {
         content,
         tool_calls: partial_calls
             .into_values()
@@ -339,7 +377,7 @@ async fn stream_completion(
             .collect(),
         finish_reason,
         usage,
-    })
+    }, arrivals))
 }
 
 /// One tool call being assembled from stream fragments.
@@ -371,6 +409,8 @@ pub struct RunOptions {
     pub traffic_type: String,
     /// Model calls permitted in this turn; zero is unbounded.
     pub max_tool_rounds: u32,
+    /// The reply being written, so messages absorbed mid-turn can name it.
+    pub reply_id: uuid::Uuid,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -422,6 +462,8 @@ impl AgentRunner {
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
             rounds_used: 0,
+            arrivals: Vec::new(),
+            reply_id: options.reply_id,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

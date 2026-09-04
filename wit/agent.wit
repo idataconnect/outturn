@@ -81,6 +81,25 @@ interface host {
     /// the agent did rather than only what it concluded.
     tool-started: func(activity: tool-activity);
 
+    /// Something the user said while this turn was already running.
+    record arrival {
+        content: string,
+        /// "steer" to redirect the work now, "follow-up" to extend the turn
+        /// once it would otherwise have ended.
+        delivery: string,
+    }
+
+    /// What the user has said since this turn began.
+    ///
+    /// Handed over once. The host gives each message to exactly one caller, so
+    /// a guest that asks twice does not inject the same instruction twice, and
+    /// the turn queued for that message knows not to answer it again.
+    ///
+    /// A guest that never calls this simply does not steer; the message is
+    /// answered by its own turn afterwards, which is the behaviour before any
+    /// of this existed.
+    pending-input: func() -> list<arrival>;
+
     /// Bounds the host places on this turn.
     ///
     /// Read by a guest so it can wind down gracefully -- deliver what it has,

@@ -129,3 +129,58 @@ impl ProviderCache {
         Some(provider)
     }
 }
+
+/// A message the user sent while a turn was already running.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Pending {
+    pub content: String,
+    pub delivery: String,
+}
+
+/// Takes anything the user has said since this turn began.
+///
+/// The gateway does this because it is the only tier on the path of every
+/// model call that also has a database: the runtime holds no credentials and
+/// no pool by design, and giving it one would widen what a sandbox escape
+/// reaches. Riding the response it was already sending costs nothing.
+///
+/// Handed over exactly once. The update marks each message with the reply that
+/// took it, so a second call returns nothing and the turn queued for that
+/// message knows it has already been answered.
+///
+/// A message is pending when nothing has replied to it and nothing has
+/// absorbed it. The turn's own prompt is excluded automatically, because the
+/// reply being written already hangs off it.
+pub async fn take_pending(
+    pool: &PgPool,
+    session_id: Uuid,
+    reply_id: Uuid,
+) -> Result<Vec<Pending>, sqlx::Error> {
+    let rows = sqlx::query(
+        "update agent_messages set absorbed_by = $2 \
+         where id in ( \
+             select u.id from agent_messages u \
+             where u.session_id = $1 \
+               and u.role = 'user' \
+               and u.absorbed_by is null \
+               and not exists ( \
+                   select 1 from agent_messages r where r.replies_to = u.id \
+               ) \
+             order by u.id \
+             for update skip locked \
+         ) \
+         returning content, delivery",
+    )
+    .bind(session_id)
+    .bind(reply_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| Pending {
+            content: r.get("content"),
+            delivery: r.get("delivery"),
+        })
+        .collect())
+}

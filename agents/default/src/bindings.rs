@@ -171,6 +171,25 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// Something the user said while this turn was already running.
+            #[derive(Clone)]
+            pub struct Arrival {
+                pub content: _rt::String,
+                /// "steer" to redirect the work now, "follow-up" to extend the turn
+                /// once it would otherwise have ended.
+                pub delivery: _rt::String,
+            }
+            impl ::core::fmt::Debug for Arrival {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("Arrival")
+                        .field("content", &self.content)
+                        .field("delivery", &self.delivery)
+                        .finish()
+                }
+            }
             /// Bounds the host places on this turn.
             ///
             /// Read by a guest so it can wind down gracefully -- deliver what it has,
@@ -282,6 +301,82 @@ pub mod outturn {
                             len3,
                         )
                     };
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// What the user has said since this turn began.
+            ///
+            /// Handed over once. The host gives each message to exactly one caller, so
+            /// a guest that asks twice does not inject the same instruction twice, and
+            /// the turn queued for that message knows not to answer it again.
+            ///
+            /// A guest that never calls this simply does not steer; the message is
+            /// answered by its own turn afterwards, which is the behaviour before any
+            /// of this existed.
+            pub fn pending_input() -> _rt::Vec<Arrival> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 2
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "pending-input"]
+                        fn wit_import1(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = *ptr0.add(0).cast::<*mut u8>();
+                    let l3 = *ptr0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let base10 = l2;
+                    let len10 = l3;
+                    let mut result10 = _rt::Vec::with_capacity(len10);
+                    for i in 0..len10 {
+                        let base = base10
+                            .add(i * (4 * ::core::mem::size_of::<*const u8>()));
+                        let e10 = {
+                            let l4 = *base.add(0).cast::<*mut u8>();
+                            let l5 = *base
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len6 = l5;
+                            let bytes6 = _rt::Vec::from_raw_parts(l4.cast(), len6, len6);
+                            let l7 = *base
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l8 = *base
+                                .add(3 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len9 = l8;
+                            let bytes9 = _rt::Vec::from_raw_parts(l7.cast(), len9, len9);
+                            Arrival {
+                                content: _rt::string_lift(bytes6),
+                                delivery: _rt::string_lift(bytes9),
+                            }
+                        };
+                        result10.push(e10);
+                    }
+                    _rt::cabi_dealloc(
+                        base10,
+                        len10 * (4 * ::core::mem::size_of::<*const u8>()),
+                        ::core::mem::size_of::<*const u8>(),
+                    );
+                    let result11 = result10;
+                    result11
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -1129,6 +1224,20 @@ mod _rt {
     #![allow(dead_code, clippy::all)]
     pub use alloc_crate::string::String;
     pub use alloc_crate::vec::Vec;
+    pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
+        if cfg!(debug_assertions) {
+            String::from_utf8(bytes).unwrap()
+        } else {
+            String::from_utf8_unchecked(bytes)
+        }
+    }
+    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
+        if size == 0 {
+            return;
+        }
+        let layout = alloc::Layout::from_size_align_unchecked(size, align);
+        alloc::dealloc(ptr, layout);
+    }
     pub use alloc_crate::alloc;
     pub fn as_f32<T: AsF32>(t: T) -> f32 {
         t.as_f32()
@@ -1206,20 +1315,6 @@ mod _rt {
             self as i32
         }
     }
-    pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
-        if cfg!(debug_assertions) {
-            String::from_utf8(bytes).unwrap()
-        } else {
-            String::from_utf8_unchecked(bytes)
-        }
-    }
-    pub unsafe fn cabi_dealloc(ptr: *mut u8, size: usize, align: usize) {
-        if size == 0 {
-            return;
-        }
-        let layout = alloc::Layout::from_size_align_unchecked(size, align);
-        alloc::dealloc(ptr, layout);
-    }
     pub unsafe fn invalid_enum_discriminant<T>() -> T {
         if cfg!(debug_assertions) {
             panic!("invalid enum discriminant")
@@ -1269,9 +1364,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 960] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbe\x06\x01A\x02\x01\
-A\x05\x01B&\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1021] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfb\x06\x01A\x02\x01\
+A\x05\x01B+\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
 \x04\0\x07message\x03\0\x06\x01p\x07\x01p\x03\x01kv\x01ky\x01r\x05\x08messages\x08\
@@ -1279,18 +1374,19 @@ r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02
 ion-request\x03\0\x0c\x01r\x02\x0dprompt-tokensy\x11completion-tokensy\x04\0\x05\
 usage\x03\0\x0e\x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\
 \x05\x05usage\x10\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06acti\
-ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limit\
-s\x03\0\x15\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05\
-clock\x03\0\x17\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x19\x01\
-@\0\0\x16\x04\0\x0ecurrent-limits\x01\x1a\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\
-\0\x1b\x04\0\x04chat\x01\x1c\x01@\0\0\x18\x04\0\x0ccurrent-time\x01\x1d\x01@\x01\
-\x04texts\x01\0\x04\0\x08progress\x01\x1e\x01@\x02\x05levels\x07messages\x01\0\x04\
-\0\x03log\x01\x1f\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\
-\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01\
-@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19\
-outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\
-\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
-wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+ons\x04\0\x0dtool-activity\x03\0\x13\x01r\x02\x07contents\x08deliverys\x04\0\x07\
+arrival\x03\0\x15\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limits\x03\0\x17\x01r\x04\
+\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0\x19\x01@\
+\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01\x1b\x01p\x16\x01@\0\0\x1c\x04\
+\0\x0dpending-input\x01\x1d\x01@\0\0\x18\x04\0\x0ecurrent-limits\x01\x1e\x01j\x01\
+\x12\x01s\x01@\x01\x07request\x0d\0\x1f\x04\0\x04chat\x01\x20\x01@\0\0\x1a\x04\0\
+\x0ccurrent-time\x01!\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01\"\x01@\x02\x05\
+levels\x07messages\x01\0\x04\0\x03log\x01#\x03\0\x18outturn:agent/host@0.1.0\x05\
+\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01\
+p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03\
+run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/ag\
+ent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0c\
+processed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -245,6 +245,17 @@ impl ChatStore for PostgresChatStore {
         Ok(read_message(&row))
     }
 
+    async fn was_absorbed(&self, message_id: Uuid) -> Result<bool, ChatError> {
+        let absorbed: Option<Uuid> =
+            sqlx::query_scalar("select absorbed_by from agent_messages where id = $1")
+                .bind(message_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?
+                .flatten();
+        Ok(absorbed.is_some())
+    }
+
     async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError> {
         // Only while still empty: a turn that failed after writing its reply
         // must not have that reply deleted.

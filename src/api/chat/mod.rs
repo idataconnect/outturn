@@ -157,6 +157,12 @@ pub trait ChatStore: Send + Sync {
         session_id: Uuid,
     ) -> Result<Message, ChatError>;
 
+    /// Whether this prompt was already answered inside an earlier turn.
+    ///
+    /// A steered message is absorbed by the reply it interrupted, so the turn
+    /// queued for it must not answer it a second time.
+    async fn was_absorbed(&self, message_id: Uuid) -> Result<bool, ChatError>;
+
     /// Discards a job's placeholder, for a turn that will never be retried.
     ///
     /// Without this a permanently failed turn leaves an empty message that

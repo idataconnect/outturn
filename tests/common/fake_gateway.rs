@@ -30,6 +30,14 @@ pub enum Behaviour {
     Status(StatusCode, String),
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
+    /// Ask for a tool, and report a message the user sent mid-turn, then
+    /// answer. Stands in for the gateway noticing pending input.
+    ToolThenSteer {
+        name: String,
+        arguments: String,
+        steer: String,
+        reply: String,
+    },
     /// Ask for a tool in a reply that was cut off at the token limit, so the
     /// arguments cannot be trusted.
     TruncatedToolCall { name: String, arguments: String },
@@ -173,6 +181,36 @@ async fn completions_stream(
     };
 
     match behaviour {
+        Behaviour::ToolThenSteer {
+            name,
+            arguments,
+            steer,
+            reply,
+        } => {
+            if call_number > 1 {
+                let mut lines: Vec<String> = chunk_text(&reply)
+                    .iter()
+                    .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                    .collect();
+                lines.push(format!("{}\n", chunk_json("", Some("stop"))));
+                return ndjson(lines);
+            }
+
+            let mut lines = vec![format!(
+                "{}\n",
+                tool_chunk(Some("call_steer"), Some(&name), &arguments)
+            )];
+            lines.push(format!("{}\n", chunk_json("", Some("tool_calls"))));
+            // The trailing control line the real gateway appends.
+            lines.push(format!(
+                "{}\n",
+                serde_json::json!({
+                    "outturn": { "pending": [{ "content": steer, "delivery": "steer" }] }
+                })
+            ));
+            ndjson(lines)
+        }
+
         Behaviour::TruncatedToolCall { name, arguments } => {
             let mut lines = vec![format!(
                 "{}\n",
@@ -270,6 +308,7 @@ async fn completions(
         Behaviour::ToolThenReply { reply, .. } => reply,
         Behaviour::AlwaysToolCall { content, .. } => content,
         Behaviour::TruncatedToolCall { .. } => String::new(),
+        Behaviour::ToolThenSteer { reply, .. } => reply,
         Behaviour::TruncateAfter { text, .. } => text,
         Behaviour::Status(code, message) => return (code, message).into_response(),
         Behaviour::Hang => {

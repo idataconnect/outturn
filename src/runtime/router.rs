@@ -64,6 +64,9 @@ pub struct ExecuteRequest {
     /// limit, for work that legitimately runs long.
     #[serde(default)]
     pub max_tool_rounds: Option<i64>,
+    /// The reply this turn is writing, so a message absorbed mid-turn can
+    /// name what took it.
+    pub reply_id: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +198,7 @@ pub async fn execute(
             Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
             None => DEFAULT_MAX_TOOL_ROUNDS,
         },
+        reply_id: request.reply_id,
         idle_timeout: crate::http_client::IDLE_TIMEOUT,
     };
 

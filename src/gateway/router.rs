@@ -7,7 +7,7 @@ use futures::StreamExt;
 use crate::auth::{self, TokenValidator, SessionClaims};
 
 use super::breaker;
-use super::routing::{self, Route};
+use super::routing::{self};
 use super::llm::provider::{LlmProvider, ProviderError};
 use super::llm::types::{ChatCompletionRequest, ChatCompletionResponse};
 
@@ -45,6 +45,27 @@ impl GatewayState {
     pub fn with_health(mut self, pool: sqlx::postgres::PgPool) -> Self {
         self.health = Some(pool);
         self
+    }
+
+    /// Anything the user has said since this turn began.
+    ///
+    /// Empty without a database or without a reply to attribute it to, which
+    /// means steering simply does not happen rather than the call failing.
+    async fn take_pending(
+        &self,
+        session_id: uuid::Uuid,
+        reply: Option<uuid::Uuid>,
+    ) -> Vec<routing::Pending> {
+        let (Some(pool), Some(reply)) = (&self.health, reply) else {
+            return Vec::new();
+        };
+        match routing::take_pending(pool, session_id, reply).await {
+            Ok(pending) => pending,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read pending input");
+                Vec::new()
+            }
+        }
     }
 
     /// What to try, in order of precedence.
@@ -113,6 +134,17 @@ impl GatewayState {
 /// through to the provider, so anything added there leaks upstream. Routing is
 /// also not something a model should be told about.
 const TRAFFIC_HEADER: &str = "x-outturn-traffic";
+
+/// The reply the caller is writing, so a message taken mid-turn can name what
+/// absorbed it.
+const REPLY_HEADER: &str = "x-outturn-reply";
+
+fn reply_id(headers: &axum::http::HeaderMap) -> Option<uuid::Uuid> {
+    headers
+        .get(REPLY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+}
 
 fn traffic_type(headers: &axum::http::HeaderMap) -> String {
     headers
@@ -215,6 +247,14 @@ async fn chat_completions_stream(
 
     let traffic = traffic_type(&headers);
 
+    // Taken before the call rather than after, so a long generation does not
+    // hold a steering message for its whole duration. Anything arriving during
+    // this call is picked up by the next one, which is the next round -- the
+    // only boundary where injecting it is safe anyway.
+    let pending = state
+        .take_pending(claims.session_id, reply_id(&headers))
+        .await;
+
     for attempt in state.attempts(claims.tenant_id, &traffic).await {
         let provider = &attempt.provider;
         if !provider.is_available().await || !state.admits(provider).await {
@@ -242,6 +282,17 @@ async fn chat_completions_stream(
                         .map_err(|e| std::io::Error::other(e.to_string())),
                     Err(e) => Err(std::io::Error::other(e.to_string())),
                 });
+
+                // Appended after the provider's chunks, in the same framing.
+                // A caller that does not know this line exists ignores it, so
+                // an older runtime keeps working -- it simply does not steer.
+                let trailer = futures::stream::iter(if pending.is_empty() {
+                    Vec::new()
+                } else {
+                    let line = serde_json::json!({ "outturn": { "pending": pending } });
+                    vec![Ok(axum::body::Bytes::from(format!("{line}\n")))]
+                });
+                let body = body.chain(trailer);
 
                 return Ok((
                     [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],

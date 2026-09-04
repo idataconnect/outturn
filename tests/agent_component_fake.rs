@@ -30,6 +30,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         reasoning_effort: None,
         traffic_type: "assistant".into(),
         max_tool_rounds: 100,
+        reply_id: Uuid::now_v7(),
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
         fuel: 10_000_000_000,
@@ -446,5 +447,59 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
     assert!(
         !content.contains("timezone"),
         "the clock must not have run, got {content:?}"
+    );
+}
+
+// -- Steering -----------------------------------------------------------------
+
+/// A message sent mid-turn reaches the model at the next round.
+///
+/// It rides the gateway's own response rather than a channel of its own, so
+/// the runtime needs neither a database nor credentials to be steered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_mid_turn_reaches_the_next_round() {
+    let gateway = FakeGateway::start(Behaviour::ToolThenSteer {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking the clock"}"#.into(),
+        steer: "actually, just tell me the year".into(),
+        reply: "2026.".into(),
+    })
+    .await;
+
+    let runner = AgentRunner::new().expect("runner");
+    let reply = runner
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect("run");
+
+    assert_eq!(reply, "2026.");
+
+    // The second call carries the interruption, marked as having arrived
+    // during the work rather than as an orderly next question.
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 2, "the turn continued after being steered");
+    let injected = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| {
+            m["role"] == "user"
+                && m["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("just tell me the year"))
+        })
+        .expect("the steering message went to the model");
+    assert!(
+        injected["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("mid-turn"),
+        "the model should know it was interrupted, got {:?}",
+        injected["content"]
     );
 }
