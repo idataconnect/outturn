@@ -1217,3 +1217,91 @@ async fn racing_claimers_cannot_both_take_one_key() {
 
     finish!(db);
 }
+
+#[tokio::test]
+async fn a_released_job_is_not_held_to_have_tried() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    jobs::enqueue(pool, tenant, "test.release", serde_json::json!({}), None, None)
+        .await
+        .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["test.release"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].job.attempts, 1, "claiming counts an attempt");
+
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0))
+        .await
+        .expect("release");
+
+    let (state, attempts): (String, i32) =
+        sqlx::query_as("select state, attempts from jobs where id = $1")
+            .bind(claimed[0].job.id)
+            .fetch_one(pool)
+            .await
+            .expect("read job");
+    assert_eq!(state, "pending", "a released job did not return to the queue");
+    assert_eq!(
+        attempts, 0,
+        "a job that never ran was charged an attempt, so a busy cluster \
+         would exhaust its retries without running it once"
+    );
+
+    let again = jobs::claim(pool, &["test.release"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(again.len(), 1, "a released job must be claimable again");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_released_job_waits_before_it_is_offered_again() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    jobs::enqueue(pool, tenant, "test.backoff", serde_json::json!({}), None, None)
+        .await
+        .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60))
+        .await
+        .expect("release");
+
+    // Otherwise a cluster with no room spends itself claiming and releasing
+    // the same work as fast as it can.
+    let again = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert!(again.is_empty(), "a released job was offered again immediately");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn only_a_running_job_can_be_released() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    jobs::enqueue(pool, tenant, "test.norun", serde_json::json!({}), None, None)
+        .await
+        .expect("enqueue");
+
+    let pending: uuid::Uuid = sqlx::query_scalar("select id from jobs where kind = $1")
+        .bind("test.norun")
+        .fetch_one(pool)
+        .await
+        .expect("read job");
+
+    // A release that could touch a pending job would let a late reply from an
+    // abandoned turn give back an attempt that a live claimer is spending.
+    assert!(
+        jobs::release(pool, pending, Duration::from_secs(0)).await.is_err(),
+        "a job that was never claimed was released"
+    );
+
+    finish!(db);
+}

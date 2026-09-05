@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::auth::{Role, TokenMinter};
 use crate::events;
@@ -14,6 +13,40 @@ use crate::runtime::router::ExecuteEvent;
 
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
+
+/// Turns this pod will have in flight before it stops claiming.
+///
+/// The API's share of a turn is a task and an open stream, which is cheap --
+/// but claiming is what takes work off the queue, and work taken off the queue
+/// is work no other pod can serve. An unbounded claimer turns a shared backlog
+/// into a private one.
+const DEFAULT_MAX_IN_FLIGHT_TURNS: usize = 16;
+
+/// Claimed per tick at most, so a burst is spread over ticks rather than
+/// landing on one pod because it happened to ask first.
+const CLAIM_BATCH: i64 = 4;
+
+/// How long a turn waits after a runtime refused it for want of room.
+///
+/// Short, because the refusal says nothing is wrong -- only that every pod
+/// asked so far was busy. Long enough that retrying is not itself the load.
+const NO_ROOM_BACKOFF: Duration = Duration::from_secs(2);
+
+/// The runtime had no room for this turn.
+///
+/// Distinguished from every other error because it is not a failure: nothing
+/// was attempted, nothing is wrong with the job, and counting it as an attempt
+/// would let a busy cluster exhaust a turn's retries without ever running it.
+#[derive(Debug)]
+struct NoRoom(String);
+
+impl std::fmt::Display for NoRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "runtime had no room: {}", self.0)
+    }
+}
+
+impl std::error::Error for NoRoom {}
 
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";
@@ -54,6 +87,19 @@ pub struct Worker {
     /// for its own CPU rather than the API's, and so the two scale apart.
     pub runtime_url: String,
     pub http: reqwest::Client,
+    /// Slots for turns this pod is carrying. Bounds what it will claim, so a
+    /// backlog stays in the queue where other pods -- and the autoscaler --
+    /// can see it.
+    pub in_flight: Arc<tokio::sync::Semaphore>,
+}
+
+/// The in-flight bound this pod will use.
+pub fn max_in_flight_turns() -> usize {
+    std::env::var("OUTTURN_MAX_IN_FLIGHT_TURNS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_IN_FLIGHT_TURNS)
 }
 
 impl Worker {
@@ -85,13 +131,33 @@ impl Worker {
         // retried rather than left hanging.
         jobs::reap_abandoned(&self.pool).await?;
 
-        let claimed = jobs::claim(&self.pool, &[CHAT_TURN], 4, jobs::DEFAULT_LEASE).await?;
+        // Claim no more than can be carried. Leaving work in the queue is the
+        // point: it stays visible to every other pod, and to whatever is
+        // deciding how many pods there should be.
+        let room = self.in_flight.available_permits();
+        if room == 0 {
+            return Ok(());
+        }
+        let batch = CLAIM_BATCH.min(room as i64);
+
+        let claimed = jobs::claim(&self.pool, &[CHAT_TURN], batch, jobs::DEFAULT_LEASE).await?;
 
         // Each turn runs on its own task: generation can take minutes, and
         // awaiting it here would stall every other session behind it.
         for handle in claimed {
             let worker = Arc::clone(&self);
-            tokio::spawn(async move { worker.execute(handle).await });
+            // Taken here rather than inside the task, so a claim and the slot
+            // it occupies cannot drift apart. try_acquire because the room was
+            // checked above and anything else is a bug rather than a wait.
+            let Ok(slot) = Arc::clone(&self.in_flight).try_acquire_owned() else {
+                tracing::warn!(job_id = %handle.job.id, "claimed past capacity; releasing");
+                let _ = jobs::release(&self.pool, handle.job.id, NO_ROOM_BACKOFF).await;
+                continue;
+            };
+            tokio::spawn(async move {
+                let _slot = slot;
+                worker.execute(handle).await
+            });
         }
         Ok(())
     }
@@ -125,6 +191,14 @@ impl Worker {
             Ok(()) => {
                 if let Err(e) = jobs::complete(&self.pool, id).await {
                     tracing::error!(job_id = %id, error = %e, "failed to complete job");
+                }
+            }
+            Err(e) if e.downcast_ref::<NoRoom>().is_some() => {
+                // Back on the queue untouched. Nothing ran, so nothing failed,
+                // and the attempt this claim took is given back.
+                tracing::debug!(job_id = %id, reason = %e, "turn returned to the queue");
+                if let Err(e) = jobs::release(&self.pool, id, NO_ROOM_BACKOFF).await {
+                    tracing::error!(job_id = %id, error = %e, "failed to release job");
                 }
             }
             Err(e) => {
@@ -203,6 +277,12 @@ impl Worker {
         if !response.status().is_success() {
             let status = response.status();
             let detail = response.text().await.unwrap_or_default();
+            // A runtime at capacity says so with 503. That is a statement
+            // about the pod, not the turn, so the turn goes back on the queue
+            // intact rather than being marked as having failed once.
+            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                return Err(anyhow::Error::new(NoRoom(detail)));
+            }
             anyhow::bail!("runtime returned {status}: {detail}");
         }
 

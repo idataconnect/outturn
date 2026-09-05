@@ -225,6 +225,35 @@ pub async fn fail(
     Ok(())
 }
 
+/// Returns a job to the queue without holding it against the job.
+///
+/// For work that was claimed and then found to have nowhere to run: a runtime
+/// at capacity, a pod shutting down. Nothing was attempted, so the attempt the
+/// claim counted is given back -- otherwise a cluster that is merely busy
+/// would burn through a job's retries without ever having run it once, and the
+/// user would be told their turn failed because the cluster was popular.
+pub async fn release(pool: &PgPool, id: Uuid, delay: Duration) -> Result<(), JobError> {
+    let result = sqlx::query(
+        "update jobs set \
+             state = 'pending', \
+             attempts = greatest(attempts - 1, 0), \
+             leased_until = null, \
+             run_after = now() + make_interval(secs => $2), \
+             updated_at = now() \
+         where id = $1 and state = 'running'",
+    )
+    .bind(id)
+    .bind(delay.as_secs_f64())
+    .execute(pool)
+    .await
+    .map_err(internal)?;
+
+    if result.rows_affected() == 0 {
+        return Err(JobError::NotFound);
+    }
+    Ok(())
+}
+
 /// Returns jobs whose lease expired to the pending pool.
 ///
 /// This is what makes a crashed worker recoverable: the claim is a lease, not

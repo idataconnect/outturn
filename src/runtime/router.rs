@@ -45,6 +45,8 @@ pub struct RuntimeState {
     /// Object storage, shared by every tenant and partitioned by prefix. The
     /// host resolves which part a turn may touch; the guest never learns.
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    /// Whether this pod has room for another turn.
+    pub admission: Arc<crate::runtime::admission::Admission>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +148,31 @@ pub async fn execute(
         ));
     }
 
+    // Before any work is done for this turn, and before a response body is
+    // opened: a refusal has to be a status the caller can retry, not a stream
+    // that dies partway.
+    let permit = match state.admission.try_admit() {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            tracing::info!(
+                session_id = %request.session_id,
+                in_flight = state.admission.in_flight(),
+                reason = %refusal,
+                "refused a turn"
+            );
+            // 503 rather than 429: nothing about the caller is the problem,
+            // and the same request to another pod would be served. Retry-After
+            // keeps a rejected caller from returning immediately, which would
+            // spend the pod's remaining headroom on saying no.
+            return Ok((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                refusal.to_string(),
+            )
+                .into_response());
+        }
+    };
+
     let conversation: Vec<Message> = request
         .conversation
         .into_iter()
@@ -244,6 +271,9 @@ pub async fn execute(
     };
 
     tokio::spawn(async move {
+        // Held until the turn ends, however it ends. The slot is what this
+        // pod is carrying, not what it agreed to carry.
+        let _permit = permit;
         let outcome = runner
             .run(&module, conversation, request.system_prompt, options)
             .await;

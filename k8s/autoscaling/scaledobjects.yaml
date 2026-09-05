@@ -1,0 +1,105 @@
+# Scaling on queue depth, which is the only number that says whether the
+# cluster is keeping up. CPU says how hard the pods that exist are working,
+# which stays high whether there are two turns waiting or two thousand.
+#
+# Optional and applied separately: it needs KEDA's CRDs, and a local kind
+# cluster that has never installed KEDA should still come up.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: outturn-keda
+type: Opaque
+stringData:
+  # The scaler reads the queue; it never writes to it. Point this at a role
+  # with select on `jobs` and nothing else.
+  connection: postgres://outturn:outturn-dev@postgres:5432/outturn?sslmode=disable
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: outturn-queue
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: outturn-keda
+      key: connection
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: outturn-runtime
+spec:
+  scaleTargetRef:
+    name: outturn-runtime
+  # Never to zero. A cold runtime pod has to compile the guest component
+  # before it can answer, so scaling to zero moves that cost onto whichever
+  # user happens to send the first message after a quiet period.
+  minReplicaCount: 1
+  maxReplicaCount: 20
+  pollingInterval: 10
+  # Long enough to outlast a turn. Scaling in while a pod is mid-generation
+  # discards work that is nearly finished.
+  cooldownPeriod: 300
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # Bursts are the normal case here -- a scheduled fleet of agents all
+          # waking at once -- and waiting to be sure is just latency.
+          stabilizationWindowSeconds: 0
+        scaleDown:
+          # Slow, because the cost of being wrong is asymmetric: an extra pod
+          # costs money, a missing one costs a queued user.
+          stabilizationWindowSeconds: 600
+  triggers:
+    - type: postgresql
+      metricType: AverageValue
+      authenticationRef:
+        name: outturn-queue
+      metadata:
+        # Ten waiting turns per pod. With eight concurrent turns per pod
+        # (OUTTURN_MAX_CONCURRENT_TURNS) that is a little over one pod's worth
+        # of backlog, so a pod is added while the queue is forming rather than
+        # after it has formed.
+        targetQueryValue: "10"
+        # Work deferred by a few seconds is still work waiting for capacity:
+        # a turn a full runtime handed back is exactly the signal to scale on,
+        # and excluding it would make the queue look shortest at its busiest.
+        # The window stops genuinely scheduled work -- a job due tomorrow --
+        # from holding pods open overnight.
+        query: >-
+          select count(*) from jobs
+          where state = 'pending'
+            and kind = 'chat.turn'
+            and run_after <= now() + interval '30 seconds'
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: outturn-api
+spec:
+  scaleTargetRef:
+    name: outturn-api
+  # The API serves the browser as well as claiming turns, so it does not
+  # follow the queue down to a single pod.
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 10
+  cooldownPeriod: 300
+  triggers:
+    - type: postgresql
+      metricType: AverageValue
+      authenticationRef:
+        name: outturn-queue
+      metadata:
+        # Higher than the runtime's, because the API's share of a turn is a
+        # task and an open stream. It scales so that claiming does not become
+        # the bottleneck -- each pod claims up to OUTTURN_MAX_IN_FLIGHT_TURNS
+        # -- not because it is doing the work.
+        targetQueryValue: "40"
+        query: >-
+          select count(*) from jobs
+          where state = 'pending'
+            and kind = 'chat.turn'
+            and run_after <= now() + interval '30 seconds'

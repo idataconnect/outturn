@@ -1,7 +1,7 @@
 mod store;
 
 pub use store::{
-    Job, JobError, JobHandle, claim, complete, enqueue, extend_lease, fail, reap_abandoned,
+    Job, JobError, JobHandle, claim, complete, enqueue, extend_lease, fail, reap_abandoned, release,
 };
 
 use std::time::Duration;

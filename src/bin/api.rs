@@ -97,6 +97,9 @@ async fn main() {
         runtime_url: std::env::var("OUTTURN_RUNTIME_URL")
             .unwrap_or_else(|_| "http://outturn-runtime:8082".into()),
         http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
+            in_flight: Arc::new(tokio::sync::Semaphore::new(
+            outturn::api::worker::max_in_flight_turns(),
+        )),
     })
     .spawn(health.shutdown_signal());
 

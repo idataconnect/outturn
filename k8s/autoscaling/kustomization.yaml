@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Deliberately not part of ../base: these are KEDA CRDs, and a cluster without
+# KEDA installed should still be able to bring the rest of the stack up.
+#
+#   helm install keda kedacore/keda --namespace keda --create-namespace
+#   kubectl apply -k k8s/autoscaling
+resources:
+  - scaledobjects.yaml

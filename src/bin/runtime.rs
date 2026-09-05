@@ -70,6 +70,7 @@ async fn main() {
         runner: Arc::new(AgentRunner::new().expect("agent runner")),
         agent_module: Arc::new(agent_module),
         storage,
+        admission: Arc::new(outturn::runtime::admission::Admission::from_env()),
     });
 
     let app = Router::new()

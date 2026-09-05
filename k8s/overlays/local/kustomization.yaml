@@ -105,3 +105,11 @@ patches:
           # either way. Per-model behaviour, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
             value: "gemma4"
+          # The pod's memory limit here is 1Gi, so the defaults (8 turns,
+          # 256Mi held clear) would admit far past what one local pod can
+          # hold. A single developer sending one message at a time never
+          # reaches these; a load test should.
+          - name: OUTTURN_MAX_CONCURRENT_TURNS
+            value: "2"
+          - name: OUTTURN_MEMORY_RESERVE_BYTES
+            value: "134217728"
