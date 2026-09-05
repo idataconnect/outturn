@@ -124,6 +124,11 @@ connection that hangs — so the tiers above the provider can be tested for
 behaviour rather than for whatever a model happened to say. Only
 `tests/agent_component.rs` needs a live model.
 
+Tenancy, whose credential pays and what is attributed are written up in
+[docs/tenancy.md](docs/tenancy.md) — the short version being that `tenant_id`
+is the isolation boundary and stays that way, with organizations added above it
+rather than nesting beneath it.
+
 Storage layout and retention are written up separately, in
 [docs/storage.md](docs/storage.md) — including why the object prefixes are
 ordered scope-first rather than as the hierarchy you would expect, which looks
