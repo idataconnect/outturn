@@ -3,6 +3,7 @@ import { Send } from 'lucide-react'
 
 import MarkdownText from './MarkdownText'
 import ToolCall from './ToolCall'
+import toolRenderers from './toolRenderers'
 
 /**
  * Thread built from assistant-ui primitives directly, using this project's
@@ -37,8 +38,10 @@ function AssistantMessage() {
       <div className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100">
         {/* Only the assistant's text is markdown: rendering what the user
             typed would mangle anything that resembled syntax. */}
-        {/* One fallback for every tool: they all render the same way, and a
-            tool with no renderer of its own should still be visible.
+        {/* Tools show the verb the model wrote. A tool that shows more has a
+            renderer in `toolRenderers` written for it specifically -- the
+            fallback deliberately cannot, because whatever it did show would
+            arrive by default on every tool added afterwards.
 
             Empty fills the reply while it is still being generated. The reply
             row exists from the moment the turn starts so deltas have somewhere
@@ -50,7 +53,7 @@ function AssistantMessage() {
           components={{
             Text: MarkdownText,
             Empty: Thinking,
-            tools: { Fallback: ToolCall },
+            tools: { by_name: toolRenderers, Fallback: ToolCall },
           }}
         />
       </div>

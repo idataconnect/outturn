@@ -33,11 +33,17 @@ const convertMessage = (message: Message): ThreadMessageLike => ({
       toolName: call.name,
       // The action is the model's own account of what it is doing, and the
       // only argument the user is shown.
-      args: { action: call.action, details: call.details, isError: call.is_error },
+      // Absent rather than undefined: the part must be plain JSON, and an
+      // explicit undefined is not.
+      args: {
+        action: call.action,
+        details: call.details ?? '',
+        isError: call.is_error ?? false,
+      },
       argsText: JSON.stringify({ action: call.action }),
     })),
     { type: 'text' as const, text: message.content },
-  ],
+  ] as ThreadMessageLike['content'],
 })
 
 /** Ids are UUIDv7, so lexical order is insertion order. */
