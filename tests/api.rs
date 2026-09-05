@@ -1156,3 +1156,142 @@ async fn partial_update_leaves_other_fields_intact() {
 
     finish!(h);
 }
+
+// -- Egress rules -------------------------------------------------------------
+
+/// Adding an API is meant to be one paste of whatever the docs showed.
+#[tokio::test]
+async fn a_pasted_url_becomes_an_egress_rule() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+
+    // Nothing to begin with, which is what an agent can reach to begin with.
+    let (status, body) = h.get("/v1/egress-rules", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body, "[]");
+
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&token),
+            r#"{"host":"https://api.stripe.com/v1/charges"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert!(
+        body.contains(r#""host":"api.stripe.com""#),
+        "a pasted URL did not become a host rule: {body}"
+    );
+
+    let (status, body) = h.get("/v1/egress-rules", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("api.stripe.com"), "body: {body}");
+}
+
+/// A rule that would not do what its author expected is refused with the
+/// reason, not a validation code.
+#[tokio::test]
+async fn a_rule_that_would_mislead_its_author_is_refused() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+
+    for (input, expected) in [
+        (r#"{"host":"*"}"#, "has to name a host"),
+        (r#"{"host":"localhost"}"#, "no domain"),
+        (r#"{"host":"10.0.0.5"}"#, "inside the network"),
+        (
+            r#"{"host":"api.example.com","header":"authorization"}"#,
+            "environment variable",
+        ),
+        (
+            r#"{"host":"api.example.com","credential_env":"KEY"}"#,
+            "needs a header",
+        ),
+    ] {
+        let (status, body) = h.post("/v1/egress-rules", Some(&token), input).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{input} gave: {body}");
+        assert!(body.contains(expected), "{input} gave: {body}");
+    }
+}
+
+/// One rule per host, so which credential travels does not depend on
+/// insertion order.
+#[tokio::test]
+async fn a_host_cannot_be_allowed_twice() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+
+    let rule = r#"{"host":"api.example.com"}"#;
+    let (status, _) = h.post("/v1/egress-rules", Some(&token), rule).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The same host, spelled the way someone else would paste it.
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&token),
+            r#"{"host":"https://API.example.com/"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+}
+
+/// One tenant's list is not another's, and neither is reachable from the
+/// other's token.
+#[tokio::test]
+async fn egress_rules_do_not_cross_tenants() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let globex = h.make_tenant("Globex", "globex").await;
+    let acme_token = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+    let globex_token = h
+        .login_as("admin@globex.example", None, Some((globex, Role::Admin)))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&acme_token),
+            r#"{"host":"api.acme.example"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let id = body
+        .split(r#""id":""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("id")
+        .to_string();
+
+    let (status, body) = h.get("/v1/egress-rules", Some(&globex_token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "[]", "one tenant saw another's rules: {body}");
+
+    // Knowing an id is not the same as being able to use it.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/egress-rules/{id}"))
+        .header("authorization", format!("Bearer {globex_token}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a tenant deleted another tenant's rule"
+    );
+
+    let (status, body) = h.get("/v1/egress-rules", Some(&acme_token)).await;
+    assert!(body.contains("api.acme.example"), "status {status}: {body}");
+}

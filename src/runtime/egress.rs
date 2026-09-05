@@ -116,6 +116,90 @@ pub fn host_matches(rule: &str, host: &str) -> bool {
     }
 }
 
+/// Turns what someone typed into a rule, or explains why it is not one.
+///
+/// Deliberately forgiving about form and strict about meaning. Someone adding
+/// an API has its documentation open and will paste what is in front of them:
+/// `https://api.stripe.com/v1/charges`, or `API.Stripe.com`, or a trailing
+/// slash. All of those name the same host and all of them are accepted. What
+/// is refused is a rule that would not mean what its author thought.
+pub fn normalise_host(input: &str) -> Result<String, String> {
+    let mut host = input.trim().to_ascii_lowercase();
+
+    // Pasted from a browser or a curl example.
+    if let Some((_, rest)) = host.split_once("://") {
+        host = rest.to_string();
+    }
+    // A path, a query, or credentials in front of the host.
+    if let Some((before, _)) = host.split_once('/') {
+        host = before.to_string();
+    }
+    if let Some((_, after)) = host.rsplit_once('@') {
+        host = after.to_string();
+    }
+    // A port says which door, not which building, and a rule is about the
+    // building.
+    if let Some((before, after)) = host.rsplit_once(':')
+        && after.chars().all(|c| c.is_ascii_digit())
+    {
+        host = before.to_string();
+    }
+    let host = host.trim_end_matches('.').to_string();
+
+    if host.is_empty() {
+        return Err("that is not a hostname".into());
+    }
+
+    // A bare wildcard is almost always a misunderstanding of what the list is
+    // for, and the one case where being strict is kinder than being helpful.
+    if host == "*" || host == "*." {
+        return Err(
+            "a rule has to name a host. Allowing everything would mean anything an agent              is persuaded to read could be sent anywhere"
+                .into(),
+        );
+    }
+
+    let labels = host.strip_prefix("*.").unwrap_or(&host);
+    if labels.contains('*') {
+        return Err("a wildcard can only stand for the leftmost part, as in *.example.com".into());
+    }
+
+    if labels.parse::<IpAddr>().is_ok() {
+        // Allowed as a rule, because a public address is a legitimate thing to
+        // name -- but a private one never becomes reachable, and saying so now
+        // is better than at three in the morning inside an agent's transcript.
+        if let Ok(addr) = labels.parse::<IpAddr>()
+            && is_forbidden(addr)
+        {
+            return Err(format!(
+                "{addr} is inside the network running this service, so a rule for it                  would never permit anything"
+            ));
+        }
+        return Ok(host);
+    }
+
+    if !labels.contains('.') {
+        return Err(format!(
+            "{labels} has no domain, so it can only name something inside the network              running this service"
+        ));
+    }
+
+    let valid = labels.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    });
+    if !valid {
+        return Err(format!("{host} is not a hostname"));
+    }
+
+    Ok(host)
+}
+
 /// The rule permitting this host, if a tenant wrote one.
 pub fn rule_for<'a>(rules: &'a [EgressRule], host: &str) -> Option<&'a EgressRule> {
     // First match wins, and exact rules are tried before wildcards so a
@@ -324,6 +408,59 @@ mod tests {
             .expect("matched")
             .credential_env
             .is_none());
+    }
+
+    #[test]
+    fn what_someone_pastes_becomes_a_rule() {
+        // Whatever is in front of them when they go looking for the hostname.
+        for typed in [
+            "https://api.stripe.com/v1/charges",
+            "API.Stripe.com",
+            "api.stripe.com/",
+            "https://api.stripe.com:443",
+            "  api.stripe.com  ",
+            "api.stripe.com.",
+        ] {
+            assert_eq!(
+                normalise_host(typed).expect(typed),
+                "api.stripe.com",
+                "{typed:?} did not become a rule"
+            );
+        }
+        assert_eq!(
+            normalise_host("*.EXAMPLE.com").expect("wildcard"),
+            "*.example.com"
+        );
+    }
+
+    #[test]
+    fn a_rule_that_would_not_mean_what_it_says_is_refused() {
+        for typed in [
+            // Allowing everything, which is never what someone means to click.
+            "*",
+            // A wildcard anywhere but the front does not mean what it looks
+            // like it means.
+            "api.*.com",
+            "",
+            "   ",
+            // No domain: only something inside this network answers to it.
+            "localhost",
+            "postgres",
+            "-bad.example.com",
+        ] {
+            assert!(normalise_host(typed).is_err(), "{typed:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn an_address_inside_the_cluster_is_refused_when_it_is_typed() {
+        // It would never permit anything, and finding that out here is better
+        // than finding it out in an agent's transcript.
+        let refused = normalise_host("10.0.0.5").expect_err("accepted");
+        assert!(refused.contains("inside the network"), "{refused}");
+        assert!(normalise_host("169.254.169.254").is_err());
+        // A public address is a legitimate thing to name.
+        assert_eq!(normalise_host("1.1.1.1").expect("public"), "1.1.1.1");
     }
 
     #[test]

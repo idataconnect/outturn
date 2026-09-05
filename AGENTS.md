@@ -155,6 +155,21 @@ catches a dead peer in about a minute, but a peer that is alive and silent is
 invisible below the application layer — and the job heartbeat renews the lease
 while a worker waits, so nothing else would ever reclaim it.
 
+**An agent reaches nothing it was not allowed.** Egress rules name hosts, per
+tenant, and an empty list is the default -- a tenant who has not thought about
+it has not consented to it. The tenant's list is checked first and the resolved
+address second, and the second check is not theirs to waive: an allowed name
+that resolves inside the cluster is still refused. Names are resolved once and
+the connection pinned to the answer, or the check and the request are about
+different places. Redirects are not followed, because a redirect names a host
+nobody checked.
+
+**Credentials are named, never stored.** A rule carries the name of an
+environment variable; the host reads it and attaches the header on the way out.
+The guest cannot read it and cannot set the headers it travels in. Nothing that
+reads `egress_rules` can leak a secret by reading it, which is why the table is
+safe to return to a browser.
+
 **Refusing work is not failing it.** A runtime pod at capacity answers 503,
 and the worker returns the job with `jobs::release`, which gives back the
 attempt the claim counted. Map that 503 onto `jobs::fail` and a cluster that is
@@ -186,9 +201,8 @@ Intended but not yet built, so that nobody mistakes these for facts about the
 code: Redis caching, pull-based session assignment, per-tenant usage
 attribution, OpenTelemetry, and workflows as scripted tasks in sub-sessions.
 
-Agents can read, write and list objects, and read a clock. There is no tool for
-reaching anything outside the cluster, which is the largest gap between what
-the platform supports and what an agent can do with it.
+A tenant's egress list is managed through `/v1/egress-rules` and has no UI
+yet, so allowing a host means an API call.
 
 The gateway must eventually support mid-session provider failover — an
 Anthropic outage substituting Gemini and continuing. That requires separating

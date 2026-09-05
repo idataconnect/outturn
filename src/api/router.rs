@@ -91,6 +91,19 @@ pub(super) fn authorize(
     Ok(claims)
 }
 
+impl From<super::egress::RuleError> for ApiError {
+    fn from(e: super::egress::RuleError) -> Self {
+        use super::egress::RuleError;
+        match e {
+            // The message is written for whoever typed the rule, so it is the
+            // response body rather than something only a log sees.
+            RuleError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+            RuleError::Duplicate(m) => (StatusCode::CONFLICT, m),
+            RuleError::Database(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        }
+    }
+}
+
 impl From<TenantError> for ApiError {
     fn from(e: TenantError) -> Self {
         let status = match e {
@@ -193,6 +206,55 @@ async fn delete_tenant(
 #[derive(Debug, serde::Deserialize)]
 struct GrantRole {
     role: Role,
+}
+
+/// The hosts this tenant's agents may reach.
+///
+/// Scoped to the caller's own tenant throughout, taken from the token rather
+/// than from a path: an egress list is the shape of what a tenant's agents can
+/// reach, and reading somebody else's tells you where to aim an injection.
+async fn list_egress_rules(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::egress::Rule>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsRead)?;
+    Ok(Json(super::egress::list(&state.pool, claims.tenant_id).await?))
+}
+
+async fn create_egress_rule(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<super::egress::CreateRule>,
+) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate)?;
+    let rule = super::egress::create(&state.pool, claims.tenant_id, input).await?;
+    // Worth a line in the log on its own: this is the moment a tenant's agents
+    // gained somewhere new to send things.
+    tracing::info!(
+        actor = %claims.session_id,
+        tenant_id = %claims.tenant_id,
+        host = %rule.host,
+        "egress rule added"
+    );
+    Ok((StatusCode::CREATED, Json(rule)))
+}
+
+async fn delete_egress_rule(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate)?;
+    if !super::egress::delete(&state.pool, claims.tenant_id, id).await? {
+        return Err((StatusCode::NOT_FOUND, "no such rule".into()));
+    }
+    tracing::info!(
+        actor = %claims.session_id,
+        tenant_id = %claims.tenant_id,
+        rule_id = %id,
+        "egress rule removed"
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_users(
@@ -371,6 +433,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
+        .route(
+            "/v1/egress-rules",
+            get(list_egress_rules).post(create_egress_rule),
+        )
+        .route(
+            "/v1/egress-rules/{id}",
+            axum::routing::delete(delete_egress_rule),
+        )
         .route("/v1/users", get(list_users).post(create_user))
         .route("/v1/users/{id}", get(get_user).delete(delete_user))
         .route("/v1/users/{user_id}/identities", post(add_identity))
