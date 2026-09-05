@@ -204,6 +204,53 @@ attribution, OpenTelemetry, and workflows as scripted tasks in sub-sessions.
 A tenant's egress list is managed through `/v1/egress-rules` and has no UI
 yet, so allowing a host means an API call.
 
+### Compaction
+
+Not built. The design, so it is not rediscovered:
+
+A transcript outlives any model's window, and the window is a property of the
+route rather than of the session — so a turn can arrive at a smaller context
+than the one before it. The naive ordering, compact in the outgoing model
+before switching, is a trap: it bills the user for an expensive operation they
+did not ask for, at the moment they asked for something else.
+
+Summarise from the system prompt, the previous summary, and the tail. That
+input is bounded by construction, so the incoming model can always do it
+however long the session has run, and no compaction depends on a model that is
+being switched away from. The tail is also where the live context is: what is
+being worked on now, the recent tool results, the thread of the conversation.
+
+Summaries are cumulative — each one summarises the tail plus the summary before
+it — because the alternative loses durable facts. Constraints stated once at the
+start are exactly what gets dropped and then violated. Cumulative carrying is
+not a guarantee, only a much better chance; the real fix is memory, an explicit
+write that says "this survives", so compaction does not have to guess what was
+load-bearing. Memory makes compaction safer, which is an argument for building
+it second rather than first.
+
+A summary is a message a model wrote about the conversation and will be
+replayed on every later turn, so its failure mode is quiet: a summary that
+misstates a decision becomes the record. Mark it as a summary in the
+transcript rather than folding it in as ordinary history — both so a reader can
+see what happened, and so the next compaction knows it is compacting a summary.
+
+Underneath all of it, a trim that cannot fail: drop whole turns from the oldest
+end until the prompt fits. No model call, so it works when the provider is
+down, the breaker is open, or the summary itself would not fit. It is what
+guarantees a user never sees "context exceeded", which is the actual
+requirement — everything above is about doing better than that.
+
+Two things the trim must not get wrong. **Never split a tool turn**: dropping an
+assistant message carrying tool calls while keeping its results produces a
+request both protocols reject, trading one hard error for another, so the unit
+of dropping is a turn including its round trips. And **always keep the last user
+message**, since a turn with nothing to answer is already an error in the guest.
+
+Budgets belong on the route, beside `model`, because that is the thing that
+varies. Compact against a fraction of the window rather than the whole of it,
+leaving room for the reply, for tool results arriving mid-turn, and for the
+compaction call itself.
+
 The gateway must eventually support mid-session provider failover — an
 Anthropic outage substituting Gemini and continuing. That requires separating
 the durable transcript from the projection sent to a model, so provider-specific
