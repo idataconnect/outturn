@@ -92,17 +92,34 @@ pub async fn claim(
     limit: i64,
     lease: Duration,
 ) -> Result<Vec<JobHandle>, JobError> {
-    // Serialisation is enforced in two places because one is not enough. The
-    // `not exists` keeps a key from being claimed while it is already running;
-    // the advisory lock closes the window between that check and the update,
-    // where two transactions would otherwise both find nothing running and
-    // both claim. The lock is transaction-scoped, so it is released the moment
-    // the claim commits -- it guards the decision, not the work.
+    // Serialisation takes two statements, and the second one is the point.
     //
-    // The ranking handles the third case: two jobs for one key inside a single
-    // batch, where the advisory lock is held by the same transaction and so
-    // would admit both.
-    let rows = sqlx::query(
+    // Everything below used to be a single statement: pick candidates, take a
+    // transaction-scoped advisory lock on the serial key, check that nothing
+    // with that key is already running, claim. The advisory lock did serialise
+    // correctly. It bought nothing, because under READ COMMITTED one statement
+    // sees one snapshot, taken before the statement began -- so a claimer that
+    // acquired the lock *after* another had claimed and committed still
+    // evaluated `not exists` against a snapshot from before that commit, found
+    // nothing running, and claimed a second job for the same key.
+    //
+    // The candidate rows never had this problem: `for update` re-checks each
+    // row against its latest version. A `not exists` subquery gets no such
+    // treatment.
+    //
+    // So the guard moves into a second statement, which under READ COMMITTED
+    // takes a fresh snapshot and therefore sees the other claimer's commit.
+    // The advisory lock is still needed, and now guards something real: it
+    // keeps a second claimer from sitting between these two statements for the
+    // same key, so the only claim the guard can miss is one that has not
+    // committed -- and that one is still holding the lock.
+    let mut tx = pool.begin().await.map_err(internal)?;
+
+    // Rows stay locked for the rest of the transaction, so the update below
+    // cannot collide with a concurrent claimer. The ranking handles two jobs
+    // for one key inside a single batch, where the advisory lock is held by
+    // this same transaction and so would admit both.
+    let picked: Vec<Uuid> = sqlx::query_scalar(
         "with candidate as ( \
              select id, serial_key from jobs \
              where state = 'pending' \
@@ -116,34 +133,48 @@ pub async fn claim(
              select id, serial_key, \
                     row_number() over (partition by serial_key order by id) as rank \
              from candidate \
-         ), \
-         claimed as ( \
-             select id from ranked \
-             where serial_key is null \
-                or ( \
-                     rank = 1 \
-                     and pg_try_advisory_xact_lock(hashtext(serial_key)) \
-                     and not exists ( \
-                         select 1 from jobs running \
-                         where running.state = 'running' \
-                           and running.serial_key = ranked.serial_key \
-                     ) \
-                   ) \
          ) \
-         update jobs set \
-             state = 'running', \
-             attempts = attempts + 1, \
-             leased_until = now() + make_interval(secs => $3), \
-             updated_at = now() \
-         where id in (select id from claimed) \
-         returning id, tenant_id, kind, payload, attempts, max_attempts",
+         select id from ranked \
+         where serial_key is null \
+            or (rank = 1 and pg_try_advisory_xact_lock(hashtext(serial_key)))",
     )
     .bind(kinds)
     .bind(limit)
-    .bind(lease.as_secs_f64())
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(internal)?;
+
+    if picked.is_empty() {
+        // Nothing to do, but the transaction still has to end -- and rolling
+        // back releases the advisory locks sooner than dropping it would.
+        tx.rollback().await.map_err(internal)?;
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query(
+        "update jobs set \
+             state = 'running', \
+             attempts = attempts + 1, \
+             leased_until = now() + make_interval(secs => $2), \
+             updated_at = now() \
+         where id = any($1) \
+           and ( \
+                 jobs.serial_key is null \
+                 or not exists ( \
+                     select 1 from jobs running \
+                     where running.state = 'running' \
+                       and running.serial_key = jobs.serial_key \
+                 ) \
+               ) \
+         returning id, tenant_id, kind, payload, attempts, max_attempts",
+    )
+    .bind(&picked)
+    .bind(lease.as_secs_f64())
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(internal)?;
+
+    tx.commit().await.map_err(internal)?;
 
     Ok(rows.iter().map(|r| JobHandle { job: read_job(r) }).collect())
 }
