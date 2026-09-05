@@ -350,8 +350,26 @@ fn tool_name(req: &ChatRequest) -> String {
         .to_string()
 }
 
+/// Wraps a chunk's variable part in the envelope every chunk carries.
+///
+/// `id`, `object`, `created` and `model` are not decoration: a consumer
+/// deserialises the whole chunk, so one missing field drops the chunk entirely
+/// and the reply arrives empty with only a warning in a log. A fixture that
+/// omits them tests the consumer's error path rather than its success path,
+/// convincingly enough to look like a platform bug.
 fn sse(value: &serde_json::Value) -> axum::body::Bytes {
-    axum::body::Bytes::from(format!("data: {value}\n\n"))
+    let mut chunk = serde_json::json!({
+        "id": "chatcmpl-mock",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "mock",
+    });
+    if let Some(fields) = value.as_object() {
+        for (k, v) in fields {
+            chunk[k] = v.clone();
+        }
+    }
+    axum::body::Bytes::from(format!("data: {chunk}\n\n"))
 }
 
 #[derive(Serialize)]
@@ -528,6 +546,31 @@ mod tests {
             reused < whole_of_before,
             "a reworded message went unnoticed, so this measures nothing"
         );
+    }
+
+    /// A chunk missing a field the consumer requires is dropped whole, and a
+    /// reply arrives empty with nothing but a warning in a log to say why.
+    /// That is what this fixture did, and it looked exactly like a platform
+    /// bug: a hundred and fifty turns that succeeded and produced nothing.
+    #[test]
+    fn every_streamed_chunk_carries_the_whole_envelope() {
+        let bytes = sse(&serde_json::json!({
+            "choices": [{"index": 0, "delta": {"content": "the"}}]
+        }));
+        let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
+        let json = text
+            .strip_prefix("data: ")
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(t.trim()).ok())
+            .expect("a chunk should be json behind a data: prefix");
+
+        for field in ["id", "object", "created", "model", "choices"] {
+            assert!(
+                json.get(field).is_some(),
+                "a chunk without {field} is discarded by the consumer, and the \
+                 reply comes back empty"
+            );
+        }
+        assert_eq!(json["choices"][0]["delta"]["content"], "the");
     }
 
     #[test]
