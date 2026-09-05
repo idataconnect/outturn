@@ -77,6 +77,22 @@ Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
 where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
 It hangs off the agent's policy, beside `model`.
 
+## Tunables
+
+Environment variables, all optional, all with defaults in the code beside the
+constant they replace.
+
+| Variable | Tier | Bounds |
+|---|---|---|
+| `OUTTURN_MAX_CONCURRENT_TURNS` | runtime | Turns one pod carries before answering 503 |
+| `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
+| `OUTTURN_MAX_IN_FLIGHT_TURNS` | api | Turns one pod claims before it stops claiming |
+| `OUTTURN_DEFAULT_MODEL` | api, runtime | Model when an agent names none |
+
+An idle runtime pod always accepts a turn however tight memory looks. Without
+that, a pod whose baseline sits under the reserve refuses everything forever,
+because no turn is running whose ending could change the answer.
+
 ## Tests
 
 ```bash
@@ -123,15 +139,40 @@ catches a dead peer in about a minute, but a peer that is alive and silent is
 invisible below the application layer — and the job heartbeat renews the lease
 while a worker waits, so nothing else would ever reclaim it.
 
+**Refusing work is not failing it.** A runtime pod at capacity answers 503,
+and the worker returns the job with `jobs::release`, which gives back the
+attempt the claim counted. Map that 503 onto `jobs::fail` and a cluster that is
+merely busy will exhaust a turn's retries without ever running it, and tell the
+user their turn failed because the service was popular. Releases are counted
+separately and give up past `MAX_RELEASES`, so a permanently full cluster
+reports rather than spins.
+
+**Scale on work that could start, not work that is waiting.** A serial key
+admits one running job at a time, so a session with a hundred queued turns is
+one unit of work. The `job_backlog` view is the one statement of that, and a
+test holds it to what `claim` actually takes; counting rows asks for pods that
+cannot claim anything. Relatedly, the deployments KEDA manages carry no
+`replicas:` — a count in the manifest is a standing instruction to undo the
+autoscaler on every apply.
+
+**A pod is killed against its cgroup, not the node.** And against its working
+set, not `memory.current`: page cache is charged to the cgroup and stays
+charged until there is pressure, so usage climbs to the limit and never comes
+back. Subtract inactive file cache, or a pod that has read some files reports
+itself permanently full.
+
 **Pods can silently predate your edits.** When behaviour contradicts the
 source, check pod age before theorising.
 
 ## Direction
 
 Intended but not yet built, so that nobody mistakes these for facts about the
-code: Redis caching, KEDA queue-depth scaling, pull-based session assignment,
-per-tenant usage attribution, OpenTelemetry, and workflows as scripted tasks in
-sub-sessions.
+code: Redis caching, pull-based session assignment, per-tenant usage
+attribution, OpenTelemetry, and workflows as scripted tasks in sub-sessions.
+
+Agents can read, write and list objects, and read a clock. There is no tool for
+reaching anything outside the cluster, which is the largest gap between what
+the platform supports and what an agent can do with it.
 
 The gateway must eventually support mid-session provider failover — an
 Anthropic outage substituting Gemini and continuing. That requires separating
