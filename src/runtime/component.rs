@@ -4,7 +4,7 @@
 //! cross the boundary as typed records, so there is no manual marshalling and
 //! no bounds-checking of guest-supplied offsets.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
@@ -535,8 +535,100 @@ struct PartialToolCall {
     arguments: String,
 }
 
+/// Compiled components to keep, keyed by the bytes they came from.
+///
+/// A cap because the map is keyed by tenant-supplied content: without one,
+/// uploading a component is a way to make the runtime allocate, over and over,
+/// with nothing to reclaim it. Small, because in practice a node serves a
+/// handful of distinct agents and a miss costs one compile, not a failure.
+const COMPILED_CACHE_ENTRIES: usize = 32;
+
+/// How long an unused compiled component is kept.
+///
+/// Long enough that an idle tenant does not pay a compile on every message,
+/// short enough that a redeployed agent's previous build is gone within the
+/// hour rather than at the next pod recycle.
+const COMPILED_CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Compiling a component is pure: the same bytes always produce the same
+/// module, so the work only has to happen once per distinct guest rather than
+/// once per turn.
+///
+/// Keyed by a hash of the bytes rather than by agent id, because a compiled
+/// component is only valid for the bytes it came from -- an agent that is
+/// redeployed with changes must not be served its previous build, and one
+/// redeployed unchanged should be.
+///
+/// Most-recently-used last. Thirty-two entries is short enough that scanning
+/// costs less than the bookkeeping to avoid it.
+struct CompiledCache<T = Component> {
+    entries: Mutex<Vec<CompiledEntry<T>>>,
+}
+
+struct CompiledEntry<T> {
+    key: [u8; 32],
+    component: T,
+    last_used: std::time::Instant,
+}
+
+impl<T: Clone> CompiledCache<T> {
+    fn new() -> Self {
+        Self { entries: Mutex::new(Vec::new()) }
+    }
+
+    fn get(&self, key: &[u8; 32]) -> Option<T> {
+        let mut entries = self.entries.lock().ok()?;
+        Self::drop_idle(&mut entries);
+        let found = entries.iter().position(|e| &e.key == key)?;
+        // Move to the back so eviction takes the least recently used.
+        let mut entry = entries.remove(found);
+        entry.last_used = std::time::Instant::now();
+        let component = entry.component.clone();
+        entries.push(entry);
+        Some(component)
+    }
+
+    fn insert(&self, key: [u8; 32], component: T) {
+        let Ok(mut entries) = self.entries.lock() else {
+            // A poisoned cache is a lost optimisation, not a lost turn.
+            return;
+        };
+        Self::drop_idle(&mut entries);
+        if entries.iter().any(|e| e.key == key) {
+            return;
+        }
+        entries.push(CompiledEntry {
+            key,
+            component,
+            last_used: std::time::Instant::now(),
+        });
+        if entries.len() > COMPILED_CACHE_ENTRIES {
+            entries.remove(0);
+        }
+    }
+
+    /// Forgets what has not been asked for lately.
+    ///
+    /// The size cap alone would not do this. A node serving one agent holds
+    /// one entry, so a version that has been superseded is never pushed out --
+    /// it just sits there, resident for the life of the process, holding the
+    /// compiled form of code nobody runs any more. Redeploys are exactly when
+    /// that happens, and the old bytes are never asked for again.
+    ///
+    /// Swept on access rather than by a timer: a cache nobody is using is not
+    /// costing anything to sweep, and one that is busy sweeps constantly.
+    fn drop_idle(entries: &mut Vec<CompiledEntry<T>>) {
+        let now = std::time::Instant::now();
+        entries.retain(|e| now.duration_since(e.last_used) < COMPILED_CACHE_IDLE);
+    }
+}
+
 pub struct AgentRunner {
     engine: Engine,
+    /// Built once. A linker describes what the host offers, which does not
+    /// vary by turn, by guest, or by tenant.
+    linker: Linker<AgentHost>,
+    compiled: CompiledCache,
 }
 
 pub struct RunOptions {
@@ -576,9 +668,40 @@ impl AgentRunner {
         // Fuel bounds a runaway guest; without it a loop in a component would
         // occupy a worker indefinitely.
         config.consume_fuel(true);
+        let engine = Engine::new(&config)?;
+
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+        // The generated linker needs a HasData marker naming which type the
+        // host implementations live on.
+        AgentWorld::add_to_linker::<_, HostData>(&mut linker, |state: &mut AgentHost| state)?;
+
         Ok(Self {
-            engine: Engine::new(&config)?,
+            engine,
+            linker,
+            compiled: CompiledCache::new(),
         })
+    }
+
+    /// The compiled form of these bytes, compiling only if it is not held.
+    fn component_for(&self, bytes: &[u8]) -> anyhow::Result<Component> {
+        use sha2::{Digest, Sha256};
+
+        let key: [u8; 32] = Sha256::digest(bytes).into();
+        if let Some(component) = self.compiled.get(&key) {
+            return Ok(component);
+        }
+
+        let started = std::time::Instant::now();
+        let component = Component::new(&self.engine, bytes)?;
+        tracing::debug!(
+            bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "compiled a guest component"
+        );
+
+        self.compiled.insert(key, component.clone());
+        Ok(component)
     }
 
     pub async fn run(
@@ -588,13 +711,7 @@ impl AgentRunner {
         system_prompt: String,
         options: RunOptions,
     ) -> anyhow::Result<(String, TurnCost)> {
-        let component = Component::new(&self.engine, component_bytes)?;
-
-        let mut linker = Linker::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-        // The generated linker needs a HasData marker naming which type the
-        // host implementations live on.
-        AgentWorld::add_to_linker::<_, HostData>(&mut linker, |state: &mut AgentHost| state)?;
+        let component = self.component_for(component_bytes)?;
 
         // No preopened directories, no environment, no network: everything the
         // guest can reach is an explicit import.
@@ -637,7 +754,7 @@ impl AgentRunner {
         let mut store = Store::new(&self.engine, host);
         store.set_fuel(options.fuel)?;
 
-        let instance = AgentWorld::instantiate_async(&mut store, &component, &linker).await?;
+        let instance = AgentWorld::instantiate_async(&mut store, &component, &self.linker).await?;
 
         let reply = instance
             .outturn_agent_agent()
@@ -658,5 +775,76 @@ impl AgentRunner {
         };
 
         Ok((reply, cost))
+    }
+}
+
+#[cfg(test)]
+mod compiled_cache_tests {
+    use super::*;
+
+    fn key(n: u8) -> [u8; 32] {
+        [n; 32]
+    }
+
+    fn cache() -> CompiledCache<u32> {
+        CompiledCache::new()
+    }
+
+    #[test]
+    fn what_was_put_in_comes_back_out() {
+        let c = cache();
+        assert_eq!(c.get(&key(1)), None);
+        c.insert(key(1), 11);
+        assert_eq!(c.get(&key(1)), Some(11));
+    }
+
+    #[test]
+    fn different_bytes_never_share_a_build() {
+        // The whole reason for keying on content: a changed component must
+        // not be served the build of the one it replaced.
+        let c = cache();
+        c.insert(key(1), 11);
+        c.insert(key(2), 22);
+        assert_eq!(c.get(&key(1)), Some(11));
+        assert_eq!(c.get(&key(2)), Some(22));
+    }
+
+    #[test]
+    fn a_full_cache_drops_the_least_recently_used() {
+        let c = cache();
+        for n in 0..COMPILED_CACHE_ENTRIES as u8 {
+            c.insert(key(n), n as u32);
+        }
+        // Touch the oldest so it is no longer the one to go.
+        assert_eq!(c.get(&key(0)), Some(0));
+        c.insert(key(200), 200);
+
+        assert_eq!(c.get(&key(0)), Some(0), "a recently used entry was evicted");
+        assert_eq!(c.get(&key(1)), None, "the least recently used entry survived");
+        assert_eq!(c.get(&key(200)), Some(200));
+    }
+
+    #[test]
+    fn a_build_nobody_asks_for_does_not_stay_resident() {
+        // A node serving one agent never fills the cache, so the size cap
+        // would keep a superseded build for the life of the process.
+        let c = cache();
+        c.insert(key(1), 11);
+        {
+            let mut entries = c.entries.lock().expect("lock");
+            entries[0].last_used -= COMPILED_CACHE_IDLE + std::time::Duration::from_secs(1);
+        }
+        assert_eq!(c.get(&key(1)), None, "an idle build outlived its welcome");
+        assert!(c.entries.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn staying_in_use_keeps_a_build_alive() {
+        let c = cache();
+        c.insert(key(1), 11);
+        for _ in 0..3 {
+            assert_eq!(c.get(&key(1)), Some(11));
+        }
+        assert_eq!(c.entries.lock().expect("lock").len(), 1);
     }
 }
