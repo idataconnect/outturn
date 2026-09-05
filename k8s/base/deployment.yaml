@@ -3,7 +3,9 @@ kind: Deployment
 metadata:
   name: outturn-api
 spec:
-  replicas: 1
+  # No replicas here on purpose: k8s/autoscaling gives this an HPA, and a
+  # count in the manifest would be reset to it on every apply -- silently
+  # undoing whatever the autoscaler had decided.
   selector:
     matchLabels:
       app: outturn-api
@@ -81,7 +83,9 @@ kind: Deployment
 metadata:
   name: outturn-runtime
 spec:
-  replicas: 1
+  # No replicas here on purpose: k8s/autoscaling gives this an HPA, and a
+  # count in the manifest would be reset to it on every apply -- silently
+  # undoing whatever the autoscaler had decided.
   selector:
     matchLabels:
       app: outturn-runtime

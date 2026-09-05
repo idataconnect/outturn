@@ -10,9 +10,6 @@ patches:
       name: outturn-api
     patch: |
       - op: replace
-        path: /spec/replicas
-        value: 1
-      - op: replace
         path: /spec/template/spec/containers/0/resources/limits/cpu
         value: "1"
       - op: replace
@@ -68,9 +65,6 @@ patches:
       kind: Deployment
       name: outturn-runtime
     patch: |
-      - op: replace
-        path: /spec/replicas
-        value: 1
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/cpu
         value: "2"
