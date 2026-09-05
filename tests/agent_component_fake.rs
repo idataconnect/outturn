@@ -756,7 +756,7 @@ async fn a_large_file_is_read_from_both_ends() {
          would have thrown it away"
     );
     assert!(
-        content.contains("not shown; read again with offset"),
+        content.contains("not shown. Read again with offset="),
         "the gap should say where to continue, got {content:.400}"
     );
 }
@@ -953,5 +953,66 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     assert!(
         content.contains("LAST LINE: 終わり"),
         "the end of the file should survive the tail read, got {content:.300}"
+    );
+}
+
+/// One line larger than the whole budget is refused, not cut.
+///
+/// A minified bundle or an encoded blob has no useful prefix: fifty kilobytes
+/// of it costs the entire budget and tells the model nothing it can act on.
+/// Better to spend a sentence saying what the file is and how to ask for part
+/// of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_single_enormous_line_is_refused_rather_than_cut() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let tenant = Uuid::now_v7();
+
+    // One line, no newlines, well past the byte ceiling.
+    let minified = "a".repeat(200 * 1024);
+    store
+        .write(
+            &scope::resolve(tenant, "bundle.min.js").unwrap(),
+            0,
+            minified.as_bytes(),
+        )
+        .await
+        .expect("seed");
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"bundle.min.js","action":"Reading the bundle"}"#.into(),
+        reply: "Had a look.".into(),
+    })
+    .await;
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.tenant_id = tenant;
+
+    runner
+        .run(&component(), user("What is in it?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the read came back");
+    let content = result["content"].as_str().unwrap_or_default();
+
+    assert!(
+        content.contains("single line"),
+        "an enormous single line should be described rather than shown, got \
+         {content:.200}"
+    );
+    assert!(
+        !content.contains("aaaaaaaaaaaaaaaaaaaa"),
+        "the budget was spent on a fragment of a minified file"
     );
 }

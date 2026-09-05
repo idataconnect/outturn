@@ -54,12 +54,17 @@ fn tools() -> Vec<ToolDefinition> {
     vec![
     ToolDefinition {
         name: READ_OBJECT.to_string(),
-        description: "Read a stored file. Paths are relative to this agent's \
-                      own storage -- there is nothing above it to reach, so \
-                      do not try. A file too large to show comes back as its \
-                      start and its end, saying how much was skipped and at \
-                      what offset the rest begins."
-            .to_string(),
+        // The ceilings are interpolated rather than written out, so the
+        // numbers the model is told and the numbers enforced cannot drift.
+        description: format!(
+            "Read a stored file. Paths are relative to this agent's own \
+             storage -- there is nothing above it to reach, so do not try. \
+             At most {} lines or {}KB comes back at once; a file larger than \
+             that returns its start and its end, and says at what offset to \
+             read again for the middle.",
+            MAX_TOOL_LINES,
+            MAX_TOOL_BYTES / 1024
+        ),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
             .to_string(),
     },
@@ -151,6 +156,21 @@ fn for_the_model(full: &str) -> String {
         return full.to_string();
     }
 
+    // One line larger than the whole budget cannot be usefully cut: what comes
+    // back is a fragment of minified source or an encoded blob, which costs the
+    // full budget and tells the model nothing it can act on. Better to return
+    // none of it and say how to ask for a part.
+    if full.lines().next().is_some_and(|first| first.len() > MAX_TOOL_BYTES) {
+        let first = full.lines().next().unwrap_or_default();
+        return format!(
+            "[the first line is {} bytes, larger than the {}KB that can be shown. \
+             It is likely minified or encoded. Read a part of it with offset and \
+             work forward, or read a different file.]",
+            first.len(),
+            MAX_TOOL_BYTES / 1024
+        );
+    }
+
     let mut kept = String::new();
     let mut lines = 0usize;
     for line in full.lines() {
@@ -162,9 +182,15 @@ fn for_the_model(full: &str) -> String {
         lines += 1;
     }
 
+    // Which ceiling was reached decides what to do next, so it is named
+    // rather than left to be inferred: a result stopped by bytes has long
+    // lines in it and reading further will not help much, where one stopped by
+    // lines has many short ones and reading on will.
+    let by = if lines >= MAX_TOOL_LINES { "lines" } else { "bytes" };
     format!(
-        "{kept}\n[truncated: showing {lines} of {total_lines} lines, \
-         {} of {total_bytes} bytes]",
+        "{kept}\n[truncated by {by}: showing {lines} of {total_lines} lines, \
+         {} of {total_bytes} bytes. Read again from offset {} for the rest.]",
+        kept.len(),
         kept.len()
     )
 }
@@ -297,6 +323,24 @@ fn read_object(args: &serde_json::Value) -> String {
         Err(e) => return serde_json::json!({ "path": path, "size": size, "error": e }).to_string(),
     };
 
+    // A file with no line breaks in the part read is one long line -- minified
+    // source, an encoded blob, a single-line export. Trimming to whole lines
+    // cannot help, and what would come back is a fragment costing the whole
+    // budget and carrying nothing the model can act on. Said, rather than
+    // shown.
+    if !head.contains('\n') && !tail.contains('\n') {
+        return serde_json::json!({
+            "path": path,
+            "size": size,
+            "error": format!(
+                "this file is {size} bytes on a single line, so no useful part of \
+                 it can be shown. It is likely minified or encoded. Read a span \
+                 of it with offset if you need one."
+            ),
+        })
+        .to_string();
+    }
+
     let head = whole_lines(&head, false);
     let tail = whole_lines(&tail, true);
     let skipped_from = offset + head.len() as u64;
@@ -309,7 +353,7 @@ fn read_object(args: &serde_json::Value) -> String {
         // Said precisely enough to act on: a model wanting the middle reads
         // again from this offset rather than guessing where it went.
         "content": format!(
-            "{head}\n[{skipped} bytes not shown; read again with offset {skipped_from} \
+            "{head}\n[{skipped} bytes not shown. Read again with offset={skipped_from} \
              for the middle]\n{tail}"
         ),
     })
