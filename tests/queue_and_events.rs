@@ -1181,14 +1181,39 @@ async fn racing_claimers_cannot_both_take_one_key() {
         .expect("enqueue");
     }
 
+    // Fewer racers than the pool has connections. Asking for more than that
+    // makes one claimer wait, and under load that wait can outlast sqlx's
+    // acquire timeout -- which fails this test for a reason that has nothing
+    // to do with what it is testing.
+    let racers = 4;
     let mut claims = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..racers {
         claims.push(jobs::claim(pool, &["test.race"], 10, jobs::DEFAULT_LEASE));
     }
     let results = futures::future::join_all(claims).await;
-    let taken: usize = results.iter().map(|r| r.as_ref().expect("claim").len()).sum();
 
-    assert_eq!(taken, 1, "six workers raced and {taken} turns started");
+    // Errors are counted apart from claims, because "a claimer could not
+    // reach the database" and "two claimers both won" are opposite findings
+    // and must not arrive as the same failure.
+    let mut taken = 0usize;
+    let mut failed = Vec::new();
+    for result in &results {
+        match result {
+            Ok(claimed) => taken += claimed.len(),
+            Err(e) => failed.push(e.to_string()),
+        }
+    }
+
+    assert!(
+        failed.is_empty(),
+        "{} of {racers} claimers could not reach the database: {failed:?}",
+        failed.len()
+    );
+    assert_eq!(
+        taken, 1,
+        "{racers} workers raced and {taken} turns started, which means the \
+         serialisation guarantee does not hold"
+    );
 
     finish!(db);
 }
