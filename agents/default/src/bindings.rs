@@ -176,6 +176,12 @@ pub mod outturn {
                 /// and feeding it back costs tokens on every later turn while telling
                 /// the model only what it already decided.
                 pub action: _rt::String,
+                /// The arguments the model asked with, minus the action.
+                ///
+                /// Kept so a later turn can be shown the call it made. A stored
+                /// assistant message carrying tool calls is malformed without them,
+                /// and both protocols reject it.
+                pub arguments: _rt::String,
             }
             impl ::core::fmt::Debug for ToolActivity {
                 fn fmt(
@@ -186,6 +192,7 @@ pub mod outturn {
                         .field("id", &self.id)
                         .field("name", &self.name)
                         .field("action", &self.action)
+                        .field("arguments", &self.arguments)
                         .finish()
                 }
             }
@@ -220,6 +227,14 @@ pub mod outturn {
                 /// or a table without paying for it in every later prompt: the model
                 /// is told enough to reason, and the reader gets the rest.
                 pub details: _rt::String,
+                /// What the model was actually given, after truncation.
+                ///
+                /// Reported so it can be stored and replayed on later turns exactly as
+                /// the model first saw it. Cutting a result down happens once, when the
+                /// tool runs; what is kept is what was cut down to, and a model that
+                /// wants more asks for more through the ranged read rather than being
+                /// handed a larger version of an answer it already has.
+                pub content: _rt::String,
                 /// Whether the tool failed. Reported either way -- a model that is
                 /// told nothing went wrong will act as though nothing did.
                 pub is_error: bool,
@@ -232,6 +247,7 @@ pub mod outturn {
                     f.debug_struct("ToolOutcome")
                         .field("id", &self.id)
                         .field("details", &self.details)
+                        .field("content", &self.content)
                         .field("is-error", &self.is_error)
                         .finish()
                 }
@@ -671,6 +687,7 @@ pub mod outturn {
                     let ToolOutcome {
                         id: id0,
                         details: details0,
+                        content: content0,
                         is_error: is_error0,
                     } = outcome;
                     let vec1 = id0;
@@ -679,11 +696,16 @@ pub mod outturn {
                     let vec2 = details0;
                     let ptr2 = vec2.as_ptr().cast::<u8>();
                     let len2 = vec2.len();
+                    let vec3 = content0;
+                    let ptr3 = vec3.as_ptr().cast::<u8>();
+                    let len3 = vec3.len();
                     #[cfg(target_arch = "wasm32")]
                     #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
                     unsafe extern "C" {
                         #[link_name = "tool-finished"]
-                        fn wit_import3(
+                        fn wit_import4(
+                            _: *mut u8,
+                            _: usize,
                             _: *mut u8,
                             _: usize,
                             _: *mut u8,
@@ -692,7 +714,9 @@ pub mod outturn {
                         );
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    unsafe extern "C" fn wit_import3(
+                    unsafe extern "C" fn wit_import4(
+                        _: *mut u8,
+                        _: usize,
                         _: *mut u8,
                         _: usize,
                         _: *mut u8,
@@ -702,11 +726,13 @@ pub mod outturn {
                         unreachable!()
                     }
                     unsafe {
-                        wit_import3(
+                        wit_import4(
                             ptr1.cast_mut(),
                             len1,
                             ptr2.cast_mut(),
                             len2,
+                            ptr3.cast_mut(),
+                            len3,
                             match is_error0 {
                                 true => 1,
                                 false => 0,
@@ -724,7 +750,12 @@ pub mod outturn {
             /// the agent did rather than only what it concluded.
             pub fn tool_started(activity: &ToolActivity) -> () {
                 unsafe {
-                    let ToolActivity { id: id0, name: name0, action: action0 } = activity;
+                    let ToolActivity {
+                        id: id0,
+                        name: name0,
+                        action: action0,
+                        arguments: arguments0,
+                    } = activity;
                     let vec1 = id0;
                     let ptr1 = vec1.as_ptr().cast::<u8>();
                     let len1 = vec1.len();
@@ -734,11 +765,16 @@ pub mod outturn {
                     let vec3 = action0;
                     let ptr3 = vec3.as_ptr().cast::<u8>();
                     let len3 = vec3.len();
+                    let vec4 = arguments0;
+                    let ptr4 = vec4.as_ptr().cast::<u8>();
+                    let len4 = vec4.len();
                     #[cfg(target_arch = "wasm32")]
                     #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
                     unsafe extern "C" {
                         #[link_name = "tool-started"]
-                        fn wit_import4(
+                        fn wit_import5(
+                            _: *mut u8,
+                            _: usize,
                             _: *mut u8,
                             _: usize,
                             _: *mut u8,
@@ -748,7 +784,9 @@ pub mod outturn {
                         );
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    unsafe extern "C" fn wit_import4(
+                    unsafe extern "C" fn wit_import5(
+                        _: *mut u8,
+                        _: usize,
                         _: *mut u8,
                         _: usize,
                         _: *mut u8,
@@ -759,13 +797,15 @@ pub mod outturn {
                         unreachable!()
                     }
                     unsafe {
-                        wit_import4(
+                        wit_import5(
                             ptr1.cast_mut(),
                             len1,
                             ptr2.cast_mut(),
                             len2,
                             ptr3.cast_mut(),
                             len3,
+                            ptr4.cast_mut(),
+                            len4,
                         )
                     };
                 }
@@ -1866,8 +1906,8 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1347] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xc1\x09\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1367] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd5\x09\x01A\x02\x01\
 A\x05\x01B?\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01p\x01\x01ks\x01r\x04\x04roles\x07contents\x0atool-calls\x04\x0ctool-call-id\x05\
@@ -1876,26 +1916,27 @@ r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02
 ion-request\x03\0\x0c\x01r\x05\x0dprompt-tokensy\x11completion-tokensy\x11cache-\
 read-tokensy\x12cache-write-tokensy\x10reasoning-tokensy\x04\0\x05usage\x03\0\x0e\
 \x01k\x0f\x01r\x04\x07contents\x0atool-calls\x04\x0dfinish-reason\x05\x05usage\x10\
-\x04\0\x0acompletion\x03\0\x11\x01r\x03\x02ids\x04names\x06actions\x04\0\x0dtool\
--activity\x03\0\x13\x01r\x02\x04paths\x04sizew\x04\0\x0bobject-info\x03\0\x15\x01\
-r\x03\x02ids\x07detailss\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0\x17\x01r\x02\
-\x07contents\x08deliverys\x04\0\x07arrival\x03\0\x19\x01r\x01\x0fmax-tool-rounds\
-y\x04\0\x06limits\x03\0\x1b\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbrevi\
-ations\x04\0\x05clock\x03\0\x1d\x01p}\x01j\x01\x1f\x01s\x01@\x03\x04paths\x06off\
-setw\x03leny\0\x20\x04\0\x0bread-object\x01!\x01j\x01\x16\x01s\x01@\x01\x04paths\
-\0\"\x04\0\x0bstat-object\x01#\x01j\x01w\x01s\x01@\x02\x04paths\x04data\x1f\0$\x04\
-\0\x0cwrite-object\x01%\x01p\x16\x01j\x01&\x01s\x01@\x01\x06prefixs\0'\x04\0\x0c\
-list-objects\x01(\x01@\x01\x07outcome\x18\x01\0\x04\0\x0dtool-finished\x01)\x01@\
-\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01*\x01p\x1a\x01@\0\0+\x04\0\x0d\
-pending-input\x01,\x01@\0\0\x1c\x04\0\x0ecurrent-limits\x01-\x01j\x01\x12\x01s\x01\
-@\x01\x07request\x0d\0.\x04\0\x04chat\x01/\x01@\0\0\x1e\x04\0\x0ccurrent-time\x01\
-0\x01@\x01\x04texts\x01\0\x04\0\x08progress\x011\x01@\x02\x05levels\x07messages\x01\
-\0\x04\0\x03log\x012\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07mess\
-age\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01\
-s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\
-\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\
-\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
-wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\x04\0\x0acompletion\x03\0\x11\x01r\x04\x02ids\x04names\x06actions\x09argumentss\
+\x04\0\x0dtool-activity\x03\0\x13\x01r\x02\x04paths\x04sizew\x04\0\x0bobject-inf\
+o\x03\0\x15\x01r\x04\x02ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctoo\
+l-outcome\x03\0\x17\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0\x19\
+\x01r\x01\x0fmax-tool-roundsy\x04\0\x06limits\x03\0\x1b\x01r\x04\x03nows\x07week\
+days\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0\x1d\x01p}\x01j\x01\x1f\x01\
+s\x01@\x03\x04paths\x06offsetw\x03leny\0\x20\x04\0\x0bread-object\x01!\x01j\x01\x16\
+\x01s\x01@\x01\x04paths\0\"\x04\0\x0bstat-object\x01#\x01j\x01w\x01s\x01@\x02\x04\
+paths\x04data\x1f\0$\x04\0\x0cwrite-object\x01%\x01p\x16\x01j\x01&\x01s\x01@\x01\
+\x06prefixs\0'\x04\0\x0clist-objects\x01(\x01@\x01\x07outcome\x18\x01\0\x04\0\x0d\
+tool-finished\x01)\x01@\x01\x08activity\x14\x01\0\x04\0\x0ctool-started\x01*\x01\
+p\x1a\x01@\0\0+\x04\0\x0dpending-input\x01,\x01@\0\0\x1c\x04\0\x0ecurrent-limits\
+\x01-\x01j\x01\x12\x01s\x01@\x01\x07request\x0d\0.\x04\0\x04chat\x01/\x01@\0\0\x1e\
+\x04\0\x0ccurrent-time\x010\x01@\x01\x04texts\x01\0\x04\0\x08progress\x011\x01@\x02\
+\x05levels\x07messages\x01\0\x04\0\x03log\x012\x03\0\x18outturn:agent/host@0.1.0\
+\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\
+\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\
+\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:ag\
+ent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\
+\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41\
+.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

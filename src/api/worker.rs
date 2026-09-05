@@ -67,6 +67,77 @@ pub struct ChatTurnPayload {
     pub timezone: Option<String>,
 }
 
+/// Rebuilds the conversation a model should be shown from what was stored.
+///
+/// A turn's tool round trips are part of the conversation. Shown only the
+/// prose it wrote afterwards, an agent cannot tell what it looked up from what
+/// it decided -- so it looks things up again, and answers questions about its
+/// own earlier answers by guessing.
+///
+/// What is replayed is what the model was given at the time, truncation and
+/// all. Cutting a result down happens once, when the tool runs; a model that
+/// wants more asks for more through the ranged read, rather than being handed
+/// a larger version of an answer it already has. `details` -- the whole
+/// result, for the reader -- is never sent.
+///
+/// One stored assistant message becomes up to three, because that is the order
+/// things happened in: the calls, then their results, then the prose. Rounds
+/// are not recovered; a turn that called tools three times replays as one
+/// batch. That is a faithful account of what was asked and answered, and a
+/// lossy one of when.
+fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
+    let mut projected = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        let calls = message
+            .metadata
+            .get("tool_calls")
+            .and_then(|c| c.as_array())
+            .filter(|c| !c.is_empty());
+
+        if let Some(calls) = calls {
+            projected.push(serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": calls
+                    .iter()
+                    .map(|c| serde_json::json!({
+                        "id": c["id"],
+                        "name": c["name"],
+                        "arguments": c["arguments"].as_str().unwrap_or("{}"),
+                    }))
+                    .collect::<Vec<_>>(),
+            }));
+
+            for call in calls {
+                projected.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    // Every call must be answered. A turn that died between
+                    // asking and recording leaves one without a result, and a
+                    // request carrying an unanswered call is rejected outright
+                    // -- so the gap is filled rather than left to break the
+                    // next turn as well.
+                    "content": call["result"]
+                        .as_str()
+                        .unwrap_or("{\"error\":\"no result was recorded\"}"),
+                }));
+            }
+        }
+
+        // An assistant message that only called tools has nothing else to say,
+        // and an empty one costs tokens to communicate that.
+        if !message.content.is_empty() || calls.is_none() {
+            projected.push(serde_json::json!({
+                "role": message.role,
+                "content": message.content,
+            }));
+        }
+    }
+
+    projected
+}
+
 /// What a completed turn produced.
 struct TurnOutcome {
     content: String,
@@ -354,11 +425,19 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Tool { id, name, action }) => {
+                    Ok(ExecuteEvent::Tool {
+                        id,
+                        name,
+                        action,
+                        arguments,
+                    }) => {
                         let call = serde_json::json!({
                             "id": id,
                             "name": name,
                             "action": action,
+                            // Stored, never announced: the browser shows the
+                            // action, and a later turn needs the call.
+                            "arguments": arguments,
                         });
                         // Announced live so the browser can show the work as
                         // it happens, and kept so the finished message can
@@ -380,6 +459,7 @@ impl Worker {
                     Ok(ExecuteEvent::ToolResult {
                         id,
                         details,
+                        content,
                         is_error,
                     }) => {
                         // Attached to the call it answers rather than sent as
@@ -390,6 +470,10 @@ impl Worker {
                             .find(|c| c["id"].as_str() == Some(id.as_str()))
                         {
                             call["details"] = serde_json::json!(details);
+                            // What the model was handed, kept exactly as it
+                            // was handed over. Replaying anything else would
+                            // rewrite the conversation the model remembers.
+                            call["result"] = serde_json::json!(content);
                             call["is_error"] = serde_json::json!(is_error);
                         }
                         events::append(
@@ -461,11 +545,7 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
 
-        let conversation: Vec<serde_json::Value> = history
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-            .collect();
+        let conversation = project(&history.messages);
 
         // The assistant's message is created empty before generation starts, so
         // deltas attach to a row that already exists. Without this the browser
@@ -626,3 +706,143 @@ fn model_for(policy: &serde_json::Value) -> String {
 
 
 
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::api::chat::Message;
+
+    fn message(role: &str, content: &str, metadata: serde_json::Value) -> Message {
+        Message {
+            id: Uuid::now_v7(),
+            session_id: Uuid::now_v7(),
+            role: role.to_string(),
+            content: content.to_string(),
+            metadata,
+            delta_next: 0,
+            model: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+        }
+    }
+
+    fn call(id: &str, result: Option<&str>) -> serde_json::Value {
+        let mut call = serde_json::json!({
+            "id": id,
+            "name": "get_current_time",
+            "action": "Checking the time",
+            "arguments": "{}",
+            "details": "the whole thing, for the reader",
+        });
+        if let Some(result) = result {
+            call["result"] = serde_json::json!(result);
+        }
+        call
+    }
+
+    /// Every call answered, every answer to a call that was made.
+    ///
+    /// Both protocols reject a request that breaks this, so a projection that
+    /// gets it wrong does not degrade -- it fails the turn.
+    fn assert_well_formed(projected: &[serde_json::Value]) {
+        let mut awaiting: Vec<String> = Vec::new();
+        for message in projected {
+            match message["role"].as_str() {
+                Some("assistant") => {
+                    for call in message["tool_calls"].as_array().unwrap_or(&Vec::new()) {
+                        awaiting.push(call["id"].as_str().expect("call id").to_string());
+                    }
+                }
+                Some("tool") => {
+                    let id = message["tool_call_id"].as_str().expect("tool_call_id");
+                    let found = awaiting.iter().position(|a| a == id);
+                    assert!(found.is_some(), "a result answered no call: {id}");
+                    awaiting.remove(found.expect("checked"));
+                }
+                _ => {}
+            }
+        }
+        assert!(awaiting.is_empty(), "calls left unanswered: {awaiting:?}");
+    }
+
+    #[test]
+    fn a_conversation_without_tools_is_unchanged() {
+        let projected = project(&[
+            message("user", "hello", serde_json::json!({})),
+            message("assistant", "hi", serde_json::json!({})),
+        ]);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0]["content"], "hello");
+        assert_eq!(projected[1]["content"], "hi");
+    }
+
+    #[test]
+    fn a_tool_call_is_replayed_before_the_answer_it_fed() {
+        let projected = project(&[
+            message("user", "what time is it?", serde_json::json!({})),
+            message(
+                "assistant",
+                "It is Friday.",
+                serde_json::json!({ "tool_calls": [call("call_1", Some("{\"weekday\":\"Friday\"}"))] }),
+            ),
+        ]);
+
+        assert_eq!(projected.len(), 4, "{projected:#?}");
+        assert_eq!(projected[1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(projected[2]["role"], "tool");
+        assert_eq!(projected[2]["content"], "{\"weekday\":\"Friday\"}");
+        assert_eq!(projected[3]["content"], "It is Friday.");
+        assert_well_formed(&projected);
+    }
+
+    #[test]
+    fn the_reader_only_view_is_never_sent() {
+        let projected = project(&[message(
+            "assistant",
+            "done",
+            serde_json::json!({ "tool_calls": [call("call_1", Some("short"))] }),
+        )]);
+        let sent = serde_json::to_string(&projected).expect("serialise");
+        assert!(
+            !sent.contains("for the reader"),
+            "the untruncated result reached the model: {sent}"
+        );
+    }
+
+    #[test]
+    fn a_call_that_recorded_no_result_is_still_answered() {
+        // A turn that died between asking and recording. Leaving the call
+        // unanswered would make every later turn in this session malformed,
+        // not just the one that failed.
+        let projected = project(&[message(
+            "assistant",
+            "",
+            serde_json::json!({ "tool_calls": [call("call_1", None)] }),
+        )]);
+        assert_well_formed(&projected);
+        assert!(projected[1]["content"].as_str().expect("content").contains("error"));
+    }
+
+    #[test]
+    fn a_turn_that_only_called_tools_adds_no_empty_message() {
+        let projected = project(&[message(
+            "assistant",
+            "",
+            serde_json::json!({ "tool_calls": [call("call_1", Some("ok"))] }),
+        )]);
+        assert_eq!(projected.len(), 2, "an empty reply was sent: {projected:#?}");
+    }
+
+    #[test]
+    fn several_calls_in_one_turn_all_get_answers() {
+        let projected = project(&[message(
+            "assistant",
+            "both done",
+            serde_json::json!({
+                "tool_calls": [call("call_1", Some("a")), call("call_2", Some("b"))]
+            }),
+        )]);
+        assert_well_formed(&projected);
+        assert_eq!(projected[0]["tool_calls"].as_array().expect("calls").len(), 2);
+    }
+}

@@ -312,19 +312,21 @@ fn run_tool(call: &ToolCall) -> Message {
         other => format!(r#"{{"error":"no such tool: {other}"}}"#),
     };
 
-    // The reader gets everything; the model gets what fits. For the clock
-    // these are the same string, but the shape is what a file read or a
-    // query needs, and it costs nothing to be right about it now.
+    // The reader gets everything; the model gets what fits. Cutting it down
+    // happens here and once: what the model is handed now is what it will be
+    // shown on every later turn, so the two must be the same string.
     let is_error = content.contains("\"error\"");
+    let for_model = for_the_model(&content);
     host::tool_finished(&ToolOutcome {
         id: call.id.clone(),
         details: content.clone(),
+        content: for_model.clone(),
         is_error,
     });
 
     Message {
         role: "tool".to_string(),
-        content: for_the_model(&content),
+        content: for_model,
         tool_calls: Vec::new(),
         tool_call_id: Some(call.id.clone()),
     }
@@ -471,6 +473,7 @@ impl Guest for Component {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     action,
+                    arguments: without_action.clone(),
                 });
                 echoed.push(ToolCall {
                     id: call.id.clone(),

@@ -86,6 +86,12 @@ interface host {
         /// and feeding it back costs tokens on every later turn while telling
         /// the model only what it already decided.
         action: string,
+        /// The arguments the model asked with, minus the action.
+        ///
+        /// Kept so a later turn can be shown the call it made. A stored
+        /// assistant message carrying tool calls is malformed without them,
+        /// and both protocols reject it.
+        arguments: string,
     }
 
     /// One stored object, as the guest sees it.
@@ -129,6 +135,14 @@ interface host {
         /// or a table without paying for it in every later prompt: the model
         /// is told enough to reason, and the reader gets the rest.
         details: string,
+        /// What the model was actually given, after truncation.
+        ///
+        /// Reported so it can be stored and replayed on later turns exactly as
+        /// the model first saw it. Cutting a result down happens once, when the
+        /// tool runs; what is kept is what was cut down to, and a model that
+        /// wants more asks for more through the ranged read rather than being
+        /// handed a larger version of an answer it already has.
+        content: string,
         /// Whether the tool failed. Reported either way -- a model that is
         /// told nothing went wrong will act as though nothing did.
         is-error: bool,

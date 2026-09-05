@@ -81,6 +81,20 @@ pub struct ExecuteRequest {
 pub struct ConversationMessage {
     pub role: String,
     pub content: String,
+    /// On an assistant message, the tools it asked for on that turn.
+    #[serde(default)]
+    pub tool_calls: Vec<ConversationToolCall>,
+    /// On a tool message, which call it answers.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConversationToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
 }
 
 /// One line of the response stream.
@@ -95,12 +109,25 @@ pub enum ExecuteEvent {
     Delta { idx: i64, text: String },
     /// The guest started a tool, with the model's own label for what it is
     /// doing.
-    Tool { id: String, name: String, action: String },
+    Tool {
+        id: String,
+        name: String,
+        action: String,
+        /// What the model asked with. Stored so a later turn can be shown the
+        /// call rather than only the prose that followed it.
+        #[serde(default)]
+        arguments: String,
+    },
     /// A tool finished. Carries what the reader may look at, which the model
-    /// was never sent.
+    /// was never sent, and separately what the model was given.
     ToolResult {
         id: String,
         details: String,
+        /// The result as the model received it, already truncated. Kept so a
+        /// later turn replays what was actually said rather than a fuller
+        /// version of it.
+        #[serde(default)]
+        content: String,
         is_error: bool,
     },
     /// Generation finished; the reply is complete, and this is what it cost.
@@ -179,10 +206,20 @@ pub async fn execute(
         .map(|m| Message {
             role: m.role,
             content: m.content,
-            // Stored history holds no tool calls: a turn's tool round trips
-            // live and die inside it, and only the reply is kept.
-            tool_calls: Vec::new(),
-            tool_call_id: None,
+            // A turn's tool round trips are part of the conversation, not
+            // scaffolding inside it. An agent that is shown only the prose it
+            // wrote afterwards cannot tell what it looked up from what it
+            // decided, and will look things up again to find out.
+            tool_calls: m
+                .tool_calls
+                .into_iter()
+                .map(|c| crate::runtime::component::ToolCall {
+                    id: c.id,
+                    name: c.name,
+                    arguments: c.arguments,
+                })
+                .collect(),
+            tool_call_id: m.tool_call_id,
         })
         .collect();
 
@@ -215,6 +252,7 @@ pub async fn execute(
                 id: activity.id.clone(),
                 name: activity.name.clone(),
                 action: activity.action.clone(),
+                arguments: activity.arguments.clone(),
             });
         })
     };
@@ -225,6 +263,7 @@ pub async fn execute(
             let _ = tx.send(ExecuteEvent::ToolResult {
                 id: outcome.id.clone(),
                 details: outcome.details.clone(),
+                content: outcome.content.clone(),
                 is_error: outcome.is_error,
             });
         })
