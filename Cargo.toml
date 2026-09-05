@@ -59,7 +59,15 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # checkout builds and runs only what needs nothing, rather than silently
 # skipping and reporting success. Each database test runs in its own schema,
 # so they are safe to run in parallel.
-integration-tests = []
+#
+# Implies slow-tests, so one flag before a push runs everything.
+integration-tests = ["slow-tests"]
+
+# Tests gated for what they cost rather than for what they need. The component
+# suite needs no services at all, but instantiates a WebAssembly sandbox per
+# case and saturates the machine doing it -- which is a poor trade for the
+# check someone runs twenty times an hour while changing one function.
+slow-tests = []
 
 [[test]]
 name = "api"
@@ -73,7 +81,8 @@ required-features = ["integration-tests"]
 name = "agent_component"
 required-features = ["integration-tests"]
 
-# Uses a scripted gateway rather than a live model, so it needs no services
-# beyond what cargo provides.
+# Uses a scripted gateway rather than a live model, so it needs no services --
+# but it is the most expensive suite here, so it waits to be asked for.
 [[test]]
 name = "agent_component_fake"
+required-features = ["slow-tests"]

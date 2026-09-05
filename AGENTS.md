@@ -95,11 +95,27 @@ because no turn is running whose ending could change the answer.
 
 ## Tests
 
+`cargo test` runs what is fast and needs nothing. Use it while working.
+
+Before a push, run everything:
+
 ```bash
 TEST_DATABASE_URL='postgres://outturn:outturn-dev@localhost:15432/outturn_test' \
 GATEWAY_URL=http://localhost:18081 \
 cargo test --features integration-tests
 ```
+
+Two gates. `integration-tests` is for suites that need services -- Postgres,
+a gateway, a model -- and it implies `slow-tests`, which is for suites gated by
+what they cost rather than what they need. The component suite needs no
+services at all but instantiates a sandbox per case and saturates the machine,
+which is a poor trade against a check run twenty times an hour.
+
+Do not assert elapsed time in the slow suites. Sixteen sandboxes compete for
+whatever cores are left, and a turn there finishes when the suite does rather
+than when its own deadline fires -- a test that measured this failed about half
+the time while the deadline it was testing worked perfectly. Bound the work
+from outside with `tokio::time::timeout` and assert that it finished.
 
 Every test gets a private Postgres schema, so the suite is safe to run in
 parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`

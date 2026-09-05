@@ -18,6 +18,22 @@ fn component() -> Vec<u8> {
     std::fs::read("assets/agent_default.wasm").expect("component fixture")
 }
 
+/// One runner for the whole binary.
+///
+/// Compiling the component is the most expensive thing these tests do, and a
+/// runner each meant every test paid for it -- sixteen concurrent Cranelift
+/// compiles of identical bytes, in a debug build, on however many cores are
+/// left over. That starved the one test that measures elapsed time badly
+/// enough to fail it: its turn finished when the suite did, not when its
+/// deadline fired.
+///
+/// Sharing one runner is also what the runtime does, so these tests now
+/// exercise the compile cache rather than routing around it.
+fn runner() -> &'static AgentRunner {
+    static RUNNER: std::sync::OnceLock<AgentRunner> = std::sync::OnceLock::new();
+    RUNNER.get_or_init(|| AgentRunner::new().expect("runner"))
+}
+
 fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> RunOptions {
     RunOptions {
         session_id: Uuid::now_v7(),
@@ -49,10 +65,10 @@ fn user(text: &str) -> Vec<Message> {
     }]
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streams_deltas_and_returns_the_whole_reply() {
     let gateway = FakeGateway::start(Behaviour::Reply("one two three four".into())).await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
     let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = {
@@ -80,10 +96,10 @@ async fn streams_deltas_and_returns_the_whole_reply() {
     assert_eq!(seen.concat(), reply);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_system_prompt_leads_the_conversation() {
     let gateway = FakeGateway::start(Behaviour::Reply("ok".into())).await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
     runner
         .run(
@@ -107,14 +123,14 @@ async fn the_system_prompt_leads_the_conversation() {
     assert_eq!(messages[1]["role"], "user");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gateway_failure_surfaces_as_an_error() {
     let gateway = FakeGateway::start(Behaviour::Status(
         StatusCode::SERVICE_UNAVAILABLE,
         "no provider available".into(),
     ))
     .await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
     let result = runner
         .run(
@@ -132,7 +148,7 @@ async fn a_gateway_failure_surfaces_as_an_error() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_stream_returns_what_arrived() {
     // An upstream that drops mid-generation: the caller should keep the text
     // it received rather than losing the turn entirely.
@@ -141,7 +157,7 @@ async fn a_truncated_stream_returns_what_arrived() {
         chunks: 2,
     })
     .await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
     let reply = runner
         .run(
@@ -157,10 +173,10 @@ async fn a_truncated_stream_returns_what_arrived() {
     assert_eq!(reply, "one two ");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_conversation_is_refused_without_calling_the_model() {
     let gateway = FakeGateway::start(Behaviour::Reply("unused".into())).await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
     let result = runner
         .run(&component(), Vec::new(), "system only".into(), options(&gateway, None))
@@ -182,7 +198,7 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
 /// a tool call arriving in fragments, the guest reads the model's reason out of
 /// the arguments and announces it, the clock answers in the user's zone, and
 /// the reason is stripped before the call goes back to the model.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_a_tool_and_answers_with_its_result() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "get_current_time".into(),
@@ -201,7 +217,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
         })
     };
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.on_tool = Some(on_tool);
     options.timezone = Some("Australia/Brisbane".into());
@@ -290,7 +306,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
 }
 
 /// Without a zone the clock says so rather than passing off UTC as local.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "get_current_time".into(),
@@ -299,7 +315,7 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     // An unparseable zone must degrade the same way an absent one does; a
     // client sending nonsense should not put the agent in a random timezone.
@@ -334,36 +350,45 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
 /// complain about. Left alone the turn never ends -- and because the job
 /// heartbeat renews the lease while the worker waits, it would not even be
 /// reclaimed as abandoned work.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
     let gateway = FakeGateway::start(Behaviour::Hang).await;
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
 
-    let started = std::time::Instant::now();
-    let outcome = runner
-        .run(
+    // Bounded from outside rather than measured from inside. The old test
+    // asserted elapsed time against a threshold, which cannot distinguish a
+    // deadline that did not fire from a turn that was starved -- and starved
+    // is what it was: with the suite running sixteen sandboxes at once, this
+    // turn finished when the suite did, not when its own deadline expired.
+    // The same test passes in three seconds run on its own.
+    //
+    // Nothing sharper is available from the error, either: a read timeout
+    // surfaces from reqwest as "error sending request for url ...", which is
+    // also what a refused connection says.
+    //
+    // What the test is actually for survives all of that. Without a deadline
+    // this turn never ends, so completing at all is the evidence, and the
+    // outer bound only has to be shorter than forever.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        runner.run(
             &component(),
             user("Are you there?"),
             String::new(),
             options(&gateway, None),
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("the turn never ended, so no deadline applied");
 
     assert!(outcome.is_err(), "a silent provider must not hang the turn");
-    // Comfortably inside the 30s a stalled turn would otherwise sit for, and
-    // safely outside the 2s deadline plus scheduling.
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
-        "gave up after {:?}, which suggests no deadline applied",
-        started.elapsed()
-    );
 }
 
 // -- Limits -------------------------------------------------------------------
 
 /// A model that keeps asking for tools is stopped, and the turn still ends
 /// with something to show rather than an error.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_looping_model_is_bounded_and_still_answers() {
     // Asks for a tool on every single call, so only the limit ends it.
     let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
@@ -373,7 +398,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.max_tool_rounds = 3;
 
@@ -398,7 +423,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
 ///
 /// A component is deployed by a tenant, so a bound that lives only in guest
 /// code is a suggestion. The host counts the calls it makes and refuses.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
     let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
         name: "get_current_time".into(),
@@ -407,7 +432,7 @@ async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.max_tool_rounds = 1;
 
@@ -428,7 +453,7 @@ async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
 /// arguments may be incomplete. Some truncations still parse as valid JSON --
 /// into something the model never meant -- which is exactly why the finish
 /// reason has to be checked rather than the arguments.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_reply_does_not_get_its_tools_run() {
     let gateway = FakeGateway::start(Behaviour::TruncatedToolCall {
         name: "get_current_time".into(),
@@ -437,7 +462,7 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.max_tool_rounds = 2;
 
@@ -473,7 +498,7 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
 ///
 /// It rides the gateway's own response rather than a channel of its own, so
 /// the runtime needs neither a database nor credentials to be steered.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_sent_mid_turn_reaches_the_next_round() {
     let gateway = FakeGateway::start(Behaviour::ToolThenSteer {
         name: "get_current_time".into(),
@@ -483,7 +508,7 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let reply = runner
         .run(
             &component(),
@@ -529,7 +554,7 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
 /// The guest never sees these numbers and cannot report them: asking a
 /// component deployed by a tenant to declare its own spend is asking the party
 /// being billed to write the invoice.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_reports_what_it_spent() {
     // Two rounds: a tool call, then the answer. Each reports usage, so a
     // turn that only counted the last one would come up short.
@@ -540,7 +565,7 @@ async fn a_turn_reports_what_it_spent() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let (_reply, cost) = runner
         .run(
             &component(),
@@ -574,7 +599,7 @@ async fn a_turn_reports_what_it_spent() {
 /// The split is what lets a tool return a file or a table without paying for
 /// it in every later prompt: the model is told enough to reason over, and the
 /// browser gets the rest.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "get_current_time".into(),
@@ -593,7 +618,7 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
         })
     };
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.on_tool_result = Some(on_tool_result);
 
@@ -619,7 +644,7 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
 /// The guest is never told which tenant it belongs to, so it cannot name
 /// another; and the host resolves every path rather than trusting one, so a
 /// component that tries to climb out is refused rather than quietly corrected.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
@@ -640,7 +665,7 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
     options.tenant_id = ours;
@@ -674,7 +699,7 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
 /// Head-only truncation loses exactly the part that matters in a log: the
 /// setup is at the top and what went wrong is at the bottom. What was skipped
 /// is described precisely enough to go and fetch.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_file_is_read_from_both_ends() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
@@ -699,7 +724,7 @@ async fn a_large_file_is_read_from_both_ends() {
     })
     .await;
 
-    let runner = AgentRunner::new().expect("runner");
+    let runner = runner();
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
     options.tenant_id = tenant;
