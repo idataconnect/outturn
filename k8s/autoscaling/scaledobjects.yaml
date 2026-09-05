@@ -63,16 +63,12 @@ spec:
         # of backlog, so a pod is added while the queue is forming rather than
         # after it has formed.
         targetQueryValue: "10"
-        # Work deferred by a few seconds is still work waiting for capacity:
-        # a turn a full runtime handed back is exactly the signal to scale on,
-        # and excluding it would make the queue look shortest at its busiest.
-        # The window stops genuinely scheduled work -- a job due tomorrow --
-        # from holding pods open overnight.
+        # Turns that could start now, which is not the same as turns waiting.
+        # `job_backlog` is defined in migrations/0001_initial.sql, beside the
+        # table and the claim it has to agree with.
         query: >-
-          select count(*) from jobs
-          where state = 'pending'
-            and kind = 'chat.turn'
-            and run_after <= now() + interval '30 seconds'
+          select coalesce(max(claimable), 0)
+          from job_backlog where kind = 'chat.turn'
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -98,8 +94,8 @@ spec:
         # the bottleneck -- each pod claims up to OUTTURN_MAX_IN_FLIGHT_TURNS
         # -- not because it is doing the work.
         targetQueryValue: "40"
+        # The same backlog the runtime scales on: rows that cannot be claimed
+        # are not work.
         query: >-
-          select count(*) from jobs
-          where state = 'pending'
-            and kind = 'chat.turn'
-            and run_after <= now() + interval '30 seconds'
+          select coalesce(max(claimable), 0)
+          from job_backlog where kind = 'chat.turn'

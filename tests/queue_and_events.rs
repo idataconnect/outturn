@@ -1305,3 +1305,70 @@ async fn only_a_running_job_can_be_released() {
 
     finish!(db);
 }
+
+#[tokio::test]
+async fn the_backlog_counts_work_that_could_actually_start() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    // One session with six queued turns is one unit of work, not six: the
+    // serial key admits one at a time. Counting rows would ask an autoscaler
+    // for pods that cannot claim anything.
+    let session = Uuid::now_v7().to_string();
+    for i in 0..6 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "chat.turn",
+            serde_json::json!({ "i": i }),
+            None,
+            Some(&session),
+        )
+        .await
+        .expect("enqueue");
+    }
+    // Two more sessions, and two jobs with nothing to serialise on.
+    for _ in 0..2 {
+        let other = Uuid::now_v7().to_string();
+        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, Some(&other))
+            .await
+            .expect("enqueue");
+    }
+    for _ in 0..2 {
+        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, None)
+            .await
+            .expect("enqueue");
+    }
+
+    let backlog = || async {
+        sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(claimable), 0) from job_backlog where kind = 'chat.turn'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("backlog")
+    };
+
+    // Three serialised keys plus two unconstrained jobs.
+    assert_eq!(backlog().await, 5, "the backlog counted rows rather than work");
+
+    // The number the autoscaler reads has to be the number a fleet with enough
+    // room could start, or it scales towards pods that would sit idle.
+    let claimed = jobs::claim(pool, &["chat.turn"], 100, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.len(),
+        5,
+        "the backlog and the claim disagree about what can start"
+    );
+
+    // With those running, only their keys are blocked: nothing is left.
+    assert_eq!(
+        backlog().await,
+        0,
+        "work already running was counted as waiting for a pod"
+    );
+
+    finish!(db);
+}

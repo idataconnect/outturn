@@ -378,6 +378,45 @@ create index jobs_serial_running_idx on jobs (serial_key)
 create index jobs_lease_idx on jobs (leased_until)
     where state = 'running';
 
+-- What an autoscaler should read: work that could start now, not work that is
+-- waiting. A serial key admits one running job at a time, so a session with a
+-- hundred queued turns is one unit of work rather than a hundred -- counting
+-- rows would ask for pods that cannot claim anything.
+--
+-- Defined here rather than in the scaler's configuration so there is one
+-- statement of what "backlog" means, and so a test can hold it against what
+-- `claim` actually takes.
+--
+-- The window admits work deferred by a few seconds, because a turn a full
+-- runtime handed back is precisely the signal to scale on, and excluding it
+-- would make the backlog look shortest when the cluster is busiest. It stops
+-- short of genuinely scheduled work, which must not hold pods open overnight.
+create view job_backlog as
+select kind, sum(units)::bigint as claimable
+from (
+    -- Unconstrained work: every row is its own unit.
+    select kind, count(*) as units
+      from jobs
+     where state = 'pending'
+       and run_after <= now() + interval '30 seconds'
+       and serial_key is null
+     group by kind
+    union all
+    -- Serialised work: one unit per key, and none for a key already running.
+    select j.kind, count(distinct j.serial_key) as units
+      from jobs j
+     where j.state = 'pending'
+       and j.run_after <= now() + interval '30 seconds'
+       and j.serial_key is not null
+       and not exists (
+           select 1 from jobs r
+            where r.state = 'running'
+              and r.serial_key = j.serial_key
+       )
+     group by j.kind
+) parts
+group by kind;
+
 -- This table is high-churn: rows are updated on claim and again on completion,
 -- so dead tuples accumulate faster than the default autovacuum thresholds
 -- expect.

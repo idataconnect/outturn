@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.17",
+    "@assistant-ui/react": "^0.15.18",
     "@assistant-ui/react-markdown": "^0.14.13",
     "lucide-react": "^1.38.0",
     "react": "^19.2.8",

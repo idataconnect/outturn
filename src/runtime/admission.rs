@@ -48,12 +48,41 @@ impl CgroupMemory {
         std::fs::read_to_string(path).ok()?.trim().parse().ok()
     }
 
+    /// One counter out of a cgroup `memory.stat`, which is `key value` a line.
+    ///
+    /// Matched on the whole first field rather than a prefix: v1 carries both
+    /// `inactive_file` and `total_inactive_file`, and a prefix match would take
+    /// whichever came first.
+    fn stat(stat: &str, key: &str) -> Option<u64> {
+        stat.lines()
+            .filter_map(|line| line.split_once(' '))
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value.trim().parse().ok())
+    }
+
+    /// What is left before the limit, counting cache the kernel would drop
+    /// rather than fail an allocation.
+    ///
+    /// This is the number a pod is killed against: the kernel reclaims file
+    /// cache under pressure, so charged-but-reclaimable pages are not memory
+    /// anyone is short of. Subtracting them is what kubelet calls the working
+    /// set, and using `current` raw instead is the difference between "this pod
+    /// is full" and "this pod has read some files".
+    fn headroom(limit: u64, current: u64, inactive_file: u64) -> u64 {
+        limit.saturating_sub(current.saturating_sub(inactive_file))
+    }
+
     fn cgroup_v2() -> Option<u64> {
         let limit = std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
         // "max" means no limit, so the cgroup has nothing to say here.
         let limit: u64 = limit.trim().parse().ok()?;
-        let used = Self::read_u64("/sys/fs/cgroup/memory.current")?;
-        Some(limit.saturating_sub(used))
+        let current = Self::read_u64("/sys/fs/cgroup/memory.current")?;
+        let stat = std::fs::read_to_string("/sys/fs/cgroup/memory.stat").unwrap_or_default();
+        // A missing counter costs headroom rather than inventing it: better to
+        // refuse a turn that would have fitted than to accept one that will
+        // not.
+        let inactive_file = Self::stat(&stat, "inactive_file").unwrap_or(0);
+        Some(Self::headroom(limit, current, inactive_file))
     }
 
     fn cgroup_v1() -> Option<u64> {
@@ -62,8 +91,13 @@ impl CgroupMemory {
         if limit >= u64::MAX / 2 {
             return None;
         }
-        let used = Self::read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes")?;
-        Some(limit.saturating_sub(used))
+        let current = Self::read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes")?;
+        let stat =
+            std::fs::read_to_string("/sys/fs/cgroup/memory/memory.stat").unwrap_or_default();
+        // v1 reports per-cgroup and hierarchical counters side by side; the
+        // hierarchical one is what the limit applies to.
+        let inactive_file = Self::stat(&stat, "total_inactive_file").unwrap_or(0);
+        Some(Self::headroom(limit, current, inactive_file))
     }
 
     /// MemAvailable rather than MemFree: the kernel's own estimate of what a
@@ -252,6 +286,39 @@ mod tests {
         let _first = a.try_admit().expect("admitted");
         assert!(a.try_admit().is_err());
         assert_eq!(a.in_flight(), 1, "a refusal left a slot held");
+    }
+
+    #[test]
+    fn cache_the_kernel_would_drop_is_not_counted_as_used() {
+        // Without this a pod that has merely read files reports itself full:
+        // page cache is charged to the cgroup and stays charged until there is
+        // pressure, so `current` climbs to the limit and never comes back.
+        let limit = 1024;
+        let current = 1000;
+        let inactive_file = 900;
+        assert_eq!(CgroupMemory::headroom(limit, current, inactive_file), 924);
+        assert_eq!(
+            CgroupMemory::headroom(limit, current, 0),
+            24,
+            "counting reclaimable cache as used is what made a pod look full"
+        );
+    }
+
+    #[test]
+    fn a_counter_is_matched_whole_rather_than_by_prefix() {
+        // v1 carries both, and a prefix match takes whichever comes first.
+        let stat = "inactive_file 100\ntotal_inactive_file 700\nanon 5\n";
+        assert_eq!(CgroupMemory::stat(stat, "inactive_file"), Some(100));
+        assert_eq!(CgroupMemory::stat(stat, "total_inactive_file"), Some(700));
+        assert_eq!(CgroupMemory::stat(stat, "nope"), None);
+    }
+
+    #[test]
+    fn headroom_never_wraps() {
+        // A cgroup can report usage above its own limit, and a reclaimable
+        // figure larger than usage; neither may turn into a huge headroom.
+        assert_eq!(CgroupMemory::headroom(100, 200, 0), 0);
+        assert_eq!(CgroupMemory::headroom(100, 10, 999), 100);
     }
 
     #[test]
