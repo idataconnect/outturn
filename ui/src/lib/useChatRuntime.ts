@@ -9,6 +9,7 @@ import {
   loadHistory,
   pollEvents,
   sendMessage,
+  type Delivery,
   type Message,
   type ToolCallRecord,
 } from './chat'
@@ -221,8 +222,8 @@ export function useChatRuntime(sessionId: string | null) {
     }
   }, [sessionId, merge])
 
-  const onNew = useCallback(
-    async (message: AppendMessage) => {
+  const submit = useCallback(
+    async (message: AppendMessage, delivery?: Delivery) => {
       if (!sessionId) return
       const part = message.content[0]
       if (part?.type !== 'text') {
@@ -234,7 +235,7 @@ export function useChatRuntime(sessionId: string | null) {
       try {
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
-        const stored = await sendMessage(sessionId, part.text)
+        const stored = await sendMessage(sessionId, part.text, delivery)
         merge([stored])
       } catch (e) {
         setIsRunning(false)
@@ -245,11 +246,52 @@ export function useChatRuntime(sessionId: string | null) {
     [sessionId, merge],
   )
 
+  /**
+   * Declaring this is what lets someone type while the agent is working.
+   *
+   * Without it the composer swallows Enter mid-turn -- and swallows it by
+   * returning early, so the keypress falls through to the textarea and inserts
+   * a newline instead. It looks intermittent, because it only happens while a
+   * reply is still streaming.
+   *
+   * The lanes are always empty because the queue is not here. A message is
+   * persisted the moment it is sent and comes back over the event feed like
+   * any other; the agent picks it up at its next round boundary. Holding a
+   * copy in the browser as well would mean two places disagreeing about
+   * whether something was sent, and the browser's copy is the one that
+   * vanishes when the tab closes.
+   */
+  const queue = useMemo(
+    () => ({
+      items: [],
+      steerItems: [],
+      // Reached when nothing is running: an ordinary message starting an
+      // ordinary turn.
+      enqueue: (message: AppendMessage) => {
+        void submit(message).catch(() => {})
+      },
+      // Reached when a turn is in flight. The agent is told at its next round
+      // boundary, which is what someone typing mid-reply means.
+      steer: (message: AppendMessage) => {
+        void submit(message, 'steer').catch(() => {})
+      },
+      // Nothing is ever pending on this side, so there is nothing to reorder,
+      // rewrite or take back.
+      move: () => {},
+      edit: () => {},
+      remove: () => {},
+    }),
+    [submit],
+  )
+
   const runtime = useExternalStoreRuntime({
     messages,
     isRunning,
     convertMessage,
-    onNew,
+    // Never reached while `queue` is set -- the runtime routes every append
+    // through the queue instead -- but required, and the same path anyway.
+    onNew: submit,
+    queue,
   })
 
   return useMemo(() => ({ runtime, error, isRunning }), [runtime, error, isRunning])

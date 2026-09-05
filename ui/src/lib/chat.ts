@@ -107,10 +107,20 @@ const timezone = (): string | undefined => {
   }
 }
 
-export const sendMessage = (sessionId: string, content: string) =>
+/**
+ * When a message sent during a turn takes effect.
+ *
+ * `steer` reaches the agent at its next round boundary, redirecting work
+ * already under way. `follow_up` waits until the agent would otherwise stop.
+ * The server defaults to steering, which is what someone typing mid-turn
+ * almost always means: they are reacting to what they can see.
+ */
+export type Delivery = 'steer' | 'follow_up'
+
+export const sendMessage = (sessionId: string, content: string, delivery?: Delivery) =>
   api<Message>(`/v1/agent-sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content, timezone: timezone() }),
+    body: JSON.stringify({ content, timezone: timezone(), delivery }),
   })
 
 /**
