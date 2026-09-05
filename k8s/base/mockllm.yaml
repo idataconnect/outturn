@@ -1,0 +1,64 @@
+# A model that never was, for load tests.
+#
+# Deployed at zero replicas and left there. Scaling it up is the whole of
+# turning it on:
+#
+#   kubectl scale deploy/outturn-mockllm --replicas=1
+#
+# It is declared here rather than in a separate overlay so it is discoverable
+# and versioned with everything else; at zero replicas it costs nothing. It
+# deliberately has no ScaledObject -- the replica count is a decision someone
+# makes by hand, which is exactly the case where a number in the manifest is a
+# declaration rather than a fight with an autoscaler.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-mockllm
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: outturn-mockllm
+  template:
+    metadata:
+      labels:
+        app: outturn-mockllm
+    spec:
+      containers:
+        - name: mockllm
+          image: outturn-mockllm
+          ports:
+            - containerPort: 8083
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8083
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              # Generous on CPU because the point of it is to not be the
+              # bottleneck: whatever a load test finds should be in the tiers
+              # being tested, not in the thing standing in for a model.
+              cpu: "2"
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-mockllm
+spec:
+  selector:
+    app: outturn-mockllm
+  ports:
+    - port: 8083
+      targetPort: 8083

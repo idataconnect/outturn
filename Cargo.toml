@@ -26,6 +26,7 @@ opentelemetry = "0.32.0"
 opentelemetry-otlp = "0.32.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+async-stream = "0.3"
 tracing-opentelemetry = "0.33.0"
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
 reqwest = { version = "0.12", features = ["json"] }
@@ -68,6 +69,13 @@ integration-tests = ["slow-tests"]
 # case and saturates the machine doing it -- which is a poor trade for the
 # check someone runs twenty times an hour while changing one function.
 slow-tests = []
+
+# The mock provider. A binary rather than a test fixture because a load test
+# has to go through the gateway's real HTTP client, streaming and timeouts --
+# an in-process stand-in measures the stand-in.
+[[bin]]
+name = "mockllm"
+path = "src/bin/mockllm.rs"
 
 [[test]]
 name = "api"
