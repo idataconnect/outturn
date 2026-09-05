@@ -124,6 +124,11 @@ connection that hangs — so the tiers above the provider can be tested for
 behaviour rather than for whatever a model happened to say. Only
 `tests/agent_component.rs` needs a live model.
 
+Storage layout and retention are written up separately, in
+[docs/storage.md](docs/storage.md) — including why the object prefixes are
+ordered scope-first rather than as the hierarchy you would expect, which looks
+like a mistake until you know about S3's per-bucket lifecycle rule cap.
+
 ## Invariants worth knowing before you change things
 
 These are load-bearing. Each has already caused a visible bug.
