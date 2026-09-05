@@ -35,6 +35,14 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+/// Names what answered, on every response.
+///
+/// Nothing enforces anything with it. It is there so a transcript served by a
+/// fixture can be told apart from one served by a model, months later, by
+/// somebody who does not know this service exists.
+const MOCK_HEADER: axum::http::HeaderName =
+    axum::http::HeaderName::from_static("x-outturn-mock");
+
 /// Words the filler is built from.
 ///
 /// Deterministic on purpose: a load test that also has to cope with novel text
@@ -274,7 +282,7 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
         } else {
             serde_json::json!({ "role": "assistant", "content": filler(body_tokens) })
         };
-        return Json(serde_json::json!({
+        return ([(MOCK_HEADER, "outturn-mockllm: generated, not inferred")], Json(serde_json::json!({
             "id": "mock",
             "object": "chat.completion",
             "model": req.model,
@@ -284,7 +292,7 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
                 "finish_reason": if wants_tool { "tool_calls" } else { "stop" },
             }],
             "usage": usage,
-        }))
+        })))
         .into_response();
     }
 
@@ -319,7 +327,15 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
     };
 
     (
-        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+        [
+            (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+            // Said on every response, because the one time it matters is when
+            // somebody is looking at a transcript wondering where the words
+            // came from. A component that fabricates model output should be
+            // identifiable after the fact rather than only by knowing which
+            // service answered.
+            (MOCK_HEADER, "outturn-mockllm: generated, not inferred"),
+        ],
         Body::from_stream(stream),
     )
         .into_response()

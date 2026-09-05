@@ -124,6 +124,18 @@ connection that hangs — so the tiers above the provider can be tested for
 behaviour rather than for whatever a model happened to say. Only
 `tests/agent_component.rs` needs a live model.
 
+Two things are declared in `k8s/base` but do nothing until asked. The mock
+provider (`outturn-mockllm`) sits at zero replicas: it is what integration and
+end-to-end tests point at when the shape of a turn matters and the words do
+not, so it belongs where CI cannot forget to install it. Everything it serves
+carries an `x-outturn-mock` header, so a transcript it produced can be told
+apart from a real one later by somebody who does not know it exists.
+
+KEDA's manifests are *not* in base, and the difference is not arbitrary. A
+deployment at zero replicas costs one object; a controller with CRDs and
+webhooks cannot be installed inertly. So `k8s/autoscaling` is applied
+deliberately, after `helm install keda`, and local development runs without it.
+
 Tenancy, whose credential pays and what is attributed are written up in
 [docs/tenancy.md](docs/tenancy.md) — the short version being that `tenant_id`
 is the isolation boundary and stays that way, with organizations added above it
