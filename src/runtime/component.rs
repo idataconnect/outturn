@@ -18,7 +18,8 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Arrival, Clock, Completion, CompletionRequest, Limits, Message, ObjectInfo, ToolActivity,
+    Arrival, Clock, Completion, CompletionRequest, HttpRequest, HttpResponse, Limits, Message,
+    ObjectInfo, ToolActivity,
     ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
@@ -30,6 +31,37 @@ pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 
 /// Reports what a tool produced, for the reader rather than the model.
 pub type ToolResultSink = Arc<dyn Fn(&ToolOutcome) + Send + Sync>;
+
+/// How long a request an agent made may take.
+///
+/// Far shorter than a model call, because this is a request to somebody else's
+/// service on behalf of an agent that is holding a turn open while it waits.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How much of a response may come back.
+///
+/// The body is written by somebody else and a response that never ends is a
+/// way to exhaust a pod that was told to be careful about memory. What arrives
+/// past this is dropped, and the agent is told plainly that it was.
+const FETCH_BODY_LIMIT: usize = 256 * 1024;
+
+/// Removes URLs from an error before it is shown to a model.
+///
+/// A URL an agent built can carry a credential in its query string, and these
+/// strings go into a transcript that is read back on every later turn.
+fn strip_url(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|word| {
+            if word.contains("://") {
+                "<url>"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
@@ -87,6 +119,9 @@ pub struct AgentHost {
     /// somebody else's.
     storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     tenant_id: uuid::Uuid,
+    /// Hosts this tenant's agents may reach. Empty means none, which is what a
+    /// tenant who has not thought about it has consented to.
+    egress: Vec<crate::runtime::egress::EgressRule>,
 }
 
 impl AgentHost {
@@ -247,6 +282,117 @@ impl outturn::agent::host::Host for AgentHost {
         }
 
         Ok(completion)
+    }
+
+    /// Makes a request an agent asked for, if everything about it is allowed.
+    ///
+    /// Every refusal comes back as an error the model can read, because a tool
+    /// that fails opaquely gets called again the same way. None of them tell
+    /// the model anything it could use: that a host is not allowed is a fact
+    /// about the tenant's settings, and that one resolves inside the cluster is
+    /// a fact it already had to guess to ask.
+    async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
+        use crate::runtime::egress;
+
+        let method = match request.method.to_ascii_uppercase().as_str() {
+            m @ ("GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD") => m.to_string(),
+            other => return Err(format!("{other} is not a method this can send")),
+        };
+
+        let url = reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
+        let (host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+
+        // Resolved once, and the connection pinned to the answer. Checking a
+        // name and then letting the client look it up again is a check of a
+        // different request to the one that gets made.
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "that URL names no port and its scheme implies none".to_string())?;
+        let addrs = egress::resolve_and_vet(&host, port)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in &request.headers {
+            egress::check_header(name).map_err(|e| e.to_string())?;
+            let name: reqwest::header::HeaderName = name
+                .parse()
+                .map_err(|_| format!("{name} is not a header name"))?;
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|_| format!("the {name} header's value cannot be sent"))?;
+            headers.insert(name, value);
+        }
+
+        // Attached after the guest's headers, so nothing it sent can displace
+        // one, and read from the environment rather than from anything that
+        // crossed the sandbox boundary.
+        if let (Some(header), Some(variable)) = (&rule.header, &rule.credential_env) {
+            let secret = std::env::var(variable).map_err(|_| {
+                // Names the variable, not its absence from any particular
+                // place: whoever reads this configured the rule.
+                format!("this host's credential ({variable}) is not configured")
+            })?;
+            let name: reqwest::header::HeaderName = header
+                .parse()
+                .map_err(|_| format!("{header} is not a header name"))?;
+            let mut value = reqwest::header::HeaderValue::from_str(&secret)
+                .map_err(|_| "this host's credential cannot be sent as a header".to_string())?;
+            value.set_sensitive(true);
+            headers.insert(name, value);
+        }
+
+        let mut client = reqwest::Client::builder()
+            .connect_timeout(crate::http_client::CONNECT_TIMEOUT)
+            .timeout(FETCH_TIMEOUT)
+            // A redirect names a host that was never checked. Refusing to
+            // follow is what keeps an allowed host from being a doorway.
+            .redirect(reqwest::redirect::Policy::none());
+        client = client.resolve_to_addrs(&host, &addrs);
+        let client = client
+            .build()
+            .map_err(|e| format!("could not prepare the request: {e}"))?;
+
+        let method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|_| "that is not a method this can send".to_string())?;
+        let mut outgoing = client.request(method, url).headers(headers);
+        if let Some(body) = request.body {
+            outgoing = outgoing.body(body);
+        }
+
+        let response = outgoing.send().await.map_err(|e| {
+            // The URL is stripped: it can carry a credential in a query
+            // string, and this text goes to a model and into a transcript.
+            format!("the request did not complete: {}", strip_url(&e.to_string()))
+        })?;
+
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    value.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+
+        // Read to a bound rather than to the end. A response is written by
+        // somebody else, and a body that does not stop is a way to exhaust a
+        // pod that was told to be careful about memory.
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| format!("the response did not arrive whole: {}", strip_url(&e.to_string())))?;
+        let truncated = body.len() > FETCH_BODY_LIMIT;
+        let body = String::from_utf8_lossy(&body[..body.len().min(FETCH_BODY_LIMIT)]).to_string();
+
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+            truncated,
+        })
     }
 
     async fn read_object(
@@ -653,6 +799,8 @@ pub struct RunOptions {
     pub reply_id: uuid::Uuid,
     /// Object storage the guest may reach, within its tenant's own space.
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    /// Hosts this turn may reach, from the tenant's own rules.
+    pub egress: Vec<crate::runtime::egress::EgressRule>,
     /// Whose space that is. The guest is never told.
     pub tenant_id: uuid::Uuid,
     /// How long the gateway's stream may go silent before the turn is
@@ -744,6 +892,7 @@ impl AgentRunner {
             served_by: None,
             storage: options.storage,
             tenant_id: options.tenant_id,
+            egress: options.egress,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

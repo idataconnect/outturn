@@ -122,6 +122,41 @@ interface host {
     /// Writes an object, replacing anything already there.
     write-object: func(path: string, data: list<u8>) -> result<u64, string>;
 
+    /// A request an agent wants made on its behalf.
+    record http-request {
+        /// GET, POST, PUT, PATCH or DELETE.
+        method: string,
+        url: string,
+        /// Headers the agent sets. The ones carrying credentials are refused
+        /// here and attached by the host instead, so a component cannot read a
+        /// tenant's key and cannot aim one somewhere it was not meant for.
+        headers: list<tuple<string, string>>,
+        body: option<string>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: string,
+        /// Whether the body was cut short. Said plainly rather than left for
+        /// the agent to infer from a body that stops mid-sentence.
+        truncated: bool,
+    }
+
+    /// Makes a request to a host the tenant has allowed.
+    ///
+    /// Every part of the decision is the host's: which hosts are reachable,
+    /// which are refused for being inside the network this runs in, what
+    /// credential goes with which host, and how much of a response may come
+    /// back. A guest that could influence any of those could use a tenant's
+    /// credentials against somewhere the tenant never named.
+    ///
+    /// Redirects are not followed. A redirect names a new host, and following
+    /// one would mean a request that was checked ends up somewhere that was
+    /// not. The response comes back as it is, and an agent that wants the new
+    /// location asks for it.
+    fetch: func(request: http-request) -> result<http-response, string>;
+
     /// Lists objects beneath a prefix.
     list-objects: func(prefix: string) -> result<list<object-info>, string>;
 

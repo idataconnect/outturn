@@ -361,6 +361,7 @@ impl Worker {
         traffic_type: &str,
         max_tool_rounds: Option<i64>,
         message_id: Uuid,
+        egress: Vec<crate::runtime::egress::EgressRule>,
     ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
 
@@ -379,6 +380,10 @@ impl Worker {
                 "traffic_type": traffic_type,
                 "max_tool_rounds": max_tool_rounds,
                 "reply_id": message_id,
+                // The rules travel with the turn: the runtime holds no
+                // database, and an agent that could be told its own limits by
+                // something inside the sandbox would not be limited.
+                "egress": egress,
             }))
             .send()
             .await?;
@@ -568,6 +573,13 @@ impl Worker {
             return Ok(());
         }
 
+        // Read once per turn rather than once per call: a tenant changing
+        // what its agents may reach should take effect on the next turn, and
+        // not halfway through one that is already reasoning about a host.
+        let egress = super::egress::rules_for(&self.pool, payload.tenant_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
+
         // Idempotent: a retry after a worker died mid-turn takes back the
         // reply it already created rather than starting a second one.
         let placeholder = self
@@ -611,6 +623,7 @@ impl Worker {
                 &traffic_type_for(&agent.policy),
                 max_tool_rounds_for(&agent.policy),
                 placeholder.message.id,
+                egress,
             )
             .await;
 

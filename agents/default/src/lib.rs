@@ -25,6 +25,9 @@ const READ_OBJECT: &str = "read_object";
 const WRITE_OBJECT: &str = "write_object";
 const LIST_OBJECTS: &str = "list_objects";
 
+/// The model's name for the outbound request tool.
+const FETCH: &str = "fetch_url";
+
 /// How much of a file a single read puts in front of the model.
 ///
 /// Comfortably under the generic tool ceiling, so an assembled head-and-tail
@@ -73,6 +76,20 @@ fn tools() -> Vec<ToolDefinition> {
         description: "List stored files. Omit the prefix to see everything."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Relative prefix, e.g. reports/. Omit for everything."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking through the stored files."}},"required":["action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: FETCH.to_string(),
+        description: "Make an HTTP request to an external API. Only hosts this \
+                      workspace has allowed can be reached; anything else comes \
+                      back refused, and no amount of rephrasing changes that -- \
+                      say so rather than trying another address. Credentials \
+                      are attached automatically where they are configured, so \
+                      never put a key in the URL or in a header. Redirects are \
+                      not followed: a 3xx response means asking again for the \
+                      new location."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Absolute https URL."},"method":{"type":"string","description":"GET, POST, PUT, PATCH, DELETE or HEAD. Defaults to GET.","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]},"headers":{"type":"object","description":"Extra headers, as a flat object. Leave authorization out; it is added for you.","additionalProperties":{"type":"string"}},"body":{"type":"string","description":"Request body, for methods that take one."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking up the exchange rate."}},"required":["url","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -285,6 +302,65 @@ fn list_objects(args: &serde_json::Value) -> String {
     }
 }
 
+/// Asks the host to make a request.
+///
+/// Everything that decides whether this is allowed happens on the other side
+/// of the boundary. What is left here is turning the model's arguments into a
+/// request and its answer into something worth reading: a refusal says why in
+/// a sentence, because a tool that fails opaquely gets called again the same
+/// way, and a body that was cut short says so rather than trailing off.
+fn fetch_url(args: &serde_json::Value) -> String {
+    let url = arg(args, "url");
+    if url.is_empty() {
+        return serde_json::json!({ "error": "no url was given" }).to_string();
+    }
+
+    let method = match arg(args, "method") {
+        "" => "GET".to_string(),
+        given => given.to_string(),
+    };
+
+    // A flat object, because that is what a model reliably produces. Anything
+    // else is dropped rather than guessed at.
+    let headers: Vec<(String, String)> = args
+        .get("headers")
+        .and_then(|h| h.as_object())
+        .map(|h| {
+            h.iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let body = args
+        .get("body")
+        .and_then(|b| b.as_str())
+        .map(str::to_string);
+
+    match host::fetch(&host::HttpRequest {
+        method,
+        url: url.to_string(),
+        headers,
+        body,
+    }) {
+        Ok(response) => serde_json::json!({
+            "status": response.status,
+            "body": response.body,
+            "truncated": response.truncated,
+            // The location, so a 3xx is actionable rather than a dead end --
+            // the host will not follow one, and the model has to decide
+            // whether the new address is worth asking for.
+            "location": response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+                .map(|(_, value)| value.clone()),
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
 /// Runs one tool call and returns the message answering it.
 fn run_tool(call: &ToolCall) -> Message {
     let args: serde_json::Value =
@@ -294,6 +370,7 @@ fn run_tool(call: &ToolCall) -> Message {
         READ_OBJECT => read_object(&args),
         WRITE_OBJECT => write_object(&args),
         LIST_OBJECTS => list_objects(&args),
+        FETCH => fetch_url(&args),
         CURRENT_TIME => {
             let clock = host::current_time();
             // The weekday is given rather than left to be worked out: a model

@@ -341,6 +341,33 @@ create unique index traffic_routes_system_idx
 -- Worked with SELECT ... FOR UPDATE SKIP LOCKED. Enqueue happens in the same
 -- transaction as the state change that caused it, so there is no dual-write
 -- to reconcile.
+-- Hosts a tenant's agents may reach.
+--
+-- Empty means an agent reaches nothing, which is the default and the point: a
+-- tenant that has not thought about egress has not consented to it. Adding a
+-- row is the whole of the ceremony, and it is about a hostname rather than a
+-- URL because that is the part a tenant knows without guessing.
+create table egress_rules (
+    id             uuid        primary key,
+    tenant_id      uuid        not null references tenants (id) on delete cascade,
+    -- `api.stripe.com`, or `*.example.com` for its subdomains but not its apex.
+    host           text        not null,
+    -- The header a credential travels in, attached by the host on the way out.
+    -- Null for an API that needs none.
+    header         text,
+    -- The name of the environment variable holding that header's value, never
+    -- the value. Secrets stay where the platform already keeps them rather
+    -- than in a row that a backup, a log line or a support query carries off,
+    -- and nothing that reads this table can leak one by reading it.
+    credential_env text,
+    enabled        boolean     not null default true,
+    created_at     timestamptz not null default now(),
+    -- One rule per host per tenant: two rules for one host would differ only
+    -- in which credential they attached, and which won would depend on
+    -- insertion order.
+    unique (tenant_id, host)
+);
+
 create table jobs (
     id            uuid primary key,
     tenant_id     uuid        not null references tenants (id) on delete cascade,

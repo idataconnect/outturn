@@ -75,6 +75,10 @@ pub struct ExecuteRequest {
     /// The reply this turn is writing, so a message absorbed mid-turn can
     /// name what took it.
     pub reply_id: Uuid,
+    /// Hosts this tenant's agents may reach. Sent with the turn because the
+    /// runtime holds no database; absent means the agent reaches nothing.
+    #[serde(default)]
+    pub egress: Vec<crate::runtime::egress::EgressRule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -303,6 +307,7 @@ pub async fn execute(
         },
         reply_id: request.reply_id,
         storage: state.storage.clone(),
+        egress: request.egress,
         // Taken from the token rather than the body, so a caller cannot ask
         // for another tenant's objects by saying it is one.
         tenant_id: claims.tenant_id,

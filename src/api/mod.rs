@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod chat;
+pub mod egress;
 mod agents;
 mod sessions;
 mod events;

@@ -21,20 +21,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// silently stops matching when the vendor reorganises them. Scheme, port and
 /// path are the request's business; whether this host may be spoken to at all
 /// is the rule's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EgressRule {
     /// `api.stripe.com`, or `*.example.com` for its subdomains.
     pub host: String,
+
     /// A header the host attaches on the way out, if any.
     ///
     /// The guest never sees it and cannot set it: a credential a component can
     /// read is a credential a component can send somewhere else.
+    #[serde(default)]
     pub header: Option<String>,
     /// Name of the environment variable holding that header's value.
     ///
     /// A name rather than the secret, so credentials live where the platform
     /// already keeps secrets and never sit in a row that a backup, a log line
     /// or a support query could carry off.
+    #[serde(default)]
     pub credential_env: Option<String>,
 }
 

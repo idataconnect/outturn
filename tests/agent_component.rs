@@ -78,6 +78,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 max_tool_rounds: 100,
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
+                egress: Vec::new(),
                 fuel: 10_000_000_000,
             },
         )
