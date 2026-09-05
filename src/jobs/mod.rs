@@ -1,7 +1,7 @@
 mod store;
 
 pub use store::{
-    Job, JobError, JobHandle, claim, complete, enqueue, extend_lease, fail, reap_abandoned, release,
+    Job, JobError, JobHandle, claim, complete, enqueue, extend_lease, fail, reap_abandoned, release, Released,
 };
 
 use std::time::Duration;
@@ -16,6 +16,16 @@ use std::time::Duration;
 /// job stranded for its full duration, since the heartbeat dies with the
 /// process that was writing it.
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(45);
+
+/// How many times a job may be handed back for want of room before it is
+/// treated as failed.
+///
+/// At the worker's two-second no-room backoff this is about five minutes of
+/// trying, which outlasts a scale-out -- the scaler polls every ten seconds
+/// and a new pod is ready inside a minute. Past that, the cluster is not busy
+/// but broken, and a user waiting on a reply is better told so than left
+/// watching an indicator that will never resolve.
+pub const MAX_RELEASES: i32 = 150;
 
 /// How often a worker extends the lease on work it is still running.
 ///

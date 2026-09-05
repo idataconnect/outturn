@@ -52,6 +52,18 @@ pub struct History {
 ///
 /// Only meaningful while something is in flight. A message arriving into a
 /// quiet session starts a turn regardless of which this is.
+/// The empty reply a turn streams into, and whether this turn created it.
+///
+/// A turn can be attempted more than once -- a worker died, a runtime had no
+/// room -- and the reply is deliberately idempotent so a retry takes back the
+/// one it already made. But announcing it is not idempotent: telling the
+/// browser again on every attempt writes an event per attempt for a message it
+/// already has, and a turn that keeps being handed back writes them forever.
+pub struct Placeholder {
+    pub message: Message,
+    pub created: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
@@ -168,7 +180,7 @@ pub trait ChatStore: Send + Sync {
         &self,
         replies_to: Uuid,
         session_id: Uuid,
-    ) -> Result<Message, ChatError>;
+    ) -> Result<Placeholder, ChatError>;
 
     /// Whether this prompt was already answered inside an earlier turn.
     ///

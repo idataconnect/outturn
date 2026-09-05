@@ -151,7 +151,9 @@ impl Worker {
             // checked above and anything else is a bug rather than a wait.
             let Ok(slot) = Arc::clone(&self.in_flight).try_acquire_owned() else {
                 tracing::warn!(job_id = %handle.job.id, "claimed past capacity; releasing");
-                let _ = jobs::release(&self.pool, handle.job.id, NO_ROOM_BACKOFF).await;
+                let _ =
+                    jobs::release(&self.pool, handle.job.id, NO_ROOM_BACKOFF, jobs::MAX_RELEASES)
+                        .await;
                 continue;
             };
             tokio::spawn(async move {
@@ -196,9 +198,24 @@ impl Worker {
             Err(e) if e.downcast_ref::<NoRoom>().is_some() => {
                 // Back on the queue untouched. Nothing ran, so nothing failed,
                 // and the attempt this claim took is given back.
-                tracing::debug!(job_id = %id, reason = %e, "turn returned to the queue");
-                if let Err(e) = jobs::release(&self.pool, id, NO_ROOM_BACKOFF).await {
-                    tracing::error!(job_id = %id, error = %e, "failed to release job");
+                match jobs::release(&self.pool, id, NO_ROOM_BACKOFF, jobs::MAX_RELEASES).await {
+                    Ok(jobs::Released::Queued) => {
+                        tracing::debug!(job_id = %id, reason = %e, "turn returned to the queue");
+                    }
+                    // Long past the point where this is a busy cluster. The
+                    // reader has been watching an indicator the whole time and
+                    // is owed an answer, even a disappointing one.
+                    Ok(jobs::Released::GaveUp) => {
+                        tracing::error!(
+                            job_id = %id,
+                            releases = jobs::MAX_RELEASES,
+                            "no runtime had room; giving up on the turn"
+                        );
+                        self.abandon(&handle, "no runtime had room for this turn").await;
+                    }
+                    Err(e) => {
+                        tracing::error!(job_id = %id, error = %e, "failed to release job");
+                    }
                 }
             }
             Err(e) => {
@@ -206,19 +223,14 @@ impl Worker {
                 // The last attempt is giving up, so the empty reply it left
                 // has to go: nothing will fill it, and an abandoned one wedges
                 // the session against further messages.
-                let final_attempt = handle.job.attempts >= handle.job.max_attempts;
-                if final_attempt
-                    && let Ok(payload) =
-                        serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
-                    && let Err(e) = self.chat.discard_placeholder(payload.message_id).await
-                {
-                    tracing::error!(job_id = %id, error = %e, "failed to discard placeholder");
-                }
-
-                // Tell the browser rather than leaving it polling forever.
-                if let Ok(payload) =
+                if handle.job.attempts >= handle.job.max_attempts {
+                    self.abandon(&handle, &e.to_string()).await;
+                } else if let Ok(payload) =
                     serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
                 {
+                    // Still has attempts left, so the reply stays for the
+                    // retry to take back -- but the reader is told the round
+                    // failed rather than left watching.
                     let _ = events::append(
                         &self.pool,
                         payload.tenant_id,
@@ -234,6 +246,32 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Gives up on a turn: clears the reply nothing will fill, and says so.
+    ///
+    /// An empty reply left behind wedges the session against further messages,
+    /// and a reader with no error event waits on an indicator that resolves on
+    /// no timescale at all. Both halves matter, which is why they are one
+    /// function rather than two blocks that drifted apart.
+    async fn abandon(&self, handle: &jobs::JobHandle, reason: &str) {
+        let Ok(payload) = serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
+        else {
+            return;
+        };
+
+        if let Err(e) = self.chat.discard_placeholder(payload.message_id).await {
+            tracing::error!(job_id = %handle.job.id, error = %e, "failed to discard placeholder");
+        }
+
+        let _ = events::append(
+            &self.pool,
+            payload.tenant_id,
+            Some(payload.session_id),
+            "chat.error",
+            serde_json::json!({ "message": reason }),
+        )
+        .await;
     }
 
     /// Runs a turn on the runtime service, writing each delta to the event
@@ -458,14 +496,20 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
 
-        events::append(
-            &self.pool,
-            payload.tenant_id,
-            Some(payload.session_id),
-            "chat.message",
-            serde_json::to_value(&placeholder)?,
-        )
-        .await?;
+        // Announced only when this attempt made it. A turn handed back for
+        // want of room comes round again every couple of seconds, and saying
+        // "here is a message" each time writes an event per cycle for a
+        // message the browser already has.
+        if placeholder.created {
+            events::append(
+                &self.pool,
+                payload.tenant_id,
+                Some(payload.session_id),
+                "chat.message",
+                serde_json::to_value(&placeholder.message)?,
+            )
+            .await?;
+        }
 
         // The runtime executes the agent and streams its progress back. Each
         // delta is announced as it arrives, carrying an index so a reader can
@@ -486,7 +530,7 @@ impl Worker {
                 reasoning_effort_for(&agent.policy).as_deref(),
                 &traffic_type_for(&agent.policy),
                 max_tool_rounds_for(&agent.policy),
-                placeholder.id,
+                placeholder.message.id,
             )
             .await;
 
@@ -509,7 +553,7 @@ impl Worker {
         let finished = self
             .chat
             .set_message_content(
-                placeholder.id,
+                placeholder.message.id,
                 &reply.content,
                 Some(&model_for(&agent.policy)),
                 reply.provider.as_deref(),

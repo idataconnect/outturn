@@ -715,7 +715,15 @@ async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
         .await
         .expect("retry");
 
-    assert_eq!(first.id, second.id, "a retry must take back the same reply");
+    assert_eq!(
+        first.message.id, second.message.id,
+        "a retry must take back the same reply"
+    );
+    assert!(first.created, "the first claim made the reply");
+    assert!(
+        !second.created,
+        "a retry re-announced a reply the browser already has"
+    );
 
     let history = store.messages(session_id).await.expect("history");
     assert_eq!(
@@ -775,7 +783,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
         .expect("second reply");
 
     assert_ne!(
-        first_reply.id, second_reply.id,
+        first_reply.message.id, second_reply.message.id,
         "each turn must fill its own reply"
     );
 
@@ -1232,7 +1240,7 @@ async fn a_released_job_is_not_held_to_have_tried() {
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].job.attempts, 1, "claiming counts an attempt");
 
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0))
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), jobs::MAX_RELEASES)
         .await
         .expect("release");
 
@@ -1268,7 +1276,7 @@ async fn a_released_job_waits_before_it_is_offered_again() {
     let claimed = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60))
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60), jobs::MAX_RELEASES)
         .await
         .expect("release");
 
@@ -1299,7 +1307,9 @@ async fn only_a_running_job_can_be_released() {
     // A release that could touch a pending job would let a late reply from an
     // abandoned turn give back an attempt that a live claimer is spending.
     assert!(
-        jobs::release(pool, pending, Duration::from_secs(0)).await.is_err(),
+        jobs::release(pool, pending, Duration::from_secs(0), jobs::MAX_RELEASES)
+            .await
+            .is_err(),
         "a job that was never claimed was released"
     );
 
@@ -1369,6 +1379,56 @@ async fn the_backlog_counts_work_that_could_actually_start() {
         0,
         "work already running was counted as waiting for a pod"
     );
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    jobs::enqueue(pool, tenant, "test.noroom", serde_json::json!({}), None, None)
+        .await
+        .expect("enqueue");
+
+    // Small budget so the test states the rule rather than the constant.
+    let budget = 3;
+    let mut outcomes = Vec::new();
+    for _ in 0..budget {
+        let claimed = jobs::claim(pool, &["test.noroom"], 10, jobs::DEFAULT_LEASE)
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1, "a released job must come back round");
+        outcomes.push(
+            jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), budget)
+                .await
+                .expect("release"),
+        );
+    }
+
+    assert_eq!(
+        outcomes,
+        vec![
+            jobs::Released::Queued,
+            jobs::Released::Queued,
+            jobs::Released::GaveUp
+        ],
+        "a permanently full cluster must stop handing the same work round"
+    );
+
+    let (state, error): (String, Option<String>) =
+        sqlx::query_as("select state, last_error from jobs where kind = $1")
+            .bind("test.noroom")
+            .fetch_one(pool)
+            .await
+            .expect("read job");
+    assert_eq!(state, "failed");
+    assert_eq!(error.as_deref(), Some("no runtime had room"));
+
+    let again = jobs::claim(pool, &["test.noroom"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert!(again.is_empty(), "a job that gave up was offered again");
 
     finish!(db);
 }

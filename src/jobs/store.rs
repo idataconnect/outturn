@@ -225,6 +225,15 @@ pub async fn fail(
     Ok(())
 }
 
+/// What became of a job that was handed back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Released {
+    /// Back in the queue, waiting for somewhere with room.
+    Queued,
+    /// Handed back too many times; treated as failed so someone is told.
+    GaveUp,
+}
+
 /// Returns a job to the queue without holding it against the job.
 ///
 /// For work that was claimed and then found to have nowhere to run: a runtime
@@ -232,26 +241,43 @@ pub async fn fail(
 /// claim counted is given back -- otherwise a cluster that is merely busy
 /// would burn through a job's retries without ever having run it once, and the
 /// user would be told their turn failed because the cluster was popular.
-pub async fn release(pool: &PgPool, id: Uuid, delay: Duration) -> Result<(), JobError> {
-    let result = sqlx::query(
+///
+/// Releases are counted separately, and past `MAX_RELEASES` the job fails.
+/// Giving back the attempt every time and counting nothing would leave a
+/// permanently full cluster claiming and releasing the same work forever, with
+/// no terminal state and nobody told -- a session showing an indicator that
+/// resolves on no timescale at all.
+pub async fn release(
+    pool: &PgPool,
+    id: Uuid,
+    delay: Duration,
+    max_releases: i32,
+) -> Result<Released, JobError> {
+    let state: Option<String> = sqlx::query_scalar(
         "update jobs set \
-             state = 'pending', \
+             state = case when releases + 1 >= $3 then 'failed' else 'pending' end, \
+             releases = releases + 1, \
              attempts = greatest(attempts - 1, 0), \
+             last_error = case when releases + 1 >= $3 \
+                               then 'no runtime had room' else last_error end, \
              leased_until = null, \
              run_after = now() + make_interval(secs => $2), \
              updated_at = now() \
-         where id = $1 and state = 'running'",
+         where id = $1 and state = 'running' \
+         returning state",
     )
     .bind(id)
     .bind(delay.as_secs_f64())
-    .execute(pool)
+    .bind(max_releases)
+    .fetch_optional(pool)
     .await
     .map_err(internal)?;
 
-    if result.rows_affected() == 0 {
-        return Err(JobError::NotFound);
+    match state.as_deref() {
+        Some("failed") => Ok(Released::GaveUp),
+        Some(_) => Ok(Released::Queued),
+        None => Err(JobError::NotFound),
     }
-    Ok(())
 }
 
 /// Returns jobs whose lease expired to the pending pool.

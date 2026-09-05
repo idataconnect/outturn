@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::{AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Usage};
+use super::{AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Placeholder, Usage};
 
 pub struct PostgresChatStore {
     pool: PgPool,
@@ -236,18 +236,21 @@ impl ChatStore for PostgresChatStore {
         &self,
         replies_to: Uuid,
         session_id: Uuid,
-    ) -> Result<Message, ChatError> {
+    ) -> Result<Placeholder, ChatError> {
         // The unique index on replies_to is what makes this idempotent: a
         // retry of the same turn collides and takes the row it already made,
         // rather than leaving the first behind. Doing it in one statement
         // means a worker that dies mid-way leaves nothing half-done.
+        //
+        // `xmax = 0` distinguishes the insert from the conflict, which is what
+        // lets the caller announce the reply once rather than once per attempt.
         let row = sqlx::query(
             "insert into agent_messages (id, session_id, role, content, replies_to) \
              values ($1, $2, 'assistant', '', $3) \
              on conflict (replies_to) where replies_to is not null \
              do update set replies_to = excluded.replies_to \
              returning id, session_id, role, content, metadata, model, \
-                       prompt_tokens, completion_tokens",
+                       prompt_tokens, completion_tokens, (xmax = 0) as created",
         )
         .bind(Uuid::now_v7())
         .bind(session_id)
@@ -256,7 +259,10 @@ impl ChatStore for PostgresChatStore {
         .await
         .map_err(internal)?;
 
-        Ok(read_message(&row))
+        Ok(Placeholder {
+            created: row.try_get("created").unwrap_or(true),
+            message: read_message(&row),
+        })
     }
 
     async fn was_absorbed(&self, message_id: Uuid) -> Result<bool, ChatError> {

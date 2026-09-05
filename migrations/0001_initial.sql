@@ -350,6 +350,11 @@ create table jobs (
                   check (state in ('pending', 'running', 'succeeded', 'failed')),
     attempts      int         not null default 0,
     max_attempts  int         not null default 3,
+    -- Times this job was handed back because nowhere had room to run it.
+    -- Counted apart from attempts, which it gives back: a cluster that is
+    -- merely busy must not exhaust a job's retries without running it, but a
+    -- cluster that is permanently full must not spin on it forever either.
+    releases      int         not null default 0,
     last_error    text,
     -- Delayed and retried work is scheduled by moving this forward.
     run_after     timestamptz not null default now(),
