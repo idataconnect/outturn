@@ -176,7 +176,42 @@ fn for_the_model(full: &str) -> String {
 /// model shown mojibake will try to read it.
 fn slice(path: &str, offset: u64, len: u64) -> Result<String, String> {
     let bytes = host::read_object(path, offset, len.min(u32::MAX as u64) as u32)?;
-    String::from_utf8(bytes).map_err(|_| "this file is not text and cannot be shown".to_string())
+
+    // A range is named in bytes, so its start can land inside a character
+    // rather than before one. That is not a file which is "not text" -- it is
+    // a text file read from an unlucky offset, and calling it binary would be
+    // wrong about the file and would send the model looking for a problem that
+    // does not exist. It happens in proportion to how much of the file is not
+    // ASCII, so a document of em-dashes trips it and a log of ASCII never
+    // does.
+    //
+    // Both ends can be cut: a range starting at an offset begins wherever that
+    // offset lands, and a range of a given length ends wherever the length
+    // runs out. A head read starts at zero and still ends mid-character.
+    //
+    // A character is at most four bytes, so at most three lead in to one and
+    // at most three trail off the end. Dropping them costs a fragment that was
+    // already incomplete, and the caller trims to whole lines afterwards
+    // regardless.
+    //
+    // Refused rather than replaced: `from_utf8_lossy` would substitute
+    // replacement characters and hand back something that reads as though it
+    // were the file. A genuinely binary file should still say so.
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => return Ok(text.to_string()),
+        Err(e) => {
+            // `valid_up_to` is where the good prefix ends, which handles the
+            // trailing cut exactly rather than by trying lengths.
+            let end = e.valid_up_to();
+            for skip in 0..4usize.min(end + 1) {
+                if let Ok(text) = std::str::from_utf8(&bytes[skip..end]) {
+                    return Ok(text.to_string());
+                }
+            }
+        }
+    }
+
+    Err("this file is not text and cannot be shown".to_string())
 }
 
 /// Trims a fragment back to whole lines.

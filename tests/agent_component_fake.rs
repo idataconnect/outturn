@@ -892,3 +892,66 @@ async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
         "a file URL was attempted: {result}"
     );
 }
+
+/// A byte range can begin inside a character, and that is not a binary file.
+///
+/// The tail of a large read starts wherever `size - tail_len` lands, which for
+/// a file with any non-ASCII in it will sometimes be partway through a
+/// multi-byte character. Refusing that read as "not text" is wrong about the
+/// file, and sends the model looking for a problem that does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_that_begins_mid_character_is_still_text() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let tenant = Uuid::now_v7();
+
+    // Three-byte characters throughout, so wherever the tail begins it has a
+    // good chance of landing inside one. Padded with a single ASCII character
+    // per line so the offsets do not all align to three.
+    let mut doc = String::from("FIRST LINE: 見出し\n");
+    for i in 0..5000 {
+        doc.push_str(&format!("行 {i} — 中身の行がここにあります\n"));
+    }
+    doc.push_str("LAST LINE: 終わり\n");
+    store
+        .write(&scope::resolve(tenant, "doc.txt").unwrap(), 0, doc.as_bytes())
+        .await
+        .expect("seed");
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"doc.txt","action":"Reading the document"}"#.into(),
+        reply: "Read it.".into(),
+    })
+    .await;
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.tenant_id = tenant;
+
+    runner
+        .run(&component(), user("What does it say?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the read came back");
+    let content = result["content"].as_str().unwrap_or_default();
+
+    assert!(
+        !content.contains("not text and cannot be shown"),
+        "a text file was refused because a byte offset landed mid-character: \
+         {content:.200}"
+    );
+    assert!(
+        content.contains("LAST LINE: 終わり"),
+        "the end of the file should survive the tail read, got {content:.300}"
+    );
+}
