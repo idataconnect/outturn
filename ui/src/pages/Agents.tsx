@@ -19,6 +19,11 @@ export default function Agents() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', slug: '', system_prompt: '' })
+  // Thinking is on by default wherever a provider supports it, and on a local
+  // model it costs far more than the answer: a reply of a few dozen characters
+  // has been measured spending three hundred tokens deliberating first, which
+  // is half a minute before anything appears. Off unless someone asks for it.
+  const [deliberate, setDeliberate] = useState(false)
   const [slugEdited, setSlugEdited] = useState(false)
   const [creating, setCreating] = useState(false)
 
@@ -60,7 +65,13 @@ export default function Agents() {
     event.preventDefault()
     setCreating(true)
     try {
-      await api<Agent>('/v1/agents', { method: 'POST', body: JSON.stringify(form) })
+      await api<Agent>('/v1/agents', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...form,
+          policy: deliberate ? {} : { reasoning_effort: 'none' },
+        }),
+      })
       setForm({ name: '', slug: '', system_prompt: '' })
       setSlugEdited(false)
       setError(null)
@@ -127,6 +138,21 @@ export default function Agents() {
               rows={3}
               className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
             />
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={deliberate}
+              onChange={(e) => setDeliberate(e.target.checked)}
+              className="mt-1"
+            />
+            <span className="text-sm text-surface-700 dark:text-surface-300">
+              Let the model think before answering
+              <span className="block text-xs text-surface-500 dark:text-surface-400">
+                Better on hard questions, and much slower — a local model can
+                spend half a minute deliberating before the first word appears.
+              </span>
+            </span>
           </label>
           <button
             type="submit"

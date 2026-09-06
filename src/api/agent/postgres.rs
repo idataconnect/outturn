@@ -69,8 +69,8 @@ impl AgentStore for PostgresAgentStore {
         validate_slug(&input.slug)?;
 
         let row = sqlx::query(
-            "insert into agents (id, tenant_id, name, slug, description, system_prompt) \
-             values ($1, $2, $3, $4, $5, $6) \
+            "insert into agents (id, tenant_id, name, slug, description, system_prompt, policy) \
+             values ($1, $2, $3, $4, $5, $6, coalesce($7, '{}'::jsonb)) \
              returning id, tenant_id, name, slug, description, system_prompt, policy, enabled",
         )
         .bind(Uuid::now_v7())
@@ -79,6 +79,7 @@ impl AgentStore for PostgresAgentStore {
         .bind(&input.slug)
         .bind(input.description.trim())
         .bind(&input.system_prompt)
+        .bind(&input.policy)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match &e {

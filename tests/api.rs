@@ -1016,6 +1016,7 @@ async fn agents_are_invisible_across_tenants() {
                 slug: "acme-secret".into(),
                 description: String::new(),
                 system_prompt: String::new(),
+                policy: None,
             },
         )
         .await
@@ -1056,6 +1057,7 @@ async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
                 slug: "globex-bot".into(),
                 description: String::new(),
                 system_prompt: String::new(),
+                policy: None,
             },
         )
         .await
@@ -1110,6 +1112,7 @@ async fn operator_cannot_delete_agents() {
                 slug: "keeper".into(),
                 description: String::new(),
                 system_prompt: String::new(),
+                policy: None,
             },
         )
         .await
@@ -1142,6 +1145,7 @@ async fn slugs_are_unique_per_tenant_not_globally() {
         slug: "support".into(),
         description: String::new(),
         system_prompt: String::new(),
+                policy: None,
     };
 
     h.agents.create(acme, make()).await.expect("acme");
@@ -1168,6 +1172,7 @@ async fn partial_update_leaves_other_fields_intact() {
                 slug: "original".into(),
                 description: "keep me".into(),
                 system_prompt: "keep this too".into(),
+                policy: None,
             },
         )
         .await
@@ -1457,4 +1462,41 @@ async fn a_stale_service_token_is_refused() {
     let fresh = h.runtime_token(acme);
     let (status, body) = h.post("/v1/work", Some(&fresh), "{}").await;
     assert_eq!(status, StatusCode::OK, "a fresh token was refused: {body}");
+}
+
+/// An agent's policy can be set when it is created, not only afterwards.
+///
+/// Everything in the policy affects the very first turn: which model runs it,
+/// which route serves it, and whether the model deliberates before answering.
+/// Creating an agent without one meant every agent made through the product
+/// ran with thinking on, which on a local model is half a minute of silence
+/// before the first visible character — and the only cure was an UPDATE.
+#[tokio::test]
+async fn an_agent_can_be_created_with_a_policy() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Quick","slug":"quick","policy":{"reasoning_effort":"none"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert!(
+        body.contains(r#""reasoning_effort":"none""#),
+        "the policy was dropped on the way in: {body}"
+    );
+
+    // And an agent created without one still gets a usable empty policy
+    // rather than null, which the turn path reads with `.get`.
+    let (status, body) = h
+        .post("/v1/agents", Some(&token), r#"{"name":"Plain","slug":"plain"}"#)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert!(body.contains(r#""policy":{}"#), "body: {body}");
 }

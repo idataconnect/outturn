@@ -58,6 +58,32 @@ This fits what exists. `traffic_routes.credential_ref` already names a secret
 rather than holding one, so what changes is which ref is chosen, not how
 credentials are stored or reached.
 
+## Defaults, and who gets to set them
+
+An agent's policy decides which model runs its turns, which route serves them,
+whether the model deliberates before answering, and how many tool rounds a turn
+may take. Today it is per-agent and nothing above it has an opinion, so every
+agent is configured from scratch by whoever made it — and an agent created
+without one runs on whatever the deployment happens to default to.
+
+That is the wrong level for most of these. Whether a local model should think
+before answering is a property of the deployment, not of an agent: the site
+owner knows they are running an 8B model at ten tokens a second, and no tenant
+should have to discover that half a minute of silence is deliberation rather
+than a hang.
+
+The shape is the same as credential resolution, and should share its
+machinery: a value resolved from the most specific place that sets it, with
+each level able to leave it unset rather than being forced to choose. Agent,
+then tenant, then organization, then whatever the deployment ships with.
+
+The switch matters as much as the default. Some settings an operator wants to
+suggest and let a tenant override; others they need to impose — a model
+allowlist, a ceiling on tool rounds, an egress posture. That is the same
+distinction the credential design draws between offering a key downward and
+requiring tenants to bring their own, and it wants one mechanism rather than
+two.
+
 ## Attribution
 
 Two different questions, and today only the first is answered.

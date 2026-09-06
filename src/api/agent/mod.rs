@@ -26,6 +26,16 @@ pub struct CreateAgent {
     pub description: String,
     #[serde(default)]
     pub system_prompt: String,
+    /// How this agent runs: which model, which traffic type, how much the
+    /// model deliberates, how many tool rounds a turn may take.
+    ///
+    /// Settable at creation because everything in it affects the very first
+    /// turn. Without it an agent is created with an empty policy and the
+    /// deployment's defaults -- which for a local model means thinking left
+    /// on, and a reply that spends thirty seconds deliberating before its
+    /// first visible character.
+    #[serde(default)]
+    pub policy: Option<serde_json::Value>,
 }
 
 /// Fields omitted are left unchanged, so a partial edit cannot silently blank
