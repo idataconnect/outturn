@@ -400,12 +400,31 @@ impl Worker {
             anyhow::bail!("runtime returned {status}: {detail}");
         }
 
-        let mut stream = response.bytes_stream();
+        self.consume_turn(response.bytes_stream(), payload, message_id).await
+    }
+
+    /// Reads a turn's progress and records it as it arrives.
+    ///
+    /// Takes a stream of bytes rather than a response, because the same events
+    /// arrive by two routes: as the body of a reply from a runtime this tier
+    /// called, and as the body of a request from a runtime that came asking.
+    /// What has to happen to them is identical either way -- the transcript is
+    /// written here, where the database is, and a runtime never touches it.
+    pub(super) async fn consume_turn(
+        &self,
+        stream: impl futures::Stream<Item = Result<axum::body::Bytes, impl std::fmt::Display>> + Unpin,
+        payload: &ChatTurnPayload,
+        message_id: Uuid,
+    ) -> anyhow::Result<TurnOutcome> {
+        use futures::StreamExt;
+
+        let mut stream = stream;
         let mut buffer = String::new();
         let mut tools: Vec<serde_json::Value> = Vec::new();
 
         while let Some(bytes) = stream.next().await {
-            buffer.push_str(std::str::from_utf8(&bytes?)?);
+            let bytes = bytes.map_err(|e| anyhow::anyhow!("{e}"))?;
+            buffer.push_str(std::str::from_utf8(&bytes)?);
 
             // An event may span reads, so only whole lines are parsed.
             while let Some(index) = buffer.find('\n') {
