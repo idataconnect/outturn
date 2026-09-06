@@ -33,6 +33,11 @@ export default function Agents() {
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('agents:create')
+  // Only worth saying to somebody who can be looking at more than one tenant.
+  // To everybody else there is no "currently viewing" -- there is only their
+  // workspace -- and the sentence raises a question they cannot act on.
+  const manyTenants =
+    state.status === 'authenticated' && state.session.tenants.length > 1
   const canDelete = authorities.includes('agents:delete')
 
   async function refresh() {
@@ -99,9 +104,11 @@ export default function Agents() {
   return (
     <div className="p-6 max-w-3xl">
       <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
-      <p className="mt-2 text-surface-600 dark:text-surface-400">
-        Agents belong to the tenant you are currently viewing.
-      </p>
+      {manyTenants && (
+        <p className="mt-2 text-surface-600 dark:text-surface-400">
+          Agents belong to the tenant you are currently viewing.
+        </p>
+      )}
 
       {canCreate && (
         <form
