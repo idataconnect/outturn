@@ -458,9 +458,25 @@ impl Worker {
             })
         };
 
-        let outcome = self
-            .consume_turn(stream, &payload, payload.message_id)
-            .await;
+        // The reply, not the prompt. `payload.message_id` is the message this
+        // turn answers; deltas and the finished content belong to the reply
+        // that hangs off it. Attaching them to the prompt streams the answer
+        // into the user's own message and leaves the reply empty for ever --
+        // which is what a reader sees as their words replaced and a thinking
+        // indicator that never resolves.
+        //
+        // Taken back rather than passed in, because this tier is reached by a
+        // runtime reporting a job id and nothing else. The unique index on
+        // `replies_to` is what makes that unambiguous, and is the same thing
+        // that lets a retry take back the reply it already made.
+        let placeholder = self
+            .chat
+            .claim_placeholder(payload.message_id, payload.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
+        let reply_id = placeholder.message.id;
+
+        let outcome = self.consume_turn(stream, &payload, reply_id).await;
         heartbeat.abort();
 
         let reply = match outcome {
@@ -499,7 +515,7 @@ impl Worker {
         let finished = self
             .chat
             .set_message_content(
-                payload.message_id,
+                reply_id,
                 &reply.content,
                 Some(&model_for(&agent.policy)),
                 reply.provider.as_deref(),

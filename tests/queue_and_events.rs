@@ -1502,3 +1502,74 @@ async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
 
     finish!(db);
 }
+
+/// A turn's progress belongs to the reply, never to the prompt.
+///
+/// Attaching deltas to the message being answered streams the reply into the
+/// user's own words and leaves the assistant's message empty for ever: the
+/// reader sees what they typed replaced by the answer, and a thinking
+/// indicator that never resolves. The two ids are both called `message_id` in
+/// their own scopes, which is how they get swapped.
+#[tokio::test]
+async fn a_turn_reports_against_its_reply_not_its_prompt() {
+    use outturn::api::chat::{Delivery, Usage};
+
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, chat) = streamed_session(pool, tenant).await;
+
+    let prompt = chat
+        .append_message(
+            session_id,
+            "user",
+            "What is the weather?",
+            None,
+            Usage::default(),
+            Delivery::Steer,
+            None,
+        )
+        .await
+        .expect("prompt");
+
+    let placeholder = chat
+        .claim_placeholder(prompt.id, session_id)
+        .await
+        .expect("placeholder");
+
+    assert_ne!(placeholder.message.id, prompt.id, "a reply is its own message");
+
+    // What a runtime reports lands on the reply.
+    chat.set_message_content(
+        placeholder.message.id,
+        "It is raining.",
+        Some("test-model"),
+        None,
+        Usage::default(),
+        serde_json::json!({}),
+    )
+    .await
+    .expect("finalise");
+
+    let history = chat.messages(session_id).await.expect("history");
+    let stored_prompt = history
+        .messages
+        .iter()
+        .find(|m| m.id == prompt.id)
+        .expect("the prompt is still there");
+    let stored_reply = history
+        .messages
+        .iter()
+        .find(|m| m.id == placeholder.message.id)
+        .expect("the reply is still there");
+
+    assert_eq!(
+        stored_prompt.content, "What is the weather?",
+        "the prompt was overwritten with the reply"
+    );
+    assert_eq!(
+        stored_reply.content, "It is raining.",
+        "the reply is empty, so a reader waits on it for ever"
+    );
+
+    finish!(db);
+}
