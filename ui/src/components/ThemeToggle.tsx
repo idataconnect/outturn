@@ -29,6 +29,23 @@ export default function ThemeToggle() {
           aria-checked={theme === value}
           aria-label={label}
           title={label}
+          // A radio group is one stop, not three: tab reaches the chosen
+          // option and the arrows move within. Without this the roles say
+          // radio group and the keyboard behaves like a row of buttons.
+          tabIndex={theme === value ? 0 : -1}
+          onKeyDown={(e) => {
+            const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+            if (step === 0) return
+            e.preventDefault()
+            const at = options.findIndex((o) => o.value === theme)
+            const next = options[(at + step + options.length) % options.length]
+            setTheme(next.value)
+            // Selection follows focus, as it does in a native group, so the
+            // focused option is the chosen one.
+            e.currentTarget.parentElement
+              ?.querySelectorAll('button')
+              [options.indexOf(next)]?.focus()
+          }}
           onClick={() => setTheme(value)}
           className={`flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
             theme === value

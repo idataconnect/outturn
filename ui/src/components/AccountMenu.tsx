@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Building2, Check, ChevronsUpDown, LogOut, Monitor, Moon, Sun } from 'lucide-react'
+import { Building2, Check, ChevronsUpDown, LogOut } from 'lucide-react'
 
 import { useSession, useSessionActions } from '../lib/session'
-import type { Theme } from '../lib/theme'
-import { useTheme } from '../lib/useTheme'
-
-const themes: { value: Theme; icon: typeof Sun; label: string }[] = [
-  { value: 'light', icon: Sun, label: 'Light' },
-  { value: 'dark', icon: Moon, label: 'Dark' },
-  { value: 'system', icon: Monitor, label: 'System' },
-]
+import ThemeToggle from './ThemeToggle'
 
 /**
  * Initials for the avatar.
@@ -28,7 +21,6 @@ function initials(name: string): string {
 export default function AccountMenu() {
   const state = useSession()
   const { signOut, switchTenant } = useSessionActions()
-  const [theme, setTheme] = useTheme()
   const [open, setOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
   const container = useRef<HTMLDivElement>(null)
@@ -132,29 +124,7 @@ export default function AccountMenu() {
             <p className="px-2 py-1 text-xs font-medium text-surface-600 dark:text-surface-400">
               Appearance
             </p>
-            <div
-              role="radiogroup"
-              aria-label="Colour theme"
-              className="flex gap-0.5 p-0.5 m-1 rounded-md bg-surface-100 dark:bg-surface-800"
-            >
-              {themes.map(({ value, icon: Icon, label }) => (
-                <button
-                  key={value}
-                  role="radio"
-                  aria-checked={theme === value}
-                  aria-label={label}
-                  title={label}
-                  onClick={() => setTheme(value)}
-                  className={`flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
-                    theme === value
-                      ? 'bg-white dark:bg-surface-950 text-surface-900 dark:text-surface-100 shadow-sm'
-                      : 'text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100'
-                  }`}
-                >
-                  <Icon size={14} />
-                </button>
-              ))}
-            </div>
+            <ThemeToggle />
           </div>
 
           <div className="p-1">
