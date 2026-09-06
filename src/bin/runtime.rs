@@ -62,7 +62,7 @@ async fn main() {
     };
 
     let state = Arc::new(RuntimeState {
-        minter,
+        minter: Arc::new(minter),
         gateway_url: std::env::var("OUTTURN_GATEWAY_URL")
             .unwrap_or_else(|_| "http://outturn-gateway:8081".into()),
         runner: Arc::new(AgentRunner::new().expect("agent runner")),
@@ -77,10 +77,7 @@ async fn main() {
     Arc::new(outturn::runtime::puller::Puller {
         api_url: std::env::var("OUTTURN_API_URL")
             .unwrap_or_else(|_| "http://outturn-api:8080".into()),
-        token: state
-            .minter
-            .mint(uuid::Uuid::now_v7(), uuid::Uuid::nil(), &[outturn::auth::Role::Runtime])
-            .expect("work token"),
+        minter: Arc::clone(&state.minter),
         http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
         runner: Arc::clone(&state.runner),
         agent_module: Arc::clone(&state.agent_module),

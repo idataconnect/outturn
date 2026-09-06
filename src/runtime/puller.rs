@@ -42,7 +42,12 @@ struct Assignment {
 
 pub struct Puller {
     pub api_url: String,
-    pub token: String,
+    /// Mints this pod's own credential. Held rather than a token, because a
+    /// service token lives five minutes and this loop runs for the life of the
+    /// pod -- a token taken once at startup is valid for the first few polls
+    /// and rejected for every one after, which is a pod that looks healthy and
+    /// takes no work.
+    pub minter: Arc<crate::auth::TokenMinter>,
     pub http: reqwest::Client,
     pub runner: Arc<AgentRunner>,
     pub agent_module: Arc<Vec<u8>>,
@@ -97,6 +102,19 @@ impl Puller {
     }
 
     /// Asks for one turn and runs it. Returns whether there was work.
+    /// A fresh credential for one exchange with the API.
+    ///
+    /// Minted per call rather than cached: the lifetime is short by design, and
+    /// signing is cheap next to the request it authorises. Nothing has to
+    /// remember to refresh something that is never kept.
+    fn token(&self) -> anyhow::Result<String> {
+        Ok(self.minter.mint(
+            uuid::Uuid::now_v7(),
+            uuid::Uuid::nil(),
+            &[crate::auth::Role::Runtime],
+        )?)
+    }
+
     async fn take_one(
         self: Arc<Self>,
         permit: super::admission::Permit,
@@ -104,7 +122,7 @@ impl Puller {
         let response = self
             .http
             .post(format!("{}/v1/work", self.api_url))
-            .bearer_auth(&self.token)
+            .bearer_auth(self.token()?)
             .send()
             .await?;
 
@@ -225,7 +243,7 @@ impl Puller {
         let response = self
             .http
             .post(format!("{}/v1/work/{job_id}/events", self.api_url))
-            .bearer_auth(&self.token)
+            .bearer_auth(self.token()?)
             .body(reqwest::Body::wrap_stream(stream))
             .send()
             .await?;
@@ -256,7 +274,13 @@ impl Puller {
         let sent = self
             .http
             .post(format!("{}/v1/work/{job_id}/abandon", self.api_url))
-            .bearer_auth(&self.token)
+            .bearer_auth(match self.token() {
+                Ok(token) => token,
+                Err(e) => {
+                    tracing::warn!(job_id = %job_id, error = %e, "could not mint a token to hand a turn back");
+                    return;
+                }
+            })
             .send()
             .await;
 

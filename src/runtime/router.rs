@@ -32,7 +32,7 @@ pub struct RuntimeState {
     /// Mints the token the guest's model calls travel with. Minted here rather
     /// than forwarded from the caller, so a guest's reach is bounded by what
     /// the runtime grants rather than by whatever the API happened to hold.
-    pub minter: TokenMinter,
+    pub minter: Arc<TokenMinter>,
     pub gateway_url: String,
     pub runner: Arc<AgentRunner>,
     /// The component every agent currently runs.

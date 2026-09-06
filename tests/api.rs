@@ -1420,3 +1420,41 @@ async fn asking_for_work_when_there_is_none_says_so() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
 }
+
+/// A credential older than its lifetime is refused.
+///
+/// The runtime's work loop runs for the life of a pod, and a service token
+/// lives five minutes. A token taken once at startup is accepted for the first
+/// few polls and rejected for every one after -- a pod that looks healthy,
+/// logs a warning every two seconds, and takes no work at all. This asserts
+/// the rejection so the loop cannot go back to holding one.
+#[tokio::test]
+async fn a_stale_service_token_is_refused() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+
+    let expired = h
+        .minter
+        .mint_with_lifetime(
+            Uuid::now_v7(),
+            acme,
+            &[Role::Runtime],
+            std::time::Duration::from_secs(0),
+        )
+        .expect("token");
+
+    // Past its expiry by any margin at all.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let (status, body) = h.post("/v1/work", Some(&expired), "{}").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired token was accepted: {body}"
+    );
+
+    // And a fresh one, minted the way the puller does per request, works.
+    let fresh = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&fresh), "{}").await;
+    assert_eq!(status, StatusCode::OK, "a fresh token was refused: {body}");
+}
