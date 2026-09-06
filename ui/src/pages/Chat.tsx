@@ -31,6 +31,12 @@ export default function Chat() {
   // Agents and sessions are tenant-scoped, so switching tenant reloads both.
   // Selecting a session does not: that only changes which one is shown.
   const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  // Offered as a way out only to somebody who could act on it. Sending a
+  // reader to a page where they can look but not create leaves them exactly
+  // where they started, having been told to do something they cannot.
+  const canCreateAgents =
+    state.status === 'authenticated' &&
+    state.session.authorities.includes('agents:create')
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -100,9 +106,19 @@ export default function Chat() {
             Start a session
           </p>
           {agents.length === 0 ? (
-            <p className="text-xs text-surface-600 dark:text-surface-400">
-              No agents yet — create one first.
-            </p>
+            canCreateAgents ? (
+              <NavLink
+                to="/agents"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+              >
+                <Plus size={14} className="shrink-0" />
+                <span>Create an agent</span>
+              </NavLink>
+            ) : (
+              <p className="text-xs text-surface-600 dark:text-surface-400">
+                No agents yet. Ask an administrator to add one.
+              </p>
+            )
           ) : (
             <div className="space-y-1">
               {agents.map((agent) => (
