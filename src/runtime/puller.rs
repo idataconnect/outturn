@@ -72,6 +72,11 @@ impl Puller {
                     }
                 };
 
+                // Measured once it has grown into its footprint, so the
+                // pessimistic charge becomes what the turn actually costs
+                // rather than standing for its whole life.
+                let permit = self.admission.settle_when_grown(permit);
+
                 let pause = match Arc::clone(&self).take_one(permit).await {
                     Ok(true) => Duration::ZERO,
                     Ok(false) => IDLE_PAUSE,

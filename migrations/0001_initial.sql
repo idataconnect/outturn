@@ -377,6 +377,12 @@ create table jobs (
                   check (state in ('pending', 'running', 'succeeded', 'failed')),
     attempts      int         not null default 0,
     max_attempts  int         not null default 3,
+    -- Which claim currently holds this job. Reissued on every claim, so a
+    -- heartbeat from a claim that was reaped renews nothing: without it, the
+    -- previous holder's renewal extends whichever claim is current and is told
+    -- it still owns the job, and two workers stream the same turn into the
+    -- same reply.
+    lease_token   uuid,
     -- Times this job was handed back because nowhere had room to run it.
     -- Counted apart from attempts, which it gives back: a cluster that is
     -- merely busy must not exhaust a job's retries without running it, but a

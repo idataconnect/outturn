@@ -4,7 +4,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-use outturn::auth::{TokenMinter, TokenValidator};
+use outturn::auth::TokenMinter;
 use outturn::lifecycle::{self, Health};
 use outturn::runtime::component::AgentRunner;
 use outturn::runtime::router::RuntimeState;
@@ -26,7 +26,6 @@ async fn main() {
     )
     .expect("agent component");
 
-    let _validator = TokenValidator::from_env().expect("token validator");
     let (minter, _public) = TokenMinter::from_env().expect("token minter");
 
     // One bucket, partitioned by tenant prefix. Buckets are a limited
@@ -80,7 +79,7 @@ async fn main() {
             .unwrap_or_else(|_| "http://outturn-api:8080".into()),
         token: state
             .minter
-            .mint(uuid::Uuid::now_v7(), uuid::Uuid::nil(), &[outturn::auth::Role::Operator])
+            .mint(uuid::Uuid::now_v7(), uuid::Uuid::nil(), &[outturn::auth::Role::Runtime])
             .expect("work token"),
         http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
         runner: Arc::clone(&state.runner),

@@ -223,21 +223,31 @@ fn slice(path: &str, offset: u64, len: u64) -> Result<String, String> {
     // Refused rather than replaced: `from_utf8_lossy` would substitute
     // replacement characters and hand back something that reads as though it
     // were the file. A genuinely binary file should still say so.
-    match std::str::from_utf8(&bytes) {
-        Ok(text) => return Ok(text.to_string()),
+    // The front first, then the back, and in that order: a range that begins
+    // mid-character has no valid prefix at all, so `valid_up_to` is zero and
+    // trimming by it alone leaves nothing. Continuation bytes are 10xxxxxx and
+    // a character is at most four, so at most three lead in to one.
+    let mut start = 0usize;
+    while start < bytes.len() && start < 3 && (bytes[start] & 0xC0) == 0x80 {
+        start += 1;
+    }
+    let bytes = &bytes[start..];
+
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(text.to_string()),
         Err(e) => {
-            // `valid_up_to` is where the good prefix ends, which handles the
-            // trailing cut exactly rather than by trying lengths.
+            // Now the only bad bytes left are a character cut off the end,
+            // which is exactly what `valid_up_to` reports.
             let end = e.valid_up_to();
-            for skip in 0..4usize.min(end + 1) {
-                if let Ok(text) = std::str::from_utf8(&bytes[skip..end]) {
-                    return Ok(text.to_string());
-                }
+            if end == 0 {
+                // Nothing decoded from either end: this is not text.
+                return Err("this file is not text and cannot be shown".to_string());
             }
+            std::str::from_utf8(&bytes[..end])
+                .map(|text| text.to_string())
+                .map_err(|_| "this file is not text and cannot be shown".to_string())
         }
     }
-
-    Err("this file is not text and cannot be shown".to_string())
 }
 
 /// Trims a fragment back to whole lines.

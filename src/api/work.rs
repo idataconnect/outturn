@@ -78,9 +78,11 @@ pub async fn take(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Option<Assignment>>, ApiError> {
-    // The same authority the runtime already holds to reach the gateway: this
-    // is the platform's own tier asking for work, not a tenant's.
-    super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
+    // WorkTake rather than GatewayInvoke: the latter is held by tenant Admins
+    // and Operators, and a turn handed out carries whichever tenant's
+    // transcript it belongs to. Anything that can ask for work can ask for
+    // everyone's, so this has to be an authority no tenant role holds.
+    super::router::authorize(&state, &headers, Authority::WorkTake)?;
 
     let deadline = tokio::time::Instant::now() + WORK_POLL_TIMEOUT;
     loop {
@@ -207,7 +209,7 @@ pub async fn report(
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
     body: axum::body::Body,
 ) -> Result<StatusCode, ApiError> {
-    super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
+    super::router::authorize(&state, &headers, Authority::WorkTake)?;
 
     let worker = state.worker.get().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
@@ -248,7 +250,7 @@ pub async fn abandon(
     headers: axum::http::HeaderMap,
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
+    let claims = super::router::authorize(&state, &headers, Authority::WorkTake)?;
 
     // Given back rather than failed: nothing about the turn was wrong, the
     // pod running it could not report what it produced.

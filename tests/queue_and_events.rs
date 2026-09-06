@@ -426,9 +426,14 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
 
     // While the work is still running, the worker extends its own lease.
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    let still_ours = jobs::extend_lease(pool, id, Duration::from_secs(60))
-        .await
-        .expect("extend");
+    let still_ours = jobs::extend_lease(
+        pool,
+        id,
+        Duration::from_secs(60),
+        claimed[0].job.lease_token.expect("a claim issues a token"),
+    )
+    .await
+    .expect("extend");
     assert!(still_ours, "a running job must be able to renew its lease");
 
     // The reaper must now leave it alone.
@@ -467,14 +472,24 @@ async fn extend_lease_reports_when_the_job_was_taken_away() {
         .expect("claim");
     assert_eq!(other.len(), 1);
 
-    // The original worker completes its own execution and renews -- which
-    // succeeds, because the job is running again under a new owner. This is
-    // the case a heartbeat cannot detect on its own, and is why the lease must
-    // exceed the longest legitimate execution rather than relying on renewal.
-    let renewed = jobs::extend_lease(pool, id, jobs::DEFAULT_LEASE)
-        .await
-        .expect("extend");
-    assert!(renewed, "the row is running, so renewal reports success");
+    // The original worker completes its own execution and renews. It is told
+    // no, because the claim it holds was replaced -- which is the whole point
+    // of the token. Renewing on state alone reported success here, extending
+    // the new owner's lease while the old owner carried on believing the job
+    // was still its own.
+    let renewed = jobs::extend_lease(
+        pool,
+        id,
+        jobs::DEFAULT_LEASE,
+        claimed[0].job.lease_token.expect("a claim issues a token"),
+    )
+    .await
+    .expect("extend");
+    assert!(
+        !renewed,
+        "a renewal from a replaced claim reported success, so two workers \
+         both believe they hold this job"
+    );
 
     finish!(db);
 }
@@ -1429,6 +1444,61 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
         .await
         .expect("claim");
     assert!(again.is_empty(), "a job that gave up was offered again");
+
+    finish!(db);
+}
+
+/// A heartbeat from a claim that has since been reaped renews nothing.
+///
+/// The dangerous case is not that the old holder fails to renew -- it is that
+/// it succeeds. Renewing on state alone extends whichever claim is current,
+/// tells the previous holder it still owns the job, and leaves two workers
+/// streaming the same turn into the same reply.
+#[tokio::test]
+async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    jobs::enqueue(pool, tenant, "test.stolen", serde_json::json!({}), None, None)
+        .await
+        .expect("enqueue");
+
+    // The first holder's claim, with a lease short enough to lapse.
+    let first = jobs::claim(pool, &["test.stolen"], 10, Duration::from_secs(0))
+        .await
+        .expect("claim");
+    assert_eq!(first.len(), 1);
+    let id = first[0].job.id;
+
+    // Long enough that the reaper's grace window has also passed.
+    tokio::time::sleep(jobs::LEASE_HEARTBEAT + Duration::from_millis(500)).await;
+    assert_eq!(
+        jobs::reap_abandoned(pool).await.expect("reap"),
+        1,
+        "the abandoned claim should have been returned"
+    );
+
+    // A second holder takes it.
+    let second = jobs::claim(pool, &["test.stolen"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(second.len(), 1, "the job should be claimable again");
+    assert_eq!(second[0].job.id, id);
+
+    // The first holder, still running, tries to renew with the token it was
+    // issued -- which the second claim has since replaced.
+    let renewed = jobs::extend_lease(
+        pool,
+        id,
+        Duration::from_secs(60),
+        first[0].job.lease_token.expect("a claim issues a token"),
+    )
+    .await
+    .expect("extend");
+    assert!(
+        !renewed,
+        "a heartbeat from a lapsed claim renewed a job someone else now holds, \
+         so both holders believe they own it"
+    );
 
     finish!(db);
 }

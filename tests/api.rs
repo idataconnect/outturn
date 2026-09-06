@@ -35,6 +35,9 @@ struct Harness {
     sessions: Arc<dyn SessionStore>,
     agents: Arc<dyn AgentStore>,
     db: common::TestDb,
+    /// Signs with the same key the app validates against, so a test can issue
+    /// the platform's own credentials the way the platform does.
+    minter: TokenMinter,
 }
 
 async fn harness() -> Harness {
@@ -43,7 +46,20 @@ async fn harness() -> Harness {
     let db = common::TestDb::new().await;
     let pool: PgPool = db.pool.clone();
 
-    let (minter, public_bytes) = TokenMinter::generate().expect("keypair");
+    // One seed, two minters: the app's, and one the test uses to issue the
+    // platform's own credentials the way the platform does.
+    let seed = {
+        use rand::RngCore;
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        seed
+    };
+    let minter = TokenMinter::new(&seed).expect("minter");
+    let test_minter = TokenMinter::new(&seed).expect("minter");
+    let public_bytes = {
+        use ed25519_dalek::SigningKey;
+        SigningKey::from_bytes(&seed).verifying_key().to_bytes().to_vec()
+    };
     let validator =
         TokenValidator::new(&public_bytes.try_into().expect("32-byte key")).expect("validator");
 
@@ -71,7 +87,6 @@ async fn harness() -> Harness {
         pool: pool.clone(),
         agents: agents.clone(),
         chat: chat.clone(),
-        minter: Arc::new(TokenMinter::generate().expect("keypair").0),
     }));
 
     Harness {
@@ -81,6 +96,7 @@ async fn harness() -> Harness {
         sessions,
         agents,
         db,
+        minter: test_minter,
     }
 }
 
@@ -139,6 +155,18 @@ impl Harness {
             req = req.header("authorization", format!("Bearer {t}"));
         }
         self.send(req.body(Body::empty()).expect("request")).await
+    }
+
+    /// A token for the tier that runs turns.
+    ///
+    /// Minted rather than logged in for, because `Role::Runtime` is granted to
+    /// no user and cannot be parsed from a role name -- which is the point of
+    /// it. This is the platform issuing a credential to itself, the same as
+    /// `src/bin/runtime.rs` does at startup.
+    fn runtime_token(&self, tenant: Uuid) -> String {
+        self.minter
+            .mint(Uuid::now_v7(), tenant, &[Role::Runtime])
+            .expect("runtime token")
     }
 
     /// Creates a user with the given system role and tenant role, then logs in
@@ -1307,17 +1335,38 @@ async fn egress_rules_do_not_cross_tenants() {
 
 // -- Work distribution --------------------------------------------------------
 
-/// Nothing is handed out to a caller that is not the platform's own tier.
+/// No tenant role, however senior, can take work off the queue.
+///
+/// A turn handed out carries whichever tenant's transcript it belongs to,
+/// that tenant's egress rules, and a token minted for it -- so anything that
+/// can ask for work can ask for everyone's. Checking only that a Viewer is
+/// refused would pass while an Admin walked through, which is exactly what
+/// happened when these endpoints were gated on an authority tenants hold.
 #[tokio::test]
-async fn taking_work_needs_more_than_a_tenant_token() {
+async fn no_tenant_role_can_take_work() {
     let h = harness_or_skip!();
     let acme = h.make_tenant("Acme", "acme").await;
-    let member = h
-        .login_as("member@acme.example", None, Some((acme, Role::Viewer)))
-        .await;
 
-    let (status, body) = h.post("/v1/work", Some(&member), "{}").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    for (email, role) in [
+        ("viewer@acme.example", Role::Viewer),
+        ("operator@acme.example", Role::Operator),
+        ("admin@acme.example", Role::Admin),
+    ] {
+        let token = h.login_as(email, None, Some((acme, role))).await;
+        let (status, body) = h.post("/v1/work", Some(&token), "{}").await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{role:?} was handed work: {body}"
+        );
+    }
+
+    // And a system administrator is a person, not the tier that runs turns.
+    let sysadmin = h
+        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, Role::Admin)))
+        .await;
+    let (status, body) = h.post("/v1/work", Some(&sysadmin), "{}").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a system admin took work: {body}");
 
     let (status, _) = h.post("/v1/work", None, "{}").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1332,9 +1381,7 @@ async fn taking_work_needs_more_than_a_tenant_token() {
 async fn a_turn_that_is_not_running_cannot_be_reported() {
     let h = harness_or_skip!();
     let acme = h.make_tenant("Acme", "acme").await;
-    let operator = h
-        .login_as("runtime@acme.example", None, Some((acme, Role::Operator)))
-        .await;
+    let runtime = h.runtime_token(acme);
 
     // Queued but never handed out, so nothing is running it.
     let job = outturn::jobs::enqueue(
@@ -1351,7 +1398,7 @@ async fn a_turn_that_is_not_running_cannot_be_reported() {
     let req = Request::builder()
         .method("POST")
         .uri(format!("/v1/work/{job}/events"))
-        .header("authorization", format!("Bearer {operator}"))
+        .header("authorization", format!("Bearer {runtime}"))
         .body(Body::from("{}\n"))
         .expect("request");
     let (status, body) = h.send(req).await;
@@ -1367,11 +1414,9 @@ async fn a_turn_that_is_not_running_cannot_be_reported() {
 async fn asking_for_work_when_there_is_none_says_so() {
     let h = harness_or_skip!();
     let acme = h.make_tenant("Acme", "acme").await;
-    let operator = h
-        .login_as("runtime@acme.example", None, Some((acme, Role::Operator)))
-        .await;
+    let runtime = h.runtime_token(acme);
 
-    let (status, body) = h.post("/v1/work", Some(&operator), "{}").await;
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
 }

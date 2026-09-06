@@ -69,7 +69,6 @@ async fn main() {
 
     let validator = TokenValidator::from_env().expect("token validator");
     let (minter, _public) = TokenMinter::from_env().expect("token minter");
-    let (worker_minter, _) = TokenMinter::from_env().expect("worker token minter");
 
     // One LISTEN connection fans out to every parked long poll.
     let bus = EventBus::spawn(pool.clone());
@@ -94,7 +93,6 @@ async fn main() {
         pool: pool.clone(),
         agents: agents.clone(),
         chat: chat.clone(),
-        minter: Arc::new(worker_minter),
     });
     // A turn is claimed here and reported by whichever runtime ran it, and
     // nothing joins those but a lease. When a runtime dies mid-turn the job is

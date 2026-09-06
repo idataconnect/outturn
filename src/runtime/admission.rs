@@ -152,6 +152,10 @@ pub struct Permit {
     /// What this turn is currently charged. Starts at the assumption and is
     /// replaced once the turn has shown what it actually costs.
     charged: u64,
+    /// Set when something else is settling this permit on its behalf, so
+    /// dropping returns what is owed now rather than what was owed at the
+    /// start.
+    settled: Option<Arc<AtomicU64>>,
     reserved: Arc<AtomicU64>,
 }
 
@@ -176,6 +180,9 @@ impl Permit {
 
 impl Drop for Permit {
     fn drop(&mut self) {
+        if let Some(settled) = &self.settled {
+            self.charged = settled.load(Ordering::SeqCst);
+        }
         // Whatever this turn was charged goes back when it ends, however it
         // ends. A reservation that outlived its turn would shrink the pod's
         // headroom for the life of the process.
@@ -196,6 +203,14 @@ impl Drop for Permit {
 /// costs a little throughput on a pod that could have taken one more; guessing
 /// low costs the pod, and every turn on it.
 const ASSUMED_TURN_BYTES: u64 = 384 * 1024 * 1024;
+
+/// How long a turn is given to grow into its footprint before it is measured.
+///
+/// Long enough that the prompt is assembled and the model has begun answering,
+/// which is when a turn's memory is roughly what it will be. Measuring sooner
+/// reads the assumption back as the answer; measuring much later leaves a pod
+/// carrying a pessimistic charge for work that turned out to be cheap.
+const SETTLE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct Admission {
     slots: Arc<Semaphore>,
@@ -252,6 +267,49 @@ impl Admission {
         self.limit - self.slots.available_permits()
     }
 
+    /// Watches a turn long enough to learn what it costs, then says so.
+    ///
+    /// Spawned beside the turn rather than measured inline: the point of the
+    /// assumption is that nothing is known when work is taken, so the
+    /// correction has to arrive later or it is not a correction. A turn
+    /// shorter than the settling delay never settles, which is correct --
+    /// it gave its charge back by ending.
+    pub fn settle_when_grown(self: &Arc<Self>, mut permit: Permit) -> Permit {
+        let admission = Arc::clone(self);
+        let reserved = Arc::clone(&permit.reserved);
+        let charged = permit.charged;
+
+        // The permit itself cannot move into the task -- it belongs to the
+        // turn -- so the task adjusts the shared counter and the permit is
+        // told what it now owes.
+        let settled = Arc::new(AtomicU64::new(charged));
+        permit.settled = Some(Arc::clone(&settled));
+
+        tokio::spawn(async move {
+            tokio::time::sleep(SETTLE_AFTER).await;
+
+            let Some(available) = admission.memory.available_bytes() else {
+                return;
+            };
+            // What this pod is using beyond what its other turns reserved,
+            // divided by the turns actually running: a rough per-turn cost,
+            // which is all that is wanted. The assumption exists precisely
+            // because an exact figure is not available.
+            let in_flight = (admission.limit - admission.slots.available_permits()).max(1);
+            let spoken_for = reserved.load(Ordering::SeqCst);
+            let actual = spoken_for.saturating_sub(available) / in_flight as u64;
+
+            if actual >= charged {
+                reserved.fetch_add(actual - charged, Ordering::SeqCst);
+            } else {
+                reserved.fetch_sub(charged - actual, Ordering::SeqCst);
+            }
+            settled.store(actual, Ordering::SeqCst);
+        });
+
+        permit
+    }
+
     /// Takes a slot, or says why not. Never waits: a caller that would queue
     /// here is holding a turn this pod cannot serve, and somewhere else can.
     pub fn try_admit(&self) -> Result<Permit, Refusal> {
@@ -292,6 +350,7 @@ impl Admission {
         Ok(Permit {
             slot: permit,
             charged: self.assumed_turn_bytes,
+            settled: None,
             reserved: Arc::clone(&self.reserved),
         })
     }

@@ -954,6 +954,15 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
         content.contains("LAST LINE: 終わり"),
         "the end of the file should survive the tail read, got {content:.300}"
     );
+    // The bug this guards against returned an empty string rather than an
+    // error: a range beginning mid-character has no valid prefix, so trimming
+    // by `valid_up_to` alone leaves nothing and the read silently succeeds
+    // with no content. Both ends have to be present for that to be ruled out.
+    assert!(
+        content.contains("FIRST LINE: 見出し"),
+        "the start of the file was dropped, which is what an empty decode \
+         looks like from here: {content:.300}"
+    );
 }
 
 /// One line larger than the whole budget is refused, not cut.

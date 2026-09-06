@@ -6,7 +6,6 @@ use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 
-use crate::auth::TokenMinter;
 use crate::events;
 use crate::jobs;
 use crate::runtime::router::ExecuteEvent;
@@ -123,15 +122,10 @@ pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
     pub chat: Arc<dyn ChatStore>,
-    pub minter: Arc<TokenMinter>,
 }
 
 
 impl Worker {
-    /// Runs until the process shuts down.
-    ///
-    /// Polls rather than listening: turns are enqueued through the job table,
-    /// and a missed wake-up simply waits for the next tick.
 
 
 
@@ -161,11 +155,6 @@ impl Worker {
         .await;
     }
 
-    /// Runs a turn on the runtime service, writing each delta to the event
-    /// feed as it arrives.
-    ///
-    /// The runtime holds no database, so the transcript stays owned by this
-    /// tier: deltas travel back over the response and are recorded here.
 
     /// Reads a turn's progress and records it as it arrives.
     ///
@@ -438,14 +427,27 @@ impl Worker {
         // row, and the runtime holds no database. Arriving bytes are the
         // evidence the turn is alive, which is better evidence than a pod
         // saying so.
+        // Quoted back on every renewal, so a heartbeat outliving its claim
+        // cannot extend whichever claim replaced it.
+        let lease_token = job.lease_token;
         let heartbeat = {
             let pool = self.pool.clone();
             tokio::spawn(async move {
+                // Renewed immediately rather than after a first interval. The
+                // lease started when the turn was handed out, and a runtime
+                // that spent time generating before its first byte has already
+                // burned some of it -- so the clock this heartbeat is racing
+                // began before the heartbeat did.
                 let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
-                ticker.tick().await;
+                let Some(token) = lease_token else {
+                    // Nothing to renew against: this job was not claimed the
+                    // way a running turn is, so leave the lease alone rather
+                    // than extending someone else's.
+                    return;
+                };
                 loop {
                     ticker.tick().await;
-                    match jobs::extend_lease(&pool, job_id, jobs::DEFAULT_LEASE).await {
+                    match jobs::extend_lease(&pool, job_id, jobs::DEFAULT_LEASE, token).await {
                         // No longer ours: something reaped it, and renewing
                         // would take it back from whoever has it now.
                         Ok(false) => return,

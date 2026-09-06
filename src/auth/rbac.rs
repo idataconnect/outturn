@@ -4,6 +4,9 @@ use std::collections::HashSet;
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     SystemAdmin,
+    /// The tier that runs turns. Not a person, and not grantable to one: it
+    /// exists so the work endpoints can be closed to every tenant role.
+    Runtime,
     Admin,
     Operator,
     Viewer,
@@ -30,6 +33,14 @@ pub enum Authority {
     SettingsRead,
     SettingsUpdate,
     GatewayInvoke,
+    /// Taking turns off the queue and reporting what they produced.
+    ///
+    /// Held by no tenant role, however senior. A turn handed out carries the
+    /// transcript of whichever tenant it belongs to, that tenant's egress
+    /// rules, and a token minted for it -- so anything that can ask for work
+    /// can ask for everyone's. This is the platform's own tier asking, and the
+    /// distinction has to be an authority rather than a comment.
+    WorkTake,
 }
 
 impl Role {
@@ -57,6 +68,7 @@ impl Role {
                 SettingsUpdate,
                 GatewayInvoke,
             ],
+            Role::Runtime => &[GatewayInvoke, WorkTake],
             Role::Admin => &[
                 UsersCreate,
                 UsersRead,
@@ -113,6 +125,7 @@ impl Authority {
             Authority::SettingsRead => "settings:read",
             Authority::SettingsUpdate => "settings:update",
             Authority::GatewayInvoke => "gateway:invoke",
+            Authority::WorkTake => "work:take",
         }
     }
 }
@@ -131,6 +144,7 @@ impl std::fmt::Display for Role {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Role::SystemAdmin => write!(f, "system_admin"),
+            Role::Runtime => write!(f, "runtime"),
             Role::Admin => write!(f, "admin"),
             Role::Operator => write!(f, "operator"),
             Role::Viewer => write!(f, "viewer"),
@@ -144,6 +158,13 @@ impl std::str::FromStr for Role {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "system_admin" => Ok(Role::SystemAdmin),
+            // Parseable because a token carries roles as strings and has to
+            // read its own back. What keeps this from being grantable is the
+            // database: `user_system_roles` admits only 'system_admin', and
+            // tenant roles are constrained likewise, so no row can name it and
+            // no login can produce it. It exists only in tokens the platform
+            // mints for itself.
+            "runtime" => Ok(Role::Runtime),
             "admin" => Ok(Role::Admin),
             "operator" => Ok(Role::Operator),
             "viewer" => Ok(Role::Viewer),

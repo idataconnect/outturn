@@ -13,6 +13,9 @@ pub struct Job {
     pub payload: serde_json::Value,
     pub attempts: i32,
     pub max_attempts: i32,
+    /// Identifies this claim. A heartbeat quotes it back, so a renewal from a
+    /// claim that was reaped cannot extend whichever claim replaced it.
+    pub lease_token: Option<Uuid>,
 }
 
 /// A claimed job. Dropping this does not release the lease — the reaper
@@ -35,6 +38,8 @@ fn internal(e: sqlx::Error) -> JobError {
 }
 
 fn read_job(row: &sqlx::postgres::PgRow) -> Job {
+    // Absent where a job is read rather than claimed: `get` does not need the
+    // token, and reading one it has no business with would invite quoting it.
     Job {
         id: row.get("id"),
         tenant_id: row.get("tenant_id"),
@@ -42,6 +47,7 @@ fn read_job(row: &sqlx::postgres::PgRow) -> Job {
         payload: row.get("payload"),
         attempts: row.get("attempts"),
         max_attempts: row.get("max_attempts"),
+        lease_token: row.try_get("lease_token").ok(),
     }
 }
 
@@ -156,6 +162,7 @@ pub async fn claim(
              state = 'running', \
              attempts = attempts + 1, \
              leased_until = now() + make_interval(secs => $2), \
+             lease_token = gen_random_uuid(), \
              updated_at = now() \
          where id = any($1) \
            and ( \
@@ -166,7 +173,7 @@ pub async fn claim(
                        and running.serial_key = jobs.serial_key \
                  ) \
                ) \
-         returning id, tenant_id, kind, payload, attempts, max_attempts",
+         returning id, tenant_id, kind, payload, attempts, max_attempts, lease_token",
     )
     .bind(&picked)
     .bind(lease.as_secs_f64())
@@ -232,7 +239,7 @@ pub async fn fail(
 /// lapsed while it ran still has to be recognisable when its results arrive.
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
     let row = sqlx::query(
-        "select id, tenant_id, kind, payload, attempts, max_attempts \
+        "select id, tenant_id, kind, payload, attempts, max_attempts, lease_token \
          from jobs where id = $1",
     )
     .bind(id)
@@ -346,14 +353,22 @@ pub async fn extend_lease(
     pool: &PgPool,
     id: Uuid,
     lease: Duration,
+    token: Uuid,
 ) -> Result<bool, JobError> {
+    // Matched on the token rather than on state or time. A turn whose lease
+    // lapsed has been handed back and may already be running somewhere else;
+    // renewing on state alone extends whichever claim is current while telling
+    // the previous holder it still owns the job, and both go on to stream the
+    // same turn into the same reply. Timing cannot separate them either, since
+    // the new holder's lease is fresh.
     let result = sqlx::query(
         "update jobs set leased_until = now() + make_interval(secs => $2), \
              updated_at = now() \
-         where id = $1 and state = 'running'",
+         where id = $1 and state = 'running' and lease_token = $3",
     )
     .bind(id)
     .bind(lease.as_secs_f64())
+    .bind(token)
     .execute(pool)
     .await
     .map_err(internal)?;
