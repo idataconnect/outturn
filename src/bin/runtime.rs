@@ -73,9 +73,30 @@ async fn main() {
         admission: Arc::new(outturn::runtime::admission::Admission::from_env()),
     });
 
+    // The runtime asks for work rather than waiting to be handed it, so a pod
+    // with no room simply does not ask and is never offered a turn it would
+    // have to refuse.
+    Arc::new(outturn::runtime::puller::Puller {
+        api_url: std::env::var("OUTTURN_API_URL")
+            .unwrap_or_else(|_| "http://outturn-api:8080".into()),
+        token: state
+            .minter
+            .mint(uuid::Uuid::now_v7(), uuid::Uuid::nil(), &[outturn::auth::Role::Operator])
+            .expect("work token"),
+        http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
+        runner: Arc::clone(&state.runner),
+        agent_module: Arc::clone(&state.agent_module),
+        storage: state.storage.clone(),
+        gateway_url: state.gateway_url.clone(),
+        admission: Arc::clone(&state.admission),
+        default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
+            .unwrap_or_else(|_| "llama3.1".into()),
+        idle_timeout: outturn::http_client::IDLE_TIMEOUT,
+    })
+    .spawn(health.shutdown_signal());
+
     let app = Router::new()
-        .merge(lifecycle::routes(health.clone()))
-        .merge(router::routes(state));
+        .merge(lifecycle::routes(health.clone()));
 
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".into());
     let listener = TcpListener::bind(&addr).await.unwrap();

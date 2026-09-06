@@ -30,6 +30,17 @@ pub struct ApiState {
     /// Fires on shutdown so parked long polls return instead of holding the
     /// drain open for their full timeout.
     pub(super) shutdown: Arc<tokio::sync::Notify>,
+    /// Prepares turns and records what they produce. Set after construction,
+    /// because the worker holds this state and the two would otherwise have to
+    /// be built at once.
+    pub(super) worker: std::sync::OnceLock<Arc<super::worker::Worker>>,
+}
+
+impl ApiState {
+    /// Gives this state the worker that serves turns to runtimes.
+    pub fn set_worker(&self, worker: Arc<super::worker::Worker>) {
+        let _ = self.worker.set(worker);
+    }
 }
 
 impl ApiState {
@@ -56,6 +67,7 @@ impl ApiState {
             pool,
             bus,
             shutdown,
+            worker: std::sync::OnceLock::new(),
         }
     }
 }
@@ -441,6 +453,11 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/egress-rules/{id}",
             axum::routing::delete(delete_egress_rule),
         )
+        // Runtimes ask here for work and report back what it produced. Both
+        // require GatewayInvoke, which is the platform's own tier rather than
+        // a tenant's.
+        .route("/v1/work", post(super::work::take))
+        .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/users", get(list_users).post(create_user))
         .route("/v1/users/{id}", get(get_user).delete(delete_user))
         .route("/v1/users/{user_id}/identities", post(add_identity))

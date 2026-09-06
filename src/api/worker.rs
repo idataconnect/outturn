@@ -154,14 +154,6 @@ pub struct Worker {
     pub agents: Arc<dyn AgentStore>,
     pub chat: Arc<dyn ChatStore>,
     pub minter: Arc<TokenMinter>,
-    /// Where agents execute. A separate service so a runaway guest competes
-    /// for its own CPU rather than the API's, and so the two scale apart.
-    pub runtime_url: String,
-    pub http: reqwest::Client,
-    /// Slots for turns this pod is carrying. Bounds what it will claim, so a
-    /// backlog stays in the queue where other pods -- and the autoscaler --
-    /// can see it.
-    pub in_flight: Arc<tokio::sync::Semaphore>,
 }
 
 /// The in-flight bound this pod will use.
@@ -178,146 +170,8 @@ impl Worker {
     ///
     /// Polls rather than listening: turns are enqueued through the job table,
     /// and a missed wake-up simply waits for the next tick.
-    pub fn spawn(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_millis(500));
-            loop {
-                tokio::select! {
-                    _ = shutdown.notified() => {
-                        tracing::info!("chat worker stopping");
-                        return;
-                    }
-                    _ = ticker.tick() => {
-                        if let Err(e) = Arc::clone(&self).tick().await {
-                            tracing::error!(error = %e, "chat worker tick failed");
-                        }
-                    }
-                }
-            }
-        });
-    }
 
-    async fn tick(self: Arc<Self>) -> anyhow::Result<()> {
-        // Returning abandoned leases first means a crashed worker's turn is
-        // retried rather than left hanging.
-        jobs::reap_abandoned(&self.pool).await?;
 
-        // Claim no more than can be carried. Leaving work in the queue is the
-        // point: it stays visible to every other pod, and to whatever is
-        // deciding how many pods there should be.
-        let room = self.in_flight.available_permits();
-        if room == 0 {
-            return Ok(());
-        }
-        let batch = CLAIM_BATCH.min(room as i64);
-
-        let claimed = jobs::claim(&self.pool, &[CHAT_TURN], batch, jobs::DEFAULT_LEASE).await?;
-
-        // Each turn runs on its own task: generation can take minutes, and
-        // awaiting it here would stall every other session behind it.
-        for handle in claimed {
-            let worker = Arc::clone(&self);
-            // Taken here rather than inside the task, so a claim and the slot
-            // it occupies cannot drift apart. try_acquire because the room was
-            // checked above and anything else is a bug rather than a wait.
-            let Ok(slot) = Arc::clone(&self.in_flight).try_acquire_owned() else {
-                tracing::warn!(job_id = %handle.job.id, "claimed past capacity; releasing");
-                let _ =
-                    jobs::release(&self.pool, handle.job.id, NO_ROOM_BACKOFF, jobs::MAX_RELEASES)
-                        .await;
-                continue;
-            };
-            tokio::spawn(async move {
-                let _slot = slot;
-                worker.execute(handle).await
-            });
-        }
-        Ok(())
-    }
-
-    async fn execute(self: Arc<Self>, handle: jobs::JobHandle) {
-        let id = handle.job.id;
-
-        // Keep the lease alive while this runs, so a slow generation is not
-        // reaped into the queue and executed a second time.
-        let heartbeat = {
-            let pool = self.pool.clone();
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    match jobs::extend_lease(&pool, id, jobs::DEFAULT_LEASE).await {
-                        Ok(true) => {}
-                        // The job is no longer ours; stop renewing.
-                        Ok(false) => return,
-                        Err(e) => tracing::warn!(job_id = %id, error = %e, "lease renewal failed"),
-                    }
-                }
-            })
-        };
-
-        let result = self.run_turn(&handle.job.payload).await;
-        heartbeat.abort();
-
-        match result {
-            Ok(()) => {
-                if let Err(e) = jobs::complete(&self.pool, id).await {
-                    tracing::error!(job_id = %id, error = %e, "failed to complete job");
-                }
-            }
-            Err(e) if e.downcast_ref::<NoRoom>().is_some() => {
-                // Back on the queue untouched. Nothing ran, so nothing failed,
-                // and the attempt this claim took is given back.
-                match jobs::release(&self.pool, id, NO_ROOM_BACKOFF, jobs::MAX_RELEASES).await {
-                    Ok(jobs::Released::Queued) => {
-                        tracing::debug!(job_id = %id, reason = %e, "turn returned to the queue");
-                    }
-                    // Long past the point where this is a busy cluster. The
-                    // reader has been watching an indicator the whole time and
-                    // is owed an answer, even a disappointing one.
-                    Ok(jobs::Released::GaveUp) => {
-                        tracing::error!(
-                            job_id = %id,
-                            releases = jobs::MAX_RELEASES,
-                            "no runtime had room; giving up on the turn"
-                        );
-                        self.abandon(&handle, "no runtime had room for this turn").await;
-                    }
-                    Err(e) => {
-                        tracing::error!(job_id = %id, error = %e, "failed to release job");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(job_id = %id, error = %e, "chat turn failed");
-                // The last attempt is giving up, so the empty reply it left
-                // has to go: nothing will fill it, and an abandoned one wedges
-                // the session against further messages.
-                if handle.job.attempts >= handle.job.max_attempts {
-                    self.abandon(&handle, &e.to_string()).await;
-                } else if let Ok(payload) =
-                    serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
-                {
-                    // Still has attempts left, so the reply stays for the
-                    // retry to take back -- but the reader is told the round
-                    // failed rather than left watching.
-                    let _ = events::append(
-                        &self.pool,
-                        payload.tenant_id,
-                        Some(payload.session_id),
-                        "chat.error",
-                        serde_json::json!({ "message": e.to_string() }),
-                    )
-                    .await;
-                }
-                if let Err(e) = jobs::fail(&self.pool, id, &e.to_string(), Duration::from_secs(5)).await
-                {
-                    tracing::error!(job_id = %id, error = %e, "failed to record job failure");
-                }
-            }
-        }
-    }
 
     /// Gives up on a turn: clears the reply nothing will fill, and says so.
     ///
@@ -330,9 +184,16 @@ impl Worker {
         else {
             return;
         };
+        self.abandon_payload(&payload, reason).await;
+    }
 
+    async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
         if let Err(e) = self.chat.discard_placeholder(payload.message_id).await {
-            tracing::error!(job_id = %handle.job.id, error = %e, "failed to discard placeholder");
+            tracing::error!(
+                session_id = %payload.session_id,
+                error = %e,
+                "failed to discard placeholder"
+            );
         }
 
         let _ = events::append(
@@ -350,58 +211,6 @@ impl Worker {
     ///
     /// The runtime holds no database, so the transcript stays owned by this
     /// tier: deltas travel back over the response and are recorded here.
-    async fn execute_on_runtime(
-        &self,
-        token: &str,
-        payload: &ChatTurnPayload,
-        conversation: Vec<serde_json::Value>,
-        system_prompt: &str,
-        model: &str,
-        reasoning_effort: Option<&str>,
-        traffic_type: &str,
-        max_tool_rounds: Option<i64>,
-        message_id: Uuid,
-        egress: Vec<crate::runtime::egress::EgressRule>,
-    ) -> anyhow::Result<TurnOutcome> {
-        use futures::StreamExt;
-
-        let response = self
-            .http
-            .post(format!("{}/v1/execute", self.runtime_url))
-            .bearer_auth(token)
-            .json(&serde_json::json!({
-                "session_id": payload.session_id,
-                "tenant_id": payload.tenant_id,
-                "conversation": conversation,
-                "system_prompt": system_prompt,
-                "model": model,
-                "timezone": payload.timezone,
-                "reasoning_effort": reasoning_effort,
-                "traffic_type": traffic_type,
-                "max_tool_rounds": max_tool_rounds,
-                "reply_id": message_id,
-                // The rules travel with the turn: the runtime holds no
-                // database, and an agent that could be told its own limits by
-                // something inside the sandbox would not be limited.
-                "egress": egress,
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            // A runtime at capacity says so with 503. That is a statement
-            // about the pod, not the turn, so the turn goes back on the queue
-            // intact rather than being marked as having failed once.
-            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                return Err(anyhow::Error::new(NoRoom(detail)));
-            }
-            anyhow::bail!("runtime returned {status}: {detail}");
-        }
-
-        self.consume_turn(response.bytes_stream(), payload, message_id).await
-    }
 
     /// Reads a turn's progress and records it as it arrives.
     ///
@@ -550,9 +359,18 @@ impl Worker {
         anyhow::bail!("runtime stream ended without a result")
     }
 
-    async fn run_turn(&self, payload: &serde_json::Value) -> anyhow::Result<()> {
-        let payload: ChatTurnPayload = serde_json::from_value(payload.clone())?;
-
+    /// Everything a turn needs before it can run.
+    ///
+    /// All of it touches the database -- the agent, the transcript, the egress
+    /// rules, the reply the turn will stream into -- so it happens on this
+    /// tier whichever way the turn is going to reach a runtime. Returns None
+    /// when the turn has nothing left to do, which is not a failure: a steered
+    /// message was answered inside the turn it interrupted, and answering it
+    /// again would produce a second reply to a question already addressed.
+    pub(super) async fn prepare_turn(
+        &self,
+        payload: &ChatTurnPayload,
+    ) -> anyhow::Result<Option<crate::runtime::router::ExecuteRequest>> {
         let agent = self
             .agents
             .get(payload.tenant_id, payload.agent_id)
@@ -563,54 +381,31 @@ impl Worker {
             anyhow::bail!("agent is disabled");
         }
 
-        let history = self
-            .chat
-            .messages(payload.session_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("history: {e}"))?;
-
-        let conversation = project(&history.messages);
-
-        // The assistant's message is created empty before generation starts, so
-        // deltas attach to a row that already exists. Without this the browser
-        // would render a streaming buffer and then swap it for a loaded
-        // message, and any difference between the two would flash.
-        // A steered message was answered inside the turn it interrupted, so
-        // this queued turn has nothing left to do. Skipped rather than run,
-        // which would produce a second reply to a question already addressed.
         if self
             .chat
             .was_absorbed(payload.message_id)
             .await
             .map_err(|e| anyhow::anyhow!("absorbed: {e}"))?
         {
-            tracing::info!(
-                session_id = %payload.session_id,
-                message_id = %payload.message_id,
-                "prompt was answered mid-turn; nothing to do"
-            );
-            return Ok(());
+            return Ok(None);
         }
 
-        // Read once per turn rather than once per call: a tenant changing
-        // what its agents may reach should take effect on the next turn, and
-        // not halfway through one that is already reasoning about a host.
+        let history = self
+            .chat
+            .messages(payload.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+
         let egress = super::egress::rules_for(&self.pool, payload.tenant_id)
             .await
             .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
 
-        // Idempotent: a retry after a worker died mid-turn takes back the
-        // reply it already created rather than starting a second one.
         let placeholder = self
             .chat
             .claim_placeholder(payload.message_id, payload.session_id)
             .await
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
 
-        // Announced only when this attempt made it. A turn handed back for
-        // want of room comes round again every couple of seconds, and saying
-        // "here is a message" each time writes an event per cycle for a
-        // message the browser already has.
         if placeholder.created {
             events::append(
                 &self.pool,
@@ -622,39 +417,68 @@ impl Worker {
             .await?;
         }
 
-        // The runtime executes the agent and streams its progress back. Each
-        // delta is announced as it arrives, carrying an index so a reader can
-        // tell a dropped one from a slow one.
-        let token = self.minter.mint(
-            payload.session_id,
-            payload.tenant_id,
-            &[Role::Operator],
-        )?;
+        Ok(Some(crate::runtime::router::ExecuteRequest {
+            session_id: payload.session_id,
+            tenant_id: payload.tenant_id,
+            conversation: project(&history.messages)
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?,
+            system_prompt: agent.system_prompt,
+            model: Some(model_for(&agent.policy)),
+            timezone: payload.timezone.clone(),
+            reasoning_effort: reasoning_effort_for(&agent.policy),
+            traffic_type: Some(traffic_type_for(&agent.policy)),
+            max_tool_rounds: max_tool_rounds_for(&agent.policy),
+            reply_id: placeholder.message.id,
+            egress,
+        }))
+    }
 
-        let reply = self
-            .execute_on_runtime(
-                &token,
-                &payload,
-                conversation,
-                &agent.system_prompt,
-                &model_for(&agent.policy),
-                reasoning_effort_for(&agent.policy).as_deref(),
-                &traffic_type_for(&agent.policy),
-                max_tool_rounds_for(&agent.policy),
-                placeholder.message.id,
-                egress,
-            )
+    /// Records what a turn produced, and closes the job out.
+    ///
+    /// Called with the stream a runtime is posting back, so everything that
+    /// touches the transcript stays on this tier. The job is completed or
+    /// failed here rather than by the runtime, which holds no database and
+    /// should not be trusted to say whether its own work succeeded.
+    pub(super) async fn finish_turn(
+        &self,
+        job_id: Uuid,
+        stream: impl futures::Stream<Item = Result<axum::body::Bytes, impl std::fmt::Display>> + Unpin,
+    ) -> anyhow::Result<()> {
+        let job = jobs::get(&self.pool, job_id).await?;
+        let payload: ChatTurnPayload = serde_json::from_value(job.payload.clone())?;
+
+        let outcome = self
+            .consume_turn(stream, &payload, payload.message_id)
             .await;
 
-        let reply = match reply {
+        let reply = match outcome {
             Ok(reply) => reply,
             Err(e) => {
-                // Left in place when the turn will be retried -- the retry
-                // fills it. Only a turn that is giving up discards it, which
-                // happens where the job is marked permanently failed.
-                return Err(e);
+                tracing::error!(job_id = %job_id, error = %e, "chat turn failed");
+                if job.attempts >= job.max_attempts {
+                    self.abandon_payload(&payload, &e.to_string()).await;
+                } else {
+                    let _ = events::append(
+                        &self.pool,
+                        payload.tenant_id,
+                        Some(payload.session_id),
+                        "chat.error",
+                        serde_json::json!({ "message": e.to_string() }),
+                    )
+                    .await;
+                }
+                jobs::fail(&self.pool, job_id, &e.to_string(), Duration::from_secs(5)).await?;
+                return Ok(());
             }
         };
+
+        let agent = self
+            .agents
+            .get(payload.tenant_id, payload.agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
         let metadata = if reply.tools.is_empty() {
             serde_json::json!({})
@@ -665,7 +489,7 @@ impl Worker {
         let finished = self
             .chat
             .set_message_content(
-                placeholder.message.id,
+                payload.message_id,
                 &reply.content,
                 Some(&model_for(&agent.policy)),
                 reply.provider.as_deref(),
@@ -675,22 +499,19 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("finalise: {e}"))?;
 
-        // Carries no content: the browser has already rendered the deltas, and
-        // sending the text again would invite a client to replace what it has
-        // and flash if the two ever differed.
         events::append(
             &self.pool,
             payload.tenant_id,
             Some(payload.session_id),
             "chat.done",
-            serde_json::json!({
-                "message_id": finished.id,
-            }),
+            serde_json::json!({ "message_id": finished.id }),
         )
         .await?;
 
+        jobs::complete(&self.pool, job_id).await?;
         Ok(())
     }
+
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.

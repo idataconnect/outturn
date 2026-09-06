@@ -22,7 +22,7 @@ use super::component::{
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
 /// a loop cannot occupy the service indefinitely.
-const FUEL_PER_TURN: u64 = 50_000_000_000;
+pub const FUEL_PER_TURN: u64 = 50_000_000_000;
 
 /// Model calls permitted in one turn when nothing says otherwise.
 ///
@@ -30,7 +30,7 @@ const FUEL_PER_TURN: u64 = 50_000_000_000;
 /// decides and reads again many times, and a cap tuned for a single-tool agent
 /// would end that work partway. This is a runaway guard, not a budget -- what
 /// costs money is tokens, and that bound belongs with the accounting.
-const DEFAULT_MAX_TOOL_ROUNDS: u32 = 100;
+pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 100;
 
 pub struct RuntimeState {
     pub auth: TokenValidator,
@@ -49,7 +49,7 @@ pub struct RuntimeState {
     pub admission: Arc<crate::runtime::admission::Admission>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ExecuteRequest {
     pub session_id: Uuid,
     pub tenant_id: Uuid,
@@ -81,7 +81,7 @@ pub struct ExecuteRequest {
     pub egress: Vec<crate::runtime::egress::EgressRule>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationMessage {
     pub role: String,
     pub content: String,
@@ -93,7 +93,7 @@ pub struct ConversationMessage {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationToolCall {
     pub id: String,
     pub name: String,
@@ -150,6 +150,54 @@ pub enum ExecuteEvent {
     },
     /// The turn failed.
     Failed { message: String },
+}
+
+/// The three sinks a turn reports progress through.
+///
+/// Built together because they all feed one channel, and shared because both
+/// ways of reaching a runtime -- being called, and asking -- need the same
+/// three. The channel is unbounded: these are called while the guest is
+/// blocked, so they cannot wait for a slow reader.
+pub fn sinks_for(
+    tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>,
+) -> (ProgressSink, ToolSink, ToolResultSink) {
+    let progress: ProgressSink = {
+        let tx = tx.clone();
+        let index = std::sync::atomic::AtomicI64::new(0);
+        Arc::new(move |text: &str| {
+            let idx = index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = tx.send(ExecuteEvent::Delta {
+                idx,
+                text: text.to_string(),
+            });
+        })
+    };
+
+    let on_tool: ToolSink = {
+        let tx = tx.clone();
+        Arc::new(move |activity: &ToolActivity| {
+            let _ = tx.send(ExecuteEvent::Tool {
+                id: activity.id.clone(),
+                name: activity.name.clone(),
+                action: activity.action.clone(),
+                arguments: activity.arguments.clone(),
+            });
+        })
+    };
+
+    let on_tool_result: ToolResultSink = {
+        let tx = tx.clone();
+        Arc::new(move |outcome: &ToolOutcome| {
+            let _ = tx.send(ExecuteEvent::ToolResult {
+                id: outcome.id.clone(),
+                details: outcome.details.clone(),
+                content: outcome.content.clone(),
+                is_error: outcome.is_error,
+            });
+        })
+    };
+
+    (progress, on_tool, on_tool_result)
 }
 
 type ApiError = (StatusCode, String);

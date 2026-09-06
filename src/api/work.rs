@@ -53,17 +53,21 @@ const WORK_POLL_TIMEOUT: Duration = Duration::from_secs(25);
 const WORK_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// A turn handed to a runtime, with everything it needs to run it.
+///
+/// Fat on purpose. Preparing a turn -- the agent, the transcript, the egress
+/// rules, the reply it will stream into -- touches the database at every step,
+/// so it happens here and the runtime is handed the finished article. The
+/// alternative, a job id the runtime calls back to expand, costs a round trip
+/// to move work to a tier that cannot do it.
 #[derive(Debug, Serialize)]
 pub struct Assignment {
     pub job_id: Uuid,
-    pub session_id: Uuid,
-    pub tenant_id: Uuid,
-    pub agent_id: Uuid,
-    /// The prompt this turn answers, so the reply can hang off it.
-    pub message_id: Uuid,
-    /// Attempts already spent, so a runtime can tell a retry from a first go.
-    pub attempts: i32,
-    pub max_attempts: i32,
+    /// Exactly what used to be POSTed to a runtime, travelling the other way.
+    #[serde(flatten)]
+    pub request: crate::runtime::router::ExecuteRequest,
+    /// Minted per turn rather than held by the runtime, so what a turn may
+    /// reach is bounded by what this tier granted for it.
+    pub gateway_token: String,
 }
 
 /// Hands out one turn, or nothing.
@@ -93,21 +97,46 @@ pub async fn take(
                     (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}"))
                 })?;
 
-            tracing::debug!(
-                job_id = %handle.job.id,
-                session_id = %payload.session_id,
-                "handed a turn to a runtime that asked for one"
-            );
+            let worker = state.worker.get().ok_or((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "this pod is not serving turns".to_string(),
+            ))?;
 
-            return Ok(Json(Some(Assignment {
-                job_id: handle.job.id,
-                session_id: payload.session_id,
-                tenant_id: payload.tenant_id,
-                agent_id: payload.agent_id,
-                message_id: payload.message_id,
-                attempts: handle.job.attempts,
-                max_attempts: handle.job.max_attempts,
-            })));
+            match worker.prepare_turn(&payload).await {
+                // Nothing left to do: the prompt was answered inside the turn
+                // it interrupted. The job is done rather than abandoned, and
+                // the runtime is not troubled with it.
+                Ok(None) => {
+                    let _ = jobs::complete(&state.pool, handle.job.id).await;
+                    continue;
+                }
+                Ok(Some(request)) => {
+                    let gateway_token = mint_for(&state, payload.session_id, payload.tenant_id)?;
+                    tracing::debug!(
+                        job_id = %handle.job.id,
+                        session_id = %payload.session_id,
+                        "handed a turn to a runtime that asked for one"
+                    );
+                    return Ok(Json(Some(Assignment {
+                        job_id: handle.job.id,
+                        request,
+                        gateway_token,
+                    })));
+                }
+                Err(e) => {
+                    // Preparation failed, so nothing ran. Fail the job here
+                    // rather than handing a runtime work it cannot do.
+                    tracing::error!(job_id = %handle.job.id, error = %e, "could not prepare a turn");
+                    let _ = jobs::fail(
+                        &state.pool,
+                        handle.job.id,
+                        &e.to_string(),
+                        Duration::from_secs(5),
+                    )
+                    .await;
+                    continue;
+                }
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {
@@ -137,4 +166,34 @@ pub fn mint_for(state: &ApiState, session_id: Uuid, tenant_id: Uuid) -> Result<S
         .minter
         .mint(session_id, tenant_id, &[Role::Operator])
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Receives a turn's progress from the runtime that is running it.
+///
+/// The body is the same newline-delimited stream a runtime used to return when
+/// this tier called it; only the direction has changed. Everything that
+/// touches the transcript still happens here, so a runtime holds no database
+/// and writes no rows -- it produces events and this tier records them.
+pub async fn report(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(job_id): axum::extract::Path<Uuid>,
+    body: axum::body::Body,
+) -> Result<StatusCode, ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    claims
+        .require(Authority::GatewayInvoke)
+        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+
+    let worker = state.worker.get().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "this pod is not serving turns".to_string(),
+    ))?;
+
+    worker
+        .finish_turn(job_id, body.into_data_stream())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

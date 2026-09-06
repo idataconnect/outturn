@@ -87,21 +87,15 @@ async fn main() {
         health.shutdown_signal(),
     ));
 
-    // Turns are produced here rather than in the request path, so a slow
-    // provider never holds an HTTP connection open.
-    Arc::new(Worker {
+    // Turns are prepared and recorded here, and run by whichever runtime asks
+    // for one. Nothing is pushed: a runtime with room comes and takes work, so
+    // this tier never has to guess which pod could have taken it.
+    state.set_worker(Arc::new(Worker {
         pool: pool.clone(),
         agents: agents.clone(),
         chat: chat.clone(),
         minter: Arc::new(worker_minter),
-        runtime_url: std::env::var("OUTTURN_RUNTIME_URL")
-            .unwrap_or_else(|_| "http://outturn-runtime:8082".into()),
-        http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
-            in_flight: Arc::new(tokio::sync::Semaphore::new(
-            outturn::api::worker::max_in_flight_turns(),
-        )),
-    })
-    .spawn(health.shutdown_signal());
+    }));
 
     let app = Router::new()
         .merge(lifecycle::routes(health.clone()))

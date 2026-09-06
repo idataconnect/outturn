@@ -225,6 +225,25 @@ pub async fn fail(
     Ok(())
 }
 
+/// Reads one job.
+///
+/// For the tier recording a turn's result, which knows the job by id and needs
+/// what it was for. Deliberately not scoped by state: a job whose lease
+/// lapsed while it ran still has to be recognisable when its results arrive.
+pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
+    let row = sqlx::query(
+        "select id, tenant_id, kind, payload, attempts, max_attempts \
+         from jobs where id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?
+    .ok_or(JobError::NotFound)?;
+
+    Ok(read_job(&row))
+}
+
 /// What became of a job that was handed back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Released {

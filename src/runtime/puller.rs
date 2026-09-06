@@ -1,0 +1,241 @@
+//! Asking for work, rather than waiting to be given it.
+//!
+//! A pod with a free slot asks the API for a turn and is given one. A pod with
+//! no room does not ask, so it is never offered work it would have to refuse.
+//!
+//! That inversion is the whole point. Pushing meant the API guessed which pod
+//! had capacity -- it could not know -- and a full pod answered 503, the turn
+//! was handed back, and the same guess was made two seconds later. Measured
+//! over a hundred and twenty turns that cost six hundred and ninety-two
+//! refusals, and the turns that kept losing the lottery waited fourteen
+//! seconds before generating a token while others started in a tenth of one.
+//! The waiting was bad; the unfairness was worse, because which turn drew the
+//! short straw was luck.
+//!
+//! Capacity is not a slot count. A turn's cost is unknown when it is taken and
+//! a turn accepted a moment ago is still growing into memory, so the pod
+//! charges itself an assumed cost the instant it takes work and only replaces
+//! that with the real figure once the turn has grown into it. Asking is
+//! therefore a statement about memory, not about a counter.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use uuid::Uuid;
+
+use super::admission::Admission;
+use super::component::{AgentRunner, Message, RunOptions};
+use super::router::{ExecuteEvent, ExecuteRequest};
+
+/// How long to wait before asking again after being told there is no work.
+///
+/// Short, because this is the idle path and the poll it follows already waited
+/// on the server for its own timeout. This only covers the gap between one
+/// poll returning empty and the next beginning.
+const IDLE_PAUSE: Duration = Duration::from_millis(100);
+
+/// How long to wait before asking again after a failure.
+///
+/// Longer, because a failure means the API is unwell and asking harder does
+/// not help it.
+const ERROR_PAUSE: Duration = Duration::from_secs(2);
+
+#[derive(serde::Deserialize)]
+struct Assignment {
+    job_id: Uuid,
+    gateway_token: String,
+    #[serde(flatten)]
+    request: ExecuteRequest,
+}
+
+pub struct Puller {
+    pub api_url: String,
+    pub token: String,
+    pub http: reqwest::Client,
+    pub runner: Arc<AgentRunner>,
+    pub agent_module: Arc<Vec<u8>>,
+    pub storage: Option<Arc<dyn super::storage::StorageBackend>>,
+    pub gateway_url: String,
+    pub admission: Arc<Admission>,
+    pub default_model: String,
+    pub idle_timeout: Duration,
+}
+
+impl Puller {
+    /// Runs until the process shuts down.
+    pub fn spawn(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
+        tokio::spawn(async move {
+            loop {
+                // Asking is gated on having somewhere to put the answer. A pod
+                // that cannot take a turn does not ask for one, which is the
+                // whole of admission control now -- there is nothing to refuse
+                // because nothing is offered.
+                let permit = match self.admission.try_admit() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep(IDLE_PAUSE) => continue,
+                            _ = shutdown.notified() => return,
+                        }
+                    }
+                };
+
+                let pause = match Arc::clone(&self).take_one(permit).await {
+                    Ok(true) => Duration::ZERO,
+                    Ok(false) => IDLE_PAUSE,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "could not take work");
+                        ERROR_PAUSE
+                    }
+                };
+
+                if !pause.is_zero() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(pause) => {}
+                        _ = shutdown.notified() => return,
+                    }
+                }
+            }
+        });
+    }
+
+    /// Asks for one turn and runs it. Returns whether there was work.
+    async fn take_one(
+        self: Arc<Self>,
+        permit: super::admission::Permit,
+    ) -> anyhow::Result<bool> {
+        let response = self
+            .http
+            .post(format!("{}/v1/work", self.api_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("asking for work returned {}", response.status());
+        }
+
+        let Some(assignment) = response.json::<Option<Assignment>>().await? else {
+            return Ok(false);
+        };
+
+        // Spawned so the loop can go back to asking. The permit rides along,
+        // so the slot is held for exactly as long as the turn runs.
+        tokio::spawn(async move {
+            let job_id = assignment.job_id;
+            if let Err(e) = self.run(assignment, permit).await {
+                tracing::error!(job_id = %job_id, error = %e, "turn failed");
+            }
+        });
+
+        Ok(true)
+    }
+
+    async fn run(
+        &self,
+        assignment: Assignment,
+        permit: super::admission::Permit,
+    ) -> anyhow::Result<()> {
+        let job_id = assignment.job_id;
+        let request = assignment.request;
+
+        let conversation: Vec<Message> = request
+            .conversation
+            .into_iter()
+            .map(|m| Message {
+                role: m.role,
+                content: m.content,
+                tool_calls: m
+                    .tool_calls
+                    .into_iter()
+                    .map(|c| super::component::ToolCall {
+                        id: c.id,
+                        name: c.name,
+                        arguments: c.arguments,
+                    })
+                    .collect(),
+                tool_call_id: m.tool_call_id,
+            })
+            .collect();
+
+        // Progress is reported by streaming it back to the tier that owns the
+        // transcript. The channel is unbounded because the sinks are called
+        // while the guest is blocked and cannot wait for a slow reader.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ExecuteEvent>();
+        let sinks = super::router::sinks_for(&tx);
+
+        let options = RunOptions {
+            session_id: request.session_id,
+            gateway_url: self.gateway_url.clone(),
+            gateway_token: assignment.gateway_token,
+            default_model: request.model.unwrap_or_else(|| self.default_model.clone()),
+            progress: Some(sinks.0),
+            on_tool: Some(sinks.1),
+            on_tool_result: Some(sinks.2),
+            fuel: super::router::FUEL_PER_TURN,
+            timezone: request.timezone,
+            reasoning_effort: request.reasoning_effort,
+            traffic_type: request
+                .traffic_type
+                .unwrap_or_else(|| crate::gateway::routing::DEFAULT_TRAFFIC_TYPE.to_string()),
+            max_tool_rounds: match request.max_tool_rounds {
+                Some(n) if n <= 0 => 0,
+                Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
+                None => super::router::DEFAULT_MAX_TOOL_ROUNDS,
+            },
+            reply_id: request.reply_id,
+            storage: self.storage.clone(),
+            tenant_id: request.tenant_id,
+            idle_timeout: self.idle_timeout,
+            egress: request.egress,
+        };
+
+        let runner = Arc::clone(&self.runner);
+        let module = Arc::clone(&self.agent_module);
+        let prompt = request.system_prompt;
+        tokio::spawn(async move {
+            // The permit is held here rather than by the reporting task: the
+            // slot belongs to the turn, and the turn is what is running.
+            let _permit = permit;
+            let outcome = runner.run(&module, conversation, prompt, options).await;
+            let _ = match outcome {
+                Ok((content, cost)) => tx.send(ExecuteEvent::Done {
+                    content,
+                    prompt_tokens: cost.prompt_tokens,
+                    completion_tokens: cost.completion_tokens,
+                    cache_read_tokens: cost.cache_read_tokens,
+                    cache_write_tokens: cost.cache_write_tokens,
+                    reasoning_tokens: cost.reasoning_tokens,
+                    provider: cost.provider,
+                }),
+                Err(e) => tx.send(ExecuteEvent::Failed {
+                    message: e.to_string(),
+                }),
+            };
+        });
+
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(|event| {
+            serde_json::to_string(&event)
+                .map(|mut line| {
+                    line.push('\n');
+                    axum::body::Bytes::from(line)
+                })
+                .map_err(std::io::Error::other)
+        });
+
+        let response = self
+            .http
+            .post(format!("{}/v1/work/{job_id}/events", self.api_url))
+            .bearer_auth(&self.token)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("reporting a turn returned {}", response.status());
+        }
+
+        Ok(())
+    }
+}
