@@ -6,7 +6,7 @@ use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 
-use crate::auth::{Role, TokenMinter};
+use crate::auth::TokenMinter;
 use crate::events;
 use crate::jobs;
 use crate::runtime::router::ExecuteEvent;
@@ -14,39 +14,9 @@ use crate::runtime::router::ExecuteEvent;
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
 
-/// Turns this pod will have in flight before it stops claiming.
-///
-/// The API's share of a turn is a task and an open stream, which is cheap --
-/// but claiming is what takes work off the queue, and work taken off the queue
-/// is work no other pod can serve. An unbounded claimer turns a shared backlog
-/// into a private one.
-const DEFAULT_MAX_IN_FLIGHT_TURNS: usize = 16;
 
-/// Claimed per tick at most, so a burst is spread over ticks rather than
-/// landing on one pod because it happened to ask first.
-const CLAIM_BATCH: i64 = 4;
 
-/// How long a turn waits after a runtime refused it for want of room.
-///
-/// Short, because the refusal says nothing is wrong -- only that every pod
-/// asked so far was busy. Long enough that retrying is not itself the load.
-const NO_ROOM_BACKOFF: Duration = Duration::from_secs(2);
 
-/// The runtime had no room for this turn.
-///
-/// Distinguished from every other error because it is not a failure: nothing
-/// was attempted, nothing is wrong with the job, and counting it as an attempt
-/// would let a busy cluster exhaust a turn's retries without ever running it.
-#[derive(Debug)]
-struct NoRoom(String);
-
-impl std::fmt::Display for NoRoom {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "runtime had no room: {}", self.0)
-    }
-}
-
-impl std::error::Error for NoRoom {}
 
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";
@@ -139,7 +109,7 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
 }
 
 /// What a completed turn produced.
-struct TurnOutcome {
+pub(super) struct TurnOutcome {
     content: String,
     /// Tool calls the agent made, in order, each with the model's own label.
     tools: Vec<serde_json::Value>,
@@ -156,14 +126,6 @@ pub struct Worker {
     pub minter: Arc<TokenMinter>,
 }
 
-/// The in-flight bound this pod will use.
-pub fn max_in_flight_turns() -> usize {
-    std::env::var("OUTTURN_MAX_IN_FLIGHT_TURNS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_MAX_IN_FLIGHT_TURNS)
-}
 
 impl Worker {
     /// Runs until the process shuts down.
@@ -179,13 +141,6 @@ impl Worker {
     /// and a reader with no error event waits on an indicator that resolves on
     /// no timescale at all. Both halves matter, which is why they are one
     /// function rather than two blocks that drifted apart.
-    async fn abandon(&self, handle: &jobs::JobHandle, reason: &str) {
-        let Ok(payload) = serde_json::from_value::<ChatTurnPayload>(handle.job.payload.clone())
-        else {
-            return;
-        };
-        self.abandon_payload(&payload, reason).await;
-    }
 
     async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
         if let Err(e) = self.chat.discard_placeholder(payload.message_id).await {
@@ -359,6 +314,30 @@ impl Worker {
         anyhow::bail!("runtime stream ended without a result")
     }
 
+    /// Returns work whose runtime stopped reporting.
+    ///
+    /// A turn is claimed by the tier handing it out and reported by the
+    /// runtime running it, and nothing connects those two but a lease. When a
+    /// runtime is killed mid-turn nobody fails the job -- the pod that would
+    /// have is gone -- so without this the row stays `running` for ever, and
+    /// because a serial key admits no second job while one is running, every
+    /// later turn in that session is blocked behind it.
+    pub fn spawn_reaper(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => return,
+                    _ = ticker.tick() => match jobs::reap_abandoned(&self.pool).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(jobs = n, "returned abandoned work to the queue"),
+                        Err(e) => tracing::error!(error = %e, "could not reap abandoned work"),
+                    },
+                }
+            }
+        });
+    }
+
     /// Everything a turn needs before it can run.
     ///
     /// All of it touches the database -- the agent, the transcript, the egress
@@ -449,9 +428,38 @@ impl Worker {
         let job = jobs::get(&self.pool, job_id).await?;
         let payload: ChatTurnPayload = serde_json::from_value(job.payload.clone())?;
 
+        // Renewed for as long as results keep arriving. A turn runs for as
+        // long as a model takes and the lease is deliberately short, so
+        // without this the reaper hands the same turn to a second runtime
+        // while the first is still streaming it -- and both would then write
+        // the same reply.
+        //
+        // Held here rather than in the runtime because a lease is a claim on a
+        // row, and the runtime holds no database. Arriving bytes are the
+        // evidence the turn is alive, which is better evidence than a pod
+        // saying so.
+        let heartbeat = {
+            let pool = self.pool.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    match jobs::extend_lease(&pool, job_id, jobs::DEFAULT_LEASE).await {
+                        // No longer ours: something reaped it, and renewing
+                        // would take it back from whoever has it now.
+                        Ok(false) => return,
+                        Ok(true) => {}
+                        Err(e) => tracing::warn!(job_id = %job_id, error = %e, "lease renewal failed"),
+                    }
+                }
+            })
+        };
+
         let outcome = self
             .consume_turn(stream, &payload, payload.message_id)
             .await;
+        heartbeat.abort();
 
         let reply = match outcome {
             Ok(reply) => reply,

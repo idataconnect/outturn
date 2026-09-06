@@ -90,12 +90,17 @@ async fn main() {
     // Turns are prepared and recorded here, and run by whichever runtime asks
     // for one. Nothing is pushed: a runtime with room comes and takes work, so
     // this tier never has to guess which pod could have taken it.
-    state.set_worker(Arc::new(Worker {
+    let worker = Arc::new(Worker {
         pool: pool.clone(),
         agents: agents.clone(),
         chat: chat.clone(),
         minter: Arc::new(worker_minter),
-    }));
+    });
+    // A turn is claimed here and reported by whichever runtime ran it, and
+    // nothing joins those but a lease. When a runtime dies mid-turn the job is
+    // returned to the queue by this rather than by the pod that vanished.
+    Arc::clone(&worker).spawn_reaper(health.shutdown_signal());
+    state.set_worker(worker);
 
     let app = Router::new()
         .merge(lifecycle::routes(health.clone()))

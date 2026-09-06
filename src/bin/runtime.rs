@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use outturn::auth::{TokenMinter, TokenValidator};
 use outturn::lifecycle::{self, Health};
 use outturn::runtime::component::AgentRunner;
-use outturn::runtime::router::{self, RuntimeState};
+use outturn::runtime::router::RuntimeState;
 use outturn::runtime::storage::{MemoryStorage, S3Storage, StorageBackend};
 
 #[tokio::main]
@@ -26,7 +26,7 @@ async fn main() {
     )
     .expect("agent component");
 
-    let validator = TokenValidator::from_env().expect("token validator");
+    let _validator = TokenValidator::from_env().expect("token validator");
     let (minter, _public) = TokenMinter::from_env().expect("token minter");
 
     // One bucket, partitioned by tenant prefix. Buckets are a limited
@@ -63,7 +63,6 @@ async fn main() {
     };
 
     let state = Arc::new(RuntimeState {
-        auth: validator,
         minter,
         gateway_url: std::env::var("OUTTURN_GATEWAY_URL")
             .unwrap_or_else(|_| "http://outturn-gateway:8081".into()),

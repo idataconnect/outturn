@@ -26,8 +26,6 @@ patches:
             value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
           - name: OUTTURN_DEV_SEED
             value: "1"
-          - name: OUTTURN_RUNTIME_URL
-            value: "http://outturn-runtime:8082"
           # gemma4 rather than llama3.1: the agent offers tools on every
           # turn, and llama3.1's template stops streaming when tools are
           # present -- a reply collapses from ~26 chunks to 3. gemma4 streams
@@ -81,6 +79,10 @@ patches:
           # Agents execute here, so this is the tier that reaches the gateway.
           - name: OUTTURN_GATEWAY_URL
             value: "http://outturn-gateway:8081"
+          # Where this pod asks for work. Nothing pushes turns to it, so a
+          # runtime that cannot reach the API sits idle rather than failing.
+          - name: OUTTURN_API_URL
+            value: "http://outturn-api:8080"
           # Object storage for agent files. One bucket, partitioned by tenant
           # prefix; the runtime resolves which part a turn may touch. Without
           # these the runtime falls back to memory, which loses everything on

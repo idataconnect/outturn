@@ -86,7 +86,7 @@ constant they replace.
 |---|---|---|
 | `OUTTURN_MAX_CONCURRENT_TURNS` | runtime | Turns one pod carries before answering 503 |
 | `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
-| `OUTTURN_MAX_IN_FLIGHT_TURNS` | api | Turns one pod claims before it stops claiming |
+| `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_DEFAULT_MODEL` | api, runtime | Model when an agent names none |
 
 An idle runtime pod always accepts a turn however tight memory looks. Without
@@ -192,13 +192,19 @@ The guest cannot read it and cannot set the headers it travels in. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
 safe to return to a browser.
 
-**Refusing work is not failing it.** A runtime pod at capacity answers 503,
-and the worker returns the job with `jobs::release`, which gives back the
-attempt the claim counted. Map that 503 onto `jobs::fail` and a cluster that is
-merely busy will exhaust a turn's retries without ever running it, and tell the
-user their turn failed because the service was popular. Releases are counted
-separately and give up past `MAX_RELEASES`, so a permanently full cluster
-reports rather than spins.
+**Runtimes take work; nothing is pushed to them.** A pod with room polls
+`/v1/work` for one turn and is given one, so a full pod is never offered work it
+would have to refuse. Pushing meant guessing which pod had capacity: measured
+over 120 turns it cost 692 refusals, and the turns that kept losing that lottery
+waited fourteen seconds to start while others began in a tenth of one.
+
+**A lease is the only thing joining a claim to the runtime running it.** The
+tier handing work out claims the job; the runtime reports what it produced. If
+that pod dies, nothing fails the job -- the thing that would have is gone -- so
+the lease is what recovers it, renewed while results arrive and reaped when they
+stop. Remove either half and turns are lost or run twice: without the reaper a
+crashed runtime blocks its session for ever, and without renewal a turn longer
+than the lease is handed to a second pod while the first is still streaming.
 
 **Scale on work that could start, not work that is waiting.** A serial key
 admits one running job at a time, so a session with a hundred queued turns is
@@ -220,8 +226,8 @@ source, check pod age before theorising.
 ## Direction
 
 Intended but not yet built, so that nobody mistakes these for facts about the
-code: Redis caching, pull-based session assignment, per-tenant usage
-attribution, OpenTelemetry, and workflows as scripted tasks in sub-sessions.
+code: Redis caching, per-tenant usage attribution, OpenTelemetry, and workflows
+as scripted tasks in sub-sessions.
 
 A tenant's egress list is managed through `/v1/egress-rules` and has no UI
 yet, so allowing a host means an API call.

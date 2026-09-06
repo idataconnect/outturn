@@ -3,15 +3,6 @@
 //! A pod with a free slot asks the API for a turn and is given one. A pod with
 //! no room does not ask, so it is never offered work it would have to refuse.
 //!
-//! That inversion is the whole point. Pushing meant the API guessed which pod
-//! had capacity -- it could not know -- and a full pod answered 503, the turn
-//! was handed back, and the same guess was made two seconds later. Measured
-//! over a hundred and twenty turns that cost six hundred and ninety-two
-//! refusals, and the turns that kept losing the lottery waited fourteen
-//! seconds before generating a token while others started in a tenth of one.
-//! The waiting was bad; the unfairness was worse, because which turn drew the
-//! short straw was luck.
-//!
 //! Capacity is not a slot count. A turn's cost is unknown when it is taken and
 //! a turn accepted a moment ago is still growing into memory, so the pod
 //! charges itself an assumed cost the instant it takes work and only replaces
@@ -126,6 +117,11 @@ impl Puller {
             let job_id = assignment.job_id;
             if let Err(e) = self.run(assignment, permit).await {
                 tracing::error!(job_id = %job_id, error = %e, "turn failed");
+                // Say so, because the endpoint that would have reported this
+                // turn is the one that failed. Silence here leaves the job
+                // claimed and the session behind it blocked until a lease
+                // lapses.
+                self.hand_back(job_id).await;
             }
         });
 
@@ -195,9 +191,6 @@ impl Puller {
         let module = Arc::clone(&self.agent_module);
         let prompt = request.system_prompt;
         tokio::spawn(async move {
-            // The permit is held here rather than by the reporting task: the
-            // slot belongs to the turn, and the turn is what is running.
-            let _permit = permit;
             let outcome = runner.run(&module, conversation, prompt, options).await;
             let _ = match outcome {
                 Ok((content, cost)) => tx.send(ExecuteEvent::Done {
@@ -232,10 +225,42 @@ impl Puller {
             .send()
             .await?;
 
+        // Held until the results are delivered, not merely until the guest
+        // stops. A permit dropped when generation ends frees the slot while
+        // the transcript is still being written, and the pod takes another
+        // turn against memory the last one has not finished with -- which is
+        // the whole thing this is meant to prevent.
+        drop(permit);
+
         if !response.status().is_success() {
             anyhow::bail!("reporting a turn returned {}", response.status());
         }
 
         Ok(())
+    }
+}
+
+impl Puller {
+    /// Tells the API a turn could not be delivered.
+    ///
+    /// Best effort by nature: this runs because something already failed, and
+    /// if the API cannot be reached to say so then the lease is what recovers
+    /// the turn. Saying so when possible turns a forty-five second stall into
+    /// an immediate retry.
+    async fn hand_back(&self, job_id: Uuid) {
+        let sent = self
+            .http
+            .post(format!("{}/v1/work/{job_id}/abandon", self.api_url))
+            .bearer_auth(&self.token)
+            .send()
+            .await;
+
+        if let Err(e) = sent {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "could not hand a turn back; its lease will recover it"
+            );
+        }
     }
 }

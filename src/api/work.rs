@@ -78,12 +78,9 @@ pub async fn take(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Option<Assignment>>, ApiError> {
-    let claims = super::router::authenticate(&state, &headers)?;
     // The same authority the runtime already holds to reach the gateway: this
     // is the platform's own tier asking for work, not a tenant's.
-    claims
-        .require(Authority::GatewayInvoke)
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
 
     let deadline = tokio::time::Instant::now() + WORK_POLL_TIMEOUT;
     loop {
@@ -97,10 +94,24 @@ pub async fn take(
                     (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}"))
                 })?;
 
-            let worker = state.worker.get().ok_or((
-                StatusCode::SERVICE_UNAVAILABLE,
-                "this pod is not serving turns".to_string(),
-            ))?;
+            // Released rather than dropped. A claimed job whose handler
+            // returns early is a row left `running` that nothing will ever
+            // report, and a serial key admits no second job while one is
+            // running -- so dropping one here wedges that session until a
+            // reaper notices, or for ever if none does.
+            let Some(worker) = state.worker.get() else {
+                let _ = jobs::release(
+                    &state.pool,
+                    handle.job.id,
+                    Duration::from_secs(0),
+                    jobs::MAX_RELEASES,
+                )
+                .await;
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "this pod is not serving turns".to_string(),
+                ));
+            };
 
             match worker.prepare_turn(&payload).await {
                 // Nothing left to do: the prompt was answered inside the turn
@@ -111,7 +122,23 @@ pub async fn take(
                     continue;
                 }
                 Ok(Some(request)) => {
-                    let gateway_token = mint_for(&state, payload.session_id, payload.tenant_id)?;
+                    let gateway_token =
+                        match mint_for(&state, payload.session_id, payload.tenant_id) {
+                            Ok(token) => token,
+                            Err(e) => {
+                                // The placeholder is already written and
+                                // announced, so this turn has to go back where
+                                // a retry can find it rather than be dropped.
+                                let _ = jobs::release(
+                                    &state.pool,
+                                    handle.job.id,
+                                    Duration::from_secs(1),
+                                    jobs::MAX_RELEASES,
+                                )
+                                .await;
+                                return Err(e);
+                            }
+                        };
                     tracing::debug!(
                         job_id = %handle.job.id,
                         session_id = %payload.session_id,
@@ -180,20 +207,63 @@ pub async fn report(
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
     body: axum::body::Body,
 ) -> Result<StatusCode, ApiError> {
-    let claims = super::router::authenticate(&state, &headers)?;
-    claims
-        .require(Authority::GatewayInvoke)
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
 
     let worker = state.worker.get().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "this pod is not serving turns".to_string(),
     ))?;
 
+    // Only a turn that is actually out with a runtime may be reported. The
+    // claim is the ticket: a job that is pending was never handed out, and one
+    // that already succeeded has been reported once. Without this, holding a
+    // job id is enough to write into a transcript -- including a second time,
+    // over a reply that was already finished.
+    let running = jobs::is_running(&state.pool, job_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !running {
+        return Err((
+            StatusCode::CONFLICT,
+            "that turn is not out with a runtime".to_string(),
+        ));
+    }
+
     worker
         .finish_turn(job_id, body.into_data_stream())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Hands a turn back when the runtime running it could not deliver the result.
+///
+/// A runtime that fails to report has no way to say so through the reporting
+/// endpoint -- that is the thing that failed -- so it says so here. Without
+/// it the only thing that notices is the lease, and a session is blocked for
+/// as long as that takes.
+pub async fn abandon(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(job_id): axum::extract::Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = super::router::authorize(&state, &headers, Authority::GatewayInvoke)?;
+
+    // Given back rather than failed: nothing about the turn was wrong, the
+    // pod running it could not report what it produced.
+    match jobs::release(&state.pool, job_id, Duration::from_secs(1), jobs::MAX_RELEASES).await {
+        Ok(jobs::Released::Queued) => {
+            tracing::info!(job_id = %job_id, actor = %claims.session_id, "a runtime handed a turn back");
+        }
+        Ok(jobs::Released::GaveUp) => {
+            tracing::error!(job_id = %job_id, "a turn was handed back too many times; giving up");
+        }
+        // Already reported, already reaped, or never ours. Nothing to do, and
+        // an error here would only make a runtime retry something that is no
+        // longer its business.
+        Err(_) => {}
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

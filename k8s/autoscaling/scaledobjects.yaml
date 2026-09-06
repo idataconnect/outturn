@@ -89,10 +89,10 @@ spec:
       authenticationRef:
         name: outturn-queue
       metadata:
-        # Higher than the runtime's, because the API's share of a turn is a
-        # task and an open stream. It scales so that claiming does not become
-        # the bottleneck -- each pod claims up to OUTTURN_MAX_IN_FLIGHT_TURNS
-        # -- not because it is doing the work.
+        # Higher than the runtime's, because the API's share of a turn is
+        # preparing it and recording what comes back, not running it. It scales
+        # so that handing out work and writing transcripts does not become the
+        # bottleneck.
         targetQueryValue: "40"
         # The same backlog the runtime scales on: rows that cannot be claimed
         # are not work.

@@ -458,6 +458,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // a tenant's.
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
+        .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
         .route("/v1/users", get(list_users).post(create_user))
         .route("/v1/users/{id}", get(get_user).delete(delete_user))
         .route("/v1/users/{user_id}/identities", post(add_identity))

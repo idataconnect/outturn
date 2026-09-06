@@ -244,6 +244,21 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
     Ok(read_job(&row))
 }
 
+/// Whether a job is out with something that claimed it.
+///
+/// The claim is what authorises reporting a turn: a job that is pending was
+/// never handed out, and one that has finished was reported already. Checking
+/// the state is what stops a job id alone from being enough to write into a
+/// transcript.
+pub async fn is_running(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
+    let state: Option<String> = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
+    Ok(state.as_deref() == Some("running"))
+}
+
 /// What became of a job that was handed back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Released {

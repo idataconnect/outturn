@@ -65,8 +65,17 @@ async fn harness() -> Harness {
         Arc::new(tokio::sync::Notify::new()),
     ));
 
+    // The endpoints runtimes use need the worker that prepares and records
+    // turns, the same as a real API pod.
+    state.set_worker(Arc::new(outturn::api::worker::Worker {
+        pool: pool.clone(),
+        agents: agents.clone(),
+        chat: chat.clone(),
+        minter: Arc::new(TokenMinter::generate().expect("keypair").0),
+    }));
+
     Harness {
-        app: routes(state),
+        app: routes(Arc::clone(&state)),
         users,
         tenants,
         sessions,
@@ -1294,4 +1303,75 @@ async fn egress_rules_do_not_cross_tenants() {
 
     let (status, body) = h.get("/v1/egress-rules", Some(&acme_token)).await;
     assert!(body.contains("api.acme.example"), "status {status}: {body}");
+}
+
+// -- Work distribution --------------------------------------------------------
+
+/// Nothing is handed out to a caller that is not the platform's own tier.
+#[tokio::test]
+async fn taking_work_needs_more_than_a_tenant_token() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let member = h
+        .login_as("member@acme.example", None, Some((acme, Role::Viewer)))
+        .await;
+
+    let (status, body) = h.post("/v1/work", Some(&member), "{}").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+
+    let (status, _) = h.post("/v1/work", None, "{}").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// A turn may only be reported while it is out with a runtime.
+///
+/// The claim is the ticket. Without this check a job id is enough to write
+/// into a transcript -- including a second time, over a reply already
+/// finished by the runtime that really ran it.
+#[tokio::test]
+async fn a_turn_that_is_not_running_cannot_be_reported() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let operator = h
+        .login_as("runtime@acme.example", None, Some((acme, Role::Operator)))
+        .await;
+
+    // Queued but never handed out, so nothing is running it.
+    let job = outturn::jobs::enqueue(
+        &h.db.pool,
+        acme,
+        "chat.turn",
+        serde_json::json!({}),
+        None,
+        None,
+    )
+    .await
+    .expect("enqueue");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {operator}"))
+        .body(Body::from("{}\n"))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a job nobody is running was reported: {body}"
+    );
+}
+
+/// An empty queue is answered with nothing, not an error.
+#[tokio::test]
+async fn asking_for_work_when_there_is_none_says_so() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let operator = h
+        .login_as("runtime@acme.example", None, Some((acme, Role::Operator)))
+        .await;
+
+    let (status, body) = h.post("/v1/work", Some(&operator), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
 }
