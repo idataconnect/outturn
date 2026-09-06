@@ -206,6 +206,22 @@ stop. Remove either half and turns are lost or run twice: without the reaper a
 crashed runtime blocks its session for ever, and without renewal a turn longer
 than the lease is handed to a second pod while the first is still streaming.
 
+**A person waiting comes before scheduled work.** Jobs carry a priority and
+the claim reads it before `run_after`, so a backlog of background work cannot
+put itself in front of somebody watching a reply. It cannot preempt a turn
+already running -- the guarantee is that the next slot to free anywhere in the
+fleet goes to the higher priority, which is bounded by the shortest turn in
+flight rather than by how long a pod takes to start.
+
+**Capacity is estimated ahead of the queue, not from it.** Queue depth is a
+lagging measure: by the time work is queued somebody is already waiting, and a
+pod arriving thirty seconds later does not help the turns that queued. So
+`desired_runtime_pods` is a floor plus a term for recently active sessions --
+which predict arrivals that have not happened yet -- plus terms for waiting
+work at each priority. The autoscaler reads it with a target of one, because
+the arithmetic belongs in a view somebody can read rather than smuggled into a
+threshold.
+
 **Scale on work that could start, not work that is waiting.** A serial key
 admits one running job at a time, so a session with a hundred queued turns is
 one unit of work. The `job_backlog` view is the one statement of that, and a

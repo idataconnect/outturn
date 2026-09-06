@@ -62,13 +62,16 @@ spec:
         # (OUTTURN_MAX_CONCURRENT_TURNS) that is a little over one pod's worth
         # of backlog, so a pod is added while the queue is forming rather than
         # after it has formed.
-        targetQueryValue: "10"
+        # One, because the query returns pods rather than a quantity to be
+        # divided into pods. The arithmetic lives in `desired_runtime_pods` in
+        # migrations/0001_initial.sql, where it can be read and changed without
+        # anyone reverse-engineering a threshold.
+        targetQueryValue: "1"
         # Turns that could start now, which is not the same as turns waiting.
         # `job_backlog` is defined in migrations/0001_initial.sql, beside the
         # table and the claim it has to agree with.
         query: >-
-          select coalesce(max(claimable), 0)
-          from job_backlog where kind = 'chat.turn'
+          select pods from desired_runtime_pods
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject

@@ -377,6 +377,19 @@ create table jobs (
                   check (state in ('pending', 'running', 'succeeded', 'failed')),
     attempts      int         not null default 0,
     max_attempts  int         not null default 3,
+    -- What is waiting on this, and therefore what it costs to be late.
+    --
+    -- A number rather than a class, so a third band needs new values and not
+    -- new SQL. Lower is sooner. Two are used: work somebody is waiting for,
+    -- and work that only has to happen eventually -- because that difference,
+    -- not the size of the job, is what decides whether a queue is a problem.
+    --
+    -- Claim order reads this before `run_after`, so a backlog of scheduled
+    -- work cannot put itself in front of a person. It cannot preempt a turn
+    -- already running: the guarantee is that the next slot to free anywhere in
+    -- the fleet goes to the higher priority, which is bounded by the shortest
+    -- turn in flight rather than by how long a pod takes to start.
+    priority      int         not null default 100,
     -- Which claim currently holds this job. Reissued on every claim, so a
     -- heartbeat from a claim that was reaped renews nothing: without it, the
     -- previous holder's renewal extends whichever claim is current and is told
@@ -403,8 +416,9 @@ create table jobs (
     updated_at    timestamptz not null default now()
 );
 
--- Supports the claim query: pending work whose time has come, oldest first.
-create index jobs_claimable_idx on jobs (run_after, id)
+-- Supports the claim query: pending work whose time has come, most urgent
+-- first and oldest first within that.
+create index jobs_claimable_idx on jobs (priority, run_after, id)
     where state = 'pending';
 
 -- Supports the serialisation check, which asks whether a key is already
@@ -430,18 +444,18 @@ create index jobs_lease_idx on jobs (leased_until)
 -- would make the backlog look shortest when the cluster is busiest. It stops
 -- short of genuinely scheduled work, which must not hold pods open overnight.
 create view job_backlog as
-select kind, sum(units)::bigint as claimable
+select kind, priority, sum(units)::bigint as claimable
 from (
     -- Unconstrained work: every row is its own unit.
-    select kind, count(*) as units
+    select kind, priority, count(*) as units
       from jobs
      where state = 'pending'
        and run_after <= now() + interval '30 seconds'
        and serial_key is null
-     group by kind
+     group by kind, priority
     union all
     -- Serialised work: one unit per key, and none for a key already running.
-    select j.kind, count(distinct j.serial_key) as units
+    select j.kind, j.priority, count(distinct j.serial_key) as units
       from jobs j
      where j.state = 'pending'
        and j.run_after <= now() + interval '30 seconds'
@@ -451,9 +465,60 @@ from (
             where r.state = 'running'
               and r.serial_key = j.serial_key
        )
-     group by j.kind
+     group by j.kind, j.priority
 ) parts
-group by kind;
+group by kind, priority;
+
+-- How many runtime pods the work in front of us wants.
+--
+-- Queue depth alone is a lagging measure: by the time work is queued somebody
+-- is already waiting, and a pod that arrives thirty seconds later does not
+-- help the turns that queued. So the figure is a floor, plus a term for each
+-- kind of demand, weighted by what being late costs.
+--
+-- Sessions somebody is actually in predict arrivals that have not happened
+-- yet, which is the leading half. A session opened yesterday and abandoned
+-- predicts nothing, so only recent ones count. Background depth is the
+-- lagging half and is allowed to be -- nobody is waiting on it, so a queue
+-- there is a queue rather than a problem.
+--
+-- Read by the autoscaler with a target of one, so the arithmetic lives here
+-- where it can be read, rather than being smuggled into a threshold.
+create view desired_runtime_pods as
+with settings as (
+    select
+        -- Enough to serve the ordinary case without waiting for a scale-up.
+        2::numeric   as floor_pods,
+        -- Conversations one pod can hold at once. Should track
+        -- OUTTURN_MAX_CONCURRENT_TURNS; a mismatch only makes the estimate
+        -- less good, never wrong.
+        2::numeric   as conversations_per_pod,
+        -- Queued background jobs one pod works through between polls. Larger
+        -- than the conversation figure because nobody is waiting.
+        8::numeric   as jobs_per_pod,
+        -- How recently a session must have spoken to count as live.
+        interval '5 minutes' as session_window
+),
+live_sessions as (
+    select count(distinct m.session_id) as n
+    from agent_messages m, settings s
+    where m.created_at > now() - s.session_window
+),
+waiting as (
+    select
+        coalesce(sum(claimable) filter (where priority <= 10), 0) as realtime,
+        coalesce(sum(claimable) filter (where priority > 10), 0)  as background
+    from job_backlog
+)
+select
+    (settings.floor_pods
+      + ceil(live_sessions.n / settings.conversations_per_pod)
+      + ceil(waiting.realtime / settings.conversations_per_pod)
+      + ceil(waiting.background / settings.jobs_per_pod))::int as pods,
+    live_sessions.n as live_sessions,
+    waiting.realtime,
+    waiting.background
+from settings, live_sessions, waiting;
 
 -- This table is high-churn: rows are updated on claim and again on completion,
 -- so dead tuples accumulate faster than the default autovacuum thresholds

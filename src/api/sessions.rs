@@ -168,6 +168,10 @@ async fn enqueue_turn(
         payload,
         None,
         Some(&session_id.to_string()),
+        // Somebody is watching this one: it came from a message a person just
+        // sent, and a backlog of scheduled work must not put itself in front
+        // of them.
+        jobs::PRIORITY_REALTIME,
     )
         .await
         .map_err(|e| e.to_string())?;

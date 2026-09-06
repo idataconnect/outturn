@@ -261,7 +261,7 @@ async fn concurrent_workers_claim_disjoint_jobs() {
     let pool = &db.pool;
 
     for i in 0..10 {
-        jobs::enqueue(pool, tenant, "test.work", serde_json::json!({"i": i}), None, None)
+        jobs::enqueue(pool, tenant, "test.work", serde_json::json!({"i": i}), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -289,7 +289,7 @@ async fn concurrent_workers_claim_disjoint_jobs() {
 async fn claimed_job_is_not_reclaimed_while_leased() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lease", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.lease", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -310,7 +310,7 @@ async fn claimed_job_is_not_reclaimed_while_leased() {
 async fn abandoned_lease_is_reaped_and_retried() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.reap", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.reap", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -336,7 +336,7 @@ async fn abandoned_lease_is_reaped_and_retried() {
 async fn job_fails_permanently_after_max_attempts() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    let id = jobs::enqueue(pool, tenant, "test.fail", serde_json::json!({}), None, None)
+    let id = jobs::enqueue(pool, tenant, "test.fail", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -376,6 +376,7 @@ async fn delayed_job_is_not_claimable_yet() {
         serde_json::json!({}),
         Some(Duration::from_secs(300)),
         None,
+        jobs::PRIORITY_BACKGROUND,
     )
     .await
     .expect("enqueue");
@@ -394,7 +395,7 @@ async fn enqueue_rolls_back_with_its_transaction() {
     let pool = &db.pool;
 
     let mut tx = pool.begin().await.expect("begin");
-    jobs::enqueue(&mut *tx, tenant, "test.tx", serde_json::json!({}), None, None)
+    jobs::enqueue(&mut *tx, tenant, "test.tx", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     tx.rollback().await.expect("rollback");
@@ -411,7 +412,7 @@ async fn enqueue_rolls_back_with_its_transaction() {
 async fn heartbeat_keeps_a_long_job_from_being_reaped() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.slow", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.slow", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -455,7 +456,7 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
 async fn extend_lease_reports_when_the_job_was_taken_away() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lost", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.lost", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -778,8 +779,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
         "chat.turn",
         serde_json::json!({ "message_id": first_prompt.id }),
         None,
-        None,
-    )
+        None, jobs::PRIORITY_BACKGROUND)
     .await
     .expect("first job");
     let first_reply = store
@@ -1105,8 +1105,7 @@ async fn work_sharing_a_key_does_not_run_concurrently() {
             "test.serial",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session),
-        )
+            Some(&session), jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     }
@@ -1147,8 +1146,7 @@ async fn different_keys_still_run_in_parallel() {
             "test.parallel",
             serde_json::json!({}),
             None,
-            Some(&session),
-        )
+            Some(&session), jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     }
@@ -1168,7 +1166,7 @@ async fn unkeyed_work_is_not_serialised() {
     let pool = &db.pool;
 
     for i in 0..4 {
-        jobs::enqueue(pool, tenant, "test.unkeyed", serde_json::json!({ "i": i }), None, None)
+        jobs::enqueue(pool, tenant, "test.unkeyed", serde_json::json!({ "i": i }), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -1198,8 +1196,7 @@ async fn racing_claimers_cannot_both_take_one_key() {
             "test.race",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session),
-        )
+            Some(&session), jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     }
@@ -1245,7 +1242,7 @@ async fn racing_claimers_cannot_both_take_one_key() {
 async fn a_released_job_is_not_held_to_have_tried() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.release", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.release", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1284,7 +1281,7 @@ async fn a_released_job_is_not_held_to_have_tried() {
 async fn a_released_job_waits_before_it_is_offered_again() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.backoff", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.backoff", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1309,7 +1306,7 @@ async fn a_released_job_waits_before_it_is_offered_again() {
 async fn only_a_running_job_can_be_released() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.norun", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.norun", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1347,20 +1344,19 @@ async fn the_backlog_counts_work_that_could_actually_start() {
             "chat.turn",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session),
-        )
+            Some(&session), jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     }
     // Two more sessions, and two jobs with nothing to serialise on.
     for _ in 0..2 {
         let other = Uuid::now_v7().to_string();
-        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, Some(&other))
+        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
     for _ in 0..2 {
-        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, None)
+        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -1402,7 +1398,7 @@ async fn the_backlog_counts_work_that_could_actually_start() {
 async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.noroom", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.noroom", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1458,7 +1454,7 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
 async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
     let (db, tenant) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.stolen", serde_json::json!({}), None, None)
+    jobs::enqueue(pool, tenant, "test.stolen", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1569,6 +1565,130 @@ async fn a_turn_reports_against_its_reply_not_its_prompt() {
     assert_eq!(
         stored_reply.content, "It is raining.",
         "the reply is empty, so a reader waits on it for ever"
+    );
+
+    finish!(db);
+}
+
+/// A backlog of scheduled work never puts itself in front of a person.
+///
+/// The queue is otherwise first-come, so a few hundred background jobs
+/// enqueued a moment earlier would each be taken before a chat turn that
+/// somebody is sitting and watching. Priority is read before `run_after`, so
+/// the next slot to free anywhere in the fleet goes to whoever is waiting.
+#[tokio::test]
+async fn a_person_waiting_is_served_before_scheduled_work() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    // Queued first, and plenty of it.
+    for i in 0..20 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "test.qos",
+            serde_json::json!({ "background": i }),
+            None,
+            None,
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
+    }
+
+    // Queued last, by somebody who is waiting.
+    jobs::enqueue(
+        pool,
+        tenant,
+        "test.qos",
+        serde_json::json!({ "realtime": true }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["test.qos"], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(
+        claimed[0].job.payload["realtime"],
+        serde_json::json!(true),
+        "twenty background jobs were taken before the person waiting"
+    );
+
+    // And within a priority, it is still oldest first.
+    let next = jobs::claim(pool, &["test.qos"], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(
+        next[0].job.payload["background"],
+        serde_json::json!(0),
+        "ordering within a priority stopped being first-come"
+    );
+
+    finish!(db);
+}
+
+/// The pod count answers with a floor when nothing is happening, and rises
+/// for each kind of demand at its own weight.
+#[tokio::test]
+async fn the_pod_count_leads_the_queue_rather_than_following_it() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+
+    let pods = || async {
+        sqlx::query_scalar::<_, i32>("select pods from desired_runtime_pods")
+            .fetch_one(pool)
+            .await
+            .expect("pods")
+    };
+
+    let idle = pods().await;
+    assert!(idle >= 2, "an idle cluster should still hold a floor, got {idle}");
+
+    // Background work raises it, but gently -- nobody is waiting.
+    for i in 0..8 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "chat.turn",
+            serde_json::json!({ "i": i }),
+            None,
+            None,
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
+    }
+    let with_background = pods().await;
+    assert_eq!(
+        with_background,
+        idle + 1,
+        "eight background jobs should want one more pod, got {with_background}"
+    );
+
+    // The same amount of realtime work wants more, because someone is waiting.
+    for i in 0..8 {
+        jobs::enqueue(
+            pool,
+            tenant,
+            "chat.turn",
+            serde_json::json!({ "r": i }),
+            None,
+            None,
+            jobs::PRIORITY_REALTIME,
+        )
+        .await
+        .expect("enqueue");
+    }
+    let with_realtime = pods().await;
+    assert!(
+        with_realtime >= with_background + 4,
+        "realtime work should weigh more heavily than background, got \
+         {with_realtime} against {with_background}"
     );
 
     finish!(db);

@@ -6,6 +6,12 @@ pub use store::{
 
 use std::time::Duration;
 
+/// Work somebody is waiting for. Taken before anything else.
+pub const PRIORITY_REALTIME: i32 = 10;
+
+/// Work that only has to happen eventually. The default, because most work is.
+pub const PRIORITY_BACKGROUND: i32 = 100;
+
 /// How long a claimed job stays leased before the reaper considers it
 /// abandoned.
 ///

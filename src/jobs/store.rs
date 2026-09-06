@@ -63,6 +63,10 @@ pub async fn enqueue<'e, E>(
     delay: Option<Duration>,
     // Work sharing a key never runs concurrently. None leaves it unconstrained.
     serial_key: Option<&str>,
+    // What is waiting on this. See PRIORITY_REALTIME and PRIORITY_BACKGROUND:
+    // the caller knows whether a person is watching, and nothing downstream
+    // can work it out afterwards.
+    priority: i32,
 ) -> Result<Uuid, JobError>
 where
     E: Executor<'e, Database = Postgres>,
@@ -71,8 +75,8 @@ where
     let delay_secs = delay.map(|d| d.as_secs_f64()).unwrap_or(0.0);
 
     sqlx::query(
-        "insert into jobs (id, tenant_id, kind, payload, run_after, serial_key) \
-         values ($1, $2, $3, $4, now() + make_interval(secs => $5), $6)",
+        "insert into jobs (id, tenant_id, kind, payload, run_after, serial_key, priority) \
+         values ($1, $2, $3, $4, now() + make_interval(secs => $5), $6, $7)",
     )
     .bind(id)
     .bind(tenant_id)
@@ -80,6 +84,7 @@ where
     .bind(&payload)
     .bind(delay_secs)
     .bind(serial_key)
+    .bind(priority)
     .execute(executor)
     .await
     .map_err(internal)?;
@@ -131,7 +136,7 @@ pub async fn claim(
              where state = 'pending' \
                and run_after <= now() \
                and (cardinality($1::text[]) = 0 or kind = any($1)) \
-             order by run_after, id \
+             order by priority, run_after, id \
              for update skip locked \
              limit $2 \
          ), \

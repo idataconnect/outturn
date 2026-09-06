@@ -1396,6 +1396,7 @@ async fn a_turn_that_is_not_running_cannot_be_reported() {
         serde_json::json!({}),
         None,
         None,
+        outturn::jobs::PRIORITY_BACKGROUND,
     )
     .await
     .expect("enqueue");
