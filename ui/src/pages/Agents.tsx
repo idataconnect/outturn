@@ -34,6 +34,10 @@ export default function Agents() {
   const [effort, setEffort] = useState<Effort>('medium')
   const [slugEdited, setSlugEdited] = useState(false)
   const [creating, setCreating] = useState(false)
+  // The same fields the browser refuses to submit without. Reflected on the
+  // button so the form says what it needs before it is clicked, rather than
+  // after -- trimmed, because a name of spaces is not a name.
+  const complete = form.name.trim() !== '' && form.slug.trim() !== ''
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('agents:create')
@@ -206,7 +210,7 @@ export default function Agents() {
           </div>
           <button
             type="submit"
-            disabled={creating}
+            disabled={creating || !complete}
             className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
           >
             <Plus size={16} />
