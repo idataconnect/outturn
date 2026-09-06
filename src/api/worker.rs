@@ -317,10 +317,20 @@ impl Worker {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => return,
-                    _ = ticker.tick() => match jobs::reap_abandoned(&self.pool).await {
-                        Ok(0) => {}
-                        Ok(n) => tracing::info!(jobs = n, "returned abandoned work to the queue"),
-                        Err(e) => tracing::error!(error = %e, "could not reap abandoned work"),
+                    _ = ticker.tick() => {
+                        match jobs::reap_abandoned(&self.pool).await {
+                            Ok(0) => {}
+                            Ok(n) => tracing::info!(jobs = n, "returned abandoned work to the queue"),
+                            Err(e) => tracing::error!(error = %e, "could not reap abandoned work"),
+                        }
+
+                        // Keeps the live-session table the size of the
+                        // conversations happening now. Nothing depends on it
+                        // being prompt -- the count filters on expiry anyway --
+                        // so a missed sweep costs a slightly larger scan.
+                        let _ = sqlx::query("delete from live_sessions where expires_at < now()")
+                            .execute(&self.pool)
+                            .await;
                     },
                 }
             }

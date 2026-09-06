@@ -469,6 +469,31 @@ from (
 ) parts
 group by kind, priority;
 
+-- Conversations somebody is currently in.
+--
+-- Kept apart from the transcript on purpose. The count wanted here is "how
+-- many people are mid-conversation", and deriving that from `agent_messages`
+-- means a count(distinct) over a time range on the busiest table in the
+-- system -- which gets more expensive exactly as the cluster gets busier, and
+-- which scans every partition once that table is partitioned by tenant.
+--
+-- Bounded by concurrency rather than by history: a row exists only while a
+-- session is live, so this table is the size of the conversations happening
+-- now, not of every conversation ever. At that size a sequential scan beats
+-- an index, which is why there is no index on it.
+--
+-- Nor could there usefully be one. A partial index on "recent" needs a
+-- predicate over now(), which is not immutable and so cannot be indexed; the
+-- alternatives all need something to periodically rewrite the index or reset
+-- a flag. Deleting the row instead is the same bookkeeping with none of that.
+create table live_sessions (
+    session_id uuid        primary key references agent_sessions (id) on delete cascade,
+    -- When this session stops counting unless somebody speaks again. Moved
+    -- forward on every message, so silence expires it without anything having
+    -- to notice.
+    expires_at timestamptz not null
+);
+
 -- How many runtime pods the work in front of us wants.
 --
 -- Queue depth alone is a lagging measure: by the time work is queued somebody
@@ -495,14 +520,12 @@ with settings as (
         2::numeric   as conversations_per_pod,
         -- Queued background jobs one pod works through between polls. Larger
         -- than the conversation figure because nobody is waiting.
-        8::numeric   as jobs_per_pod,
-        -- How recently a session must have spoken to count as live.
-        interval '5 minutes' as session_window
+        8::numeric   as jobs_per_pod
 ),
-live_sessions as (
-    select count(distinct m.session_id) as n
-    from agent_messages m, settings s
-    where m.created_at > now() - s.session_window
+live as (
+    -- Filtered rather than trusted: a sweep that falls behind makes this
+    -- scan slightly larger, never the answer wrong.
+    select count(*) as n from live_sessions where expires_at > now()
 ),
 waiting as (
     select
@@ -512,13 +535,13 @@ waiting as (
 )
 select
     (settings.floor_pods
-      + ceil(live_sessions.n / settings.conversations_per_pod)
+      + ceil(live.n / settings.conversations_per_pod)
       + ceil(waiting.realtime / settings.conversations_per_pod)
       + ceil(waiting.background / settings.jobs_per_pod))::int as pods,
-    live_sessions.n as live_sessions,
+    live.n as live_sessions,
     waiting.realtime,
     waiting.background
-from settings, live_sessions, waiting;
+from settings, live, waiting;
 
 -- This table is high-churn: rows are updated on claim and again on completion,
 -- so dead tuples accumulate faster than the default autovacuum thresholds

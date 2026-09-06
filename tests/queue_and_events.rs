@@ -1649,6 +1649,36 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
     let idle = pods().await;
     assert!(idle >= 2, "an idle cluster should still hold a floor, got {idle}");
 
+    // Conversations somebody is in raise it before any work is queued, which
+    // is the half of the estimate that leads rather than follows.
+    let (session_id, _) = streamed_session(pool, tenant).await;
+    sqlx::query(
+        "insert into live_sessions (session_id, expires_at) \
+         values ($1, now() + interval '5 minutes')",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .expect("live session");
+    let with_session = pods().await;
+    assert_eq!(
+        with_session,
+        idle + 1,
+        "a live conversation should be counted before it queues anything, got \
+         {with_session}"
+    );
+
+    // Expired rows stop counting without anything having to sweep them.
+    sqlx::query("update live_sessions set expires_at = now() - interval '1 minute'")
+        .execute(pool)
+        .await
+        .expect("expire");
+    assert_eq!(
+        pods().await,
+        idle,
+        "an expired session kept counting, so silence never releases a pod"
+    );
+
     // Background work raises it, but gently -- nobody is waiting.
     for i in 0..8 {
         jobs::enqueue(

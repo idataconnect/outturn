@@ -161,6 +161,26 @@ async fn enqueue_turn(
 ) -> Result<(), String> {
     // Serialised on the session: a turn must see the previous reply, and two
     // running at once would each answer against a history missing the other.
+    // Somebody is in this conversation, so it counts towards how many pods the
+    // fleet wants. Written here rather than derived from the transcript later:
+    // the count is needed every few seconds by an autoscaler, and asking the
+    // busiest table in the system for it gets more expensive exactly as the
+    // cluster gets busier.
+    //
+    // Best effort. A session that fails to mark itself live is one the
+    // estimate misses, which costs a little headroom -- not a turn.
+    if let Err(e) = sqlx::query(
+        "insert into live_sessions (session_id, expires_at) \
+         values ($1, now() + interval '5 minutes') \
+         on conflict (session_id) do update set expires_at = excluded.expires_at",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(session_id = %session_id, error = %e, "could not mark a session live");
+    }
+
     jobs::enqueue(
         pool,
         tenant_id,
