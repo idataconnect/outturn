@@ -30,6 +30,11 @@ export default function Users() {
   const [creating, setCreating] = useState(false)
 
   const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  // Which tenant a role lands in is only a question for somebody who has more
+  // than one. To everybody else there is no "currently viewing", and saying it
+  // raises a distinction they cannot act on.
+  const manyTenants =
+    state.status === 'authenticated' && state.session.tenants.length > 1
 
   async function refresh() {
     try {
@@ -83,7 +88,9 @@ export default function Users() {
     <div className="p-6 max-w-3xl">
       <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Users</h1>
       <p className="mt-2 text-surface-600 dark:text-surface-400">
-        New users are granted their role in the tenant you are currently viewing.
+        {manyTenants
+          ? 'New users are granted their role in the tenant you are currently viewing.'
+          : 'New users are granted their role here.'}
       </p>
 
       <form
