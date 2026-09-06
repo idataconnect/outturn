@@ -146,6 +146,11 @@ Storage layout and retention are written up separately, in
 ordered scope-first rather than as the hierarchy you would expect, which looks
 like a mistake until you know about S3's per-bucket lifecycle rule cap.
 
+What happens to a write nobody saw the answer to is designed but unbuilt, in
+[docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
+rather than two, and the third one, sent-but-never-observed, is why there is
+still no stop button.
+
 ## Invariants worth knowing before you change things
 
 These are load-bearing. Each has already caused a visible bug.
