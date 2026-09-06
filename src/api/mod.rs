@@ -8,6 +8,7 @@ mod login;
 pub mod seed;
 mod router;
 pub mod session;
+pub mod work;
 pub mod worker;
 pub mod tenant;
 pub mod user;

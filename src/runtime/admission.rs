@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Turns this pod will carry at once before refusing more.
@@ -144,17 +146,79 @@ impl std::fmt::Display for Refusal {
 /// Deliberately opaque: the only correct thing to do with it is keep it
 /// alive, and the only correct place to drop it is wherever the turn ends.
 #[derive(Debug)]
-pub struct Permit(#[allow(dead_code)] OwnedSemaphorePermit);
+pub struct Permit {
+    #[allow(dead_code)]
+    slot: OwnedSemaphorePermit,
+    /// What this turn is currently charged. Starts at the assumption and is
+    /// replaced once the turn has shown what it actually costs.
+    charged: u64,
+    reserved: Arc<AtomicU64>,
+}
+
+impl Permit {
+    /// Replaces the assumed cost with what the turn turned out to need.
+    ///
+    /// Called once a turn has grown into its footprint, which is the earliest
+    /// its cost means anything. Until then the assumption stands, so a pod
+    /// does not take a second turn on the strength of memory the first has not
+    /// finished claiming.
+    pub fn settle(&mut self, actual_bytes: u64) {
+        if actual_bytes >= self.charged {
+            self.reserved
+                .fetch_add(actual_bytes - self.charged, Ordering::SeqCst);
+        } else {
+            self.reserved
+                .fetch_sub(self.charged - actual_bytes, Ordering::SeqCst);
+        }
+        self.charged = actual_bytes;
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        // Whatever this turn was charged goes back when it ends, however it
+        // ends. A reservation that outlived its turn would shrink the pod's
+        // headroom for the life of the process.
+        self.reserved.fetch_sub(self.charged, Ordering::SeqCst);
+    }
+}
+
+/// What a turn is assumed to cost before it has shown what it costs.
+///
+/// A turn's real cost is not knowable when it is taken: the prompt is not yet
+/// assembled, the model has not answered, and no tool has returned anything.
+/// Meanwhile a turn accepted a moment ago is still growing -- allocating,
+/// filling a cache, reading a file -- so a pod that measures free memory right
+/// after taking work sees headroom that is already spoken for.
+///
+/// So a turn is charged this much the instant it is taken, and the charge is
+/// replaced by the real figure once the turn has grown into it. Guessing high
+/// costs a little throughput on a pod that could have taken one more; guessing
+/// low costs the pod, and every turn on it.
+const ASSUMED_TURN_BYTES: u64 = 384 * 1024 * 1024;
 
 pub struct Admission {
     slots: Arc<Semaphore>,
     limit: usize,
     reserve_bytes: u64,
+    assumed_turn_bytes: u64,
     memory: Arc<dyn MemoryProbe>,
+    /// Charged for turns taken but not yet measured. Falls as each turn's real
+    /// cost becomes apparent and rises again with the next one taken.
+    reserved: Arc<AtomicU64>,
 }
 
 impl Admission {
     pub fn new(limit: usize, reserve_bytes: u64, memory: Arc<dyn MemoryProbe>) -> Self {
+        Self::with_assumption(limit, reserve_bytes, ASSUMED_TURN_BYTES, memory)
+    }
+
+    pub fn with_assumption(
+        limit: usize,
+        reserve_bytes: u64,
+        assumed_turn_bytes: u64,
+        memory: Arc<dyn MemoryProbe>,
+    ) -> Self {
         // A limit of zero would refuse everything forever, which is never what
         // a misconfigured environment variable meant to express.
         let limit = limit.max(1);
@@ -162,7 +226,9 @@ impl Admission {
             slots: Arc::new(Semaphore::new(limit)),
             limit,
             reserve_bytes,
+            assumed_turn_bytes,
             memory,
+            reserved: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -201,18 +267,33 @@ impl Admission {
         let in_flight_before = self.limit - self.slots.available_permits() - 1;
         if in_flight_before > 0
             && let Some(available) = self.memory.available_bytes()
-            && available < self.reserve_bytes
         {
+            // What is already spoken for by turns taken but not yet grown into
+            // their footprint. Without this a pod reads the headroom of work it
+            // has already accepted as though it were free, and takes another
+            // turn against memory that is on its way to being used.
+            let spoken_for = self.reserved.load(Ordering::SeqCst);
+            let free = available.saturating_sub(spoken_for);
+
             // A pod holding no turns must take this one however little memory
             // it reports. Refusing would leave the work with nowhere to go and
             // no running turn whose ending could change the answer.
-            return Err(Refusal::LowMemory {
-                available,
-                reserve: self.reserve_bytes,
-            });
+            if free < self.reserve_bytes + self.assumed_turn_bytes {
+                return Err(Refusal::LowMemory {
+                    available: free,
+                    reserve: self.reserve_bytes + self.assumed_turn_bytes,
+                });
+            }
         }
 
-        Ok(Permit(permit))
+        self.reserved
+            .fetch_add(self.assumed_turn_bytes, Ordering::SeqCst);
+
+        Ok(Permit {
+            slot: permit,
+            charged: self.assumed_turn_bytes,
+            reserved: Arc::clone(&self.reserved),
+        })
     }
 }
 
@@ -228,8 +309,19 @@ mod tests {
         }
     }
 
+    /// Tests state the per-turn assumption rather than inheriting the
+    /// production one, so their small made-up byte counts stay meaningful.
     fn with_memory(limit: usize, reserve: u64, available: Option<u64>) -> Admission {
-        Admission::new(limit, reserve, Arc::new(Fixed(available)))
+        Admission::with_assumption(limit, reserve, 0, Arc::new(Fixed(available)))
+    }
+
+    fn with_assumption(
+        limit: usize,
+        reserve: u64,
+        assumed: u64,
+        available: Option<u64>,
+    ) -> Admission {
+        Admission::with_assumption(limit, reserve, assumed, Arc::new(Fixed(available)))
     }
 
     #[test]
@@ -326,5 +418,66 @@ mod tests {
         let a = with_memory(4, u64::MAX, None);
         let _first = a.try_admit().expect("admitted");
         assert!(a.try_admit().is_ok(), "an unreadable probe refused work");
+    }
+
+
+    /// A turn is charged before it has cost anything.
+    ///
+    /// Its real footprint is not knowable when it is taken -- no prompt
+    /// assembled, no answer, no tool result -- and a turn accepted a moment ago
+    /// is still growing into memory the probe has not seen used yet.
+    #[test]
+    fn a_turn_is_charged_the_moment_it_is_taken() {
+        // Room for two assumed turns beside the reserve, and no more.
+        let a = with_assumption(8, 100, 400, Some(1000));
+        let _first = a.try_admit().expect("an idle pod takes the first");
+        let _second = a.try_admit().expect("room for a second");
+        assert!(
+            matches!(a.try_admit(), Err(Refusal::LowMemory { .. })),
+            "a third was taken against memory the first two have not finished \
+             claiming"
+        );
+    }
+
+    #[test]
+    fn what_a_turn_really_cost_replaces_what_was_assumed() {
+        let a = with_assumption(8, 100, 400, Some(1000));
+        let _first = a.try_admit().expect("admitted");
+        let mut second = a.try_admit().expect("admitted");
+
+        // It turned out to be cheap, so the pod has room again.
+        second.settle(50);
+        assert!(
+            a.try_admit().is_ok(),
+            "a turn that cost less than assumed did not give the room back"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_cost_more_than_assumed_takes_the_room() {
+        let a = with_assumption(8, 100, 200, Some(1000));
+        let _first = a.try_admit().expect("admitted");
+        let mut second = a.try_admit().expect("admitted");
+        second.settle(600);
+        assert!(
+            matches!(a.try_admit(), Err(Refusal::LowMemory { .. })),
+            "a turn that outgrew its assumption did not reduce the headroom"
+        );
+    }
+
+    #[test]
+    fn a_charge_does_not_outlive_its_turn() {
+        // A reservation left behind would shrink the pod for the life of the
+        // process, one turn at a time.
+        let a = with_assumption(8, 100, 400, Some(1000));
+        {
+            let _first = a.try_admit().expect("admitted");
+            let _second = a.try_admit().expect("admitted");
+            assert!(a.try_admit().is_err(), "expected to be full");
+        }
+        assert!(
+            a.try_admit().is_ok(),
+            "the charge for a finished turn was never given back"
+        );
     }
 }
