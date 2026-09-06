@@ -13,6 +13,10 @@ type Agent = {
   enabled: boolean
 }
 
+/// The values a provider understands, in the order they cost.
+const EFFORTS = ['low', 'medium', 'high'] as const
+type Effort = (typeof EFFORTS)[number]
+
 export default function Agents() {
   const state = useSession()
   const [agents, setAgents] = useState<Agent[]>([])
@@ -27,7 +31,7 @@ export default function Agents() {
   // The values a provider understands, in the order they cost. Kept as the
   // wire values rather than mapped from prettier ones, so what is stored is
   // what was chosen.
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>('medium')
+  const [effort, setEffort] = useState<Effort>('medium')
   const [slugEdited, setSlugEdited] = useState(false)
   const [creating, setCreating] = useState(false)
 
@@ -172,8 +176,11 @@ export default function Agents() {
             {deliberate && (
               <label className="block pl-6">
                 <span className="flex items-baseline justify-between text-sm text-surface-700 dark:text-surface-300 mb-1">
-                  <span>How much</span>
-                  <span className="text-xs font-medium text-surface-500 dark:text-surface-400 capitalize">
+                  <span>How much thinking</span>
+                  <span
+                    aria-hidden
+                    className="text-xs font-medium text-surface-500 dark:text-surface-400 capitalize"
+                  >
                     {effort}
                   </span>
                 </span>
@@ -182,13 +189,15 @@ export default function Agents() {
                   min={0}
                   max={2}
                   step={1}
-                  value={['low', 'medium', 'high'].indexOf(effort)}
-                  onChange={(e) =>
-                    setEffort((['low', 'medium', 'high'] as const)[Number(e.target.value)])
-                  }
+                  value={EFFORTS.indexOf(effort)}
+                  onChange={(e) => setEffort(EFFORTS[Number(e.target.value)])}
+                  // A range announces its number, so without this it reads as
+                  // "1 of 3" -- a position on a scale nobody described. The
+                  // text says what the number means, and matches what is shown.
+                  aria-valuetext={effort}
                   className="w-full accent-brand-600"
                 />
-                <span className="flex justify-between text-xs text-surface-500 dark:text-surface-400">
+                <span aria-hidden className="flex justify-between text-xs text-surface-500 dark:text-surface-400">
                   <span>Low</span>
                   <span>High</span>
                 </span>
