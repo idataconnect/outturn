@@ -61,6 +61,12 @@ pub struct Puller {
 impl Puller {
     /// Runs until the process shuts down.
     pub fn spawn(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
+        // Whether this pod has ever reached the API. Until it has, a failure
+        // to do so is a dependency starting up rather than a fault, and is
+        // said once instead of every two seconds.
+        let settled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let announced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         tokio::spawn(async move {
             loop {
                 // Asking is gated on having somewhere to put the answer. A pod
@@ -83,10 +89,31 @@ impl Puller {
                 let permit = self.admission.settle_when_grown(permit);
 
                 let pause = match Arc::clone(&self).take_one(permit).await {
-                    Ok(true) => Duration::ZERO,
-                    Ok(false) => IDLE_PAUSE,
+                    Ok(true) => {
+                        // Reaching the API at all clears the startup grace: a
+                        // failure after this is a failure, not a wait.
+                        settled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        Duration::ZERO
+                    }
+                    Ok(false) => {
+                        settled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        IDLE_PAUSE
+                    }
                     Err(e) => {
-                        tracing::warn!(error = %e, "could not take work");
+                        // A runtime usually starts before the API is ready, so
+                        // the first failures are a dependency arriving rather
+                        // than anything wrong. Logging those at warn makes a
+                        // healthy boot read as broken and teaches a reader to
+                        // skip the line that would have mattered.
+                        if settled.load(std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(error = %e, "could not take work");
+                        } else if !announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::info!(
+                                api = %self.api_url,
+                                error = %e,
+                                "waiting for the API before taking work"
+                            );
+                        }
                         ERROR_PAUSE
                     }
                 };
