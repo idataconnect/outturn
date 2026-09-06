@@ -24,6 +24,10 @@ export default function Agents() {
   // has been measured spending three hundred tokens deliberating first, which
   // is half a minute before anything appears. Off unless someone asks for it.
   const [deliberate, setDeliberate] = useState(false)
+  // The values a provider understands, in the order they cost. Kept as the
+  // wire values rather than mapped from prettier ones, so what is stored is
+  // what was chosen.
+  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>('medium')
   const [slugEdited, setSlugEdited] = useState(false)
   const [creating, setCreating] = useState(false)
 
@@ -69,7 +73,7 @@ export default function Agents() {
         method: 'POST',
         body: JSON.stringify({
           ...form,
-          policy: deliberate ? {} : { reasoning_effort: 'none' },
+          policy: { reasoning_effort: deliberate ? effort : 'none' },
         }),
       })
       setForm({ name: '', slug: '', system_prompt: '' })
@@ -139,21 +143,51 @@ export default function Agents() {
               className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100"
             />
           </label>
-          <label className="flex items-start gap-2">
-            <input
-              type="checkbox"
-              checked={deliberate}
-              onChange={(e) => setDeliberate(e.target.checked)}
-              className="mt-1"
-            />
-            <span className="text-sm text-surface-700 dark:text-surface-300">
-              Let the model think before answering
-              <span className="block text-xs text-surface-500 dark:text-surface-400">
-                Better on hard questions, and much slower — a local model can
-                spend half a minute deliberating before the first word appears.
+          <div className="space-y-2">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={deliberate}
+                onChange={(e) => setDeliberate(e.target.checked)}
+                className="mt-1"
+              />
+              <span className="text-sm text-surface-700 dark:text-surface-300">
+                Let the model think before answering
+                <span className="block text-xs text-surface-500 dark:text-surface-400">
+                  Better on hard questions, and slower to reply.
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+
+            {/* Shown only when it applies. A disabled slider beside an
+                unticked box invites someone to set it and wonder why nothing
+                changed. */}
+            {deliberate && (
+              <label className="block pl-6">
+                <span className="flex items-baseline justify-between text-sm text-surface-700 dark:text-surface-300 mb-1">
+                  <span>How much</span>
+                  <span className="text-xs font-medium text-surface-500 dark:text-surface-400 capitalize">
+                    {effort}
+                  </span>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={1}
+                  value={['low', 'medium', 'high'].indexOf(effort)}
+                  onChange={(e) =>
+                    setEffort((['low', 'medium', 'high'] as const)[Number(e.target.value)])
+                  }
+                  className="w-full accent-brand-600"
+                />
+                <span className="flex justify-between text-xs text-surface-500 dark:text-surface-400">
+                  <span>Low</span>
+                  <span>High</span>
+                </span>
+              </label>
+            )}
+          </div>
           <button
             type="submit"
             disabled={creating}
