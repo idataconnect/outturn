@@ -320,7 +320,7 @@ async fn abandoned_lease_is_reaped_and_retried() {
         .expect("claim");
     assert_eq!(claimed.len(), 1);
 
-    let reaped = jobs::reap_abandoned(pool).await.expect("reap");
+    let (reaped, _) = jobs::reap_abandoned(pool).await.expect("reap");
     assert_eq!(reaped, 1);
 
     let again = jobs::claim(pool, &["test.reap"], 10, jobs::DEFAULT_LEASE)
@@ -346,7 +346,7 @@ async fn job_fails_permanently_after_max_attempts() {
             .await
             .expect("claim");
         assert_eq!(claimed.len(), 1);
-        jobs::fail(pool, id, "boom", Duration::from_secs(0))
+        jobs::fail(pool, id, "boom", Duration::from_secs(0), None)
             .await
             .expect("fail");
     }
@@ -438,7 +438,7 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
     assert!(still_ours, "a running job must be able to renew its lease");
 
     // The reaper must now leave it alone.
-    let reaped = jobs::reap_abandoned(pool).await.expect("reap");
+    let (reaped, _) = jobs::reap_abandoned(pool).await.expect("reap");
     assert_eq!(reaped, 0, "a heartbeating job must not be reaped");
 
     let stolen = jobs::claim(pool, &["test.slow"], 10, jobs::DEFAULT_LEASE)
@@ -809,6 +809,61 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
 ///
 /// Writing past one would leave it in the transcript, where every later turn
 /// replays it to the model as an empty assistant message.
+
+/// A reply that is only a tool call, whose turn finished, is not abandoned.
+///
+/// Empty content and a finished job is what a model that ran a tool and then
+/// said nothing leaves behind. Treating that as a dead placeholder refused
+/// every later message in the session -- one failed tool and the conversation
+/// was over for good.
+#[tokio::test]
+async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, tenant).await;
+
+    let prompt = store
+        .append_message(session_id, "user", "list my files", None, Default::default(), Default::default(), None)
+        .await
+        .expect("prompt");
+
+    // The turn ran to completion: its job succeeded.
+    let job = jobs::enqueue(
+        pool,
+        tenant,
+        "chat.turn",
+        serde_json::json!({ "message_id": prompt.id }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, jobs::DEFAULT_LEASE).await.expect("claim");
+    jobs::complete(pool, job, claimed[0].job.lease_token).await.expect("complete");
+
+    // And the reply it left is a tool call with no prose after it.
+    let reply = store.claim_placeholder(prompt.id, session_id).await.expect("reply");
+    store
+        .set_message_content(
+            reply.message.id,
+            "",
+            None,
+            None,
+            Default::default(),
+            serde_json::json!({ "tool_calls": [{ "id": "c1", "name": "list_objects", "is_error": true }] }),
+        )
+        .await
+        .expect("finalise");
+
+    store
+        .append_message(session_id, "user", "hello?", None, Default::default(), Default::default(), None)
+        .await
+        .expect("a finished turn's tool-only reply must not block the session");
+
+    finish!(db);
+}
+
 #[tokio::test]
 async fn an_abandoned_reply_refuses_further_messages() {
     let (db, tenant) = setup_or_skip!();
@@ -1123,11 +1178,54 @@ async fn work_sharing_a_key_does_not_run_concurrently() {
     assert!(second.is_empty(), "the session is busy, so nothing is claimable");
 
     // Once the turn finishes, the next is available.
-    jobs::complete(pool, first[0].job.id).await.expect("complete");
+    jobs::complete(pool, first[0].job.id, None).await.expect("complete");
     let third = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
     assert_eq!(third.len(), 1, "the queue resumes when the session frees up");
+
+    finish!(db);
+}
+
+/// A session with a turn running and another queued must not stall the queue.
+///
+/// The claim takes a bounded number of candidates and then applies the
+/// serial-key guard. If keys already running are not excluded before that
+/// bound, the busy session's queued turn is the top candidate every time,
+/// the guard rejects it, and work for every other session is never looked at
+/// -- with a limit of one, which is what runtimes ask with, one person
+/// sending two messages froze dispatch for the whole cluster.
+#[tokio::test]
+async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
+    let (db, tenant) = setup_or_skip!();
+    let pool = &db.pool;
+    let busy = Uuid::now_v7().to_string();
+    let other = Uuid::now_v7().to_string();
+
+    // The busy session: one turn taken, one waiting behind it.
+    for i in 0..2 {
+        jobs::enqueue(pool, tenant, "test.hol", serde_json::json!({ "i": i }), None, Some(&busy), jobs::PRIORITY_REALTIME)
+            .await
+            .expect("enqueue");
+    }
+    let running = jobs::claim(pool, &["test.hol"], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(running.len(), 1);
+
+    // Another session, queued after the busy one's second turn.
+    let waiting = jobs::enqueue(pool, tenant, "test.hol", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_REALTIME)
+        .await
+        .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["test.hol"], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(
+        claimed.iter().map(|h| h.job.id).collect::<Vec<_>>(),
+        vec![waiting],
+        "a claim with room for one turn should take the other session's, not stall on the busy one"
+    );
 
     finish!(db);
 }
@@ -1252,7 +1350,7 @@ async fn a_released_job_is_not_held_to_have_tried() {
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].job.attempts, 1, "claiming counts an attempt");
 
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), jobs::MAX_RELEASES)
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), jobs::MAX_RELEASES, None)
         .await
         .expect("release");
 
@@ -1288,7 +1386,7 @@ async fn a_released_job_waits_before_it_is_offered_again() {
     let claimed = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60), jobs::MAX_RELEASES)
+    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60), jobs::MAX_RELEASES, None)
         .await
         .expect("release");
 
@@ -1319,7 +1417,7 @@ async fn only_a_running_job_can_be_released() {
     // A release that could touch a pending job would let a late reply from an
     // abandoned turn give back an attempt that a live claimer is spending.
     assert!(
-        jobs::release(pool, pending, Duration::from_secs(0), jobs::MAX_RELEASES)
+        jobs::release(pool, pending, Duration::from_secs(0), jobs::MAX_RELEASES, None)
             .await
             .is_err(),
         "a job that was never claimed was released"
@@ -1411,7 +1509,7 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
             .expect("claim");
         assert_eq!(claimed.len(), 1, "a released job must come back round");
         outcomes.push(
-            jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), budget)
+            jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), budget, None)
                 .await
                 .expect("release"),
         );
@@ -1468,7 +1566,7 @@ async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
     // Long enough that the reaper's grace window has also passed.
     tokio::time::sleep(jobs::LEASE_HEARTBEAT + Duration::from_millis(500)).await;
     assert_eq!(
-        jobs::reap_abandoned(pool).await.expect("reap"),
+        jobs::reap_abandoned(pool).await.expect("reap").0,
         1,
         "the abandoned claim should have been returned"
     );

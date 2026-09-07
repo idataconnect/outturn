@@ -15,16 +15,116 @@ import {
 } from './chat'
 
 /**
+ * Where a user's message is in its life, for the reader.
+ *
+ * Derived from what the system actually reports rather than assumed: a
+ * message is queued until a runtime takes it, waiting on the model until the
+ * first token, and so on. Null once the reply is visibly underway -- the
+ * reply then speaks for itself.
+ */
+export type MessageStatus =
+  /** Stored, no runtime has taken it yet. */
+  | { kind: 'queued' }
+  /** Sent while a reply was being written; it will join that reply at the
+   *  agent's next step rather than wait for a turn of its own. */
+  | { kind: 'steering' }
+  /** A runtime has it and the model has been asked; nothing back yet. */
+  | { kind: 'waiting' }
+  /** The pod running it was lost and the turn is starting over. */
+  | { kind: 'retrying' }
+  /** Taken into a turn already running; answered there, not separately. */
+  | { kind: 'absorbed' }
+  | { kind: 'failed'; message: string }
+
+type Annotated = Message & { status?: MessageStatus | null }
+
+/**
+ * Works out each user message's status from the transcript around it.
+ *
+ * `retrying` is the one thing the transcript cannot tell: a retry reuses the
+ * same empty reply, so it is remembered from the event until a delta arrives.
+ */
+function annotate(
+  messages: Message[],
+  retrying: Set<string>,
+  failures: Map<string, string>,
+): Annotated[] {
+  const replyFor = new Map<string, Message>()
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.replies_to) replyFor.set(m.replies_to, m)
+  }
+
+
+  // Replies still being written, by id. A message folded into one of these
+  // is worth pointing out while it is happening; once the reply is done the
+  // transcript speaks for itself, as it does for every other message.
+  const inProgress = new Set(
+    messages
+      .filter(
+        (m) =>
+          m.role === 'user' &&
+          replyFor.has(m.id) &&
+          (m.job_state === 'pending' || m.job_state === 'running'),
+      )
+      .map((m) => replyFor.get(m.id)!.id),
+  )
+
+  // Whether a reply is being written right now: some prompt has a reply
+  // and its job has not finished. A message queued behind that is not
+  // waiting for a runtime, it is waiting for the agent's next step, and
+  // saying "queued" to someone who just typed mid-reply reads as a fault.
+  const replyInProgress = inProgress.size > 0
+
+  return messages.map((m) => {
+    if (m.role !== 'user') return m
+
+    if (m.absorbed_by) {
+      return { ...m, status: inProgress.has(m.absorbed_by) ? { kind: 'absorbed' } : null }
+    }
+
+    const reply = replyFor.get(m.id)
+    const replyUnderway =
+      reply !== undefined &&
+      (reply.content !== '' || (reply.metadata.tool_calls?.length ?? 0) > 0)
+    if (replyUnderway) return { ...m, status: null }
+
+    const failure = failures.get(m.id)
+    if (failure !== undefined || m.job_state === 'failed') {
+      return { ...m, status: { kind: 'failed', message: failure ?? 'the turn failed' } }
+    }
+
+    if (reply) {
+      return { ...m, status: { kind: retrying.has(reply.id) ? 'retrying' : 'waiting' } }
+    }
+
+    switch (m.job_state) {
+      case 'pending':
+        return { ...m, status: { kind: replyInProgress ? 'steering' : 'queued' } }
+      case 'running':
+        return { ...m, status: { kind: 'waiting' } }
+      default:
+        // Answered long ago, or nothing was ever queued for it. Either way
+        // there is nothing to report.
+        return { ...m, status: null }
+    }
+  })
+}
+
+/**
  * Our stored message, mapped to what assistant-ui renders.
  *
  * The id is carried through deliberately: it is what lets a message that
  * arrives over the event feed replace the one already on screen rather than
  * appear beside it. Deltas append to the content of this same id, so there is
  * never a separate "streaming" object to swap in.
+ *
+ * The status rides in `metadata.custom`, which is where assistant-ui lets an
+ * application attach its own facts to a message for its components to read.
  */
-const convertMessage = (message: Message): ThreadMessageLike => ({
+const convertMessage = (message: Annotated): ThreadMessageLike => ({
   id: message.id,
   role: message.role === 'tool' ? 'assistant' : message.role,
+  metadata: { custom: { status: message.status ?? null } },
   content: [
     // Tools lead the reply, because that is the order they happened in: the
     // agent went and looked something up, then answered.
@@ -59,6 +159,10 @@ export function useChatRuntime(sessionId: string | null) {
   const [error, setError] = useState<string | null>(null)
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
+  /** Replies known to be starting over, until their first delta. */
+  const [retrying, setRetrying] = useState<Set<string>>(() => new Set())
+  /** Why a user message's turn failed, by user message id. */
+  const [failures, setFailures] = useState<Map<string, string>>(() => new Map())
 
   const merge = useCallback((incoming: Message[]) => {
     if (incoming.length === 0) return
@@ -83,7 +187,11 @@ export function useChatRuntime(sessionId: string | null) {
     if (!sessionId) {
       deltaProgress.current = new Map()
       // Deferred rather than synchronous, so this does not cascade a render.
-      queueMicrotask(() => setMessages([]))
+      queueMicrotask(() => {
+        setMessages([])
+        setRetrying(new Set())
+        setFailures(new Map())
+      })
       return
     }
 
@@ -98,6 +206,10 @@ export function useChatRuntime(sessionId: string | null) {
         history.messages.map((m) => [m.id, m.delta_next]),
       )
       setMessages(history.messages)
+      // The snapshot carries the durable state; anything remembered from
+      // events belongs to the stream it came from.
+      setRetrying(new Set())
+      setFailures(new Map())
       return history.cursor
     }
 
@@ -166,6 +278,27 @@ export function useChatRuntime(sessionId: string | null) {
             )
           }
 
+          // A message taken mid-turn is answered inside the running reply.
+          // Marking it is what stops it reading as queued for ever.
+          for (const event of result.events) {
+            if (event.kind !== 'chat.absorbed') continue
+            const { message_id, absorbed_by } = event.payload as {
+              message_id: string
+              absorbed_by: string
+            }
+            setMessages((prev) =>
+              prev.map((m) => (m.id === message_id ? { ...m, absorbed_by } : m)),
+            )
+          }
+
+          // A retry reuses the reply it already made, so nothing in the
+          // transcript changes; only the event says the turn started over.
+          for (const event of result.events) {
+            if (event.kind !== 'chat.retry') continue
+            const { message_id } = event.payload as { message_id: string }
+            setRetrying((prev) => new Set(prev).add(message_id))
+          }
+
           // Deltas append to a message that already exists, so what is on
           // screen during generation is the same object that remains after,
           // and nothing is swapped when the turn completes.
@@ -190,6 +323,13 @@ export function useChatRuntime(sessionId: string | null) {
                 m.id === message_id ? { ...m, content: m.content + text } : m,
               ),
             )
+            // Text arriving is the end of any retry: the turn is underway.
+            setRetrying((prev) => {
+              if (!prev.has(message_id)) return prev
+              const next = new Set(prev)
+              next.delete(message_id)
+              return next
+            })
           }
 
           // A missing delta cannot be reconstructed from the stream, so the
@@ -199,14 +339,40 @@ export function useChatRuntime(sessionId: string | null) {
             if (stopped) return
           }
 
-          if (result.events.some((e) => e.kind === 'chat.done')) {
+          for (const event of result.events) {
+            if (event.kind !== 'chat.done') continue
+            const { message_id } = event.payload as { message_id: string }
+            // The job behind the prompt this reply answers is finished; the
+            // snapshot would say so, so the live view should too.
+            setMessages((prev) => {
+              const reply = prev.find((m) => m.id === message_id)
+              if (!reply?.replies_to) return prev
+              return prev.map((m) =>
+                m.id === reply.replies_to ? { ...m, job_state: 'succeeded' } : m,
+              )
+            })
             setIsRunning(false)
           }
 
           const failed = result.events.find((e) => e.kind === 'chat.error')
           if (failed) {
-            setError((failed.payload as { message: string }).message)
+            const { message, message_id } = failed.payload as {
+              message: string
+              message_id?: string
+            }
+            setError(message)
             setIsRunning(false)
+            if (message_id) {
+              setFailures((prev) => new Map(prev).set(message_id, message))
+              // A failed turn's empty reply is discarded server-side, and the
+              // reader should not be left looking at a bubble that no longer
+              // exists.
+              setMessages((prev) =>
+                prev.filter(
+                  (m) => !(m.role === 'assistant' && m.replies_to === message_id && m.content === ''),
+                ),
+              )
+            }
           }
         } catch {
           if (stopped) return
@@ -236,7 +402,9 @@ export function useChatRuntime(sessionId: string | null) {
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
         const stored = await sendMessage(sessionId, part.text, delivery)
-        merge([stored])
+        // The POST does not say, but a message it accepted has a job queued
+        // for it by construction: the two are written together.
+        merge([{ ...stored, job_state: 'pending' }])
       } catch (e) {
         setIsRunning(false)
         setError(e instanceof Error ? e.message : 'failed to send')
@@ -284,8 +452,13 @@ export function useChatRuntime(sessionId: string | null) {
     [submit],
   )
 
+  const annotated = useMemo(
+    () => annotate(messages, retrying, failures),
+    [messages, retrying, failures],
+  )
+
   const runtime = useExternalStoreRuntime({
-    messages,
+    messages: annotated,
     isRunning,
     convertMessage,
     // Never reached while `queue` is set -- the runtime routes every append

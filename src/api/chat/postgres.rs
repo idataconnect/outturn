@@ -41,6 +41,9 @@ fn read_message(row: &sqlx::postgres::PgRow) -> Message {
         model: row.get("model"),
         prompt_tokens: row.get("prompt_tokens"),
         completion_tokens: row.get("completion_tokens"),
+        replies_to: row.try_get("replies_to").ok().flatten(),
+        absorbed_by: row.try_get("absorbed_by").ok().flatten(),
+        job_state: row.try_get("job_state").ok().flatten(),
     }
 }
 
@@ -160,6 +163,12 @@ impl ChatStore for PostgresChatStore {
                         as content, \
                     coalesce(s.delta_next, 0) as delta_next, \
                     m.model, m.prompt_tokens, m.completion_tokens, \
+                    m.replies_to, m.absorbed_by, \
+                    case when m.role = 'user' then ( \
+                        select j.state from jobs j \
+                        where j.kind = 'chat.turn' \
+                          and (j.payload->>'message_id')::uuid = m.id \
+                        order by j.id desc limit 1) end as job_state, \
                     bound.cursor \
              from agent_messages m \
              cross join bound \
@@ -203,7 +212,7 @@ impl ChatStore for PostgresChatStore {
                  reasoning_tokens = coalesce($10, reasoning_tokens) \
              where id = $1 \
              returning id, session_id, role, content, metadata, model, \
-                       prompt_tokens, completion_tokens",
+                       prompt_tokens, completion_tokens, replies_to, absorbed_by",
         )
         .bind(message_id)
         .bind(content)
@@ -250,7 +259,8 @@ impl ChatStore for PostgresChatStore {
              on conflict (replies_to) where replies_to is not null \
              do update set replies_to = excluded.replies_to \
              returning id, session_id, role, content, metadata, model, \
-                       prompt_tokens, completion_tokens, (xmax = 0) as created",
+                       prompt_tokens, completion_tokens, replies_to, absorbed_by, \
+                       (xmax = 0) as created",
         )
         .bind(Uuid::now_v7())
         .bind(session_id)
@@ -297,16 +307,25 @@ impl ChatStore for PostgresChatStore {
         delivery: Delivery,
         user_id: Option<Uuid>,
     ) -> Result<Message, ChatError> {
-        // An empty assistant message is legitimate only while a job is
-        // filling it. One with no live job means a turn died without
-        // cleaning up, and writing past it would bury it in the transcript
-        // where it is replayed to the model on every later turn.
+        // An empty assistant message is legitimate while a job is filling
+        // it, and afterwards if the job finished -- a reply can legitimately
+        // be nothing but a tool call, and the model saying nothing after is
+        // its choice, not a fault. What is abandoned is an empty reply whose
+        // turn neither runs nor ever finished: a turn that died without
+        // cleaning up, which writing past would bury in the transcript to be
+        // replayed to the model on every later turn.
+        //
+        // This once refused any empty reply with no live job, which wedged a
+        // session for good the first time a tool failed and the model went
+        // quiet: the reply was empty, the job had succeeded, and every later
+        // message was refused.
         let abandoned: Option<Uuid> = sqlx::query_scalar(
             "select m.id from agent_messages m \
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
-                   and j.state in ('pending', 'running') \
+                   and j.state in ('pending', 'running', 'succeeded') \
              where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
+               and coalesce(jsonb_array_length(m.metadata->'tool_calls'), 0) = 0 \
                and j.id is null \
              limit 1",
         )
@@ -327,7 +346,7 @@ impl ChatStore for PostgresChatStore {
                   delivery, user_id) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              returning id, session_id, role, content, metadata, model, \
-                       prompt_tokens, completion_tokens",
+                       prompt_tokens, completion_tokens, replies_to, absorbed_by",
         )
         .bind(Uuid::now_v7())
         .bind(session_id)

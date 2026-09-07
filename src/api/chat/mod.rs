@@ -33,6 +33,17 @@ pub struct Message {
     pub model: Option<String>,
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
+    /// On a reply, the user message it answers. What lets a reader pair a
+    /// prompt with the reply being written for it, and so say where a
+    /// message is in its life rather than showing an empty bubble.
+    pub replies_to: Option<Uuid>,
+    /// On a user message, the reply that took it mid-turn. Such a message is
+    /// answered inside that reply and never gets one of its own.
+    pub absorbed_by: Option<Uuid>,
+    /// On a user message, the state of the job answering it -- pending,
+    /// running, succeeded or failed. Only the transcript read fills this;
+    /// live changes arrive as events.
+    pub job_state: Option<String>,
 }
 
 /// A session's transcript, with the event cursor it was read at.

@@ -25,6 +25,13 @@ export type Message = {
   /** How many deltas `content` already accounts for. */
   delta_next: number
   model: string | null
+  /** On a reply, the user message it answers. */
+  replies_to?: string | null
+  /** On a user message, the reply that took it mid-turn. */
+  absorbed_by?: string | null
+  /** On a user message, where the job answering it is. Only the transcript
+   *  read fills this; afterwards the events say. */
+  job_state?: 'pending' | 'running' | 'succeeded' | 'failed' | null
 }
 
 /**
@@ -71,7 +78,17 @@ export type ChatEvent =
       }
     }
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
-  | { id: string; kind: 'chat.error'; payload: { message: string } }
+  /** The turn failed. `message_id` names the user message it was answering. */
+  | { id: string; kind: 'chat.error'; payload: { message: string; message_id?: string } }
+  /** A user message was taken into a turn already running, and will be
+   *  answered inside that reply rather than getting one of its own. */
+  | {
+      id: string
+      kind: 'chat.absorbed'
+      payload: { message_id: string; absorbed_by: string }
+    }
+  /** A reply is starting over: the pod running it was lost. */
+  | { id: string; kind: 'chat.retry'; payload: { message_id: string; replies_to: string } }
 
 type PollResponse = {
   events: ChatEvent[]

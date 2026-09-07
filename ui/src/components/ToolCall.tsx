@@ -19,6 +19,30 @@ import { TriangleAlert, Wrench } from 'lucide-react'
  * Failures are the exception: something did not go as the verb said it would,
  * and the reader has no other way to find out what.
  */
+/**
+ * The sentence a failure should be read as.
+ *
+ * Tools report failures as `{"error": "..."}`, which is the right shape for
+ * the model and the wrong one for a person: shown raw it is a line of JSON
+ * with the words somewhere inside it. The message is lifted out when it is
+ * there, and anything else is shown as it came.
+ */
+function errorMessage(details: string): string {
+  try {
+    const parsed: unknown = JSON.parse(details)
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'string'
+    ) {
+      return (parsed as { error: string }).error
+    }
+  } catch {
+    // Not JSON: it is already prose.
+  }
+  return details
+}
+
 export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
   const action = typeof args?.action === 'string' ? args.action : ''
   const isError = args?.isError === true
@@ -58,7 +82,7 @@ export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
           )}
 
           {isError && details && (
-            <p className="mt-1 text-red-700 dark:text-red-300">{details}</p>
+            <p className="mt-1 text-red-700 dark:text-red-300">{errorMessage(details)}</p>
           )}
         </div>
       </div>
