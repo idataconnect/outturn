@@ -89,9 +89,24 @@ constant they replace.
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_DEFAULT_MODEL` | api, runtime | Model when an agent names none |
 
+Three are required rather than tunable, and each tier gets only the one it
+needs:
+
+| Variable | Tier | Is |
+|---|---|---|
+| `OUTTURN_TOKEN_SECRET` | api only | Ed25519 seed, 64 hex chars. Signs every token |
+| `OUTTURN_TOKEN_PUBLIC_KEY` | api, gateway | Its public half. Comma-separate two during a key rotation |
+| `OUTTURN_RUNTIME_KEY` | api, runtime | Shared key the runtime presents to take work, 32+ bytes |
+
 An idle runtime pod always accepts a turn however tight memory looks. Without
 that, a pod whose baseline sits under the reserve refuses everything forever,
 because no turn is running whose ending could change the answer.
+
+Runtime pods are 512Mi in base and in the local overlay alike, so what is
+learned locally about admission carries over. On SIGTERM a runtime stops
+asking for work and waits for the turns it holds, up to the deployment's
+`terminationGracePeriodSeconds`; KEDA's `cooldownPeriod` does not protect a
+turn mid-generation, it only governs scaling to zero.
 
 ## Tests
 
@@ -158,7 +173,17 @@ These are load-bearing. Each has already caused a visible bug.
 **Streamed deltas concatenate to stored content.** What the browser renders
 during a turn must be exactly what the transcript holds afterwards, or the
 message changes under the reader when the turn ends. Every round of a tool loop
-streams, so the guest returns the content of all of them.
+streams, so the guest returns the content of all of them, joined with a blank
+line. The blank line is streamed by the *host*, before the later round's first
+token: a guest only learns a round produced text when `chat` returns, and a
+separator sent then lands after the text it was meant to precede -- which is
+how two replies once arrived glued together with a stray blank at the end.
+
+**A turn's conversation stops at its own prompt.** A message the user sent
+after the prompt is already stored when the turn is prepared; left in the
+history it reaches the model twice, once as history and again as a steer, and
+the model answers the later message in the earlier one's reply. `up_to` in the
+worker is what enforces this.
 
 **The transcript read returns its own cursor.** History and the event cursor
 come from one statement so they share a snapshot: everything at or below the
@@ -191,6 +216,20 @@ the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
 nobody checked.
 
+**The runtime signs nothing.** It executes tenant components, so it holds no
+key that could mint a credential for anyone: it presents `OUTTURN_RUNTIME_KEY`,
+which is compared in constant time and means only "the runtime tier", and the
+API mints the gateway token each turn travels with. Giving the runtime the
+signing secret would let a compromised component's host mint `system_admin`.
+
+**A token is good for one audience.** Browser tokens carry `outturn:api`,
+turn tokens carry `outturn:gateway`, and each validator insists on its own.
+Before this, a turn token was a working API credential for its tenant and an
+Operator's cookie a working gateway one -- the roles differed, the verifier did
+not. Turn tokens also carry `Role::Turn`, which holds `GatewayInvoke` alone.
+The subject claim is a user id in the first kind and a chat session id in the
+second, and the audience is what says which.
+
 **Credentials are named, never stored.** A rule carries the name of an
 environment variable; the host reads it and attaches the header on the way out.
 The guest cannot read it and cannot set the headers it travels in. Nothing that
@@ -210,6 +249,24 @@ the lease is what recovers it, renewed while results arrive and reaped when they
 stop. Remove either half and turns are lost or run twice: without the reaper a
 crashed runtime blocks its session for ever, and without renewal a turn longer
 than the lease is handed to a second pod while the first is still streaming.
+The lease token travels with the assignment and comes back in `x-outturn-lease`
+on every report and hand-back, and completing, failing and releasing all check
+it -- so a pod whose lease lapsed cannot write over the pod that now holds it.
+
+**A claim must skip keys that are already running before it applies its
+limit.** Runtimes ask for one turn at a time. If the candidate query took the
+top pending row and only then asked whether its session was busy, a session
+with one turn running and one queued would be the top candidate on every
+claim, be rejected on every claim, and nothing behind it would ever be looked
+at -- one person sending two messages froze dispatch for the whole cluster.
+There is a test for this; keep it passing.
+
+**The sandbox caps guest memory; admission only estimates it.** Admission
+decides whether to start a turn from the memory that is free, and charges a
+flat `ASSUMED_TURN_BYTES` for its lifetime. Nothing about that stops a
+component from growing once it is running, so `GUEST_MEMORY_LIMIT` is enforced
+by wasmtime's store limiter. Remove it and a component can `memory.grow` to
+four gigabytes and take the pod, and every turn on it, with it.
 
 **A person waiting comes before scheduled work.** Jobs carry a priority and
 the claim reads it before `run_after`, so a backlog of background work cannot
