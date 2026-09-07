@@ -79,6 +79,27 @@ pub fn catalogue() -> Vec<Setting> {
             owner: Owner::TenantOverridable,
         },
         Setting {
+            key: "agent_writes_agent_files",
+            label: "Agents may write agent files",
+            description: "Whether an agent may write under agent/, the files it keeps \
+                          between conversations. Session files are always writable; \
+                          they are the agent's scratch space.",
+            kind: Kind::Choice { options: &["allow", "deny"] },
+            default: serde_json::json!("allow"),
+            owner: Owner::TenantOverridable,
+        },
+        Setting {
+            key: "agent_writes_tenant_files",
+            label: "Agents may write workspace files",
+            description: "Whether an agent may write under tenant/, the files the whole \
+                          workspace shares. Off unless somebody decides otherwise: a \
+                          prompt that talks an agent into overwriting shared reference \
+                          material should find it cannot.",
+            kind: Kind::Choice { options: &["allow", "deny"] },
+            default: serde_json::json!("deny"),
+            owner: Owner::TenantOverridable,
+        },
+        Setting {
             key: "max_tool_rounds",
             label: "Model calls per turn",
             description: "How many times one turn may call the model before it is \
@@ -136,6 +157,9 @@ pub struct Resolved {
     pub temperature: Option<f32>,
     pub reasoning_effort: Option<String>,
     pub max_tool_rounds: u32,
+    /// Storage scopes the agent may write: always "session", plus whichever
+    /// of "agent" and "tenant" the cascade allows.
+    pub write_scopes: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

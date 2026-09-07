@@ -42,6 +42,14 @@ pub struct RuntimeState {
 pub struct ExecuteRequest {
     pub session_id: Uuid,
     pub tenant_id: Uuid,
+    /// Whose files the agent/ scope is. Nil for a turn nobody attributed to
+    /// an agent, which should not happen and resolves to a space nothing
+    /// else uses.
+    #[serde(default)]
+    pub agent_id: Uuid,
+    /// Storage scopes this turn may write to. Absent means session only.
+    #[serde(default)]
+    pub write_scopes: Vec<String>,
     pub conversation: Vec<ConversationMessage>,
     #[serde(default)]
     pub system_prompt: String,

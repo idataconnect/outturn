@@ -109,6 +109,35 @@ impl S3Storage {
         .map_err(classify)
     }
 
+    /// Sweeps session-scope files after `days`, with a rule the store applies
+    /// on its own. One rule for every tenant, because the scope is the prefix
+    /// (see docs/storage.md); a hierarchy laid out the obvious way would need
+    /// a rule per agent and hit the per-bucket cap almost at once.
+    ///
+    /// Best effort: some S3-compatible stores do not do lifecycle, and a
+    /// missing sweep is a growing bill rather than a broken agent.
+    pub async fn ensure_session_lifecycle(&self, days: u32) -> Result<(), StorageError> {
+        use s3::serde_types::{BucketLifecycleConfiguration, Expiration, LifecycleFilter, LifecycleRule};
+        let rule = LifecycleRule {
+            id: Some("sweep-session-files".into()),
+            status: "Enabled".into(),
+            filter: Some(LifecycleFilter {
+                prefix: Some(super::scope::Scope::Session.bucket_prefix().to_string()),
+                ..Default::default()
+            }),
+            expiration: Some(Expiration {
+                days: Some(days),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.bucket
+            .put_bucket_lifecycle(BucketLifecycleConfiguration::new(vec![rule]))
+            .await
+            .map(|_| ())
+            .map_err(classify)
+    }
+
     fn key(&self, path: &str) -> String {
         if self.prefix.is_empty() {
             path.to_string()

@@ -48,6 +48,9 @@ pub enum StorageError {
     NotFound,
     #[error("permission denied")]
     PermissionDenied,
+    /// Refused for a reason the caller can act on, said in full.
+    #[error("{0}")]
+    Refused(String),
     /// The store itself cannot be used. Nobody downstream of the operator
     /// caused this, and nobody downstream can fix it.
     #[error("object storage is unavailable: {0}")]

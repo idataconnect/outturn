@@ -11,6 +11,12 @@ impl MockProvider {
     }
 }
 
+impl Default for MockProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for MockProvider {
     fn provider(&self) -> Provider {

@@ -579,6 +579,8 @@ impl Worker {
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             tenant_id: payload.tenant_id,
+            agent_id: payload.agent_id,
+            write_scopes: settings.write_scopes,
             conversation: project(&history)
                 .into_iter()
                 .map(serde_json::from_value)

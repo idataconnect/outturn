@@ -57,30 +57,38 @@ fn tools() -> Vec<ToolDefinition> {
         // The ceilings are interpolated rather than written out, so the
         // numbers the model is told and the numbers enforced cannot drift.
         description: format!(
-            "Read a stored file. Paths are relative to this agent's own \
-             storage -- there is nothing above it to reach, so do not try. \
-             At most {} lines or {}KB comes back at once; a file larger than \
-             that returns its start and its end, and says at what offset to \
-             read again for the middle.",
+            "Read a stored file. Every path starts with its scope: session/ for \
+             this conversation's files, including anything the user shared; \
+             agent/ for files this agent keeps between conversations; tenant/ \
+             for files the whole workspace shares. There is nothing above \
+             those to reach, so do not try. At most {} lines or {}KB comes \
+             back at once; a file larger than that returns its start and its \
+             end, and says at what offset to read again for the middle.",
             MAX_TOOL_LINES,
             MAX_TOOL_BYTES / 1024
         ),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/upload.pdf, agent/notes.md or tenant/reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
         name: WRITE_OBJECT.to_string(),
-        description: "Write a file to this agent's storage, replacing whatever \
-                      was there. Paths are relative to its own space."
+        description: "Write a file, replacing whatever was there. Every path starts \
+                      with its scope: session/ for scratch and results of this \
+                      conversation, which is where most writes belong; agent/ for \
+                      things this agent should keep; tenant/ for the whole \
+                      workspace. Some scopes may be read-only for this agent, and \
+                      the error will say so and where to write instead."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Relative path, e.g. reports/summary.md"},"content":{"type":"string","description":"The complete new contents."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","content","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/summary.md"},"content":{"type":"string","description":"The complete new contents."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","content","action"]}"#
             .to_string(),
     },
     ToolDefinition {
         name: LIST_OBJECTS.to_string(),
-        description: "List stored files. Omit the prefix to see everything."
+        description: "List stored files. Omit the prefix to see every scope; give a \
+                      scope such as session/ or a folder such as tenant/reports/ \
+                      to narrow it."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Relative prefix, e.g. reports/. Omit for everything."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking through the stored files."}},"required":["action"]}"#
+        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped prefix, e.g. session/ or tenant/reports/. Omit for everything."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking through the stored files."}},"required":["action"]}"#
             .to_string(),
     },
     ToolDefinition {

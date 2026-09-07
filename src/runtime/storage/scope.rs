@@ -1,52 +1,162 @@
 //! Mapping what a guest asks for onto where it actually lives.
 //!
-//! A guest names `reports/q3.csv` and never learns which tenant it belongs to.
-//! That is the point: a component cannot get a tenant wrong if it is never
-//! told one, and cannot reach another's data by constructing a path, because
-//! the root it is given is not a path it can escape from.
+//! A guest names `session/notes.md` or `tenant/reference/pricing.csv` and never
+//! learns which tenant, agent or session it is. That is the point: a component
+//! cannot get a tenant wrong if it is never told one, and cannot reach another's
+//! data by constructing a path, because every path is resolved by the host
+//! against the space this turn was given.
 //!
-//! Tenants are prefixes in one bucket rather than a bucket each. Buckets are a
-//! limited resource -- a hundred per AWS account by default, a thousand at the
-//! ceiling -- and a limit on buckets would become a limit on customers.
+//! The scope is the first segment of the path, not a separate argument. A path
+//! is the one thing every model reliably produces, and one extra segment is
+//! far less confusing than a second parameter it has to remember to pair with
+//! the first. It also makes "list everything" meaningful: the three scopes
+//! are the three folders.
+//!
+//! Scopes are lifetimes, laid out scope-first so an S3 lifecycle rule can
+//! match each with one prefix (see docs/storage.md for why the obvious
+//! hierarchy cannot carry retention):
+//!
+//! ```text
+//! tenant/...   ->  tenants/<tenant>/...                       kept until deleted
+//! agent/...    ->  agents/<tenant>/<agent>/...                kept while the agent exists
+//! session/...  ->  sessions/<tenant>/<agent>/<session>/...    swept
+//! ```
 
 use uuid::Uuid;
 
 use super::StorageError;
 
-/// Where a tenant's objects live.
-pub fn root_for(tenant_id: Uuid) -> String {
-    format!("tenants/{tenant_id}/")
+/// Where a turn's files live: the three ids every scope is built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Space {
+    pub tenant_id: Uuid,
+    pub agent_id: Uuid,
+    pub session_id: Uuid,
 }
 
-/// Resolves a guest-supplied path to a real one, or refuses.
+/// How long a file lives, which is what a guest chooses when it picks a
+/// prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Scope {
+    Tenant,
+    Agent,
+    Session,
+}
+
+impl Scope {
+    pub const ALL: [Scope; 3] = [Scope::Session, Scope::Agent, Scope::Tenant];
+
+    /// The segment a guest writes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Tenant => "tenant",
+            Scope::Agent => "agent",
+            Scope::Session => "session",
+        }
+    }
+
+    pub fn parse(segment: &str) -> Option<Scope> {
+        match segment {
+            "tenant" => Some(Scope::Tenant),
+            "agent" => Some(Scope::Agent),
+            "session" => Some(Scope::Session),
+            _ => None,
+        }
+    }
+
+    /// The bucket prefix everything in this scope, across all tenants, sits
+    /// under. One lifecycle rule per scope matches this.
+    pub fn bucket_prefix(self) -> &'static str {
+        match self {
+            Scope::Tenant => "tenants/",
+            Scope::Agent => "agents/",
+            Scope::Session => "sessions/",
+        }
+    }
+}
+
+/// The real prefix of one scope of one space.
+pub fn root_for(space: &Space, scope: Scope) -> String {
+    match scope {
+        Scope::Tenant => format!("tenants/{}/", space.tenant_id),
+        Scope::Agent => format!("agents/{}/{}/", space.tenant_id, space.agent_id),
+        Scope::Session => format!(
+            "sessions/{}/{}/{}/",
+            space.tenant_id, space.agent_id, space.session_id
+        ),
+    }
+}
+
+/// What a guest is told when its path names no scope, or one that does not
+/// exist. Written to be acted on: a model told only "refused" tries again the
+/// same way, and this is the one storage error it will hit most.
+fn scope_hint(path: &str) -> StorageError {
+    StorageError::Refused(format!(
+        "paths start with session/, agent/ or tenant/. For something you are working on \
+         now use session/{0}; for something this agent should keep use agent/{0}; for \
+         something the whole workspace shares use tenant/{0}.",
+        path.trim_start_matches('/')
+    ))
+}
+
+/// Splits a guest path into its scope and the rest, or explains why not.
+pub fn split(requested: &str) -> Result<(Scope, &str), StorageError> {
+    let path = requested.trim().trim_start_matches("./");
+    let (head, rest) = match path.split_once('/') {
+        Some((h, r)) => (h, r),
+        None => (path, ""),
+    };
+    let scope = Scope::parse(head).ok_or_else(|| scope_hint(path))?;
+    Ok((scope, rest))
+}
+
+/// Resolves a guest-supplied path to a real key, or refuses.
 ///
 /// Refuses rather than repairs. Clamping a traversal back inside the root
 /// silently changes what was asked for, which turns "read the wrong file" into
 /// "read a different file and report success" -- and the caller never learns
 /// its path was wrong.
-pub fn resolve(tenant_id: Uuid, requested: &str) -> Result<String, StorageError> {
-    let path = requested.trim();
-
-    if path.is_empty() {
+pub fn resolve(space: &Space, requested: &str) -> Result<String, StorageError> {
+    let (scope, rest) = split(requested)?;
+    let rest = clean(rest)?;
+    if rest.is_empty() {
+        return Err(StorageError::Refused(format!(
+            "{}/ is a folder; name a file inside it",
+            scope.as_str()
+        )));
+    }
+    let resolved = format!("{}{}", root_for(space, scope), rest);
+    // Belt and braces. `clean` should make this unreachable, but this is the
+    // check that actually matters, and it costs a comparison.
+    if !resolved.starts_with(&root_for(space, scope)) {
         return Err(StorageError::PermissionDenied);
     }
+    Ok(resolved)
+}
 
-    // Absolute paths are a different namespace than the one on offer, and a
-    // guest asking for one has misunderstood rather than mistyped.
-    if path.starts_with('/') {
-        return Err(StorageError::PermissionDenied);
-    }
+/// Resolves a guest prefix for listing: a scope alone, or a scope and a
+/// folder within it. Empty means every scope, which the caller handles.
+pub fn resolve_prefix(space: &Space, requested: &str) -> Result<String, StorageError> {
+    let (scope, rest) = split(requested)?;
+    let rest = clean(rest)?;
+    Ok(format!("{}{}", root_for(space, scope), rest))
+}
 
+/// The part of a path after the scope, with the sloppiness removed and the
+/// hostility refused.
+fn clean(rest: &str) -> Result<String, StorageError> {
+    // A leading slash here is a doubled separator after the scope
+    // ("session//x"), which is sloppy rather than hostile: an absolute path
+    // never gets this far, because "" is not a scope.
     // Backslashes would be a separator on some platforms and a literal on
     // others; a path whose meaning depends on where it is read is not one to
     // guess about. Control characters and nulls end up truncating keys in
     // ways that vary by store.
-    if path.contains('\\') || path.chars().any(|c| c.is_control()) {
+    if rest.contains('\\') || rest.chars().any(|c| c.is_control()) {
         return Err(StorageError::PermissionDenied);
     }
-
     let mut parts: Vec<&str> = Vec::new();
-    for component in path.split('/') {
+    for component in rest.split('/') {
         match component {
             // Skip rather than refuse: doubled separators and a trailing
             // slash are sloppy, not hostile.
@@ -55,61 +165,73 @@ pub fn resolve(tenant_id: Uuid, requested: &str) -> Result<String, StorageError>
             other => parts.push(other),
         }
     }
-
-    if parts.is_empty() {
-        return Err(StorageError::PermissionDenied);
+    let mut joined = parts.join("/");
+    if rest.ends_with('/') && !joined.is_empty() {
+        joined.push('/');
     }
-
-    let resolved = format!("{}{}", root_for(tenant_id), parts.join("/"));
-
-    // Belt and braces. The loop above should make this unreachable, but this
-    // is the check that actually matters, and it costs a comparison.
-    if !resolved.starts_with(&root_for(tenant_id)) {
-        return Err(StorageError::PermissionDenied);
-    }
-
-    Ok(resolved)
+    Ok(joined)
 }
 
-/// Strips the tenant root back off, for showing a guest what it asked about.
-///
-/// A listing that returned real keys would leak the tenant's identity and the
-/// layout of the store into a component that is deliberately not told either.
-pub fn strip_root(tenant_id: Uuid, stored: &str) -> String {
-    stored
-        .strip_prefix(&root_for(tenant_id))
-        .unwrap_or(stored)
-        .to_string()
+/// Turns a real key back into the path a guest would name it by, or None if
+/// it belongs to no scope of this space -- which a listing should never
+/// produce, but a listing is somebody else's answer.
+pub fn strip_root(space: &Space, stored: &str) -> Option<String> {
+    for scope in Scope::ALL {
+        if let Some(rest) = stored.strip_prefix(&root_for(space, scope)) {
+            return Some(format!("{}/{}", scope.as_str(), rest));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tenant() -> Uuid {
-        Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bfd").unwrap()
+    fn space() -> Space {
+        Space {
+            tenant_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bfd").unwrap(),
+            agent_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871aaa").unwrap(),
+            session_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bbb").unwrap(),
+        }
     }
 
     #[test]
-    fn a_plain_path_lands_under_the_tenant() {
-        let resolved = resolve(tenant(), "reports/q3.csv").expect("allowed");
+    fn each_scope_lands_under_its_own_prefix() {
+        let s = space();
         assert_eq!(
-            resolved,
+            resolve(&s, "tenant/reports/q3.csv").unwrap(),
             "tenants/01a06545-c926-7672-ae22-5971b4871bfd/reports/q3.csv"
         );
+        assert_eq!(
+            resolve(&s, "agent/procedures.md").unwrap(),
+            "agents/01a06545-c926-7672-ae22-5971b4871bfd/01a06545-c926-7672-ae22-5971b4871aaa/procedures.md"
+        );
+        assert_eq!(
+            resolve(&s, "session/scratch.txt").unwrap(),
+            "sessions/01a06545-c926-7672-ae22-5971b4871bfd/01a06545-c926-7672-ae22-5971b4871aaa/01a06545-c926-7672-ae22-5971b4871bbb/scratch.txt"
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_scope_is_told_how_to_write_one() {
+        let err = resolve(&space(), "notes.md").expect_err("scopeless");
+        let text = err.to_string();
+        assert!(text.contains("session/notes.md"), "{text}");
+        assert!(text.contains("agent/notes.md"), "{text}");
+        assert!(text.contains("tenant/notes.md"), "{text}");
     }
 
     #[test]
     fn traversal_is_refused_however_it_is_spelled() {
         for attempt in [
-            "../other/secrets",
-            "reports/../../other/secrets",
-            "reports/../..",
-            "..",
-            "a/b/../../../c",
+            "session/../tenant/secrets",
+            "agent/reports/../../other/secrets",
+            "tenant/..",
+            "session/a/b/../../../c",
         ] {
             assert!(
-                resolve(tenant(), attempt).is_err(),
+                resolve(&space(), attempt).is_err(),
                 "{attempt:?} should be refused, not repaired"
             );
         }
@@ -117,44 +239,40 @@ mod tests {
 
     #[test]
     fn other_ways_out_are_refused_too() {
-        for attempt in [
-            "/etc/passwd",
-            "",
-            "   ",
-            "/",
-            "reports\\q3.csv",
-            "reports/q3\0.csv",
-            "reports/\nq3.csv",
-        ] {
-            assert!(resolve(tenant(), attempt).is_err(), "{attempt:?} should be refused");
+        for attempt in ["/etc/passwd", "", "   ", "/", "session/reports\\q3.csv", "session/q3\0.csv"] {
+            assert!(resolve(&space(), attempt).is_err(), "{attempt:?} should be refused");
         }
     }
 
     #[test]
+    fn a_scope_alone_is_a_folder_not_a_file() {
+        assert!(resolve(&space(), "session").is_err());
+        assert!(resolve(&space(), "session/").is_err());
+        assert!(resolve_prefix(&space(), "session/").is_ok());
+        assert!(resolve_prefix(&space(), "agent").is_ok());
+    }
+
+    #[test]
     fn sloppiness_is_tolerated_where_it_is_unambiguous() {
-        // Doubled separators, a leading dot-slash and a trailing slash all
-        // mean one thing, so they are cleaned rather than rejected.
+        let s = space();
         assert_eq!(
-            resolve(tenant(), "./reports//q3.csv").expect("allowed"),
-            resolve(tenant(), "reports/q3.csv").expect("allowed")
+            resolve(&s, "./session//reports/q3.csv").unwrap(),
+            resolve(&s, "session/reports/q3.csv").unwrap()
         );
     }
 
     #[test]
     fn a_tenant_cannot_reach_another_by_naming_it() {
-        // The tenant's own root is not a path a guest can write; naming it
-        // just nests one inside the other.
-        let resolved = resolve(tenant(), "tenants/00000000-0000-0000-0000-000000000000/x")
-            .expect("allowed");
-        assert!(resolved.starts_with(&root_for(tenant())));
-        assert!(resolved.ends_with(
-            "tenants/01a06545-c926-7672-ae22-5971b4871bfd/tenants/00000000-0000-0000-0000-000000000000/x"
-        ));
+        let s = space();
+        let resolved = resolve(&s, "tenant/tenants/00000000-0000-0000-0000-000000000000/x").unwrap();
+        assert!(resolved.starts_with(&root_for(&s, Scope::Tenant)));
     }
 
     #[test]
-    fn stripping_hides_where_things_really_live() {
-        let stored = resolve(tenant(), "reports/q3.csv").expect("allowed");
-        assert_eq!(strip_root(tenant(), &stored), "reports/q3.csv");
+    fn stripping_gives_back_the_scoped_path() {
+        let s = space();
+        let stored = resolve(&s, "agent/reports/q3.csv").unwrap();
+        assert_eq!(strip_root(&s, &stored).unwrap(), "agent/reports/q3.csv");
+        assert_eq!(strip_root(&s, "tenants/somebody-else/x"), None);
     }
 }

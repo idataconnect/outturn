@@ -47,6 +47,16 @@ async fn main() {
                     // that comes up with a bucket it cannot reach hands every
                     // agent an error dressed up as a listing.
                     store.ensure_bucket().await.expect("object storage bucket");
+                    // Session files are scratch and are swept. How soon is
+                    // the operator's call; the runtime holds no database, so
+                    // it is an environment variable rather than a setting.
+                    let days = std::env::var("OUTTURN_SESSION_FILE_TTL_DAYS")
+                        .ok()
+                        .and_then(|d| d.parse().ok())
+                        .unwrap_or(30);
+                    if let Err(e) = store.ensure_session_lifecycle(days).await {
+                        tracing::warn!(error = %e, "could not set the session file lifecycle; session files will not be swept");
+                    }
                     tracing::info!(endpoint, bucket, "object storage enabled");
                     Some(Arc::new(store))
                 }

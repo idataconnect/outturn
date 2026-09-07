@@ -4,11 +4,28 @@ What is built, what is not, and why the obvious layout is not the one to use.
 
 ## What exists
 
-One bucket, partitioned by prefix. `scope::root_for(tenant)` returns
-`tenants/{uuid}/` and `scope::resolve` maps a guest's relative path onto it,
-refusing anything that tries to climb out rather than clamping it back inside —
-a clamped traversal reads the wrong file and reports success, and the caller
-never learns its path was wrong.
+One bucket, partitioned by prefix, laid out scope-first as the rest of this
+document argues for. A guest names a file by its scope and a path --
+`session/notes.md`, `agent/procedures.md`, `tenant/reference/pricing.csv` --
+and `scope::resolve` maps that onto the real key for the turn's space (tenant,
+agent, session), refusing anything that tries to climb out rather than
+clamping it back inside: a clamped traversal reads the wrong file and reports
+success, and the caller never learns its path was wrong.
+
+The scope is a path segment rather than a separate argument because a path is
+the one thing every model reliably produces. A path with no scope is answered
+with a correction that shows the same path under all three, which is the one
+storage error a model hits most and the one it can fix on its own. Listing
+with no prefix lists all three scopes.
+
+Which scopes an agent may *write* is decided above the runtime, in the
+settings cascade: session always, agent by default, tenant off by default so a
+prompt that talks an agent into overwriting shared reference material finds
+it cannot. Reads within the space are always allowed.
+
+Session files are swept by a lifecycle rule the runtime installs on the bucket
+at startup, after `OUTTURN_SESSION_FILE_TTL_DAYS` (default 30). One rule for
+every tenant, because the scope is the prefix.
 
 Buckets are not the partition because buckets are a limited resource: a hundred
 per AWS account by default, a thousand at the ceiling. A limit on buckets would
@@ -18,9 +35,9 @@ A guest is never told which tenant it belongs to, so it cannot name another one
 and cannot construct a path into one. The host resolves every path; nothing the
 component does can widen its own reach.
 
-That is the whole of it. There is no scoping below the tenant, no retention, no
-sweeping, and nothing distinguishes a file an agent will need next year from a
-scratch file written during one turn.
+Not yet: promotion of a file from session scope to something longer-lived,
+retention configured per tenant rather than by one variable, a sweeper for the
+policies lifecycle rules cannot express, and uploads from the browser.
 
 ## The problem this leaves
 
@@ -108,11 +125,8 @@ performed.
 
 ## Not built
 
-Everything below the tenant scope. Named here so nobody mistakes the list for
-a description of the code: agent and session scopes, the inverted prefixes,
-retention configured per agent, the sweeper, promotion of a file from session
-scope to something longer-lived, and a UI choice of where an upload lands.
-
-The first thing that will need session scope is overflow from a tool result too
-large to show: written somewhere the model can go and read rather than
-discarded, which turns truncation from a loss into a redirection.
+Promotion of a file from session scope to something longer-lived, retention
+configured per tenant, the sweeper, and uploads from the browser with a choice
+of where they land. Overflow from a tool result too large to show -- written
+to session scope so the model can go and read it rather than losing it -- is
+the next thing that will want the session scope that now exists.

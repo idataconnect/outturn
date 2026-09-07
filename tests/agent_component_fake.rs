@@ -46,6 +46,8 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_usage: None,
         storage: None,
         tenant_id: Uuid::now_v7(),
+        agent_id: Uuid::now_v7(),
+        write_scopes: vec!["session".into(), "agent".into()],
         timezone: None,
         reasoning_effort: None,
         temperature: None,
@@ -747,18 +749,18 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let ours = Uuid::now_v7();
-    let theirs = Uuid::now_v7();
+    let ours = scope::Space { tenant_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
+    let theirs = scope::Space { tenant_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
 
     // Somebody else's object, which our agent must not be able to reach.
     store
-        .write(&scope::resolve(theirs, "secrets.txt").unwrap(), 0, b"not yours")
+        .write(&scope::resolve(&theirs, "tenant/secrets.txt").unwrap(), 0, b"not yours")
         .await
         .expect("seed");
 
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "write_object".into(),
-        arguments: r#"{"path":"notes/hello.txt","content":"written by the agent","action":"Saving a note"}"#.into(),
+        arguments: r#"{"path":"agent/notes/hello.txt","content":"written by the agent","action":"Saving a note"}"#.into(),
         reply: "Saved.".into(),
     })
     .await;
@@ -766,30 +768,117 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
     let runner = runner();
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
-    options.tenant_id = ours;
+    options.tenant_id = ours.tenant_id;
+    options.agent_id = ours.agent_id;
+    options.session_id = ours.session_id;
 
     runner
         .run(&component(), user("Write a note."), String::new(), options)
         .await
         .expect("run");
 
-    // It landed under our tenant, not at the path the guest named.
+    // It landed under our agent's prefix, not at the path the guest named.
     let written = store
-        .read(&scope::resolve(ours, "notes/hello.txt").unwrap(), 0, u32::MAX)
+        .read(&scope::resolve(&ours, "agent/notes/hello.txt").unwrap(), 0, u32::MAX)
         .await
         .expect("the agent's own file");
     assert_eq!(written, b"written by the agent");
 
     // And the neighbour's file is untouched and unreachable by name.
     assert!(
-        scope::resolve(ours, "../{theirs}/secrets.txt").is_err(),
-        "a path climbing out of the tenant root must be refused"
+        scope::resolve(&ours, "tenant/../../{theirs}/secrets.txt").is_err(),
+        "a path climbing out of the space must be refused"
     );
     let theirs_still = store
-        .read(&scope::resolve(theirs, "secrets.txt").unwrap(), 0, u32::MAX)
+        .read(&scope::resolve(&theirs, "tenant/secrets.txt").unwrap(), 0, u32::MAX)
         .await
         .expect("still there");
     assert_eq!(theirs_still, b"not yours");
+}
+
+/// A path that names no scope is answered with how to write one.
+///
+/// The one storage error a model will hit most, so the refusal is a
+/// correction: it names the three prefixes and shows the path under each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scopeless_path_is_corrected_not_just_refused() {
+    use outturn::runtime::storage::MemoryStorage;
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "write_object".into(),
+        arguments: r#"{"path":"notes.txt","content":"x","action":"Saving"}"#.into(),
+        reply: "Oh.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(Arc::new(MemoryStorage::new()));
+
+    runner()
+        .run(&component(), user("Save it."), String::new(), options)
+        .await
+        .expect("run");
+
+    // The tool result the model was handed on the second call.
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(result.contains("session/notes.txt"), "{result}");
+    assert!(result.contains("agent/notes.txt"), "{result}");
+    assert!(result.contains("tenant/notes.txt"), "{result}");
+}
+
+/// Writing to a scope the cascade did not allow is refused, with a way out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn writes_outside_the_allowed_scopes_are_refused() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "write_object".into(),
+        arguments: r#"{"path":"tenant/pricing.csv","content":"cheap","action":"Updating prices"}"#.into(),
+        reply: "Refused.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    // Session and agent only, which is the default the cascade resolves to.
+    options.write_scopes = vec!["session".into(), "agent".into()];
+    let space = scope::Space {
+        tenant_id: options.tenant_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+
+    runner()
+        .run(&component(), user("Update pricing."), String::new(), options)
+        .await
+        .expect("run");
+
+    assert!(
+        store
+            .read(&scope::resolve(&space, "tenant/pricing.csv").unwrap(), 0, u32::MAX)
+            .await
+            .is_err(),
+        "the write to tenant scope went through"
+    );
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(result.contains("session/"), "the refusal should say where to write instead: {result}");
 }
 
 /// A file too large to show comes back as both ends, not just the start.
@@ -802,7 +891,20 @@ async fn a_large_file_is_read_from_both_ends() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let tenant = Uuid::now_v7();
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"session/app.log","action":"Reading the log"}"#.into(),
+        reply: "It caught fire.".into(),
+    })
+    .await;
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        tenant_id: options.tenant_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
 
     // Distinctive first and last lines, with plenty of filler between.
     let mut log = String::from("FIRST LINE: service starting\n");
@@ -811,21 +913,9 @@ async fn a_large_file_is_read_from_both_ends() {
     }
     log.push_str("LAST LINE: everything caught fire\n");
     store
-        .write(&scope::resolve(tenant, "app.log").unwrap(), 0, log.as_bytes())
+        .write(&scope::resolve(&space, "session/app.log").unwrap(), 0, log.as_bytes())
         .await
         .expect("seed");
-
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
-        name: "read_object".into(),
-        arguments: r#"{"path":"app.log","action":"Reading the log"}"#.into(),
-        reply: "It caught fire.".into(),
-    })
-    .await;
-
-    let runner = runner();
-    let mut options = options(&gateway, None);
-    options.storage = Some(store.clone());
-    options.tenant_id = tenant;
 
     runner
         .run(&component(), user("What happened?"), String::new(), options)
@@ -999,7 +1089,20 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let tenant = Uuid::now_v7();
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"session/doc.txt","action":"Reading the document"}"#.into(),
+        reply: "Read it.".into(),
+    })
+    .await;
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        tenant_id: options.tenant_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
 
     // Three-byte characters throughout, so wherever the tail begins it has a
     // good chance of landing inside one. Padded with a single ASCII character
@@ -1010,21 +1113,9 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     }
     doc.push_str("LAST LINE: 終わり\n");
     store
-        .write(&scope::resolve(tenant, "doc.txt").unwrap(), 0, doc.as_bytes())
+        .write(&scope::resolve(&space, "session/doc.txt").unwrap(), 0, doc.as_bytes())
         .await
         .expect("seed");
-
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
-        name: "read_object".into(),
-        arguments: r#"{"path":"doc.txt","action":"Reading the document"}"#.into(),
-        reply: "Read it.".into(),
-    })
-    .await;
-
-    let runner = runner();
-    let mut options = options(&gateway, None);
-    options.storage = Some(store.clone());
-    options.tenant_id = tenant;
 
     runner
         .run(&component(), user("What does it say?"), String::new(), options)
@@ -1071,30 +1162,31 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let tenant = Uuid::now_v7();
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"session/bundle.min.js","action":"Reading the bundle"}"#.into(),
+        reply: "Had a look.".into(),
+    })
+    .await;
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        tenant_id: options.tenant_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
 
     // One line, no newlines, well past the byte ceiling.
     let minified = "a".repeat(200 * 1024);
     store
         .write(
-            &scope::resolve(tenant, "bundle.min.js").unwrap(),
+            &scope::resolve(&space, "session/bundle.min.js").unwrap(),
             0,
             minified.as_bytes(),
         )
         .await
         .expect("seed");
-
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
-        name: "read_object".into(),
-        arguments: r#"{"path":"bundle.min.js","action":"Reading the bundle"}"#.into(),
-        reply: "Had a look.".into(),
-    })
-    .await;
-
-    let runner = runner();
-    let mut options = options(&gateway, None);
-    options.storage = Some(store.clone());
-    options.tenant_id = tenant;
 
     runner
         .run(&component(), user("What is in it?"), String::new(), options)

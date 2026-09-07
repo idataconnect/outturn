@@ -142,11 +142,16 @@ pub struct AgentHost {
     /// Whether any round of this turn has streamed text yet. Decides whether
     /// the next round's first token is preceded by a paragraph break.
     streamed: bool,
-    /// Object storage, and the tenant whose corner of it this turn may touch.
-    /// Absent leaves the guest with no storage at all rather than with
-    /// somebody else's.
+    /// Object storage, and the space this turn may touch within it. Absent
+    /// leaves the guest with no storage at all rather than with somebody
+    /// else's.
     storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     tenant_id: uuid::Uuid,
+    space: crate::runtime::storage::scope::Space,
+    /// Scopes the guest may write, resolved above the runtime. Reads are
+    /// always allowed within the space; a guest that could not read its own
+    /// tenant's reference material could not do its job.
+    write_scopes: Vec<crate::runtime::storage::scope::Scope>,
     /// Hosts this tenant's agents may reach. Empty means none, which is what a
     /// tenant who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
@@ -209,12 +214,31 @@ impl AgentHost {
         &self,
         path: &str,
     ) -> Result<(Arc<dyn crate::runtime::storage::StorageBackend>, String), String> {
+        use crate::runtime::storage::StorageError;
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
-        let resolved = crate::runtime::storage::scope::resolve(self.tenant_id, path)
-            .map_err(|_| format!("path is not allowed: {path}"))?;
+        let resolved = crate::runtime::storage::scope::resolve(&self.space, path).map_err(|e| match e {
+            // Said in full: this is the one a model will hit, and the message
+            // tells it how to correct itself.
+            StorageError::Refused(m) => m,
+            _ => format!("path is not allowed: {path}"),
+        })?;
         Ok((storage, resolved))
+    }
+
+    /// Whether this turn may write at `path`, by the scope it names.
+    fn may_write(&self, path: &str) -> Result<(), String> {
+        let (scope, _) = crate::runtime::storage::scope::split(path).map_err(|e| e.to_string())?;
+        if self.write_scopes.contains(&scope) {
+            Ok(())
+        } else {
+            Err(format!(
+                "this agent may read {0}/ but not write to it. Write under session/ instead, \
+                 or ask whoever runs the workspace to allow writes to {0}/.",
+                scope.as_str()
+            ))
+        }
     }
 }
 
@@ -561,6 +585,7 @@ impl outturn::agent::host::Host for AgentHost {
     }
 
     async fn write_object(&mut self, path: String, data: Vec<u8>) -> Result<u64, String> {
+        self.may_write(&path)?;
         let (storage, resolved) = self.object_at(&path)?;
         storage
             .write(&resolved, 0, &data)
@@ -569,32 +594,35 @@ impl outturn::agent::host::Host for AgentHost {
     }
 
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
+        use crate::runtime::storage::scope::{self, Scope};
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
-        // An empty prefix means "everything I have", which resolve would
-        // reject as a path -- so the root is built directly rather than
-        // through it.
-        let root = crate::runtime::storage::scope::root_for(self.tenant_id);
-        let resolved = if prefix.trim().is_empty() {
-            root
+        // An empty prefix means "everything I have": the three scopes, each
+        // listed under its own name.
+        let prefixes: Vec<String> = if prefix.trim().is_empty() {
+            Scope::ALL.iter().map(|s| scope::root_for(&self.space, *s)).collect()
         } else {
-            crate::runtime::storage::scope::resolve(self.tenant_id, &prefix)
-                .map_err(|e| e.to_string())?
+            vec![scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
+                crate::runtime::storage::StorageError::Refused(m) => m,
+                other => other.to_string(),
+            })?]
         };
 
-        let found = storage
-            .list(&resolved)
-            .await
-            .map_err(|e| self.storage_failed("list", e))?;
-        Ok(found
-            .iter()
-            .filter(|f| !f.is_dir)
-            .map(|f| ObjectInfo {
-                path: crate::runtime::storage::scope::strip_root(self.tenant_id, &f.path),
-                size: f.size,
-            })
-            .collect())
+        let mut out = Vec::new();
+        for resolved in prefixes {
+            let found = storage
+                .list(&resolved)
+                .await
+                .map_err(|e| self.storage_failed("list", e))?;
+            out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
+                Some(ObjectInfo {
+                    path: scope::strip_root(&self.space, &f.path)?,
+                    size: f.size,
+                })
+            }));
+        }
+        Ok(out)
     }
 
     async fn tool_finished(&mut self, outcome: ToolOutcome) {
@@ -984,6 +1012,9 @@ pub struct RunOptions {
     pub egress: Vec<crate::runtime::egress::EgressRule>,
     /// Whose space that is. The guest is never told.
     pub tenant_id: uuid::Uuid,
+    pub agent_id: uuid::Uuid,
+    /// Scopes the guest may write: "session", "agent", "tenant".
+    pub write_scopes: Vec<String>,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -1075,6 +1106,16 @@ impl AgentRunner {
             streamed: false,
             storage: options.storage,
             tenant_id: options.tenant_id,
+            space: crate::runtime::storage::scope::Space {
+                tenant_id: options.tenant_id,
+                agent_id: options.agent_id,
+                session_id: options.session_id,
+            },
+            write_scopes: options
+                .write_scopes
+                .iter()
+                .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
+                .collect(),
             egress: options.egress,
             limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(GUEST_MEMORY_LIMIT)

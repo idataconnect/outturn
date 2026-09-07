@@ -224,6 +224,12 @@ impl Puller {
             reply_id: request.reply_id,
             storage: self.storage.clone(),
             tenant_id: request.tenant_id,
+            agent_id: request.agent_id,
+            write_scopes: if request.write_scopes.is_empty() {
+                vec!["session".to_string()]
+            } else {
+                request.write_scopes
+            },
             idle_timeout: self.idle_timeout,
             egress: request.egress,
         };
