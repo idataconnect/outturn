@@ -205,10 +205,15 @@ pub fn anthropic_to_openai(
             prompt_tokens_details: Some(PromptTokensDetails {
                 cached_tokens: cache_read,
                 cache_creation_tokens: cache_write,
+                extra: Default::default(),
             }),
             // Carried in the shape the OpenAI protocol uses, since that is the
             // canonical form everything downstream reads.
             completion_tokens_details: None,
+            // And the original beside it, because the translation above is
+            // lossy by design: Anthropic prices cache writes by TTL and the
+            // canonical form has one number for them.
+            extra: [("anthropic".to_string(), u.clone())].into_iter().collect(),
         }
     });
 

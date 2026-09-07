@@ -21,11 +21,22 @@ Every dimension a bill might be cut along is on the row:
 | `endpoint`, `model` | Who answered, and with what. The model that *actually* served, which routing may have chosen |
 | `credential_owner` | Whose key paid: `operator` or `tenant` |
 | `fallback` | `none`, `same_model` or `cross_model` |
-| five token columns | As the provider reported them |
+| five token columns | As the provider reported them, normalised |
+| `provider_usage` | The provider's usage object verbatim, for dimensions the columns do not model |
+| `service_tier` | The price tier that served it, where a provider has them |
 
 Tokens, never prices. Rate cards change and disputes happen, and a ledger that
 stored a computed cost would have to be corrected where one that stores tokens
 is re-priced by whoever is billing.
+
+The five normalised columns are what every provider agrees on and every rate
+card needs. They are not a superset and never will be: cache writes priced by
+TTL, service tiers, long-context thresholds, server-side tools billed per call,
+audio and image tokens. So the provider's usage object is kept whole beside
+them. The columns build today's bill; the raw object lets yesterday's calls be
+re-priced under a dimension nobody thought to normalise, without a backfill.
+For the Anthropic protocol the gateway's translation is lossy by design, so
+the original rides through under an `anthropic` key.
 
 Append-only. Nothing updates or deletes a row, so an export of a closed window
 returns the same rows every time it is run.

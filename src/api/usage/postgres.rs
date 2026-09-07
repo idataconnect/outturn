@@ -41,6 +41,8 @@ fn read_entry(row: &sqlx::postgres::PgRow) -> UsageEntry {
         cache_read_tokens: row.get("cache_read_tokens"),
         cache_write_tokens: row.get("cache_write_tokens"),
         reasoning_tokens: row.get("reasoning_tokens"),
+        provider_usage: row.get("provider_usage"),
+        service_tier: row.get("service_tier"),
     }
 }
 
@@ -52,9 +54,9 @@ impl UsageStore for PostgresUsageStore {
                  (tenant_id, id, agent_id, session_id, user_id, account, reply_id, job_id, \
                   round, traffic_type, endpoint, model, credential_owner, fallback, \
                   prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, \
-                  reasoning_tokens) \
+                  reasoning_tokens, provider_usage, service_tier) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
-                     $15, $16, $17, $18, $19)",
+                     $15, $16, $17, $18, $19, $20, $21)",
         )
         .bind(e.tenant_id)
         .bind(Uuid::now_v7())
@@ -75,6 +77,8 @@ impl UsageStore for PostgresUsageStore {
         .bind(e.cache_read_tokens)
         .bind(e.cache_write_tokens)
         .bind(e.reasoning_tokens)
+        .bind(e.provider_usage)
+        .bind(e.service_tier)
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -93,7 +97,8 @@ impl UsageStore for PostgresUsageStore {
             "select id, tenant_id, occurred_at, agent_id, session_id, user_id, account, \
                     reply_id, job_id, round, traffic_type, endpoint, model, \
                     credential_owner, fallback, prompt_tokens, completion_tokens, \
-                    cache_read_tokens, cache_write_tokens, reasoning_tokens \
+                    cache_read_tokens, cache_write_tokens, reasoning_tokens, \
+                    provider_usage, service_tier \
              from usage_ledger \
              where tenant_id = $1 \
                and ($2::timestamptz is null or occurred_at >= $2) \

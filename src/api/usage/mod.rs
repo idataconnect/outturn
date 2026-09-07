@@ -40,6 +40,9 @@ pub struct UsageEntry {
     pub cache_read_tokens: i32,
     pub cache_write_tokens: i32,
     pub reasoning_tokens: i32,
+    /// The provider's usage object as it came off the wire.
+    pub provider_usage: Option<serde_json::Value>,
+    pub service_tier: Option<String>,
 }
 
 /// What a caller records. The id and timestamp are the store's.
@@ -63,6 +66,8 @@ pub struct RecordUsage {
     pub cache_read_tokens: i32,
     pub cache_write_tokens: i32,
     pub reasoning_tokens: i32,
+    pub provider_usage: Option<serde_json::Value>,
+    pub service_tier: Option<String>,
 }
 
 /// A page of the ledger.

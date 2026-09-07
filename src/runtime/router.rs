@@ -139,6 +139,11 @@ pub enum ExecuteEvent {
         cache_read_tokens: u32,
         cache_write_tokens: u32,
         reasoning_tokens: u32,
+        /// The provider's usage object verbatim, for re-pricing later.
+        #[serde(default)]
+        provider_usage: Option<serde_json::Value>,
+        #[serde(default)]
+        service_tier: Option<String>,
     },
     /// Generation finished; the reply is complete, and this is what it cost.
     Done {
@@ -216,6 +221,8 @@ pub fn sinks_for(
                 cache_read_tokens: call.usage.cache_read_tokens,
                 cache_write_tokens: call.usage.cache_write_tokens,
                 reasoning_tokens: call.usage.reasoning_tokens,
+                provider_usage: call.provider_usage.clone(),
+                service_tier: call.service_tier.clone(),
             });
         })
     };

@@ -64,6 +64,7 @@ pub trait LlmProvider: Send + Sync {
                 })
                 .collect(),
             usage: response.usage,
+            service_tier: None,
         };
         Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })))
     }

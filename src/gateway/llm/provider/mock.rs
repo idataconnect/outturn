@@ -74,6 +74,7 @@ impl LlmProvider for MockProvider {
                         prompt_tokens_details: None,
                         completion_tokens_details: None,
                         total_tokens: 15,
+                        extra: Default::default(),
                     }),
                 });
             }
@@ -104,6 +105,7 @@ impl LlmProvider for MockProvider {
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
                 total_tokens: 30,
+                extra: Default::default(),
             }),
         })
     }

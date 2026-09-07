@@ -44,6 +44,9 @@ pub struct CallUsage {
     pub model: String,
     pub paid_by: String,
     pub usage: Usage,
+    /// The provider's usage object as it came off the wire, for the ledger.
+    pub provider_usage: Option<serde_json::Value>,
+    pub service_tier: Option<String>,
 }
 
 /// Reports each model call's cost as it completes.
@@ -364,6 +367,8 @@ impl outturn::agent::host::Host for AgentHost {
                 model: served.model.clone().unwrap_or(model.clone()),
                 paid_by: served.paid_by.clone().unwrap_or_else(|| "operator".to_string()),
                 usage: usage.clone(),
+                provider_usage: served.provider_usage.clone(),
+                service_tier: served.service_tier.clone(),
             });
         }
         let served_by = served.endpoint;
@@ -701,6 +706,8 @@ async fn stream_completion(
         endpoint: header("x-outturn-provider"),
         paid_by: header("x-outturn-paid-by"),
         model: None,
+        provider_usage: None,
+        service_tier: None,
     };
 
     let mut stream = response.bytes_stream();
@@ -782,7 +789,13 @@ async fn stream_completion(
             if let Some(reason) = chunk["choices"][0]["finish_reason"].as_str() {
                 finish_reason = Some(reason.to_string());
             }
+            if let Some(tier) = chunk["service_tier"].as_str() {
+                served.service_tier = Some(tier.to_string());
+            }
             if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
+                // Kept whole. The fields read below are the ones every bill
+                // needs; the rest are the ones a later bill might.
+                served.provider_usage = Some(u.clone());
                 let cached = u["prompt_tokens_details"]["cached_tokens"]
                     .as_u64()
                     .unwrap_or(0) as u32;
@@ -829,6 +842,8 @@ struct Served {
     endpoint: Option<String>,
     model: Option<String>,
     paid_by: Option<String>,
+    provider_usage: Option<serde_json::Value>,
+    service_tier: Option<String>,
 }
 
 /// One tool call being assembled from stream fragments.

@@ -131,6 +131,12 @@ pub struct Usage {
     pub prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_tokens_details: Option<CompletionTokensDetails>,
+    /// Everything else the provider put in its usage object, passed through
+    /// untouched. The ledger keeps the whole object verbatim so a dimension
+    /// this type does not model -- a cache write priced by TTL, a server-side
+    /// tool billed per call -- is still there to price later.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// How much of the prompt was served from cache, which is billed lower.
@@ -144,6 +150,8 @@ pub struct PromptTokensDetails {
     /// real money on every cached conversation.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cache_creation_tokens: u32,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -156,6 +164,8 @@ fn is_zero(n: &u32) -> bool {
 pub struct CompletionTokensDetails {
     #[serde(default)]
     pub reasoning_tokens: u32,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +177,10 @@ pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Which price tier served this, where a provider has them. Changes the
+    /// price of every token on the call, so it travels with the usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

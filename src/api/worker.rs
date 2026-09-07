@@ -301,6 +301,8 @@ impl Worker {
                         cache_read_tokens,
                         cache_write_tokens,
                         reasoning_tokens,
+                        provider_usage,
+                        service_tier,
                     }) => {
                         // Written the moment the call is known to have cost
                         // something, not when the turn ends: a turn that fails
@@ -346,6 +348,8 @@ impl Worker {
                                 cache_read_tokens: cache_read_tokens as i32,
                                 cache_write_tokens: cache_write_tokens as i32,
                                 reasoning_tokens: reasoning_tokens as i32,
+                                provider_usage,
+                                service_tier,
                             })
                             .await
                         {

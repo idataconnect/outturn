@@ -1773,7 +1773,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let stream = [
         r#"{"kind":"delta","idx":0,"text":"Hi"}"#,
         r#"{"kind":"usage","round":0,"endpoint":"openai:http://vllm:8000","model":"qwen","paid_by":"operator","prompt_tokens":10,"completion_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":0}"#,
-        r#"{"kind":"usage","round":1,"endpoint":"anthropic:https://api.anthropic.com","model":"claude-sonnet-5","paid_by":"operator","prompt_tokens":20,"completion_tokens":5,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1}"#,
+        r#"{"kind":"usage","round":1,"endpoint":"anthropic:https://api.anthropic.com","model":"claude-sonnet-5","paid_by":"operator","prompt_tokens":20,"completion_tokens":5,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"service_tier":"priority","provider_usage":{"input_tokens":20,"cache_creation":{"ephemeral_1h_input_tokens":7}}}"#,
         r#"{"kind":"done","content":"Hi","prompt_tokens":30,"completion_tokens":7,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"provider":"anthropic:https://api.anthropic.com"}"#,
     ]
     .join("\n");
@@ -1808,6 +1808,13 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     assert_eq!(page["entries"][0]["round"], 1);
     assert_eq!(page["entries"][0]["model"], "claude-sonnet-5");
     assert_eq!(page["entries"][0]["reasoning_tokens"], 1);
+    // What the provider said, verbatim, beside what was normalised from it.
+    assert_eq!(page["entries"][0]["service_tier"], "priority");
+    assert_eq!(
+        page["entries"][0]["provider_usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
+        7,
+        "the raw usage object was not kept: {body}"
+    );
     let next = page["next"].as_str().expect("cursor");
 
     let (_, body) = h
