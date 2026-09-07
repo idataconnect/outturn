@@ -166,6 +166,12 @@ Storage layout and retention are written up separately, in
 ordered scope-first rather than as the hierarchy you would expect, which looks
 like a mistake until you know about S3's per-bucket lifecycle rule cap.
 
+Which model answers, whose key pays and how fallback works across tenants that
+bring their own keys is in [docs/routing.md](docs/routing.md); how defaults
+cascade from operator to tenant to agent with an explicit override at each
+level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
+says what exists.
+
 What happens to a write nobody saw the answer to is designed but unbuilt, in
 [docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
 rather than two, and the third one, sent-but-never-observed, is why there is
