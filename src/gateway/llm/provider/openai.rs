@@ -123,14 +123,6 @@ impl LlmProvider for OpenAiProvider {
     fn endpoint(&self) -> String {
         format!("openai:{}", self.base_url)
     }
-
-    async fn is_available(&self) -> bool {
-        // No cheap health check is common to every endpoint speaking this
-        // protocol, so availability is assumed and a failure falls through to
-        // the next provider. One wasted request when a local runtime is down,
-        // against not having to teach this file about each vendor's probe.
-        true
-    }
 }
 
 /// Turns a byte stream of Server-Sent Events into decoded chunks.

@@ -62,8 +62,4 @@ impl LlmProvider for AnthropicProvider {
     fn endpoint(&self) -> String {
         format!("anthropic:{}", self.base_url)
     }
-
-    async fn is_available(&self) -> bool {
-        true
-    }
 }
