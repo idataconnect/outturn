@@ -1,0 +1,511 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
+import { ArrowLeft, Plus, Save, Shield, Trash2 } from 'lucide-react'
+
+import { ApiError, api } from '../lib/api'
+import { useSession } from '../lib/session'
+
+export type Identity = {
+  id: string
+  provider: string
+  subject: string
+  verified: boolean
+}
+
+export type User = {
+  id: string
+  display_name: string
+  identities: Identity[]
+  system_roles: string[]
+}
+
+type Membership = {
+  tenant_id: string
+  name: string
+  slug: string
+  roles: string[]
+}
+
+type UserDetail = User & { memberships: Membership[] }
+
+type TenantRoleOption = { id: string; name: string; description: string }
+
+/**
+ * The tenant's roles, for a picker. Empty when the caller may not see them
+ * -- listing roles takes roles:assign or roles:manage -- in which case the
+ * picker is not shown at all.
+ */
+function useTenantRoles(): TenantRoleOption[] {
+  const state = useSession()
+  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const allowed =
+    state.status === 'authenticated' &&
+    (state.session.authorities.includes('roles:assign') ||
+      state.session.authorities.includes('roles:manage'))
+  const [roles, setRoles] = useState<TenantRoleOption[]>([])
+  useEffect(() => {
+    if (!allowed) return
+    let stale = false
+    void api<TenantRoleOption[]>('/v1/roles')
+      .then((found) => {
+        if (!stale) setRoles(found)
+      })
+      .catch(() => {})
+    return () => {
+      stale = true
+    }
+  }, [tenantId, allowed])
+  return roles
+}
+
+const field =
+  'w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100'
+const label = 'block text-sm text-surface-700 dark:text-surface-300 mb-1'
+const primary =
+  'flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50'
+const card =
+  'mt-6 space-y-4 p-4 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900'
+
+function message(e: unknown, fallback: string): string {
+  return e instanceof ApiError ? e.message : fallback
+}
+
+/**
+ * Creating a user, or looking after one.
+ *
+ * `/users/new` makes an account with its first sign-in and a role in the
+ * current tenant. `/users/:id` shows the account: its name, every way it can
+ * sign in, and its roles in the tenant being viewed. Each section saves on
+ * its own -- an identity is added or removed the moment you say so, a role
+ * likewise -- because they are separate facts about the account and a single
+ * "save" button would have to pretend otherwise.
+ */
+export default function UserEditor() {
+  const { id } = useParams<{ id?: string }>()
+  const creating = id === undefined
+  return creating ? <CreateUser /> : <EditUser id={id} />
+}
+
+function CreateUser() {
+  const navigate = useNavigate()
+  const state = useSession()
+  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const manyTenants =
+    state.status === 'authenticated' && state.session.tenants.length > 1
+
+  const roles = useTenantRoles()
+  const [form, setForm] = useState({ email: '', display_name: '', password: '' })
+  const [role, setRole] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+  // Default to the least the tenant offers, once the list is known.
+  useEffect(() => {
+    if (role === '' && roles.length > 0) {
+      const least = [...roles].sort((a, b) => a.name.localeCompare(b.name)).at(-1)
+      if (least) setRole(least.name)
+    }
+  }, [roles, role])
+  const [error, setError] = useState<string | null>(null)
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    if (!tenantId) return
+    setSaving(true)
+    try {
+      // The role is granted in the same request, in the tenant the admin is
+      // currently scoped to. Two requests left a window where the account
+      // existed with no role here and so vanished from the creator's list.
+      const user = await api<User>('/v1/users', {
+        method: 'POST',
+        body: JSON.stringify({ ...form, role }),
+      })
+      void navigate(`/users/${user.id}`)
+    } catch (e) {
+      setError(message(e, 'failed to create user'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="p-6 max-w-3xl">
+      <Back />
+      <h1 className="mt-2 text-2xl font-semibold text-surface-900 dark:text-surface-100">New user</h1>
+      <p className="mt-2 text-surface-600 dark:text-surface-400">
+        {manyTenants
+          ? 'The role is granted in the tenant you are currently viewing.'
+          : 'The role is granted here.'}
+      </p>
+
+      {error && <Error text={error} />}
+
+      <form onSubmit={onSubmit} className={card}>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex-1 min-w-44">
+            <span className={label}>Email</span>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              required
+              className={field}
+            />
+          </label>
+          <label className="flex-1 min-w-36">
+            <span className={label}>Name</span>
+            <input
+              value={form.display_name}
+              onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+              required
+              className={field}
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex-1 min-w-36">
+            <span className={label}>Password</span>
+            <input
+              type="password"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              required
+              minLength={8}
+              className={field}
+            />
+          </label>
+          <label>
+            <span className={label}>Role</span>
+            <RoleSelect roles={roles} value={role} onChange={setRole} />
+          </label>
+        </div>
+        <div className="flex items-center gap-3">
+          <button type="submit" disabled={saving || role === ''} className={primary}>
+            <Plus size={16} aria-hidden />
+            {saving ? 'Adding…' : 'Add user'}
+          </button>
+          <Cancel />
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function EditUser({ id }: { id: string }) {
+  const state = useSession()
+  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const authorities = state.status === 'authenticated' ? state.session.authorities : []
+  // The session's id is the account id: that is what the login path mints
+  // the token's subject from.
+  const self = state.status === 'authenticated' && state.session.session_id === id
+  // The API lets an account manage its own identities and name without the
+  // update authority, so the form follows the same rule.
+  const canUpdate = self || authorities.includes('users:update')
+  const canAssign = authorities.includes('roles:assign')
+
+  const roles = useTenantRoles()
+  const [user, setUser] = useState<UserDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [savingName, setSavingName] = useState(false)
+  const [identity, setIdentity] = useState({ email: '', password: '' })
+  const [addingIdentity, setAddingIdentity] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const detail = await api<UserDetail>(`/v1/users/${id}`)
+      setUser(detail)
+      setName(detail.display_name)
+      setError(null)
+    } catch (e) {
+      setError(message(e, 'failed to load user'))
+    }
+  }, [id])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function onRename(event: React.FormEvent) {
+    event.preventDefault()
+    setSavingName(true)
+    try {
+      await api<User>(`/v1/users/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ display_name: name }),
+      })
+      await load()
+    } catch (e) {
+      setError(message(e, 'failed to rename user'))
+    } finally {
+      setSavingName(false)
+    }
+  }
+
+  async function onAddIdentity(event: React.FormEvent) {
+    event.preventDefault()
+    setAddingIdentity(true)
+    try {
+      await api<Identity>(`/v1/users/${id}/identities`, {
+        method: 'POST',
+        body: JSON.stringify(identity),
+      })
+      setIdentity({ email: '', password: '' })
+      await load()
+    } catch (e) {
+      setError(message(e, 'failed to add sign-in'))
+    } finally {
+      setAddingIdentity(false)
+    }
+  }
+
+  async function onRemoveIdentity(identity: Identity) {
+    if (!window.confirm(`Remove ${identity.subject} as a way to sign in?`)) return
+    try {
+      await api<void>(`/v1/users/${id}/identities/${identity.id}`, { method: 'DELETE' })
+      await load()
+    } catch (e) {
+      setError(message(e, 'failed to remove sign-in'))
+    }
+  }
+
+  async function onToggleRole(role: string, held: boolean) {
+    if (!tenantId) return
+    try {
+      if (held) {
+        await api<void>(`/v1/users/${id}/tenants/${tenantId}/roles/${role}`, { method: 'DELETE' })
+      } else {
+        await api<void>(`/v1/users/${id}/tenants/${tenantId}/roles`, {
+          method: 'POST',
+          body: JSON.stringify({ role }),
+        })
+      }
+      await load()
+    } catch (e) {
+      setError(message(e, 'failed to change role'))
+    }
+  }
+
+  const here = user?.memberships.find((m) => m.tenant_id === tenantId)
+  const heldRoles = new Set(here?.roles ?? [])
+  const isSystem = user?.system_roles.includes('system_admin') ?? false
+
+  return (
+    <div className="p-6 max-w-3xl">
+      <Back />
+      <h1 className="mt-2 flex items-center gap-3 text-2xl font-semibold text-surface-900 dark:text-surface-100">
+        {user?.display_name ?? 'User'}
+        {isSystem && (
+          <span
+            title="System administrator"
+            className="flex items-center gap-1 text-xs font-normal text-amber-600 dark:text-amber-400"
+          >
+            <Shield size={14} aria-hidden />
+            system
+          </span>
+        )}
+      </h1>
+
+      {error && <Error text={error} />}
+
+      {user && (
+        <>
+          <form onSubmit={onRename} className={card}>
+            <label className="block">
+              <span className={label}>Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                disabled={!canUpdate}
+                className={field}
+              />
+            </label>
+            {canUpdate && (
+              <button
+                type="submit"
+                disabled={savingName || name.trim() === '' || name === user.display_name}
+                className={primary}
+              >
+                <Save size={16} aria-hidden />
+                {savingName ? 'Saving…' : 'Save name'}
+              </button>
+            )}
+          </form>
+
+          <section className={card}>
+            <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">
+              Ways to sign in
+            </h2>
+            {user.identities.length === 0 ? (
+              <p className="text-sm text-surface-600 dark:text-surface-400">
+                None. This account cannot sign in.
+              </p>
+            ) : (
+              <ul className="divide-y divide-surface-200 dark:divide-surface-800 -mx-4">
+                {user.identities.map((i) => (
+                  <li key={i.id} className="flex items-center gap-4 px-4 py-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-surface-900 dark:text-surface-100 truncate">
+                        {i.subject}
+                      </p>
+                      <p className="text-xs text-surface-600 dark:text-surface-400">
+                        {i.provider}
+                        {i.verified ? ', verified' : ''}
+                      </p>
+                    </div>
+                    {canUpdate && (
+                      <button
+                        type="button"
+                        onClick={() => void onRemoveIdentity(i)}
+                        aria-label={`Remove ${i.subject}`}
+                        // The API keeps the last one; the button stays so the
+                        // refusal is explained rather than silently absent.
+                        className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                      >
+                        <Trash2 size={16} aria-hidden />
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canUpdate && (
+              <form onSubmit={onAddIdentity} className="flex flex-wrap items-end gap-3">
+                <label className="flex-1 min-w-44">
+                  <span className={label}>Email</span>
+                  <input
+                    type="email"
+                    value={identity.email}
+                    onChange={(e) => setIdentity({ ...identity, email: e.target.value })}
+                    required
+                    className={field}
+                  />
+                </label>
+                <label className="flex-1 min-w-36">
+                  <span className={label}>Password</span>
+                  <input
+                    type="password"
+                    value={identity.password}
+                    onChange={(e) => setIdentity({ ...identity, password: e.target.value })}
+                    required
+                    minLength={8}
+                    className={field}
+                  />
+                </label>
+                <button type="submit" disabled={addingIdentity} className={primary}>
+                  <Plus size={16} aria-hidden />
+                  {addingIdentity ? 'Adding…' : 'Add sign-in'}
+                </button>
+              </form>
+            )}
+          </section>
+
+          <section className={card}>
+            <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">
+              Roles {here ? `in ${here.name}` : 'here'}
+            </h2>
+            {/* Roles are toggled directly. A grant is a fact about the
+                account from the moment it is made, and a form that batched
+                them would show a state the server did not yet hold. */}
+            {roles.length === 0 ? (
+              <p className="text-sm text-surface-600 dark:text-surface-400">
+                {[...heldRoles].join(', ') || 'None'}
+              </p>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {roles.map((role) => (
+                  <label
+                    key={role.id}
+                    className="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300"
+                    title={role.description}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={heldRoles.has(role.name)}
+                      disabled={!canAssign}
+                      onChange={() => void onToggleRole(role.name, heldRoles.has(role.name))}
+                    />
+                    <span>
+                      {role.name}
+                      {role.description && (
+                        <span className="block text-xs text-surface-500 dark:text-surface-400">
+                          {role.description}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {user.memberships.length > 1 && (
+              <p className="text-xs text-surface-500 dark:text-surface-400">
+                Also a member of{' '}
+                {user.memberships
+                  .filter((m) => m.tenant_id !== tenantId)
+                  .map((m) => `${m.name} (${m.roles.join(', ')})`)
+                  .join('; ')}
+                .
+              </p>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  )
+}
+
+function RoleSelect({
+  roles,
+  value,
+  onChange,
+}: {
+  roles: TenantRoleOption[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={roles.length === 0}
+      className="px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 disabled:opacity-50"
+    >
+      {roles.length === 0 && <option value="">Loading roles…</option>}
+      {roles.map((r) => (
+        <option key={r.id} value={r.name} title={r.description}>
+          {r.name}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function Back() {
+  return (
+    <Link
+      to="/users"
+      className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+    >
+      <ArrowLeft size={14} aria-hidden />
+      Users
+    </Link>
+  )
+}
+
+function Cancel() {
+  return (
+    <Link
+      to="/users"
+      className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+    >
+      Cancel
+    </Link>
+  )
+}
+
+function Error({ text }: { text: string }) {
+  return (
+    <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
+      {text}
+    </p>
+  )
+}

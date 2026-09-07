@@ -19,6 +19,11 @@ pub struct CreateTenant {
     pub slug: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateTenant {
+    pub name: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TenantError {
     #[error("tenant not found")]
@@ -36,6 +41,8 @@ pub trait TenantStore: Send + Sync {
     async fn list(&self) -> Result<Vec<Tenant>, TenantError>;
     async fn get(&self, id: Uuid) -> Result<Tenant, TenantError>;
     async fn create(&self, input: CreateTenant) -> Result<Tenant, TenantError>;
+    /// The slug stays: it is how the tenant is named in URLs and tokens.
+    async fn rename(&self, id: Uuid, name: &str) -> Result<Tenant, TenantError>;
     async fn delete(&self, id: Uuid) -> Result<(), TenantError>;
 }
 

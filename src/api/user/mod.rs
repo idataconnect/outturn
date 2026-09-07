@@ -36,7 +36,8 @@ pub struct TenantMembership {
     pub tenant_id: Uuid,
     pub name: String,
     pub slug: String,
-    pub roles: Vec<Role>,
+    /// Names of the tenant's roles this account holds there.
+    pub roles: Vec<String>,
 }
 
 /// Creates an account together with its first password identity.
@@ -66,7 +67,11 @@ pub enum UserError {
 #[async_trait]
 pub trait UserStore: Send + Sync {
     async fn list(&self) -> Result<Vec<User>, UserError>;
+    /// Accounts holding a role in one tenant. What a tenant's administrator
+    /// is shown: the accounts of other tenants are not theirs to see.
+    async fn list_for_tenant(&self, tenant_id: Uuid) -> Result<Vec<User>, UserError>;
     async fn get(&self, id: Uuid) -> Result<User, UserError>;
+    async fn rename(&self, id: Uuid, display_name: &str) -> Result<User, UserError>;
     async fn create(&self, input: CreateUser) -> Result<User, UserError>;
     async fn delete(&self, id: Uuid) -> Result<(), UserError>;
 
@@ -76,12 +81,13 @@ pub trait UserStore: Send + Sync {
     /// Tenants this user may sign in to. A system admin sees every tenant.
     async fn memberships(&self, user_id: Uuid) -> Result<Vec<TenantMembership>, UserError>;
 
-    /// Roles the user holds in one tenant, unioned with their system roles.
+    /// Names of the roles the user holds in one tenant, with their platform
+    /// roles alongside. This is what a token carries.
     async fn roles_for_tenant(
         &self,
         user_id: Uuid,
         tenant_id: Uuid,
-    ) -> Result<Vec<Role>, UserError>;
+    ) -> Result<Vec<String>, UserError>;
 
     /// Adds another way to sign in to an existing account.
     async fn add_password_identity(
@@ -96,17 +102,19 @@ pub trait UserStore: Send + Sync {
     async fn remove_identity(&self, user_id: Uuid, identity_id: Uuid) -> Result<(), UserError>;
 
     async fn grant_system_role(&self, user_id: Uuid, role: Role) -> Result<(), UserError>;
+    /// Grants one of the tenant's roles, by name. A name the tenant has no
+    /// role for is refused rather than recorded.
     async fn grant_tenant_role(
         &self,
         user_id: Uuid,
         tenant_id: Uuid,
-        role: Role,
+        role: &str,
     ) -> Result<(), UserError>;
     async fn revoke_tenant_role(
         &self,
         user_id: Uuid,
         tenant_id: Uuid,
-        role: Role,
+        role: &str,
     ) -> Result<(), UserError>;
 
     /// True when no user exists yet — used to gate dev seeding.

@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 use outturn::api::tenant::{PostgresTenantStore, TenantStore};
 use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
+use outturn::api::role::{PostgresRoleStore, RoleStore};
 use outturn::api::worker::Worker;
 use outturn::api::session::{PostgresSessionStore, SessionStore};
 use outturn::api::user::{PostgresUserStore, UserStore};
@@ -38,6 +39,7 @@ fn cors() -> CorsLayer {
         .allow_methods([
             Method::GET,
             Method::POST,
+            Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
         ])
@@ -64,8 +66,13 @@ async fn main() {
     let sessions: Arc<dyn SessionStore> = Arc::new(PostgresSessionStore::new(pool.clone()));
     let agents: Arc<dyn AgentStore> = Arc::new(PostgresAgentStore::new(pool.clone()));
     let chat: Arc<dyn ChatStore> = Arc::new(PostgresChatStore::new(pool.clone()));
+    // Roles are resolved on every request and cached per tenant; the listener
+    // is what makes an edit on one pod reach the cache on every other.
+    let role_store = PostgresRoleStore::new(pool.clone());
+    role_store.spawn_invalidation();
+    let roles: Arc<dyn RoleStore> = Arc::new(role_store);
 
-    seed::dev_seed(&users, &tenants).await.expect("dev seed");
+    seed::dev_seed(&users, &tenants, &roles).await.expect("dev seed");
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
     let minter = TokenMinter::from_env().expect("token minter");
@@ -80,6 +87,7 @@ async fn main() {
         sessions,
         agents.clone(),
         chat.clone(),
+        roles,
         validator,
         minter,
         runtime_key,

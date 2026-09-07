@@ -59,6 +59,23 @@ impl TenantStore for PostgresTenantStore {
         .map_err(|e| map_sqlx_error(e, &input.slug))
     }
 
+    async fn rename(&self, id: Uuid, name: &str) -> Result<Tenant, TenantError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(TenantError::Invalid("name must not be empty".into()));
+        }
+        sqlx::query_as::<_, Tenant>(
+            "update tenants set name = $2, updated_at = now() where id = $1 \
+             returning id, name, slug",
+        )
+        .bind(id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| TenantError::Internal(e.to_string()))?
+        .ok_or(TenantError::NotFound)
+    }
+
     async fn delete(&self, id: Uuid) -> Result<(), TenantError> {
         let result = sqlx::query("delete from tenants where id = $1")
             .bind(id)
