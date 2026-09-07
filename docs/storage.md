@@ -35,9 +35,18 @@ A guest is never told which tenant it belongs to, so it cannot name another one
 and cannot construct a path into one. The host resolves every path; nothing the
 component does can widen its own reach.
 
+People reach the same three scopes through the API: `/v1/agent-sessions/{id}/files`
+lists what the caller may see, and `PUT`, `GET` and `DELETE` on
+`.../files/{scope}/{path}` write, fetch and remove. Session scope needs only
+what being in the conversation needs; the longer-lived scopes need the storage
+authorities (docs/authorities.md). The chat page's files panel is built on
+these, with a select for where an upload lands that offers only the scopes the
+person may write and defaults to the conversation. A file uploaded there is one
+the agent lists and reads by the same name.
+
 Not yet: promotion of a file from session scope to something longer-lived,
-retention configured per tenant rather than by one variable, a sweeper for the
-policies lifecycle rules cannot express, and uploads from the browser.
+retention configured per tenant rather than by one variable, and a sweeper for
+the policies lifecycle rules cannot express.
 
 ## The problem this leaves
 
@@ -126,7 +135,6 @@ performed.
 ## Not built
 
 Promotion of a file from session scope to something longer-lived, retention
-configured per tenant, the sweeper, and uploads from the browser with a choice
-of where they land. Overflow from a tool result too large to show -- written
+configured per tenant, and the sweeper. Overflow from a tool result too large to show -- written
 to session scope so the model can go and read it rather than losing it -- is
 the next thing that will want the session scope that now exists.

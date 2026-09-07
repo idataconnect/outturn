@@ -30,6 +30,15 @@ patches:
             value: "outturn-dev-runtime-key-0123456789abcdef0123456789abcdef"
           - name: DATABASE_URL
             value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
+          # The same bucket the runtime uses, for uploads from the browser.
+          - name: OUTTURN_S3_ENDPOINT
+            value: "http://minio:9000"
+          - name: OUTTURN_S3_BUCKET
+            value: "outturn"
+          - name: OUTTURN_S3_ACCESS_KEY
+            value: "outturn"
+          - name: OUTTURN_S3_SECRET_KEY
+            value: "outturn-dev"
           - name: OUTTURN_DEV_SEED
             value: "1"
           # gemma4 rather than llama3.1: the agent offers tools on every

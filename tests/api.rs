@@ -91,6 +91,7 @@ async fn harness() -> Harness {
         roles.clone(),
         usage.clone(),
         settings.clone(),
+        Some(Arc::new(outturn::runtime::storage::MemoryStorage::new())),
         validator,
         minter,
         runtime_key,
@@ -1921,6 +1922,83 @@ async fn settings_cascade_from_operator_to_tenant_to_agent() {
     let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
     assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "operator");
+
+    finish!(h);
+}
+
+// -- Files -----------------------------------------------------------------------
+
+/// A file a person uploads is one the agent can name, and who may write where
+/// follows the storage authorities.
+#[tokio::test]
+async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let viewer = h
+        .login_as("viewer@acme.example", None, Some((acme, "viewer")))
+        .await;
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{}","title":""}}"#, agent["id"].as_str().expect("id")),
+        )
+        .await;
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    let session_id = session["id"].as_str().expect("id");
+
+    let put = |token: &str, scoped: &str, bytes: &str| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/agent-sessions/{session_id}/files/{scoped}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(bytes.to_string()))
+            .expect("request")
+    };
+
+    // The admin puts a file in session scope; it lists under the name the
+    // agent would use.
+    let (status, body) = h.send(put(&admin, "session/report.txt", "quarterly")).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert!(body.contains(r#""path":"session/report.txt""#), "body: {body}");
+
+    let (status, body) = h
+        .get(&format!("/v1/agent-sessions/{session_id}/files"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("session/report.txt"), "body: {body}");
+
+    // It comes back out as bytes.
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/files/session/report.txt"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "quarterly");
+
+    // A viewer may read the conversation's files but not add to the
+    // workspace's; the admin may.
+    let (status, body) = h.send(put(&viewer, "tenant/pricing.csv", "x")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote tenant files: {body}");
+    let (status, body) = h.send(put(&viewer, "session/mine.txt", "x")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote session files without sessions:create: {body}");
+    let (status, body) = h.send(put(&admin, "tenant/pricing.csv", "x")).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    // Traversal in an upload path is refused, not repaired.
+    let (status, _) = h.send(put(&admin, "session/../tenant/oops.txt", "x")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
     finish!(h);
 }

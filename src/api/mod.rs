@@ -7,6 +7,7 @@ pub mod settings;
 mod agents;
 mod sessions;
 mod events;
+mod files;
 mod login;
 pub mod seed;
 mod router;

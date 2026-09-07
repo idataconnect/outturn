@@ -12,6 +12,7 @@ use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::role::{PostgresRoleStore, RoleStore};
 use outturn::api::usage::{PostgresUsageStore, UsageStore};
 use outturn::api::settings::{PostgresSettingsStore, SettingsStore};
+use outturn::runtime::storage::{S3Storage, StorageBackend};
 use outturn::api::worker::Worker;
 use outturn::api::session::{PostgresSessionStore, SessionStore};
 use outturn::api::user::{PostgresUserStore, UserStore};
@@ -76,6 +77,35 @@ async fn main() {
     let usage: Arc<dyn UsageStore> = Arc::new(PostgresUsageStore::new(pool.clone()));
     let settings: Arc<dyn SettingsStore> = Arc::new(PostgresSettingsStore::new(pool.clone()));
 
+    // The bucket the runtime uses, so uploads land where the agent looks. No
+    // in-memory fallback here: an upload that only this pod could see would
+    // be a file the agent cannot find, which is worse than an honest 503.
+    let storage: Option<Arc<dyn StorageBackend>> = match std::env::var("OUTTURN_S3_ENDPOINT") {
+        Ok(endpoint) => {
+            let bucket = std::env::var("OUTTURN_S3_BUCKET").unwrap_or_else(|_| "outturn".into());
+            match S3Storage::new(
+                &endpoint,
+                &bucket,
+                &std::env::var("OUTTURN_S3_ACCESS_KEY").unwrap_or_default(),
+                &std::env::var("OUTTURN_S3_SECRET_KEY").unwrap_or_default(),
+                String::new(),
+            ) {
+                Ok(store) => {
+                    tracing::info!(endpoint, bucket, "object storage enabled for uploads");
+                    Some(Arc::new(store))
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "object storage misconfigured; uploads disabled");
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            tracing::warn!("no OUTTURN_S3_ENDPOINT; uploads disabled");
+            None
+        }
+    };
+
     seed::dev_seed(&users, &tenants, &roles).await.expect("dev seed");
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
@@ -94,6 +124,7 @@ async fn main() {
         roles,
         usage.clone(),
         settings.clone(),
+        storage,
         validator,
         minter,
         runtime_key,

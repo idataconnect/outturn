@@ -150,3 +150,37 @@ export const sendMessage = (sessionId: string, content: string, delivery?: Deliv
  */
 export const pollEvents = (sessionId: string, after: string, signal?: AbortSignal) =>
   api<PollResponse>(`/v1/events?session_id=${sessionId}&after=${after}`, { signal })
+
+/** A file in one of a conversation's three storage scopes. */
+export type StoredFile = {
+  /** As the agent names it: `session/report.pdf`. */
+  path: string
+  scope: 'session' | 'agent' | 'tenant'
+  size: number
+}
+
+export function listFiles(sessionId: string): Promise<StoredFile[]> {
+  return api<StoredFile[]>(`/v1/agent-sessions/${sessionId}/files`)
+}
+
+/** Where a file is fetched from; the session cookie travels with the link. */
+export function fileUrl(sessionId: string, scopedPath: string): string {
+  return `/v1/agent-sessions/${sessionId}/files/${scopedPath}`
+}
+
+export async function uploadFile(
+  sessionId: string,
+  scope: StoredFile['scope'],
+  file: File,
+): Promise<StoredFile> {
+  // Raw bytes, not JSON: the file is the body.
+  return api<StoredFile>(fileUrl(sessionId, `${scope}/${encodeURIComponent(file.name)}`), {
+    method: 'PUT',
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  })
+}
+
+export function deleteFile(sessionId: string, scopedPath: string): Promise<void> {
+  return api<void>(fileUrl(sessionId, scopedPath), { method: 'DELETE' })
+}

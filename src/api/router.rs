@@ -28,6 +28,9 @@ pub struct ApiState {
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
     pub(super) settings: Arc<dyn super::settings::SettingsStore>,
+    /// The same bucket the runtime reads and writes, so a file a person
+    /// uploads is one the agent can name. Absent when none is configured.
+    pub(super) storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
     /// What the runtime tier presents. Not a token: see `RuntimeKey`.
@@ -60,6 +63,7 @@ impl ApiState {
         roles: Arc<dyn RoleStore>,
         usage: Arc<dyn super::usage::UsageStore>,
         settings: Arc<dyn super::settings::SettingsStore>,
+        storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
         auth: TokenValidator,
         minter: TokenMinter,
         runtime_key: crate::auth::RuntimeKey,
@@ -76,6 +80,7 @@ impl ApiState {
             roles,
             usage,
             settings,
+            storage,
             auth,
             minter,
             runtime_key,
@@ -924,6 +929,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
+        .route("/v1/agent-sessions/{id}/files", get(super::files::list))
+        .route(
+            "/v1/agent-sessions/{id}/files/{scope}/{*path}",
+            get(super::files::download)
+                .put(super::files::upload)
+                .delete(super::files::delete)
+                .layer(axum::extract::DefaultBodyLimit::max(super::files::MAX_UPLOAD_BYTES)),
+        )
         .route("/v1/usage", get(export_usage))
         .route("/v1/settings", get(view_tenant_settings))
         .route(

@@ -4,6 +4,7 @@ import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Plus } from 'lucide-react'
 
 import Thread from '../components/Thread'
+import FilesPanel from '../components/FilesPanel'
 import { ApiError } from '../lib/api'
 import {
   createSession,
@@ -168,6 +169,8 @@ export default function Chat() {
           </AssistantRuntimeProvider>
         </div>
       </div>
+
+      {active && <FilesPanel sessionId={active} />}
     </div>
   )
 }
