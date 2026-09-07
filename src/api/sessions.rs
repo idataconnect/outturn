@@ -32,7 +32,7 @@ pub async fn list_sessions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<AgentSession>>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::SessionsRead)?;
+    let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     Ok(Json(state.chat.list_sessions(claims.tenant_id).await?))
 }
 
@@ -43,7 +43,7 @@ pub async fn create_session(
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateSession>,
 ) -> Result<(StatusCode, Json<AgentSession>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::SessionsCreate)?;
+    let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
     let session = state
         .chat
         .create_session(claims.tenant_id, claims.subject, input)
@@ -56,7 +56,7 @@ pub async fn get_messages(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<History>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::SessionsRead)?;
+    let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     // Ownership is checked before reading messages, which are not themselves
     // tenant-scoped.
     state.chat.get_session(claims.tenant_id, id).await?;
@@ -68,7 +68,7 @@ pub async fn delete_session(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::SessionsDelete)?;
+    let claims = authorize(&state, &headers, Authority::SessionsDelete).await?;
     state.chat.delete_session(claims.tenant_id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -99,7 +99,7 @@ pub async fn send_message(
     Json(input): Json<SendMessage>,
 ) -> Result<axum::response::Response, ApiError> {
     use axum::response::IntoResponse;
-    let claims = authorize(&state, &headers, Authority::SessionsCreate)?;
+    let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
 
     if input.content.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "message must not be empty".into()));

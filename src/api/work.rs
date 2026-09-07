@@ -100,7 +100,7 @@ pub async fn take(
     // and Operators, and a turn handed out carries whichever tenant's
     // transcript it belongs to. Anything that can ask for work can ask for
     // everyone's, so this has to be an authority no tenant role holds.
-    super::router::authorize(&state, &headers, Authority::WorkTake)?;
+    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
 
     let deadline = tokio::time::Instant::now() + WORK_POLL_TIMEOUT;
     loop {
@@ -254,7 +254,7 @@ pub async fn report(
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
     body: axum::body::Body,
 ) -> Result<StatusCode, ApiError> {
-    super::router::authorize(&state, &headers, Authority::WorkTake)?;
+    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
 
     let worker = state.worker.get().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
@@ -296,7 +296,7 @@ pub async fn abandon(
     headers: axum::http::HeaderMap,
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    super::router::authorize(&state, &headers, Authority::WorkTake)?;
+    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
     let lease = lease_from(&headers)?;
 
     // Given back rather than failed: nothing about the turn was wrong, the

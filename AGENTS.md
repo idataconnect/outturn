@@ -151,6 +151,11 @@ deployment at zero replicas costs one object; a controller with CRDs and
 webhooks cannot be installed inertly. So `k8s/autoscaling` is applied
 deliberately, after `helm install keda`, and local development runs without it.
 
+Who may do what is written up in [docs/authorities.md](docs/authorities.md):
+authorities are the fixed vocabulary in code, roles are tenant-owned rows that
+bundle them, a token carries role names only, and the API resolves them on
+every request through a per-tenant cache invalidated over LISTEN/NOTIFY.
+
 Tenancy, whose credential pays and what is attributed are written up in
 [docs/tenancy.md](docs/tenancy.md) — the short version being that `tenant_id`
 is the isolation boundary and stays that way, with organizations added above it
@@ -309,6 +314,14 @@ as scripted tasks in sub-sessions.
 
 A tenant's egress list is managed through `/v1/egress-rules` and has no UI
 yet, so allowing a host means an API call.
+
+There is no per-tenant fairness in the queue, on purpose for now. Priority
+classes put a waiting person ahead of background work; within a class, order
+is arrival. One tenant's burst can therefore sit in front of another's until
+the autoscaler catches up, and the bet is that it catches up fast enough for
+this not to matter. If that bet fails, the fix is a fairness term in the
+claim's ordering, which means changing the claim index and the backlog view
+together.
 
 ### Compaction
 

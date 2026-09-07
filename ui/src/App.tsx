@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Settings,
   Users as UsersIcon,
+  KeyRound,
 } from 'lucide-react'
 
 import AccountMenu from './components/AccountMenu'
@@ -21,9 +22,14 @@ import {
 } from './lib/session'
 import Login from './pages/Login'
 import Agents from './pages/Agents'
+import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
 import Tenants from './pages/Tenants'
+import Roles from './pages/Roles'
+import RoleEditor from './pages/RoleEditor'
+import TenantEditor from './pages/TenantEditor'
 import Users from './pages/Users'
+import UserEditor from './pages/UserEditor'
 
 function Dashboard() {
   const state = useSession()
@@ -54,6 +60,7 @@ const navItems = [
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
+  { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
   { to: '/tenants', icon: Building2, label: 'Tenants', authority: 'tenants:read' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
@@ -206,6 +213,23 @@ function Shell() {
               </RequireAuthority>
             }
           />
+          <Route
+            path="/agents/new"
+            element={
+              <RequireAuthority authority="agents:create">
+                <AgentEditor />
+              </RequireAuthority>
+            }
+          />
+          {/* Read opens it; the form itself decides whether it can be saved. */}
+          <Route
+            path="/agents/:id"
+            element={
+              <RequireAuthority authority="agents:read">
+                <AgentEditor />
+              </RequireAuthority>
+            }
+          />
           <Route path="/settings" element={<SettingsPage />} />
           <Route
             path="/users"
@@ -216,10 +240,66 @@ function Shell() {
             }
           />
           <Route
+            path="/users/new"
+            element={
+              <RequireAuthority authority="users:create">
+                <UserEditor />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/users/:id"
+            element={
+              <RequireAuthority authority="users:read">
+                <UserEditor />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/roles"
+            element={
+              <RequireAuthority authority="roles:assign">
+                <Roles />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/roles/new"
+            element={
+              <RequireAuthority authority="roles:manage">
+                <RoleEditor />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/roles/:id"
+            element={
+              <RequireAuthority authority="roles:assign">
+                <RoleEditor />
+              </RequireAuthority>
+            }
+          />
+          <Route
             path="/tenants"
             element={
               <RequireAuthority authority="tenants:read">
                 <Tenants />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/tenants/new"
+            element={
+              <RequireAuthority authority="tenants:create">
+                <TenantEditor />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/tenants/:id"
+            element={
+              <RequireAuthority authority="tenants:update">
+                <TenantEditor />
               </RequireAuthority>
             }
           />

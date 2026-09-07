@@ -42,10 +42,7 @@ pub async fn poll(
     headers: axum::http::HeaderMap,
     Query(query): Query<PollQuery>,
 ) -> Result<Json<PollResponse>, ApiError> {
-    let claims = super::router::authenticate(&state, &headers)?;
-    claims
-        .require(Authority::SessionsRead)
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    let claims = super::router::authorize(&state, &headers, Authority::SessionsRead).await?;
 
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_LIMIT);
 

@@ -9,12 +9,13 @@ use axum::{
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::auth::{self, Authority, Role, SessionClaims, TokenMinter, TokenValidator};
+use crate::auth::{self, Authority, SessionClaims, TokenMinter, TokenValidator};
 
 use super::tenant::{CreateTenant, Tenant, TenantError, TenantStore};
 use super::agent::AgentStore;
 use super::chat::ChatStore;
 use super::session::SessionStore;
+use super::role::{CreateRole, RoleError, RoleStore, TenantRole, UpdateRole};
 use super::user::{CreateUser, Identity, TenantMembership, User, UserStore};
 
 pub struct ApiState {
@@ -23,6 +24,8 @@ pub struct ApiState {
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) agents: Arc<dyn AgentStore>,
     pub(super) chat: Arc<dyn ChatStore>,
+    /// What a tenant's roles mean. Consulted on every authorised request.
+    pub(super) roles: Arc<dyn RoleStore>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
     /// What the runtime tier presents. Not a token: see `RuntimeKey`.
@@ -52,6 +55,7 @@ impl ApiState {
         sessions: Arc<dyn SessionStore>,
         agents: Arc<dyn AgentStore>,
         chat: Arc<dyn ChatStore>,
+        roles: Arc<dyn RoleStore>,
         auth: TokenValidator,
         minter: TokenMinter,
         runtime_key: crate::auth::RuntimeKey,
@@ -65,6 +69,7 @@ impl ApiState {
             sessions,
             agents,
             chat,
+            roles,
             auth,
             minter,
             runtime_key,
@@ -108,16 +113,58 @@ pub(super) fn authenticate(
         .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
 }
 
-pub(super) fn authorize(
+/// Everything the caller may do, resolved for this request.
+///
+/// Platform roles resolve in code; tenant roles resolve through the role
+/// store, which caches per tenant. Done per request rather than at mint so an
+/// edit to a role takes effect on the next click, not at the next refresh.
+pub(super) async fn authorities_of(
+    state: &ApiState,
+    claims: &SessionClaims,
+) -> Result<std::collections::HashSet<Authority>, ApiError> {
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(claims.tenant_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    Ok(granted)
+}
+
+pub(super) async fn require(
+    state: &ApiState,
+    claims: &SessionClaims,
+    authority: Authority,
+) -> Result<(), ApiError> {
+    if authorities_of(state, claims).await?.contains(&authority) {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()))
+    }
+}
+
+pub(super) async fn authorize(
     state: &ApiState,
     headers: &axum::http::HeaderMap,
     authority: Authority,
 ) -> Result<SessionClaims, ApiError> {
     let claims = authenticate(state, headers)?;
-    claims
-        .require(authority)
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    require(state, &claims, authority).await?;
     Ok(claims)
+}
+
+impl From<RoleError> for ApiError {
+    fn from(e: RoleError) -> Self {
+        let status = match e {
+            RoleError::NotFound => StatusCode::NOT_FOUND,
+            RoleError::Duplicate(_) | RoleError::InUse(_) => StatusCode::CONFLICT,
+            RoleError::Invalid(_) => StatusCode::BAD_REQUEST,
+            RoleError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
 }
 
 impl From<super::egress::RuleError> for ApiError {
@@ -166,7 +213,8 @@ async fn session_info(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<SessionInfo>, ApiError> {
     let claims = authenticate(&state, &headers)?;
-    let mut authorities: Vec<String> = auth::resolve_authorities(&claims.roles)
+    let mut authorities: Vec<String> = authorities_of(&state, &claims)
+        .await?
         .iter()
         .map(|a| a.as_str().to_string())
         .collect();
@@ -181,7 +229,7 @@ async fn session_info(
         session_id: claims.subject,
         tenant_id: claims.tenant_id,
         display_name: user.display_name,
-        roles: claims.roles.iter().map(|r| r.to_string()).collect(),
+        roles: claims.roles.clone(),
         authorities,
         tenants,
     }))
@@ -191,7 +239,7 @@ async fn list_tenants(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<Tenant>>, ApiError> {
-    authorize(&state, &headers, Authority::TenantsRead)?;
+    authorize(&state, &headers, Authority::TenantsRead).await?;
     Ok(Json(state.tenants.list().await?))
 }
 
@@ -200,8 +248,10 @@ async fn create_tenant(
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateTenant>,
 ) -> Result<(StatusCode, Json<Tenant>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::TenantsCreate)?;
+    let claims = authorize(&state, &headers, Authority::TenantsCreate).await?;
     let tenant = state.tenants.create(input).await?;
+    // A tenant with no roles is one nobody can be given access to.
+    state.roles.seed_defaults(tenant.id).await?;
     tracing::info!(
         actor = %claims.subject,
         tenant_id = %tenant.id,
@@ -216,8 +266,20 @@ async fn get_tenant(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Tenant>, ApiError> {
-    authorize(&state, &headers, Authority::TenantsRead)?;
+    authorize(&state, &headers, Authority::TenantsRead).await?;
     Ok(Json(state.tenants.get(id).await?))
+}
+
+async fn update_tenant(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::tenant::UpdateTenant>,
+) -> Result<Json<Tenant>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::TenantsUpdate).await?;
+    let tenant = state.tenants.rename(id, &input.name).await?;
+    tracing::info!(actor = %claims.subject, tenant_id = %id, "tenant renamed");
+    Ok(Json(tenant))
 }
 
 async fn delete_tenant(
@@ -225,7 +287,7 @@ async fn delete_tenant(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::TenantsDelete)?;
+    let claims = authorize(&state, &headers, Authority::TenantsDelete).await?;
     state.tenants.delete(id).await?;
     tracing::info!(actor = %claims.subject, tenant_id = %id, "tenant deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -234,7 +296,8 @@ async fn delete_tenant(
 
 #[derive(Debug, serde::Deserialize)]
 struct GrantRole {
-    role: Role,
+    /// The name of one of the tenant's roles.
+    role: String,
 }
 
 /// The hosts this tenant's agents may reach.
@@ -246,7 +309,7 @@ async fn list_egress_rules(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<super::egress::Rule>>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::SettingsRead)?;
+    let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
     Ok(Json(super::egress::list(&state.pool, claims.tenant_id).await?))
 }
 
@@ -255,7 +318,7 @@ async fn create_egress_rule(
     headers: axum::http::HeaderMap,
     Json(input): Json<super::egress::CreateRule>,
 ) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::SettingsUpdate)?;
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
     let rule = super::egress::create(&state.pool, claims.tenant_id, input).await?;
     // Worth a line in the log on its own: this is the moment a tenant's agents
     // gained somewhere new to send things.
@@ -273,7 +336,7 @@ async fn delete_egress_rule(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::SettingsUpdate)?;
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
     if !super::egress::delete(&state.pool, claims.tenant_id, id).await? {
         return Err((StatusCode::NOT_FOUND, "no such rule".into()));
     }
@@ -290,17 +353,79 @@ async fn list_users(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<User>>, ApiError> {
-    authorize(&state, &headers, Authority::UsersRead)?;
-    Ok(Json(state.users.list().await?))
+    let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    // A tenant's administrator sees the accounts in their tenant. Every
+    // account on the platform is a system administrator's view alone: the
+    // tenant is the isolation boundary, and a user list that crossed it
+    // named every other customer's staff.
+    if claims.is_system_admin() {
+        Ok(Json(state.users.list().await?))
+    } else {
+        Ok(Json(state.users.list_for_tenant(claims.tenant_id).await?))
+    }
+}
+
+/// A user, with where they belong.
+///
+/// Memberships are narrowed to what the caller may know about: their own
+/// tenant, or every tenant for a system administrator.
+#[derive(Debug, serde::Serialize)]
+struct UserDetail {
+    #[serde(flatten)]
+    user: User,
+    memberships: Vec<TenantMembership>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateUser {
+    display_name: String,
+}
+
+async fn update_user(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpdateUser>,
+) -> Result<Json<User>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if claims.subject != id {
+        require(&state, &claims, Authority::UsersUpdate).await?;
+    }
+    let user = state.users.rename(id, &input.display_name).await?;
+    tracing::info!(actor = %claims.subject, user_id = %id, "user renamed");
+    Ok(Json(user))
+}
+
+/// A new account, and optionally a role for it in the creator's tenant.
+///
+/// The role rides in the same request because the user list is scoped to the
+/// tenant: an account created without a role there is one its creator can no
+/// longer see, and two requests left a window for exactly that.
+#[derive(Debug, serde::Deserialize)]
+struct CreateUserRequest {
+    #[serde(flatten)]
+    user: CreateUser,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn create_user(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Json(input): Json<CreateUser>,
+    Json(input): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<User>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::UsersCreate)?;
+    let claims = authorize(&state, &headers, Authority::UsersCreate).await?;
+    let CreateUserRequest { user: input, role } = input;
+    if role.is_some() {
+        require(&state, &claims, Authority::RolesAssign).await?;
+    }
     let user = state.users.create(input).await?;
+    if let Some(role) = role {
+        state
+            .users
+            .grant_tenant_role(user.id, claims.tenant_id, &role)
+            .await?;
+    }
     tracing::info!(actor = %claims.subject, user_id = %user.id, "user created");
     Ok((StatusCode::CREATED, Json(user)))
 }
@@ -309,9 +434,14 @@ async fn get_user(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<User>, ApiError> {
-    authorize(&state, &headers, Authority::UsersRead)?;
-    Ok(Json(state.users.get(id).await?))
+) -> Result<Json<UserDetail>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    let user = state.users.get(id).await?;
+    let mut memberships = state.users.memberships(id).await?;
+    if !claims.is_system_admin() {
+        memberships.retain(|m| m.tenant_id == claims.tenant_id);
+    }
+    Ok(Json(UserDetail { user, memberships }))
 }
 
 async fn delete_user(
@@ -319,7 +449,7 @@ async fn delete_user(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::UsersDelete)?;
+    let claims = authorize(&state, &headers, Authority::UsersDelete).await?;
     if claims.subject == id {
         return Err((StatusCode::BAD_REQUEST, "cannot delete yourself".into()));
     }
@@ -344,9 +474,7 @@ async fn add_identity(
     // else's needs the user-management authority.
     let claims = authenticate(&state, &headers)?;
     if claims.subject != user_id {
-        claims
-            .require(Authority::UsersUpdate)
-            .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+        require(&state, &claims, Authority::UsersUpdate).await?;
     }
 
     let identity = state
@@ -364,9 +492,7 @@ async fn remove_identity(
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     if claims.subject != user_id {
-        claims
-            .require(Authority::UsersUpdate)
-            .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+        require(&state, &claims, Authority::UsersUpdate).await?;
     }
 
     state.users.remove_identity(user_id, identity_id).await?;
@@ -380,21 +506,15 @@ async fn grant_tenant_role(
     Path((user_id, tenant_id)): Path<(Uuid, Uuid)>,
     Json(input): Json<GrantRole>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::RolesAssign)?;
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
     // A tenant admin may only grant within their own tenant; a system admin
     // carries the authority in whichever tenant they are scoped to.
-    if claims.tenant_id != tenant_id && !claims.roles.contains(&Role::SystemAdmin) {
+    if claims.tenant_id != tenant_id && !claims.is_system_admin() {
         return Err((StatusCode::FORBIDDEN, "cannot grant outside your tenant".into()));
-    }
-    if input.role == Role::SystemAdmin {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "system_admin is not a tenant role".into(),
-        ));
     }
     state
         .users
-        .grant_tenant_role(user_id, tenant_id, input.role)
+        .grant_tenant_role(user_id, tenant_id, &input.role)
         .await?;
     tracing::info!(
         actor = %claims.subject,
@@ -411,16 +531,13 @@ async fn revoke_tenant_role(
     headers: axum::http::HeaderMap,
     Path((user_id, tenant_id, role)): Path<(Uuid, Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::RolesAssign)?;
-    if claims.tenant_id != tenant_id && !claims.roles.contains(&Role::SystemAdmin) {
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+    if claims.tenant_id != tenant_id && !claims.is_system_admin() {
         return Err((StatusCode::FORBIDDEN, "cannot revoke outside your tenant".into()));
     }
-    let role: Role = role
-        .parse()
-        .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
     state
         .users
-        .revoke_tenant_role(user_id, tenant_id, role)
+        .revoke_tenant_role(user_id, tenant_id, &role)
         .await?;
     tracing::info!(
         actor = %claims.subject,
@@ -429,6 +546,129 @@ async fn revoke_tenant_role(
         role = %role,
         "tenant role revoked"
     );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+
+// -- Roles --------------------------------------------------------------------
+
+/// The vocabulary a role can be built from, for the role editor.
+#[derive(Debug, serde::Serialize)]
+struct AuthorityInfo {
+    name: &'static str,
+    description: &'static str,
+}
+
+async fn list_authorities(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<AuthorityInfo>>, ApiError> {
+    authenticate(&state, &headers)?;
+    Ok(Json(
+        Authority::ALL
+            .iter()
+            .filter(|a| a.tenant_assignable())
+            .map(|a| AuthorityInfo {
+                name: a.as_str(),
+                description: a.describe(),
+            })
+            .collect(),
+    ))
+}
+
+/// Seeing the roles takes either the authority to hand them out or the
+/// authority to define them: both jobs need the list.
+async fn list_roles(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<TenantRole>>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let granted = authorities_of(&state, &claims).await?;
+    if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
+        return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
+    }
+    Ok(Json(state.roles.list(claims.tenant_id).await?))
+}
+
+async fn get_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TenantRole>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let granted = authorities_of(&state, &claims).await?;
+    if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
+        return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
+    }
+    Ok(Json(state.roles.get(claims.tenant_id, id).await?))
+}
+
+/// A role may bundle only what its editor already holds.
+///
+/// Otherwise `roles:manage` is a ladder: define a role with everything, grant
+/// it to yourself, climb. The check is against the editor's resolved
+/// authorities, which for a system administrator is everything a tenant may
+/// hold anyway.
+fn within_reach(
+    granted: &std::collections::HashSet<Authority>,
+    wanted: &[String],
+) -> Result<(), ApiError> {
+    for name in wanted {
+        let Some(a) = Authority::parse(name.trim()) else {
+            // The store reports the bad name properly; this check only cares
+            // about reach.
+            continue;
+        };
+        if !granted.contains(&a) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("you cannot put {a} in a role because you do not hold it yourself"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn create_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<CreateRole>,
+) -> Result<(StatusCode, Json<TenantRole>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    // Reserved-to-the-platform first, so the answer names the real reason:
+    // nobody holds `tenants:create` in a tenant, and "you do not hold it"
+    // would send the editor looking for someone who does.
+    super::role::validate_authorities(&input.authorities)?;
+    within_reach(&authorities_of(&state, &claims).await?, &input.authorities)?;
+    let role = state.roles.create(claims.tenant_id, input).await?;
+    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role = %role.name, "role created");
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+async fn update_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpdateRole>,
+) -> Result<Json<TenantRole>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    if let Some(authorities) = &input.authorities {
+        super::role::validate_authorities(authorities)?;
+        within_reach(&authorities_of(&state, &claims).await?, authorities)?;
+    }
+    let role = state.roles.update(claims.tenant_id, id, input).await?;
+    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role = %role.name, "role updated");
+    Ok(Json(role))
+}
+
+async fn delete_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    state.roles.delete(claims.tenant_id, id).await?;
+    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role_id = %id, "role deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -476,8 +716,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
+        .route("/v1/authorities", get(list_authorities))
+        .route("/v1/roles", get(list_roles).post(create_role))
+        .route(
+            "/v1/roles/{id}",
+            get(get_role).patch(update_role).delete(delete_role),
+        )
         .route("/v1/users", get(list_users).post(create_user))
-        .route("/v1/users/{id}", get(get_user).delete(delete_user))
+        .route("/v1/users/{id}", get(get_user).patch(update_user).delete(delete_user))
         .route("/v1/users/{user_id}/identities", post(add_identity))
         .route(
             "/v1/users/{user_id}/identities/{identity_id}",
@@ -492,6 +738,6 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             axum::routing::delete(revoke_tenant_role),
         )
         .route("/v1/tenants", get(list_tenants).post(create_tenant))
-        .route("/v1/tenants/{id}", get(get_tenant).delete(delete_tenant))
+        .route("/v1/tenants/{id}", get(get_tenant).patch(update_tenant).delete(delete_tenant))
         .with_state(state)
 }

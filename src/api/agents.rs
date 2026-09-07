@@ -30,7 +30,7 @@ pub async fn list_agents(
 ) -> Result<Json<Vec<Agent>>, ApiError> {
     // The tenant comes from the token, never from the request: a caller can
     // only reach agents in a tenant they hold a minted token for.
-    let claims = authorize(&state, &headers, Authority::AgentsRead)?;
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     Ok(Json(state.agents.list(claims.tenant_id).await?))
 }
 
@@ -39,7 +39,7 @@ pub async fn create_agent(
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateAgent>,
 ) -> Result<(StatusCode, Json<Agent>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::AgentsCreate)?;
+    let claims = authorize(&state, &headers, Authority::AgentsCreate).await?;
     let agent = state.agents.create(claims.tenant_id, input).await?;
     tracing::info!(
         actor = %claims.subject,
@@ -55,7 +55,7 @@ pub async fn get_agent(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Agent>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::AgentsRead)?;
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     Ok(Json(state.agents.get(claims.tenant_id, id).await?))
 }
 
@@ -65,7 +65,7 @@ pub async fn update_agent(
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateAgent>,
 ) -> Result<Json<Agent>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::AgentsUpdate)?;
+    let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
     let agent = state.agents.update(claims.tenant_id, id, input).await?;
     tracing::info!(
         actor = %claims.subject,
@@ -81,7 +81,7 @@ pub async fn delete_agent(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::AgentsDelete)?;
+    let claims = authorize(&state, &headers, Authority::AgentsDelete).await?;
     state.agents.delete(claims.tenant_id, id).await?;
     tracing::info!(
         actor = %claims.subject,

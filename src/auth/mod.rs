@@ -3,7 +3,7 @@ pub mod password;
 mod token;
 pub mod rbac;
 
-pub use rbac::{Authority, Role, resolve_authorities};
+pub use rbac::{Authority, Role, platform_authorities};
 pub use cookie::{
     REFRESH_COOKIE, REFRESH_PATH, SESSION_COOKIE, clear_refresh_cookie, clear_session_cookie,
     refresh_cookie, refresh_from_cookies, session_cookie, session_from_cookies,

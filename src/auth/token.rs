@@ -54,7 +54,11 @@ pub struct SessionClaims {
     /// guess -- and a token of one kind is never read as the other.
     pub subject: Uuid,
     pub tenant_id: Uuid,
-    pub roles: Vec<Role>,
+    /// Role names. Platform roles resolve in code (`rbac::platform_authorities`);
+    /// tenant roles mean whatever the tenant's role rows say, which the API
+    /// resolves on every request. Never authorities: a role may bundle
+    /// hundreds, and a token that carried them would grow with every one.
+    pub roles: Vec<String>,
 }
 
 /// The claim names as they appear in the payload.
@@ -122,7 +126,7 @@ impl TokenMinter {
         &self,
         user_id: Uuid,
         tenant_id: Uuid,
-        roles: &[Role],
+        roles: &[String],
     ) -> Result<String, AuthError> {
         self.mint_with_lifetime(
             AUDIENCE_API,
@@ -143,7 +147,7 @@ impl TokenMinter {
             AUDIENCE_GATEWAY,
             chat_session_id,
             tenant_id,
-            &[Role::Turn],
+            &[Role::Turn.to_string()],
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
         )
     }
@@ -153,7 +157,7 @@ impl TokenMinter {
         audience: &str,
         subject: Uuid,
         tenant_id: Uuid,
-        roles: &[Role],
+        roles: &[String],
         lifetime: Duration,
     ) -> Result<String, AuthError> {
         use chrono::SecondsFormat;
@@ -180,8 +184,7 @@ impl TokenMinter {
             .add_additional(TENANT, tenant_id.to_string())
             .map_err(internal)?;
 
-        let scp: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
-        let scp_json = serde_json::to_value(&scp).map_err(|e| AuthError::Internal(e.to_string()))?;
+        let scp_json = serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
         claims.add_additional(SCOPE, scp_json).map_err(internal)?;
 
         // `kid` is a registered footer claim, so it goes in through the
@@ -275,15 +278,16 @@ impl TokenValidator {
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or(AuthError::Invalid)?;
 
-        // A role this build does not know is ignored rather than fatal, so a
-        // newer API can mint tokens an older gateway still accepts for the
-        // roles it does understand. A token with no recognisable role at all
-        // grants nothing and is refused as such.
-        let roles: Vec<Role> = parsed[SCOPE]
+        // Names, not meanings: a tenant role means whatever the tenant's
+        // rows say at the moment of the request, so nothing about it can be
+        // settled here. A token naming no role at all grants nothing and is
+        // refused as such.
+        let roles: Vec<String> = parsed[SCOPE]
             .as_array()
             .ok_or(AuthError::Invalid)?
             .iter()
-            .filter_map(|v| v.as_str()?.parse().ok())
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .filter(|r| !r.is_empty())
             .collect();
 
         if roles.is_empty() {
@@ -341,7 +345,7 @@ impl RuntimeKey {
         SessionClaims {
             subject: Uuid::nil(),
             tenant_id: Uuid::nil(),
-            roles: vec![Role::Runtime],
+            roles: vec![Role::Runtime.to_string()],
         }
     }
 }
@@ -372,16 +376,25 @@ pub enum AuthError {
 }
 
 impl SessionClaims {
-    pub fn has_authority(&self, authority: super::rbac::Authority) -> bool {
-        super::rbac::resolve_authorities(&self.roles).contains(&authority)
+    /// Whether a platform role in this token grants `authority`.
+    ///
+    /// Only platform roles are consulted: this is what a tier without a
+    /// database can decide on its own, and it is all the gateway needs. The
+    /// API resolves tenant roles as well, through its role store.
+    pub fn has_platform_authority(&self, authority: super::rbac::Authority) -> bool {
+        super::rbac::platform_authorities(&self.roles).contains(&authority)
     }
 
-    pub fn require(&self, authority: super::rbac::Authority) -> Result<(), AuthError> {
-        if self.has_authority(authority) {
+    pub fn require_platform(&self, authority: super::rbac::Authority) -> Result<(), AuthError> {
+        if self.has_platform_authority(authority) {
             Ok(())
         } else {
             Err(AuthError::Forbidden)
         }
+    }
+
+    pub fn is_system_admin(&self) -> bool {
+        self.roles.iter().any(|r| r == "system_admin")
     }
 }
 
@@ -409,7 +422,7 @@ mod tests {
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
 
         let session = minter
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &[Role::Operator])
+            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["operator".to_string()])
             .expect("mint");
         assert!(api.validate(&session).is_ok());
         assert!(
@@ -432,9 +445,9 @@ mod tests {
         let claims = gateway
             .validate(&minter.mint_turn(Uuid::now_v7(), Uuid::now_v7()).expect("mint"))
             .expect("valid");
-        assert!(claims.has_authority(super::super::rbac::Authority::GatewayInvoke));
-        assert!(!claims.has_authority(super::super::rbac::Authority::SessionsRead));
-        assert!(!claims.has_authority(super::super::rbac::Authority::WorkTake));
+        assert!(claims.has_platform_authority(super::super::rbac::Authority::GatewayInvoke));
+        assert!(!claims.has_platform_authority(super::super::rbac::Authority::SessionsRead));
+        assert!(!claims.has_platform_authority(super::super::rbac::Authority::WorkTake));
     }
 
     #[test]
@@ -448,10 +461,10 @@ mod tests {
         let both = TokenValidator::with_keys(&[old_public, new_public], AUDIENCE_API).expect("validator");
 
         let signed_new = new
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &[Role::Viewer])
+            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
             .expect("mint");
         let signed_old = old
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &[Role::Viewer])
+            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
             .expect("mint");
 
         assert!(only_old.validate(&signed_new).is_err());
@@ -468,7 +481,7 @@ mod tests {
                 AUDIENCE_API,
                 Uuid::now_v7(),
                 Uuid::now_v7(),
-                &[Role::Viewer],
+                &["viewer".to_string()],
                 Duration::from_secs(0),
             )
             .expect("mint");

@@ -5,7 +5,7 @@ use axum::{Json, extract::State, http::{StatusCode, header}};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{self, Role};
+use crate::auth;
 
 use super::router::{ApiError, ApiState};
 use super::session::{IssuedRefresh, REFRESH_LIFETIME_SECS, SessionError};
@@ -265,7 +265,7 @@ fn mint(
     state: &ApiState,
     user_id: Uuid,
     tenant_id: Uuid,
-    roles: &[Role],
+    roles: &[String],
 ) -> Result<String, ApiError> {
     state
         .minter

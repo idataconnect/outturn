@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::auth::Role;
 
+use super::role::RoleStore;
 use super::tenant::{CreateTenant, TenantStore};
 use super::user::{CreateUser, UserStore};
 
@@ -12,6 +13,7 @@ use super::user::{CreateUser, UserStore};
 pub async fn dev_seed(
     users: &Arc<dyn UserStore>,
     tenants: &Arc<dyn TenantStore>,
+    roles: &Arc<dyn RoleStore>,
 ) -> anyhow::Result<()> {
     if std::env::var("OUTTURN_DEV_SEED").is_err() {
         return Ok(());
@@ -44,8 +46,9 @@ pub async fn dev_seed(
         })
         .await?;
 
+    roles.seed_defaults(tenant.id).await?;
     users
-        .grant_tenant_role(admin.id, tenant.id, Role::Admin)
+        .grant_tenant_role(admin.id, tenant.id, "admin")
         .await?;
 
     tracing::warn!(

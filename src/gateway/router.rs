@@ -191,8 +191,10 @@ fn authenticate(
             auth::AuthError::Forbidden => (StatusCode::FORBIDDEN, e.to_string()),
             _ => (StatusCode::UNAUTHORIZED, e.to_string()),
         })?;
+    // The gateway has no role store and needs none: the only role a token it
+    // accepts can carry is the platform's `turn`.
     claims
-        .require(auth::Authority::GatewayInvoke)
+        .require_platform(auth::Authority::GatewayInvoke)
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     Ok(claims)
 }
