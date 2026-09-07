@@ -221,7 +221,7 @@ pub async fn select_tenant(
     Json(request): Json<SelectTenantRequest>,
 ) -> Result<Response, ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
-    let user = state.users.get(claims.session_id).await?;
+    let user = state.users.get(claims.subject).await?;
 
     let tenants = state.users.memberships(user.id).await?;
     if !tenants.iter().any(|t| t.tenant_id == request.tenant_id) {

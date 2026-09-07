@@ -133,6 +133,9 @@ impl ProviderCache {
 /// A message the user sent while a turn was already running.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Pending {
+    /// Which message this was, so the browser can be told it was taken.
+    #[serde(skip)]
+    pub id: Uuid,
     pub content: String,
     pub delivery: String,
 }
@@ -169,7 +172,7 @@ pub async fn take_pending(
              order by u.id \
              for update skip locked \
          ) \
-         returning content, delivery",
+         returning id, content, delivery",
     )
     .bind(session_id)
     .bind(reply_id)
@@ -179,6 +182,7 @@ pub async fn take_pending(
     Ok(rows
         .iter()
         .map(|r| Pending {
+            id: r.get("id"),
             content: r.get("content"),
             delivery: r.get("delivery"),
         })

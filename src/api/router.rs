@@ -25,6 +25,8 @@ pub struct ApiState {
     pub(super) chat: Arc<dyn ChatStore>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
+    /// What the runtime tier presents. Not a token: see `RuntimeKey`.
+    pub(super) runtime_key: crate::auth::RuntimeKey,
     pub(super) pool: sqlx::PgPool,
     pub(super) bus: crate::events::EventBus,
     /// Fires on shutdown so parked long polls return instead of holding the
@@ -52,6 +54,7 @@ impl ApiState {
         chat: Arc<dyn ChatStore>,
         auth: TokenValidator,
         minter: TokenMinter,
+        runtime_key: crate::auth::RuntimeKey,
         pool: sqlx::PgPool,
         bus: crate::events::EventBus,
         shutdown: Arc<tokio::sync::Notify>,
@@ -64,6 +67,7 @@ impl ApiState {
             chat,
             auth,
             minter,
+            runtime_key,
             pool,
             bus,
             shutdown,
@@ -81,13 +85,26 @@ pub(super) fn authenticate(
     // Browsers send the HttpOnly session cookie; service-to-service callers
     // send a bearer token. The cookie is preferred so a stale Authorization
     // header cannot shadow a fresh session.
-    let token = auth::session_from_cookies(headers)
-        .or_else(|| auth::extract_bearer(headers).ok())
-        .ok_or((StatusCode::UNAUTHORIZED, "not authenticated".to_string()))?;
+    if let Some(token) = auth::session_from_cookies(headers) {
+        return state
+            .auth
+            .validate(token)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()));
+    }
+
+    let bearer = auth::extract_bearer(headers)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "not authenticated".to_string()))?;
+
+    // The runtime's shared key is accepted only here, on the bearer path. It
+    // is not a token and is never parsed as one; a match means exactly one
+    // thing, which is what the claims it maps to say.
+    if state.runtime_key.accepts(bearer) {
+        return Ok(auth::RuntimeKey::claims());
+    }
 
     state
         .auth
-        .validate(token)
+        .validate(bearer)
         .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
 }
 
@@ -157,11 +174,11 @@ async fn session_info(
 
     // The session id is the account id, which is what the login response is
     // built from too.
-    let user = state.users.get(claims.session_id).await?;
-    let tenants = state.users.memberships(claims.session_id).await?;
+    let user = state.users.get(claims.subject).await?;
+    let tenants = state.users.memberships(claims.subject).await?;
 
     Ok(Json(SessionInfo {
-        session_id: claims.session_id,
+        session_id: claims.subject,
         tenant_id: claims.tenant_id,
         display_name: user.display_name,
         roles: claims.roles.iter().map(|r| r.to_string()).collect(),
@@ -186,7 +203,7 @@ async fn create_tenant(
     let claims = authorize(&state, &headers, Authority::TenantsCreate)?;
     let tenant = state.tenants.create(input).await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %tenant.id,
         slug = %tenant.slug,
         "tenant created"
@@ -210,7 +227,7 @@ async fn delete_tenant(
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::TenantsDelete)?;
     state.tenants.delete(id).await?;
-    tracing::info!(actor = %claims.session_id, tenant_id = %id, "tenant deleted");
+    tracing::info!(actor = %claims.subject, tenant_id = %id, "tenant deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -243,7 +260,7 @@ async fn create_egress_rule(
     // Worth a line in the log on its own: this is the moment a tenant's agents
     // gained somewhere new to send things.
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %claims.tenant_id,
         host = %rule.host,
         "egress rule added"
@@ -261,7 +278,7 @@ async fn delete_egress_rule(
         return Err((StatusCode::NOT_FOUND, "no such rule".into()));
     }
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %claims.tenant_id,
         rule_id = %id,
         "egress rule removed"
@@ -284,7 +301,7 @@ async fn create_user(
 ) -> Result<(StatusCode, Json<User>), ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersCreate)?;
     let user = state.users.create(input).await?;
-    tracing::info!(actor = %claims.session_id, user_id = %user.id, "user created");
+    tracing::info!(actor = %claims.subject, user_id = %user.id, "user created");
     Ok((StatusCode::CREATED, Json(user)))
 }
 
@@ -303,11 +320,11 @@ async fn delete_user(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersDelete)?;
-    if claims.session_id == id {
+    if claims.subject == id {
         return Err((StatusCode::BAD_REQUEST, "cannot delete yourself".into()));
     }
     state.users.delete(id).await?;
-    tracing::info!(actor = %claims.session_id, user_id = %id, "user deleted");
+    tracing::info!(actor = %claims.subject, user_id = %id, "user deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -326,7 +343,7 @@ async fn add_identity(
     // Users may add sign-in methods to their own account; managing anyone
     // else's needs the user-management authority.
     let claims = authenticate(&state, &headers)?;
-    if claims.session_id != user_id {
+    if claims.subject != user_id {
         claims
             .require(Authority::UsersUpdate)
             .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
@@ -336,7 +353,7 @@ async fn add_identity(
         .users
         .add_password_identity(user_id, &input.email, &input.password)
         .await?;
-    tracing::info!(actor = %claims.session_id, user_id = %user_id, "identity added");
+    tracing::info!(actor = %claims.subject, user_id = %user_id, "identity added");
     Ok((StatusCode::CREATED, Json(identity)))
 }
 
@@ -346,14 +363,14 @@ async fn remove_identity(
     Path((user_id, identity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
-    if claims.session_id != user_id {
+    if claims.subject != user_id {
         claims
             .require(Authority::UsersUpdate)
             .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     }
 
     state.users.remove_identity(user_id, identity_id).await?;
-    tracing::info!(actor = %claims.session_id, user_id = %user_id, "identity removed");
+    tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -380,7 +397,7 @@ async fn grant_tenant_role(
         .grant_tenant_role(user_id, tenant_id, input.role)
         .await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         user_id = %user_id,
         tenant_id = %tenant_id,
         role = %input.role,
@@ -406,7 +423,7 @@ async fn revoke_tenant_role(
         .revoke_tenant_role(user_id, tenant_id, role)
         .await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         user_id = %user_id,
         tenant_id = %tenant_id,
         role = %role,

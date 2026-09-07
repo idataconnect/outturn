@@ -92,26 +92,38 @@ impl SessionStore for PostgresSessionStore {
         token: &str,
         user_agent: Option<&str>,
     ) -> Result<IssuedRefresh, SessionError> {
-        let row = sqlx::query(
-            "select id, user_id, tenant_id, family_id, rotated_at, revoked_at, \
-                    expires_at < now() as expired \
-             from refresh_tokens where token_hash = $1",
+        // Retired in the same statement that reads it. A select followed by
+        // an update left a window in which two presentations of one token
+        // both passed the replay check and both got successors -- so a
+        // replay in that window went undetected. Now exactly one presenter
+        // gets the row back; every other sees it already rotated.
+        let retired = sqlx::query(
+            "update refresh_tokens set rotated_at = now() \
+             where token_hash = $1 and rotated_at is null \
+             returning id, user_id, tenant_id, family_id, revoked_at, \
+                       expires_at < now() as expired",
         )
         .bind(hash_token(token))
         .fetch_optional(&self.pool)
         .await
-        .map_err(internal)?
-        .ok_or(SessionError::Invalid)?;
+        .map_err(internal)?;
 
-        let family_id: Uuid = row.get("family_id");
+        let Some(row) = retired else {
+            // Either no such token, or one that was already rotated. The
+            // second is a replay: the legitimate holder or an attacker has
+            // a stale copy, and there is no way to tell which, so the whole
+            // family goes.
+            let family: Option<Uuid> = sqlx::query_scalar(
+                "select family_id from refresh_tokens where token_hash = $1",
+            )
+            .bind(hash_token(token))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
 
-        // An already-rotated token means someone is replaying one that should
-        // have been discarded: either the legitimate holder or an attacker has
-        // a stale copy, and there is no way to tell which. Revoke the family.
-        if row
-            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("rotated_at")
-            .is_some()
-        {
+            let Some(family_id) = family else {
+                return Err(SessionError::Invalid);
+            };
             sqlx::query(
                 "update refresh_tokens set revoked_at = now() \
                  where family_id = $1 and revoked_at is null",
@@ -120,14 +132,14 @@ impl SessionStore for PostgresSessionStore {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-
             tracing::warn!(
                 family_id = %family_id,
                 "refresh token replayed; revoking session family"
             );
             return Err(SessionError::Replayed);
-        }
+        };
 
+        let family_id: Uuid = row.get("family_id");
         if row
             .get::<Option<chrono::DateTime<chrono::Utc>>, _>("revoked_at")
             .is_some()
@@ -135,14 +147,6 @@ impl SessionStore for PostgresSessionStore {
         {
             return Err(SessionError::Invalid);
         }
-
-        // Retire the presented token, then issue its successor in the same
-        // family.
-        sqlx::query("update refresh_tokens set rotated_at = now() where id = $1")
-            .bind(row.get::<Uuid, _>("id"))
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
 
         insert(
             &self.pool,

@@ -40,6 +40,9 @@ struct Harness {
     minter: TokenMinter,
 }
 
+/// What the test's pretend runtime presents to the work endpoints.
+const TEST_RUNTIME_KEY: &str = "test-runtime-key-test-runtime-key-test-runtime-key";
+
 async fn harness() -> Harness {
     // A private schema per test, so tests do not see each other's rows and can
     // run in parallel.
@@ -60,8 +63,12 @@ async fn harness() -> Harness {
         use ed25519_dalek::SigningKey;
         SigningKey::from_bytes(&seed).verifying_key().to_bytes().to_vec()
     };
-    let validator =
-        TokenValidator::new(&public_bytes.try_into().expect("32-byte key")).expect("validator");
+    let validator = TokenValidator::new(
+        &public_bytes.try_into().expect("32-byte key"),
+        outturn::auth::AUDIENCE_API,
+    )
+    .expect("validator");
+    let runtime_key = outturn::auth::RuntimeKey::new(TEST_RUNTIME_KEY).expect("runtime key");
 
     let tenants: Arc<dyn TenantStore> = Arc::new(PostgresTenantStore::new(pool.clone()));
     let users: Arc<dyn UserStore> = Arc::new(PostgresUserStore::new(pool.clone()));
@@ -76,6 +83,7 @@ async fn harness() -> Harness {
         chat.clone(),
         validator,
         minter,
+        runtime_key,
         pool.clone(),
         outturn::events::EventBus::spawn(pool.clone()),
         Arc::new(tokio::sync::Notify::new()),
@@ -157,16 +165,13 @@ impl Harness {
         self.send(req.body(Body::empty()).expect("request")).await
     }
 
-    /// A token for the tier that runs turns.
+    /// The credential the tier that runs turns presents.
     ///
-    /// Minted rather than logged in for, because `Role::Runtime` is granted to
-    /// no user and cannot be parsed from a role name -- which is the point of
-    /// it. This is the platform issuing a credential to itself, the same as
-    /// `src/bin/runtime.rs` does at startup.
-    fn runtime_token(&self, tenant: Uuid) -> String {
-        self.minter
-            .mint(Uuid::now_v7(), tenant, &[Role::Runtime])
-            .expect("runtime token")
+    /// A shared key rather than a token: `Role::Runtime` is granted to no user,
+    /// cannot be parsed from a role name, and is never signed into anything.
+    /// The runtime holds no signing key at all, which is the point of it.
+    fn runtime_token(&self, _tenant: Uuid) -> String {
+        TEST_RUNTIME_KEY.to_string()
     }
 
     /// Creates a user with the given system role and tenant role, then logs in
@@ -1405,6 +1410,7 @@ async fn a_turn_that_is_not_running_cannot_be_reported() {
         .method("POST")
         .uri(format!("/v1/work/{job}/events"))
         .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, Uuid::now_v7().to_string())
         .body(Body::from("{}\n"))
         .expect("request");
     let (status, body) = h.send(req).await;
@@ -1427,42 +1433,31 @@ async fn asking_for_work_when_there_is_none_says_so() {
     assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
 }
 
-/// A credential older than its lifetime is refused.
+/// Only the runtime key takes work; a signed token never does.
 ///
-/// The runtime's work loop runs for the life of a pod, and a service token
-/// lives five minutes. A token taken once at startup is accepted for the first
-/// few polls and rejected for every one after -- a pod that looks healthy,
-/// logs a warning every two seconds, and takes no work at all. This asserts
-/// the rejection so the loop cannot go back to holding one.
+/// The runtime holds no signing key, so nothing it could present is a token.
+/// Conversely a turn token -- which the runtime does hold, one per turn --
+/// must not open the work endpoints, or a leaked one would let its holder ask
+/// for everyone's turns.
 #[tokio::test]
-async fn a_stale_service_token_is_refused() {
+async fn only_the_runtime_key_takes_work() {
     let h = harness_or_skip!();
     let acme = h.make_tenant("Acme", "acme").await;
 
-    let expired = h
-        .minter
-        .mint_with_lifetime(
-            Uuid::now_v7(),
-            acme,
-            &[Role::Runtime],
-            std::time::Duration::from_secs(0),
-        )
-        .expect("token");
+    let wrong = "not-the-key-not-the-key-not-the-key-no";
+    let (status, body) = h.post("/v1/work", Some(wrong), "{}").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a wrong key was accepted: {body}");
 
-    // Past its expiry by any margin at all.
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-
-    let (status, body) = h.post("/v1/work", Some(&expired), "{}").await;
+    let turn = h.minter.mint_turn(Uuid::now_v7(), acme).expect("token");
+    let (status, body) = h.post("/v1/work", Some(&turn), "{}").await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "an expired token was accepted: {body}"
+        "a turn token opened the work endpoint: {body}"
     );
 
-    // And a fresh one, minted the way the puller does per request, works.
-    let fresh = h.runtime_token(acme);
-    let (status, body) = h.post("/v1/work", Some(&fresh), "{}").await;
-    assert_eq!(status, StatusCode::OK, "a fresh token was refused: {body}");
+    let (status, body) = h.post("/v1/work", Some(&h.runtime_token(acme)), "{}").await;
+    assert_eq!(status, StatusCode::OK, "the runtime key was refused: {body}");
 }
 
 /// An agent's policy can be set when it is created, not only afterwards.

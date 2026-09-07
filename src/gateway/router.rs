@@ -53,6 +53,7 @@ impl GatewayState {
     /// means steering simply does not happen rather than the call failing.
     async fn take_pending(
         &self,
+        tenant_id: uuid::Uuid,
         session_id: uuid::Uuid,
         reply: Option<uuid::Uuid>,
     ) -> Vec<routing::Pending> {
@@ -60,7 +61,28 @@ impl GatewayState {
             return Vec::new();
         };
         match routing::take_pending(pool, session_id, reply).await {
-            Ok(pending) => pending,
+            Ok(pending) => {
+                // Told to the browser as well as to the guest. A message
+                // taken mid-turn never gets a reply of its own, and without
+                // this the reader watches it sit "queued" for ever.
+                for message in &pending {
+                    if let Err(e) = crate::events::append(
+                        pool,
+                        tenant_id,
+                        Some(session_id),
+                        "chat.absorbed",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "absorbed_by": reply,
+                        }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "could not announce an absorbed message");
+                    }
+                }
+                pending
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "could not read pending input");
                 Vec::new()
@@ -183,7 +205,7 @@ async fn chat_completions(
     let claims = authenticate(&state, &headers)?;
 
     tracing::debug!(
-        session_id = %claims.session_id,
+        session_id = %claims.subject,
         tenant_id = %claims.tenant_id,
         model = %request.model,
         "chat completion request"
@@ -239,7 +261,7 @@ async fn chat_completions_stream(
     let claims = authenticate(&state, &headers)?;
 
     tracing::debug!(
-        session_id = %claims.session_id,
+        session_id = %claims.subject,
         tenant_id = %claims.tenant_id,
         model = %request.model,
         "streaming chat completion request"
@@ -252,7 +274,7 @@ async fn chat_completions_stream(
     // this call is picked up by the next one, which is the next round -- the
     // only boundary where injecting it is safe anyway.
     let pending = state
-        .take_pending(claims.session_id, reply_id(&headers))
+        .take_pending(claims.tenant_id, claims.subject, reply_id(&headers))
         .await;
 
     for attempt in state.attempts(claims.tenant_id, &traffic).await {

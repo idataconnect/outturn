@@ -42,7 +42,7 @@ pub async fn create_agent(
     let claims = authorize(&state, &headers, Authority::AgentsCreate)?;
     let agent = state.agents.create(claims.tenant_id, input).await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %claims.tenant_id,
         agent_id = %agent.id,
         "agent created"
@@ -68,7 +68,7 @@ pub async fn update_agent(
     let claims = authorize(&state, &headers, Authority::AgentsUpdate)?;
     let agent = state.agents.update(claims.tenant_id, id, input).await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %claims.tenant_id,
         agent_id = %agent.id,
         "agent updated"
@@ -84,7 +84,7 @@ pub async fn delete_agent(
     let claims = authorize(&state, &headers, Authority::AgentsDelete)?;
     state.agents.delete(claims.tenant_id, id).await?;
     tracing::info!(
-        actor = %claims.session_id,
+        actor = %claims.subject,
         tenant_id = %claims.tenant_id,
         agent_id = %id,
         "agent deleted"

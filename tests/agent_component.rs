@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use outturn::auth::{Role, TokenMinter};
+use outturn::auth::TokenMinter;
 use outturn::runtime::component::{AgentRunner, RunOptions};
 use uuid::Uuid;
 
@@ -21,9 +21,7 @@ fn dev_token(session_id: Uuid, tenant_id: Uuid) -> String {
         bytes[i] = u8::from_str_radix(&DEV_SECRET[i * 2..i * 2 + 2], 16).unwrap();
     }
     let minter = TokenMinter::new(&bytes).expect("minter");
-    minter
-        .mint(session_id, tenant_id, &[Role::Operator])
-        .expect("mint")
+    minter.mint_turn(session_id, tenant_id).expect("mint")
 }
 
 #[tokio::test(flavor = "multi_thread")]

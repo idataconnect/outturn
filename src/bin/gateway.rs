@@ -16,7 +16,8 @@ async fn main() {
         .init();
 
     let health = Health::new();
-    let auth = TokenValidator::from_env().expect("failed to initialize token validator");
+    let auth = TokenValidator::from_env(outturn::auth::AUDIENCE_GATEWAY)
+        .expect("failed to initialize token validator");
 
     let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
 

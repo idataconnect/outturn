@@ -67,8 +67,9 @@ async fn main() {
 
     seed::dev_seed(&users, &tenants).await.expect("dev seed");
 
-    let validator = TokenValidator::from_env().expect("token validator");
-    let (minter, _public) = TokenMinter::from_env().expect("token minter");
+    let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
+    let minter = TokenMinter::from_env().expect("token minter");
+    let runtime_key = outturn::auth::RuntimeKey::from_env().expect("runtime key");
 
     // One LISTEN connection fans out to every parked long poll.
     let bus = EventBus::spawn(pool.clone());
@@ -81,6 +82,7 @@ async fn main() {
         chat.clone(),
         validator,
         minter,
+        runtime_key,
         pool.clone(),
         bus,
         health.shutdown_signal(),

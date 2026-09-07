@@ -18,10 +18,16 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
+          # The API is the only tier that signs anything. Dev values; a real
+          # deployment puts these in a Secret and generates its own.
           - name: OUTTURN_TOKEN_SECRET
             value: "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887"
           - name: OUTTURN_TOKEN_PUBLIC_KEY
             value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+          # What the runtime presents to take work. Shared with the runtime
+          # and nobody else; it means "the runtime tier" and nothing more.
+          - name: OUTTURN_RUNTIME_KEY
+            value: "outturn-dev-runtime-key-0123456789abcdef0123456789abcdef"
           - name: DATABASE_URL
             value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
           - name: OUTTURN_DEV_SEED
@@ -68,14 +74,16 @@ patches:
         value: "2"
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/memory
-        value: 1Gi
+        value: 512Mi
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
-          - name: OUTTURN_TOKEN_SECRET
-            value: "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887"
-          - name: OUTTURN_TOKEN_PUBLIC_KEY
-            value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+          # No signing key here, on purpose: this tier runs tenant code, and
+          # must hold nothing that could mint a credential for anyone. The
+          # API mints each turn's gateway token and hands it over with the
+          # turn; this key only says "I am the runtime tier".
+          - name: OUTTURN_RUNTIME_KEY
+            value: "outturn-dev-runtime-key-0123456789abcdef0123456789abcdef"
           # Agents execute here, so this is the tier that reaches the gateway.
           - name: OUTTURN_GATEWAY_URL
             value: "http://outturn-gateway:8081"
@@ -101,10 +109,12 @@ patches:
           # either way. Per-model behaviour, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
             value: "gemma4"
-          # The pod's memory limit here is 1Gi, so the defaults (8 turns,
-          # 256Mi held clear) would admit far past what one local pod can
-          # hold. A single developer sending one message at a time never
-          # reaches these; a load test should.
+          # The pod's memory limit is 512Mi, the same as base, so what is
+          # learned here about admission carries over. Each turn is charged
+          # 100Mi (ASSUMED_TURN_BYTES) and the guest itself is capped at
+          # 128Mi (GUEST_MEMORY_LIMIT), so two turns beside a 128Mi reserve
+          # fit and a third does not. A single developer sending one message
+          # at a time never reaches these; a load test should.
           - name: OUTTURN_MAX_CONCURRENT_TURNS
             value: "2"
           - name: OUTTURN_MEMORY_RESERVE_BYTES

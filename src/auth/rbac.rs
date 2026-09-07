@@ -5,8 +5,14 @@ use std::collections::HashSet;
 pub enum Role {
     SystemAdmin,
     /// The tier that runs turns. Not a person, and not grantable to one: it
-    /// exists so the work endpoints can be closed to every tenant role.
+    /// exists so the work endpoints can be closed to every tenant role. Never
+    /// carried in a signed token -- the runtime presents a shared key and is
+    /// given these claims by the API (see `RuntimeKey`).
     Runtime,
+    /// One turn, reaching the gateway. Holds `GatewayInvoke` and nothing
+    /// else, so the token a turn travels with cannot be used against the API
+    /// even before the audience check refuses it there.
+    Turn,
     Admin,
     Operator,
     Viewer,
@@ -68,7 +74,8 @@ impl Role {
                 SettingsUpdate,
                 GatewayInvoke,
             ],
-            Role::Runtime => &[GatewayInvoke, WorkTake],
+            Role::Runtime => &[WorkTake],
+            Role::Turn => &[GatewayInvoke],
             Role::Admin => &[
                 UsersCreate,
                 UsersRead,
@@ -145,6 +152,7 @@ impl std::fmt::Display for Role {
         match self {
             Role::SystemAdmin => write!(f, "system_admin"),
             Role::Runtime => write!(f, "runtime"),
+            Role::Turn => write!(f, "turn"),
             Role::Admin => write!(f, "admin"),
             Role::Operator => write!(f, "operator"),
             Role::Viewer => write!(f, "viewer"),
@@ -165,6 +173,7 @@ impl std::str::FromStr for Role {
             // no login can produce it. It exists only in tokens the platform
             // mints for itself.
             "runtime" => Ok(Role::Runtime),
+            "turn" => Ok(Role::Turn),
             "admin" => Ok(Role::Admin),
             "operator" => Ok(Role::Operator),
             "viewer" => Ok(Role::Viewer),
