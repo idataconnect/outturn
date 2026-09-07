@@ -201,7 +201,10 @@ function Shell() {
         </div>
       </nav>
       <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-900">
-        <Routes>
+        {/* Keyed by tenant so a switch remounts every page. State loaded
+            under the previous tenant -- lists, editors, an open thread --
+            is gone rather than shown until something happens to refetch it. */}
+        <Routes key={state.status === 'authenticated' ? state.session.tenant_id : 'anon'}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />

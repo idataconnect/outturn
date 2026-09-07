@@ -1,3 +1,4 @@
+import { useLocation, useNavigate } from 'react-router'
 import { useEffect, useRef, useState } from 'react'
 import { Building2, Check, ChevronsUpDown, LogOut } from 'lucide-react'
 
@@ -24,6 +25,8 @@ export default function AccountMenu() {
   const [open, setOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
   const container = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+  const location = useLocation()
 
   // Dismiss on an outside click or Escape, which is what a menu is expected to
   // do and what a bare button would not give.
@@ -60,6 +63,12 @@ export default function AccountMenu() {
     try {
       await switchTenant(tenantId)
       setOpen(false)
+      // Whatever was open belonged to the old tenant: an agent being edited,
+      // a conversation, a user. Go back to the section it was in, which the
+      // new tenant has a version of, rather than leave a record on screen
+      // that the new token cannot even read.
+      const section = `/${location.pathname.split('/')[1] ?? ''}`
+      void navigate(section, { replace: true })
     } finally {
       setSwitching(false)
     }
