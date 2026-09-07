@@ -149,40 +149,13 @@ impl std::fmt::Display for Refusal {
 pub struct Permit {
     #[allow(dead_code)]
     slot: OwnedSemaphorePermit,
-    /// What this turn is currently charged. Starts at the assumption and is
-    /// replaced once the turn has shown what it actually costs.
+    /// What this turn is charged, for as long as it runs.
     charged: u64,
-    /// Set when something else is settling this permit on its behalf, so
-    /// dropping returns what is owed now rather than what was owed at the
-    /// start.
-    settled: Option<Arc<AtomicU64>>,
     reserved: Arc<AtomicU64>,
-}
-
-impl Permit {
-    /// Replaces the assumed cost with what the turn turned out to need.
-    ///
-    /// Called once a turn has grown into its footprint, which is the earliest
-    /// its cost means anything. Until then the assumption stands, so a pod
-    /// does not take a second turn on the strength of memory the first has not
-    /// finished claiming.
-    pub fn settle(&mut self, actual_bytes: u64) {
-        if actual_bytes >= self.charged {
-            self.reserved
-                .fetch_add(actual_bytes - self.charged, Ordering::SeqCst);
-        } else {
-            self.reserved
-                .fetch_sub(self.charged - actual_bytes, Ordering::SeqCst);
-        }
-        self.charged = actual_bytes;
-    }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        if let Some(settled) = &self.settled {
-            self.charged = settled.load(Ordering::SeqCst);
-        }
         // Whatever this turn was charged goes back when it ends, however it
         // ends. A reservation that outlived its turn would shrink the pod's
         // headroom for the life of the process.
@@ -202,15 +175,17 @@ impl Drop for Permit {
 /// replaced by the real figure once the turn has grown into it. Guessing high
 /// costs a little throughput on a pod that could have taken one more; guessing
 /// low costs the pod, and every turn on it.
-const ASSUMED_TURN_BYTES: u64 = 384 * 1024 * 1024;
-
-/// How long a turn is given to grow into its footprint before it is measured.
 ///
-/// Long enough that the prompt is assembled and the model has begun answering,
-/// which is when a turn's memory is roughly what it will be. Measuring sooner
-/// reads the assumption back as the answer; measuring much later leaves a pod
-/// carrying a pessimistic charge for work that turned out to be cheap.
-const SETTLE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+/// Held for the life of the turn rather than replaced by a measurement. An
+/// earlier version re-measured after a few seconds, but the figure it used --
+/// bytes reserved minus bytes free -- was not the turn's cost, and on any pod
+/// with headroom it came out at zero, so every turn was charged nothing after
+/// five seconds and the assumption protected nothing. A flat charge is
+/// coarser and honest. The guest's own memory is capped separately by the
+/// sandbox (see GUEST_MEMORY_LIMIT), so this is the host-side cost of a turn
+/// -- the prompt, the stream buffers, the compiled instance -- plus room for
+/// a guest to use some of what it is allowed.
+const ASSUMED_TURN_BYTES: u64 = 100 * 1024 * 1024;
 
 pub struct Admission {
     slots: Arc<Semaphore>,
@@ -267,49 +242,6 @@ impl Admission {
         self.limit - self.slots.available_permits()
     }
 
-    /// Watches a turn long enough to learn what it costs, then says so.
-    ///
-    /// Spawned beside the turn rather than measured inline: the point of the
-    /// assumption is that nothing is known when work is taken, so the
-    /// correction has to arrive later or it is not a correction. A turn
-    /// shorter than the settling delay never settles, which is correct --
-    /// it gave its charge back by ending.
-    pub fn settle_when_grown(self: &Arc<Self>, mut permit: Permit) -> Permit {
-        let admission = Arc::clone(self);
-        let reserved = Arc::clone(&permit.reserved);
-        let charged = permit.charged;
-
-        // The permit itself cannot move into the task -- it belongs to the
-        // turn -- so the task adjusts the shared counter and the permit is
-        // told what it now owes.
-        let settled = Arc::new(AtomicU64::new(charged));
-        permit.settled = Some(Arc::clone(&settled));
-
-        tokio::spawn(async move {
-            tokio::time::sleep(SETTLE_AFTER).await;
-
-            let Some(available) = admission.memory.available_bytes() else {
-                return;
-            };
-            // What this pod is using beyond what its other turns reserved,
-            // divided by the turns actually running: a rough per-turn cost,
-            // which is all that is wanted. The assumption exists precisely
-            // because an exact figure is not available.
-            let in_flight = (admission.limit - admission.slots.available_permits()).max(1);
-            let spoken_for = reserved.load(Ordering::SeqCst);
-            let actual = spoken_for.saturating_sub(available) / in_flight as u64;
-
-            if actual >= charged {
-                reserved.fetch_add(actual - charged, Ordering::SeqCst);
-            } else {
-                reserved.fetch_sub(charged - actual, Ordering::SeqCst);
-            }
-            settled.store(actual, Ordering::SeqCst);
-        });
-
-        permit
-    }
-
     /// Takes a slot, or says why not. Never waits: a caller that would queue
     /// here is holding a turn this pod cannot serve, and somewhere else can.
     pub fn try_admit(&self) -> Result<Permit, Refusal> {
@@ -350,7 +282,6 @@ impl Admission {
         Ok(Permit {
             slot: permit,
             charged: self.assumed_turn_bytes,
-            settled: None,
             reserved: Arc::clone(&self.reserved),
         })
     }
@@ -495,32 +426,6 @@ mod tests {
             matches!(a.try_admit(), Err(Refusal::LowMemory { .. })),
             "a third was taken against memory the first two have not finished \
              claiming"
-        );
-    }
-
-    #[test]
-    fn what_a_turn_really_cost_replaces_what_was_assumed() {
-        let a = with_assumption(8, 100, 400, Some(1000));
-        let _first = a.try_admit().expect("admitted");
-        let mut second = a.try_admit().expect("admitted");
-
-        // It turned out to be cheap, so the pod has room again.
-        second.settle(50);
-        assert!(
-            a.try_admit().is_ok(),
-            "a turn that cost less than assumed did not give the room back"
-        );
-    }
-
-    #[test]
-    fn a_turn_that_cost_more_than_assumed_takes_the_room() {
-        let a = with_assumption(8, 100, 200, Some(1000));
-        let _first = a.try_admit().expect("admitted");
-        let mut second = a.try_admit().expect("admitted");
-        second.settle(600);
-        assert!(
-            matches!(a.try_admit(), Err(Refusal::LowMemory { .. })),
-            "a turn that outgrew its assumption did not reduce the headroom"
         );
     }
 

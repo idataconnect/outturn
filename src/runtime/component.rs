@@ -114,6 +114,9 @@ pub struct AgentHost {
     spent: Usage,
     /// Which endpoint served this turn, as the gateway reported it.
     served_by: Option<String>,
+    /// Whether any round of this turn has streamed text yet. Decides whether
+    /// the next round's first token is preceded by a paragraph break.
+    streamed: bool,
     /// Object storage, and the tenant whose corner of it this turn may touch.
     /// Absent leaves the guest with no storage at all rather than with
     /// somebody else's.
@@ -122,9 +125,56 @@ pub struct AgentHost {
     /// Hosts this tenant's agents may reach. Empty means none, which is what a
     /// tenant who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
+    /// What the guest may grow to. Consulted by wasmtime on every memory or
+    /// table growth; a request past it fails inside the guest rather than
+    /// being granted and killing the pod.
+    limits: wasmtime::StoreLimits,
 }
 
+/// What separates the text of one model round from the next in a reply.
+///
+/// The guest joins rounds with the same string when it returns the reply, so
+/// a component that does otherwise breaks the invariant that streamed deltas
+/// concatenate to stored content -- see the note on `chat` in the WIT.
+pub const ROUND_SEPARATOR: &str = "\n\n";
+
+/// Linear memory one guest may hold.
+///
+/// Above what any reasonable turn needs and below what would take a pod with
+/// it: a 512Mi pod carrying several turns cannot afford one of them growing
+/// to a gigabyte. A guest that hits this sees allocation fail and can report
+/// it; the alternative is the kernel reporting it for everyone.
+pub const GUEST_MEMORY_LIMIT: usize = 128 * 1024 * 1024;
+
+/// Fuel burned between yields to the executor.
+///
+/// Small next to the turn's total, large next to the cost of a yield: on the
+/// order of a millisecond of work.
+const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
+
 impl AgentHost {
+    /// Turns a storage failure into what the guest is told, and decides who
+    /// else hears about it.
+    ///
+    /// A platform fault -- no bucket, no connection, bad credentials -- is
+    /// logged at warn, because an operator has to fix it and nothing on the
+    /// transcript reaches one. Everything else is the tenant's outcome: the
+    /// transcript already records it as a failed tool, and putting it in the
+    /// process log would page the operator for somebody else's typo.
+    fn storage_failed(&self, what: &str, e: crate::runtime::storage::StorageError) -> String {
+        if e.is_platform_fault() {
+            tracing::warn!(
+                session_id = %self.session_id,
+                tenant_id = %self.tenant_id,
+                error = %e,
+                "object storage failed during {what}"
+            );
+        } else {
+            tracing::debug!(session_id = %self.session_id, error = %e, "{what} refused");
+        }
+        e.to_string()
+    }
+
     /// Resolves a guest path, or refuses it.
     ///
     /// The check is here rather than in the guest for the same reason the
@@ -251,6 +301,26 @@ impl outturn::agent::host::Host for AgentHost {
             );
         }
 
+        // Rounds of one turn are separated by a paragraph break, and the
+        // break has to reach the browser *before* the round's first token.
+        // The guest cannot put it there: it learns a round produced text
+        // only when `chat` returns, by which time the text has streamed. So
+        // the host inserts it here, at the first token, when an earlier
+        // round has already shown something -- and the guest joins rounds
+        // with the same "\n\n" when it assembles the reply, so what streamed
+        // and what is stored stay the same string.
+        let progress = self.progress.as_ref().map(|sink| {
+            let sink = Arc::clone(sink);
+            let separate = self.streamed;
+            let pending = std::sync::atomic::AtomicBool::new(separate);
+            Arc::new(move |text: &str| {
+                if pending.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    sink(ROUND_SEPARATOR);
+                }
+                sink(text);
+            }) as ProgressSink
+        });
+
         let (completion, arrivals, served_by) = stream_completion(
             &self.http,
             &self.gateway_url,
@@ -258,10 +328,14 @@ impl outturn::agent::host::Host for AgentHost {
             &self.traffic_type,
             &self.reply_id,
             body,
-            self.progress.as_ref(),
+            progress.as_ref(),
         )
         .await
         .map_err(|e| e.to_string())?;
+
+        if !completion.content.is_empty() {
+            self.streamed = true;
+        }
 
         // Buffered rather than delivered: the guest asks at a boundary it
         // chooses, which is the only point where injecting a message does not
@@ -301,6 +375,16 @@ impl outturn::agent::host::Host for AgentHost {
 
         let url = reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
         let (host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+
+        // A credential travels only where it cannot be read on the way. The
+        // rule names the host; the request names the scheme; and a tenant who
+        // configured a key for a host did not consent to it going out in
+        // clear because a model typed http.
+        if rule.credential_env.is_some() && url.scheme() != "https" {
+            return Err(format!(
+                "{host} has a credential configured, so it can only be reached over https"
+            ));
+        }
 
         // Resolved once, and the connection pinned to the answer. Checking a
         // name and then letting the client look it up again is a check of a
@@ -379,13 +463,27 @@ impl outturn::agent::host::Host for AgentHost {
 
         // Read to a bound rather than to the end. A response is written by
         // somebody else, and a body that does not stop is a way to exhaust a
-        // pod that was told to be careful about memory.
-        let body = response
-            .bytes()
-            .await
-            .map_err(|e| format!("the response did not arrive whole: {}", strip_url(&e.to_string())))?;
-        let truncated = body.len() > FETCH_BODY_LIMIT;
-        let body = String::from_utf8_lossy(&body[..body.len().min(FETCH_BODY_LIMIT)]).to_string();
+        // pod that was told to be careful about memory. Chunks are taken
+        // until the limit is passed and the connection is then dropped, so
+        // what is held in memory is never more than one chunk over the bound.
+        let mut body: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        {
+            use futures::StreamExt;
+            let mut chunks = response.bytes_stream();
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.map_err(|e| {
+                    format!("the response did not arrive whole: {}", strip_url(&e.to_string()))
+                })?;
+                body.extend_from_slice(&chunk);
+                if body.len() > FETCH_BODY_LIMIT {
+                    truncated = true;
+                    body.truncate(FETCH_BODY_LIMIT);
+                    break;
+                }
+            }
+        }
+        let body = String::from_utf8_lossy(&body).to_string();
 
         Ok(HttpResponse {
             status,
@@ -405,12 +503,15 @@ impl outturn::agent::host::Host for AgentHost {
         storage
             .read(&resolved, offset, len)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| self.storage_failed("read", e))
     }
 
     async fn stat_object(&mut self, path: String) -> Result<ObjectInfo, String> {
         let (storage, resolved) = self.object_at(&path)?;
-        let found = storage.stat(&resolved).await.map_err(|e| e.to_string())?;
+        let found = storage
+            .stat(&resolved)
+            .await
+            .map_err(|e| self.storage_failed("stat", e))?;
         Ok(ObjectInfo {
             // Handed back as the guest named it, not as it is stored.
             path,
@@ -423,7 +524,7 @@ impl outturn::agent::host::Host for AgentHost {
         storage
             .write(&resolved, 0, &data)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| self.storage_failed("write", e))
     }
 
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
@@ -441,7 +542,10 @@ impl outturn::agent::host::Host for AgentHost {
                 .map_err(|e| e.to_string())?
         };
 
-        let found = storage.list(&resolved).await.map_err(|e| e.to_string())?;
+        let found = storage
+            .list(&resolved)
+            .await
+            .map_err(|e| self.storage_failed("list", e))?;
         Ok(found
             .iter()
             .filter(|f| !f.is_dir)
@@ -812,7 +916,6 @@ impl AgentRunner {
     pub fn new() -> anyhow::Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
-        config.async_support(true);
         // Fuel bounds a runaway guest; without it a loop in a component would
         // occupy a worker indefinitely.
         config.consume_fuel(true);
@@ -890,9 +993,17 @@ impl AgentRunner {
                 reasoning_tokens: 0,
             },
             served_by: None,
+            streamed: false,
             storage: options.storage,
             tenant_id: options.tenant_id,
             egress: options.egress,
+            limits: wasmtime::StoreLimitsBuilder::new()
+                .memory_size(GUEST_MEMORY_LIMIT)
+                // One instance and a handful of tables is what a component
+                // needs; more is a guest doing something it need not.
+                .instances(8)
+                .tables(64)
+                .build(),
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
@@ -902,6 +1013,18 @@ impl AgentRunner {
 
         let mut store = Store::new(&self.engine, host);
         store.set_fuel(options.fuel)?;
+        // Yield to the executor every so often while fuel is burning. Fuel
+        // alone bounds how long a guest may run, not how long it may hold the
+        // thread it runs on: without this a busy loop pins a Tokio worker
+        // until the whole budget is spent, and every other turn on that
+        // thread waits for it.
+        store.fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL))?;
+        // The guest's memory is capped here, in the sandbox, not only guessed
+        // at by admission. Admission decides whether to start a turn from the
+        // memory that is free; nothing about that stops a component from
+        // growing once it is running, and a guest that grows without bound
+        // takes the pod -- and every other turn on it -- with it.
+        store.limiter(|host| &mut host.limits);
 
         let instance = AgentWorld::instantiate_async(&mut store, &component, &self.linker).await?;
 

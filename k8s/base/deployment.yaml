@@ -94,6 +94,12 @@ spec:
       labels:
         app: outturn-runtime
     spec:
+      # Long enough for a turn already streaming to finish and be reported.
+      # On SIGTERM the runtime stops asking for work and waits for the turns
+      # it holds; if this runs out first the lease recovers them, at the cost
+      # of the user watching a reply restart. Well past the five minutes a
+      # stream may sit silent before the runtime gives up on it.
+      terminationGracePeriodSeconds: 360
       containers:
         - name: runtime
           image: outturn-runtime

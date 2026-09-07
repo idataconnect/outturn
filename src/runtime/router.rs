@@ -9,8 +9,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::TokenMinter;
-
 use super::component::{
     AgentRunner, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
     ToolSink,
@@ -29,10 +27,6 @@ pub const FUEL_PER_TURN: u64 = 50_000_000_000;
 pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 100;
 
 pub struct RuntimeState {
-    /// Mints the token the guest's model calls travel with. Minted here rather
-    /// than forwarded from the caller, so a guest's reach is bounded by what
-    /// the runtime grants rather than by whatever the API happened to hold.
-    pub minter: Arc<TokenMinter>,
     pub gateway_url: String,
     pub runner: Arc<AgentRunner>,
     /// The component every agent currently runs.

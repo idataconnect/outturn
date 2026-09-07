@@ -550,6 +550,43 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
     );
 }
 
+/// Two rounds of text stream in the order they are read, break included.
+///
+/// The break between rounds used to be emitted by the guest after `chat`
+/// returned -- by which time the second round's text had already streamed, so
+/// the browser saw the rounds glued together and a blank line at the end. The
+/// host now inserts it before the round's first token. What streamed must
+/// still equal what is returned, or the reply changes under the reader when
+/// the turn ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rounds_are_separated_before_the_second_begins_not_after() {
+    let gateway = FakeGateway::start(Behaviour::TextThenSteer {
+        first: "Oh, one!".into(),
+        steer: "two".into(),
+        reply: "Two! Yay!".into(),
+    })
+    .await;
+
+    let streamed = Arc::new(Mutex::new(String::new()));
+    let sink: Arc<dyn Fn(&str) + Send + Sync> = {
+        let streamed = Arc::clone(&streamed);
+        Arc::new(move |text: &str| streamed.lock().expect("lock").push_str(text))
+    };
+
+    let reply = runner()
+        .run(&component(), user("one"), String::new(), options(&gateway, Some(sink)))
+        .await
+        .expect("run")
+        .0;
+
+    let streamed = streamed.lock().expect("lock").clone();
+    assert_eq!(reply, "Oh, one!\n\nTwo! Yay!");
+    assert_eq!(
+        streamed, reply,
+        "what the browser was shown must be what the transcript stores"
+    );
+}
+
 // -- Accounting ---------------------------------------------------------------
 
 /// What a turn spent is counted by the host, across every round.

@@ -38,8 +38,10 @@ spec:
   minReplicaCount: 1
   maxReplicaCount: 20
   pollingInterval: 10
-  # Long enough to outlast a turn. Scaling in while a pod is mid-generation
-  # discards work that is nearly finished.
+  # Only governs scaling to zero, which minReplicaCount rules out, so this is
+  # inert here. What protects a turn mid-generation when a pod is scaled in
+  # is the runtime's own drain on SIGTERM and the deployment's
+  # terminationGracePeriodSeconds, not anything in this object.
   cooldownPeriod: 300
   advanced:
     horizontalPodAutoscalerConfig:
@@ -58,12 +60,11 @@ spec:
       authenticationRef:
         name: outturn-queue
       metadata:
-        # Ten waiting turns per pod. With eight concurrent turns per pod
-        # (OUTTURN_MAX_CONCURRENT_TURNS) that is a little over one pod's worth
-        # of backlog, so a pod is added while the queue is forming rather than
-        # after it has formed.
         # One, because the query returns pods rather than a quantity to be
-        # divided into pods. The arithmetic lives in `desired_runtime_pods` in
+        # divided into pods. With AverageValue the HPA divides the metric by
+        # the current replica count and compares to this, which works out to
+        # ceil(metric / target) replicas -- so the view's answer is taken as
+        # the replica count. The arithmetic lives in `desired_runtime_pods` in
         # migrations/0001_initial.sql, where it can be read and changed without
         # anyone reverse-engineering a threshold.
         targetQueryValue: "1"

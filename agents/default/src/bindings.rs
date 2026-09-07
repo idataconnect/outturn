@@ -219,7 +219,7 @@ pub mod outturn {
             /// A request an agent wants made on its behalf.
             #[derive(Clone)]
             pub struct HttpRequest {
-                /// GET, POST, PUT, PATCH or DELETE.
+                /// GET, POST, PUT, PATCH, DELETE or HEAD.
                 pub method: _rt::String,
                 pub url: _rt::String,
                 /// Headers the agent sets. The ones carrying credentials are refused
@@ -1204,6 +1204,13 @@ pub mod outturn {
             /// of the message. A guest that runs several rounds must therefore return
             /// the content of all of them, or the browser will hold text the stored
             /// transcript does not.
+            ///
+            /// When a round produces text after an earlier round already has, the
+            /// host streams a blank line ("\n\n") before the new round's first token.
+            /// A guest must join round contents with the same blank line when it
+            /// assembles the reply, and must not emit the separator itself through
+            /// `progress` -- it cannot know a round has text until the call returns,
+            /// by which time the text has already been shown.
             pub fn chat(request: &CompletionRequest) -> Result<Completion, _rt::String> {
                 unsafe {
                     let mut cleanup_list = _rt::Vec::new();

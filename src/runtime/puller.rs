@@ -36,18 +36,19 @@ const ERROR_PAUSE: Duration = Duration::from_secs(2);
 struct Assignment {
     job_id: Uuid,
     gateway_token: String,
+    /// Quoted back on every report, so the API can tell this pod's account
+    /// of the turn from a later holder's.
+    lease_token: Uuid,
     #[serde(flatten)]
     request: ExecuteRequest,
 }
 
 pub struct Puller {
     pub api_url: String,
-    /// Mints this pod's own credential. Held rather than a token, because a
-    /// service token lives five minutes and this loop runs for the life of the
-    /// pod -- a token taken once at startup is valid for the first few polls
-    /// and rejected for every one after, which is a pod that looks healthy and
-    /// takes no work.
-    pub minter: Arc<crate::auth::TokenMinter>,
+    /// What this pod presents to the API. A shared key that means only "the
+    /// runtime tier": this pod executes tenant components and so holds
+    /// nothing that could mint a credential for anyone. See `RuntimeKey`.
+    pub runtime_key: String,
     pub http: reqwest::Client,
     pub runner: Arc<AgentRunner>,
     pub agent_module: Arc<Vec<u8>>,
@@ -82,11 +83,6 @@ impl Puller {
                         }
                     }
                 };
-
-                // Measured once it has grown into its footprint, so the
-                // pessimistic charge becomes what the turn actually costs
-                // rather than standing for its whole life.
-                let permit = self.admission.settle_when_grown(permit);
 
                 let pause = match Arc::clone(&self).take_one(permit).await {
                     Ok(true) => {
@@ -128,20 +124,11 @@ impl Puller {
         });
     }
 
-    /// Asks for one turn and runs it. Returns whether there was work.
-    /// A fresh credential for one exchange with the API.
-    ///
-    /// Minted per call rather than cached: the lifetime is short by design, and
-    /// signing is cheap next to the request it authorises. Nothing has to
-    /// remember to refresh something that is never kept.
     fn token(&self) -> anyhow::Result<String> {
-        Ok(self.minter.mint(
-            uuid::Uuid::now_v7(),
-            uuid::Uuid::nil(),
-            &[crate::auth::Role::Runtime],
-        )?)
+        Ok(self.runtime_key.clone())
     }
 
+    /// Asks for one turn and runs it. Returns whether there was work.
     async fn take_one(
         self: Arc<Self>,
         permit: super::admission::Permit,
@@ -165,13 +152,14 @@ impl Puller {
         // so the slot is held for exactly as long as the turn runs.
         tokio::spawn(async move {
             let job_id = assignment.job_id;
+            let lease = assignment.lease_token;
             if let Err(e) = self.run(assignment, permit).await {
                 tracing::error!(job_id = %job_id, error = %e, "turn failed");
                 // Say so, because the endpoint that would have reported this
                 // turn is the one that failed. Silence here leaves the job
                 // claimed and the session behind it blocked until a lease
                 // lapses.
-                self.hand_back(job_id).await;
+                self.hand_back(job_id, lease).await;
             }
         });
 
@@ -184,6 +172,7 @@ impl Puller {
         permit: super::admission::Permit,
     ) -> anyhow::Result<()> {
         let job_id = assignment.job_id;
+        let lease = assignment.lease_token;
         let request = assignment.request;
 
         let conversation: Vec<Message> = request
@@ -271,6 +260,7 @@ impl Puller {
             .http
             .post(format!("{}/v1/work/{job_id}/events", self.api_url))
             .bearer_auth(self.token()?)
+            .header(crate::api::work::LEASE_HEADER, lease.to_string())
             .body(reqwest::Body::wrap_stream(stream))
             .send()
             .await?;
@@ -297,10 +287,11 @@ impl Puller {
     /// if the API cannot be reached to say so then the lease is what recovers
     /// the turn. Saying so when possible turns a forty-five second stall into
     /// an immediate retry.
-    async fn hand_back(&self, job_id: Uuid) {
+    async fn hand_back(&self, job_id: Uuid, lease: Uuid) {
         let sent = self
             .http
             .post(format!("{}/v1/work/{job_id}/abandon", self.api_url))
+            .header(crate::api::work::LEASE_HEADER, lease.to_string())
             .bearer_auth(match self.token() {
                 Ok(token) => token,
                 Err(e) => {

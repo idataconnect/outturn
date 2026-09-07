@@ -4,7 +4,6 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-use outturn::auth::TokenMinter;
 use outturn::lifecycle::{self, Health};
 use outturn::runtime::component::AgentRunner;
 use outturn::runtime::router::RuntimeState;
@@ -26,7 +25,9 @@ async fn main() {
     )
     .expect("agent component");
 
-    let (minter, _public) = TokenMinter::from_env().expect("token minter");
+    // The runtime holds no signing key: it presents a shared key that means
+    // only "the runtime tier", and the API mints everything a turn needs.
+    let runtime_key = std::env::var("OUTTURN_RUNTIME_KEY").expect("OUTTURN_RUNTIME_KEY not set");
 
     // One bucket, partitioned by tenant prefix. Buckets are a limited
     // resource -- a hundred per AWS account by default -- and a limit on
@@ -42,6 +43,10 @@ async fn main() {
                 String::new(),
             ) {
                 Ok(store) => {
+                    // Refuse to start rather than run without storage: a pod
+                    // that comes up with a bucket it cannot reach hands every
+                    // agent an error dressed up as a listing.
+                    store.ensure_bucket().await.expect("object storage bucket");
                     tracing::info!(endpoint, bucket, "object storage enabled");
                     Some(Arc::new(store))
                 }
@@ -61,14 +66,14 @@ async fn main() {
         }
     };
 
+    let admission = Arc::new(outturn::runtime::admission::Admission::from_env());
     let state = Arc::new(RuntimeState {
-        minter: Arc::new(minter),
         gateway_url: std::env::var("OUTTURN_GATEWAY_URL")
             .unwrap_or_else(|_| "http://outturn-gateway:8081".into()),
         runner: Arc::new(AgentRunner::new().expect("agent runner")),
         agent_module: Arc::new(agent_module),
         storage,
-        admission: Arc::new(outturn::runtime::admission::Admission::from_env()),
+        admission: Arc::clone(&admission),
     });
 
     // The runtime asks for work rather than waiting to be handed it, so a pod
@@ -77,7 +82,7 @@ async fn main() {
     Arc::new(outturn::runtime::puller::Puller {
         api_url: std::env::var("OUTTURN_API_URL")
             .unwrap_or_else(|_| "http://outturn-api:8080".into()),
-        minter: Arc::clone(&state.minter),
+        runtime_key: runtime_key.trim().to_string(),
         http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
         runner: Arc::clone(&state.runner),
         agent_module: Arc::clone(&state.agent_module),
@@ -100,5 +105,19 @@ async fn main() {
         .with_graceful_shutdown(lifecycle::shutdown_signal(health))
         .await
         .unwrap();
+
+    // The puller has stopped asking, but turns it already took are still
+    // streaming. Leaving now would kill them mid-reply and leave each one to
+    // be recovered by its lease -- forty-five seconds of nothing, then the
+    // reply starting over on another pod. So wait for them, up to the grace
+    // the deployment allows (terminationGracePeriodSeconds), which is what
+    // decides whether this wait finishes or is cut off.
+    let draining = admission.in_flight();
+    if draining > 0 {
+        tracing::info!(turns = draining, "waiting for turns in flight to finish");
+        while admission.in_flight() > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
     tracing::info!("shutdown complete");
 }

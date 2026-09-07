@@ -38,6 +38,14 @@ pub enum Behaviour {
         steer: String,
         reply: String,
     },
+    /// Answer in prose, with a message the user sent mid-turn appended, then
+    /// answer that message in prose on the next call. Two rounds of text and
+    /// no tools, which is what a steer during an ordinary reply looks like.
+    TextThenSteer {
+        first: String,
+        steer: String,
+        reply: String,
+    },
     /// Ask for a tool in a reply that was cut off at the token limit, so the
     /// arguments cannot be trusted.
     TruncatedToolCall { name: String, arguments: String },
@@ -225,6 +233,24 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behaviour::TextThenSteer { first, steer, reply } => {
+            let text = if call_number > 1 { reply } else { first };
+            let mut lines: Vec<String> = chunk_text(&text)
+                .iter()
+                .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                .collect();
+            lines.push(format!("{}\n", chunk_json("", Some("stop"))));
+            if call_number == 1 {
+                lines.push(format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "outturn": { "pending": [{ "content": steer, "delivery": "steer" }] }
+                    })
+                ));
+            }
+            ndjson(lines)
+        }
+
         Behaviour::TruncatedToolCall { name, arguments } => {
             let mut lines = vec![format!(
                 "{}\n",
@@ -323,6 +349,7 @@ async fn completions(
         Behaviour::AlwaysToolCall { content, .. } => content,
         Behaviour::TruncatedToolCall { .. } => String::new(),
         Behaviour::ToolThenSteer { reply, .. } => reply,
+        Behaviour::TextThenSteer { reply, .. } => reply,
         Behaviour::TruncateAfter { text, .. } => text,
         Behaviour::Status(code, message) => return (code, message).into_response(),
         Behaviour::Hang => {

@@ -123,12 +123,28 @@ fn arg<'a>(args: &'a serde_json::Value, name: &str) -> &'a str {
 /// Marked as having arrived during the work, because that is true and the
 /// model should treat it as a correction to what it is doing rather than as
 /// the next question in an orderly exchange.
+///
+/// Several at once are numbered and the model is told to answer each. Given
+/// two bare user messages in a row a model answers the last one and drops
+/// the first -- someone who typed "two" then "three" was told about three.
 fn injected(arrivals: &[Arrival]) -> Vec<Message> {
+    let total = arrivals.len();
     arrivals
         .iter()
-        .map(|arrival| Message {
+        .enumerate()
+        .map(|(i, arrival)| Message {
             role: "user".to_string(),
-            content: format!("[mid-turn message from user] {}", arrival.content),
+            content: if total == 1 {
+                format!("[mid-turn message from user] {}", arrival.content)
+            } else {
+                format!(
+                    "[mid-turn message {} of {} from user; respond to each of the {} in order] {}",
+                    i + 1,
+                    total,
+                    total,
+                    arrival.content
+                )
+            },
             tool_calls: Vec::new(),
             tool_call_id: None,
         })
@@ -567,12 +583,15 @@ impl Guest for Component {
                 max_tokens: None,
             })?;
 
-            // A model that narrates before calling a tool has already been
-            // seen saying it, so the separator has to reach the browser too --
-            // through `progress`, which feeds the same stream the reply does.
+            // Rounds are joined with a blank line. The host streams the same
+            // blank line before this round's first token whenever an earlier
+            // round has shown text, so the reply assembled here matches what
+            // the browser has already been shown. It is not emitted through
+            // `progress` from here: by the time this code runs, the round's
+            // text has already streamed, and a separator sent now would land
+            // after it.
             if !completion.content.is_empty() {
                 if !reply.is_empty() {
-                    host::progress("\n\n");
                     reply.push_str("\n\n");
                 }
                 reply.push_str(&completion.content);
