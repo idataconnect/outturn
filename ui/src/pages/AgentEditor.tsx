@@ -4,6 +4,7 @@ import { ArrowLeft, Save } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
+import SettingsCascade from '../components/SettingsCascade'
 
 export type Agent = {
   id: string
@@ -15,26 +16,13 @@ export type Agent = {
   enabled: boolean
 }
 
-/// The values a provider understands, in the order they cost.
-const EFFORTS = ['low', 'medium', 'high'] as const
-type Effort = (typeof EFFORTS)[number]
-
-/**
- * What the form holds, whichever way it was reached.
- *
- * Thinking is on by default wherever a provider supports it, and on a local
- * model it costs far more than the answer: a reply of a few dozen characters
- * has been measured spending three hundred tokens deliberating first, which
- * is half a minute before anything appears. Off unless someone asks for it.
- */
+/** What the form holds, whichever way it was reached. */
 type Form = {
   name: string
   slug: string
   description: string
   system_prompt: string
   enabled: boolean
-  deliberate: boolean
-  effort: Effort
 }
 
 const EMPTY: Form = {
@@ -43,23 +31,15 @@ const EMPTY: Form = {
   description: '',
   system_prompt: '',
   enabled: true,
-  deliberate: false,
-  effort: 'medium',
 }
 
 function fromAgent(agent: Agent): Form {
-  const effort = agent.policy.reasoning_effort
-  const known = EFFORTS.find((e) => e === effort)
   return {
     name: agent.name,
     slug: agent.slug,
     description: agent.description,
     system_prompt: agent.system_prompt,
     enabled: agent.enabled,
-    // "none" and absent both read as off; anything else the provider
-    // understands reads as on at that level.
-    deliberate: known !== undefined,
-    effort: known ?? 'medium',
   }
 }
 
@@ -129,31 +109,31 @@ export default function AgentEditor() {
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
     setSaving(true)
-    const policy = { reasoning_effort: form.deliberate ? form.effort : 'none' }
     try {
       if (creating) {
-        await api<Agent>('/v1/agents', {
+        const made = await api<Agent>('/v1/agents', {
           method: 'POST',
           body: JSON.stringify({
             name: form.name,
             slug: form.slug,
             description: form.description,
             system_prompt: form.system_prompt,
-            policy,
           }),
         })
-      } else {
-        await api<Agent>(`/v1/agents/${id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            name: form.name,
-            description: form.description,
-            system_prompt: form.system_prompt,
-            enabled: form.enabled,
-            policy,
-          }),
-        })
+        // Straight to the editor, where the behaviour settings live: they
+        // are overrides on an agent that has to exist first.
+        void navigate(`/agents/${made.id}`)
+        return
       }
+      await api<Agent>(`/v1/agents/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: form.name,
+          description: form.description,
+          system_prompt: form.system_prompt,
+          enabled: form.enabled,
+        }),
+      })
       void navigate('/agents')
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save agent')
@@ -237,64 +217,6 @@ export default function AgentEditor() {
             />
           </label>
 
-          <div className="space-y-2">
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                checked={form.deliberate}
-                onChange={(e) => setForm({ ...form, deliberate: e.target.checked })}
-                disabled={!canSave}
-                className="mt-1"
-              />
-              <span className="text-sm text-surface-700 dark:text-surface-300">
-                Let the model think before answering
-                <span className="block text-xs text-surface-500 dark:text-surface-400">
-                  Better on hard questions, and slower to reply.
-                </span>
-              </span>
-            </label>
-
-            {/* Shown only when it applies. A disabled slider beside an
-                unticked box invites someone to set it and wonder why nothing
-                changed. */}
-            {form.deliberate && (
-              <label className="block pl-6">
-                <span className="flex items-baseline justify-between text-sm text-surface-700 dark:text-surface-300 mb-1">
-                  <span>How much thinking</span>
-                  <span
-                    aria-hidden
-                    className="text-xs font-medium text-surface-500 dark:text-surface-400 capitalize"
-                  >
-                    {form.effort}
-                  </span>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={1}
-                  value={EFFORTS.indexOf(form.effort)}
-                  onChange={(e) =>
-                    setForm({ ...form, effort: EFFORTS[Number(e.target.value)] })
-                  }
-                  // A range announces its number, so without this it reads as
-                  // "1 of 3" -- a position on a scale nobody described. The
-                  // text says what the number means, and matches what is shown.
-                  aria-valuetext={form.effort}
-                  disabled={!canSave}
-                  className="w-full accent-brand-600"
-                />
-                <span
-                  aria-hidden
-                  className="flex justify-between text-xs text-surface-500 dark:text-surface-400"
-                >
-                  <span>Low</span>
-                  <span>High</span>
-                </span>
-              </label>
-            )}
-          </div>
-
           {!creating && (
             <label className="flex items-start gap-2">
               <input
@@ -332,6 +254,24 @@ export default function AgentEditor() {
             </div>
           )}
         </form>
+      )}
+
+      {!creating && !loading && (
+        <section className="mt-8 space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
+              Behaviour
+            </h2>
+            <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
+              Each value comes from the workspace unless overridden for this agent.
+            </p>
+          </div>
+          <SettingsCascade
+            base={`/v1/agents/${id}/settings`}
+            canEdit={authorities.includes('settings:update')}
+            levelName="this agent"
+          />
+        </section>
       )}
     </div>
   )

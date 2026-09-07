@@ -48,6 +48,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         tenant_id: Uuid::now_v7(),
         timezone: None,
         reasoning_effort: None,
+        temperature: None,
         traffic_type: "assistant".into(),
         max_tool_rounds: 100,
         reply_id: Uuid::now_v7(),

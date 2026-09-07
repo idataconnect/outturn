@@ -3,6 +3,7 @@ pub mod chat;
 pub mod egress;
 pub mod role;
 pub mod usage;
+pub mod settings;
 mod agents;
 mod sessions;
 mod events;

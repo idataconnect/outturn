@@ -80,6 +80,8 @@ async fn harness() -> Harness {
         Arc::new(outturn::api::role::PostgresRoleStore::new(pool.clone()));
     let usage: Arc<dyn outturn::api::usage::UsageStore> =
         Arc::new(outturn::api::usage::PostgresUsageStore::new(pool.clone()));
+    let settings: Arc<dyn outturn::api::settings::SettingsStore> =
+        Arc::new(outturn::api::settings::PostgresSettingsStore::new(pool.clone()));
     let state = Arc::new(ApiState::new(
         tenants.clone(),
         users.clone(),
@@ -88,6 +90,7 @@ async fn harness() -> Harness {
         chat.clone(),
         roles.clone(),
         usage.clone(),
+        settings.clone(),
         validator,
         minter,
         runtime_key,
@@ -103,6 +106,7 @@ async fn harness() -> Harness {
         agents: agents.clone(),
         chat: chat.clone(),
         usage: usage.clone(),
+        settings: settings.clone(),
     }));
 
     Harness {
@@ -1829,6 +1833,94 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .get(&format!("/v1/usage?tenant_id={globex}"), Some(&admin))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    finish!(h);
+}
+
+// -- Settings cascade -----------------------------------------------------------
+
+/// A value walks down from the operator until a level overrides it, and a
+/// cleared override falls back to whatever is above.
+#[tokio::test]
+async fn settings_cascade_from_operator_to_tenant_to_agent() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let root = h
+        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    // Nothing set anywhere: the catalogue default applies.
+    let (status, body) = h.get("/v1/settings", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
+    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    assert_eq!(effort["value"], "none");
+    assert_eq!(effort["source"], "default");
+
+    // The operator sets a platform default.
+    let req = |method: &str, uri: String, token: &str, body: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    };
+    let (status, _) = h
+        .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &root, r#"{"value":"low"}"#))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // A tenant admin may not.
+    let (status, _) = h
+        .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The tenant now inherits it.
+    let (_, body) = h.get("/v1/settings", Some(&admin)).await;
+    let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
+    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    assert_eq!(effort["value"], "low");
+    assert_eq!(effort["source"], "operator");
+    assert!(effort["override_value"].is_null(), "no row at the tenant level yet");
+
+    // The tenant overrides; an agent inherits the tenant's value.
+    let (status, _) = h
+        .send(req("PUT", "/v1/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin)).await;
+    let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
+    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    assert_eq!(effort["value"], "high");
+    assert_eq!(effort["source"], "tenant");
+    assert_eq!(effort["inherited"], "high");
+
+    // Bad values are refused by the catalogue, not stored.
+    let (status, body) = h
+        .send(req("PUT", format!("/v1/agents/{agent_id}/settings/temperature"), &admin, r#"{"value":9}"#))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+    // Clearing the tenant's override falls back to the operator's value.
+    let (status, _) = h
+        .send(req("DELETE", "/v1/settings/reasoning_effort".into(), &admin, ""))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin)).await;
+    let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
+    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    assert_eq!(effort["value"], "low");
+    assert_eq!(effort["source"], "operator");
 
     finish!(h);
 }

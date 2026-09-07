@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import AccountMenu from './components/AccountMenu'
+import SettingsCascade from './components/SettingsCascade'
 import { ApiError, api } from './lib/api'
 import {
   SessionActionsContext,
@@ -46,10 +47,35 @@ function Dashboard() {
 }
 
 function SettingsPage() {
+  const state = useSession()
+  const authorities = state.status === 'authenticated' ? state.session.authorities : []
+  const canEdit = authorities.includes('settings:update')
+  const isOperator =
+    state.status === 'authenticated' && state.session.roles.includes('system_admin')
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Settings</h1>
-      <p className="mt-2 text-surface-600 dark:text-surface-400">Configuration coming soon.</p>
+    <div className="p-6 max-w-3xl space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Settings</h1>
+        <p className="mt-2 text-surface-600 dark:text-surface-400">
+          How agents in this workspace behave. Each value comes from the platform unless
+          overridden here, and an agent can override again on its own page.
+        </p>
+      </div>
+      <SettingsCascade base="/v1/settings" canEdit={canEdit} levelName="this workspace" />
+
+      {isOperator && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
+              Platform defaults
+            </h2>
+            <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
+              What every workspace gets unless it overrides. Visible to the operator only.
+            </p>
+          </div>
+          <SettingsCascade base="/v1/platform/settings" canEdit levelName="the platform" />
+        </section>
+      )}
     </div>
   )
 }

@@ -51,9 +51,13 @@ pub struct ExecuteRequest {
     /// Absent means the guest's clock answers in UTC.
     #[serde(default)]
     pub timezone: Option<String>,
-    /// From the agent's policy. "none" disables thinking where supported.
+    /// Resolved from the settings cascade. "none" disables thinking where
+    /// supported.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Resolved from the settings cascade. Absent leaves it to the provider.
+    #[serde(default)]
+    pub temperature: Option<f32>,
     /// What this turn is for. The gateway resolves it to a route.
     #[serde(default)]
     pub traffic_type: Option<String>,

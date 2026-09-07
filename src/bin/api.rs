@@ -11,6 +11,7 @@ use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::role::{PostgresRoleStore, RoleStore};
 use outturn::api::usage::{PostgresUsageStore, UsageStore};
+use outturn::api::settings::{PostgresSettingsStore, SettingsStore};
 use outturn::api::worker::Worker;
 use outturn::api::session::{PostgresSessionStore, SessionStore};
 use outturn::api::user::{PostgresUserStore, UserStore};
@@ -73,6 +74,7 @@ async fn main() {
     role_store.spawn_invalidation();
     let roles: Arc<dyn RoleStore> = Arc::new(role_store);
     let usage: Arc<dyn UsageStore> = Arc::new(PostgresUsageStore::new(pool.clone()));
+    let settings: Arc<dyn SettingsStore> = Arc::new(PostgresSettingsStore::new(pool.clone()));
 
     seed::dev_seed(&users, &tenants, &roles).await.expect("dev seed");
 
@@ -91,6 +93,7 @@ async fn main() {
         chat.clone(),
         roles,
         usage.clone(),
+        settings.clone(),
         validator,
         minter,
         runtime_key,
@@ -107,6 +110,7 @@ async fn main() {
         agents: agents.clone(),
         chat: chat.clone(),
         usage,
+        settings,
     });
     // A turn is claimed here and reported by whichever runtime ran it, and
     // nothing joins those but a lease. When a runtime dies mid-turn the job is

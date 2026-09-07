@@ -111,6 +111,10 @@ pub struct AgentHost {
     /// what the knob is called, is a provider detail an agent should not have
     /// to know.
     reasoning_effort: Option<String>,
+    /// The platform's temperature for this turn, applied when the guest
+    /// names none. Resolved above the runtime; the guest never sees where
+    /// it came from.
+    temperature: Option<f32>,
     on_tool: Option<ToolSink>,
     on_tool_result: Option<ToolResultSink>,
     on_usage: Option<UsageSink>,
@@ -290,7 +294,8 @@ impl outturn::agent::host::Host for AgentHost {
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "temperature": request.temperature,
+            // The guest's choice if it made one, else the platform's.
+            "temperature": request.temperature.or(self.temperature),
             "max_tokens": request.max_tokens,
         });
 
@@ -965,6 +970,8 @@ pub struct RunOptions {
     pub timezone: Option<String>,
     /// Passed to providers that support it; ignored by those that do not.
     pub reasoning_effort: Option<String>,
+    /// Applied when the guest names no temperature of its own.
+    pub temperature: Option<f32>,
     /// Names the class of traffic, which the gateway resolves to a route.
     pub traffic_type: String,
     /// Model calls permitted in this turn; zero is unbounded.
@@ -1051,6 +1058,7 @@ impl AgentRunner {
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.
             reasoning_effort: options.reasoning_effort,
+            temperature: options.temperature,
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
             rounds_used: 0,

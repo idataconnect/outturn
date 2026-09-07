@@ -73,6 +73,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 tenant_id,
                 timezone: None,
                 reasoning_effort: None,
+                temperature: None,
                 traffic_type: "assistant".into(),
                 max_tool_rounds: 100,
                 reply_id: Uuid::now_v7(),

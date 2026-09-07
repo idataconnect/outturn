@@ -27,6 +27,7 @@ pub struct ApiState {
     /// What a tenant's roles mean. Consulted on every authorised request.
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
+    pub(super) settings: Arc<dyn super::settings::SettingsStore>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
     /// What the runtime tier presents. Not a token: see `RuntimeKey`.
@@ -58,6 +59,7 @@ impl ApiState {
         chat: Arc<dyn ChatStore>,
         roles: Arc<dyn RoleStore>,
         usage: Arc<dyn super::usage::UsageStore>,
+        settings: Arc<dyn super::settings::SettingsStore>,
         auth: TokenValidator,
         minter: TokenMinter,
         runtime_key: crate::auth::RuntimeKey,
@@ -73,6 +75,7 @@ impl ApiState {
             chat,
             roles,
             usage,
+            settings,
             auth,
             minter,
             runtime_key,
@@ -722,6 +725,161 @@ async fn export_usage(
     Ok(Json(page))
 }
 
+
+// -- Settings -----------------------------------------------------------------
+
+use super::settings::{Level, Owner, SettingsError};
+
+impl From<SettingsError> for ApiError {
+    fn from(e: SettingsError) -> Self {
+        let status = match e {
+            SettingsError::Unknown(_) => StatusCode::NOT_FOUND,
+            SettingsError::Invalid(_) => StatusCode::BAD_REQUEST,
+            SettingsError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SetSetting {
+    value: serde_json::Value,
+}
+
+/// Whether the caller may write at `level`, and whether the setting allows it.
+async fn may_write(state: &ApiState, claims: &SessionClaims, level: Level, key: &str) -> Result<(), ApiError> {
+    let setting = super::settings::find(key).ok_or(SettingsError::Unknown(key.to_string()))?;
+    match level {
+        Level::Operator => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "only the operator sets platform defaults".into()));
+            }
+        }
+        Level::Tenant(_) | Level::Agent { .. } => {
+            require(state, claims, Authority::SettingsUpdate).await?;
+            if setting.owner == Owner::OperatorOnly {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("{} is set by the operator and cannot be overridden here", setting.label),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn view_operator_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if !claims.is_system_admin() {
+        return Err((StatusCode::FORBIDDEN, "only the operator sees platform defaults".into()));
+    }
+    Ok(Json(state.settings.view(Level::Operator).await?))
+}
+
+async fn set_operator_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims, Level::Operator, &key).await?;
+    state.settings.set(Level::Operator, &key, input.value).await?;
+    tracing::info!(actor = %claims.subject, key = %key, "platform setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_operator_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims, Level::Operator, &key).await?;
+    state.settings.clear(Level::Operator, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn view_tenant_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
+    Ok(Json(state.settings.view(Level::Tenant(claims.tenant_id)).await?))
+}
+
+async fn set_tenant_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = Level::Tenant(claims.tenant_id);
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.set(level, &key, input.value).await?;
+    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, key = %key, "tenant setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_tenant_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = Level::Tenant(claims.tenant_id);
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.clear(level, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The agent must be the caller's tenant's, or the level would let a tenant
+/// write settings onto somebody else's agent.
+async fn agent_level(state: &ApiState, claims: &SessionClaims, agent_id: Uuid) -> Result<Level, ApiError> {
+    state.agents.get(claims.tenant_id, agent_id).await?;
+    Ok(Level::Agent { tenant_id: claims.tenant_id, agent_id })
+}
+
+async fn view_agent_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    Ok(Json(state.settings.view(level).await?))
+}
+
+async fn set_agent_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((agent_id, key)): Path<(Uuid, String)>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.set(level, &key, input.value).await?;
+    tracing::info!(actor = %claims.subject, agent_id = %agent_id, key = %key, "agent setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_agent_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((agent_id, key)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.clear(level, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn routes(state: Arc<ApiState>) -> Router {
     Router::new()
         .route("/v1/login", post(super::login::login))
@@ -767,6 +925,21 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
         .route("/v1/usage", get(export_usage))
+        .route("/v1/settings", get(view_tenant_settings))
+        .route(
+            "/v1/settings/{key}",
+            axum::routing::put(set_tenant_setting).delete(clear_tenant_setting),
+        )
+        .route("/v1/platform/settings", get(view_operator_settings))
+        .route(
+            "/v1/platform/settings/{key}",
+            axum::routing::put(set_operator_setting).delete(clear_operator_setting),
+        )
+        .route("/v1/agents/{id}/settings", get(view_agent_settings))
+        .route(
+            "/v1/agents/{id}/settings/{key}",
+            axum::routing::put(set_agent_setting).delete(clear_agent_setting),
+        )
         .route("/v1/authorities", get(list_authorities))
         .route("/v1/roles", get(list_roles).post(create_role))
         .route(

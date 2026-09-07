@@ -141,6 +141,8 @@ pub struct Worker {
     pub chat: Arc<dyn ChatStore>,
     /// Where every model call is written down, as it is reported.
     pub usage: Arc<dyn super::usage::UsageStore>,
+    /// The cascade a turn's knobs come from.
+    pub settings: Arc<dyn super::settings::SettingsStore>,
 }
 
 
@@ -565,6 +567,15 @@ impl Worker {
             .await?;
         }
 
+        // Resolved here, above the runtime, so the guest is handed values
+        // and never learns whether the operator, the tenant or the agent
+        // chose them.
+        let settings = self
+            .settings
+            .resolve(payload.tenant_id, payload.agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
+
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             tenant_id: payload.tenant_id,
@@ -575,9 +586,10 @@ impl Worker {
             system_prompt: agent.system_prompt,
             model: Some(model_for(&agent.policy)),
             timezone: payload.timezone.clone(),
-            reasoning_effort: reasoning_effort_for(&agent.policy),
+            reasoning_effort: settings.reasoning_effort,
+            temperature: settings.temperature,
             traffic_type: Some(traffic_type_for(&agent.policy)),
-            max_tool_rounds: max_tool_rounds_for(&agent.policy),
+            max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
             reply_id: placeholder.message.id,
             egress,
         }))
@@ -742,26 +754,6 @@ impl Worker {
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.
-/// How much the model should deliberate, from the agent's policy.
-///
-/// Absent leaves the provider's default alone. "none" turns thinking off where
-/// it is supported, which is worth doing for agents whose work does not need
-/// it: it cuts a gemma4 tool turn from 113 completion tokens to 24.
-fn reasoning_effort_for(policy: &serde_json::Value) -> Option<String> {
-    policy
-        .get("reasoning_effort")
-        .and_then(|e| e.as_str())
-        .map(str::to_string)
-}
-
-/// How many model calls a turn of this agent may make.
-///
-/// Absent leaves the runtime's default. Zero or negative disables the limit,
-/// for agents whose work legitimately runs long.
-fn max_tool_rounds_for(policy: &serde_json::Value) -> Option<i64> {
-    policy.get("max_tool_rounds").and_then(|r| r.as_i64())
-}
-
 /// What class of traffic this agent's turns are, from its policy.
 ///
 /// Names the work rather than the destination: the gateway decides where

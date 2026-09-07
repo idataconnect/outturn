@@ -1,8 +1,10 @@
 # Settings
 
 How defaults cascade from the operator to tenants to agents, and who may
-change what. Designed, not built; nothing here describes the code yet except
-where it says so.
+change what. Built: the catalogue is `src/api/settings/mod.rs`, the rows are
+`setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
+turn in `prepare_turn`. The first three entries are temperature, reasoning
+effort and model calls per turn.
 
 ## The shape
 
@@ -64,11 +66,16 @@ the tenant configured itself. A skill's pins are declared in its frontmatter,
 because they are facts about the skill; who is billed for running it is not,
 and never belongs there.
 
-## What moves into it first
+## What is in it
 
-Temperature and reasoning effort out of the agent's free-form `policy` JSON,
-which is where they live today with no defaults above the agent and no way for
-an operator to set them once. Then max tool rounds. Then storage retention.
+Temperature, reasoning effort and model calls per turn, moved out of the
+agent's free-form `policy` JSON, where they had no defaults above the agent and
+no way for an operator to set them once. Storage retention comes when scopes
+do. The endpoints are `/v1/settings` (tenant), `/v1/platform/settings`
+(operator) and `/v1/agents/{id}/settings` (agent), each returning every
+setting with its effective value, where it came from, what this level would
+inherit, and whether this level has its own row. PUT sets a row, DELETE
+removes it.
 
 ## What is deliberately not a setting
 
