@@ -69,8 +69,6 @@ pub trait LlmProvider: Send + Sync {
         Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })))
     }
 
-    async fn is_available(&self) -> bool;
-
     /// Identifies this provider's endpoint for health tracking.
     ///
     /// Protocol and base URL, not just protocol: api.openai.com and a local

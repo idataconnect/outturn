@@ -218,7 +218,7 @@ async fn chat_completions(
 
     for attempt in state.attempts(claims.tenant_id, &traffic).await {
         let provider = &attempt.provider;
-        if !provider.is_available().await || !state.admits(provider).await {
+        if !state.admits(provider).await {
             continue;
         }
 
@@ -281,7 +281,7 @@ async fn chat_completions_stream(
 
     for attempt in state.attempts(claims.tenant_id, &traffic).await {
         let provider = &attempt.provider;
-        if !provider.is_available().await || !state.admits(provider).await {
+        if !state.admits(provider).await {
             continue;
         }
 
