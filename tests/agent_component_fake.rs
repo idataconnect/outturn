@@ -589,6 +589,26 @@ async fn rounds_are_separated_before_the_second_begins_not_after() {
     );
 }
 
+/// The platform's temperature reaches the model when the guest names none.
+///
+/// Resolved above the runtime and handed over on the turn; the guest sends
+/// no temperature of its own, so what the gateway sees is the cascade's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_turns_temperature_reaches_the_model() {
+    let gateway = FakeGateway::start(Behaviour::Reply("Hi.".into())).await;
+    let mut opts = options(&gateway, None);
+    opts.temperature = Some(0.1);
+
+    runner()
+        .run(&component(), user("hello"), String::new(), opts)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let sent = requests[0]["temperature"].as_f64().expect("temperature was not sent");
+    assert!((sent - 0.1).abs() < 1e-6, "sent {sent}");
+}
+
 // -- Accounting ---------------------------------------------------------------
 
 /// Every model call is reported on its own, as it completes.
