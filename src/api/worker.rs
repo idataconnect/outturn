@@ -34,6 +34,10 @@ pub struct ChatTurnPayload {
     /// crosses a border should not keep answering in the zone it left.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Who sent the prompt, for the usage ledger. Absent on turns nobody
+    /// sent -- a schedule, a webhook.
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
 }
 
 /// Rebuilds the conversation a model should be shown from what was stored.
@@ -135,6 +139,8 @@ pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
     pub chat: Arc<dyn ChatStore>,
+    /// Where every model call is written down, as it is reported.
+    pub usage: Arc<dyn super::usage::UsageStore>,
 }
 
 
@@ -181,12 +187,17 @@ impl Worker {
         stream: impl futures::Stream<Item = Result<axum::body::Bytes, impl std::fmt::Display>> + Unpin,
         payload: &ChatTurnPayload,
         message_id: Uuid,
+        job_id: Uuid,
     ) -> anyhow::Result<TurnOutcome> {
         use futures::StreamExt;
 
         let mut stream = stream;
         let mut buffer = String::new();
         let mut tools: Vec<serde_json::Value> = Vec::new();
+        // The session's account label, for the ledger. Read once, on the
+        // first call that needs it, so a turn that makes no model call reads
+        // nothing.
+        let mut account: Option<Option<String>> = None;
 
         while let Some(bytes) = stream.next().await {
             let bytes = bytes.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -279,6 +290,74 @@ impl Worker {
                             }),
                         )
                         .await?;
+                    }
+                    Ok(ExecuteEvent::Usage {
+                        round,
+                        endpoint,
+                        model,
+                        paid_by,
+                        prompt_tokens,
+                        completion_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        reasoning_tokens,
+                    }) => {
+                        // Written the moment the call is known to have cost
+                        // something, not when the turn ends: a turn that fails
+                        // after three calls still bills for three.
+                        let account = match &account {
+                            Some(a) => a.clone(),
+                            None => {
+                                let found = self
+                                    .chat
+                                    .get_session(payload.tenant_id, payload.session_id)
+                                    .await
+                                    .ok()
+                                    .and_then(|s| s.account);
+                                account = Some(found.clone());
+                                found
+                            }
+                        };
+                        if let Err(e) = self
+                            .usage
+                            .record(super::usage::RecordUsage {
+                                tenant_id: payload.tenant_id,
+                                agent_id: Some(payload.agent_id),
+                                session_id: Some(payload.session_id),
+                                user_id: payload.user_id,
+                                account,
+                                reply_id: Some(message_id),
+                                job_id: Some(job_id),
+                                round: round as i32,
+                                traffic_type: traffic_type_for(
+                                    &self
+                                        .agents
+                                        .get(payload.tenant_id, payload.agent_id)
+                                        .await
+                                        .map(|a| a.policy)
+                                        .unwrap_or(serde_json::Value::Null),
+                                ),
+                                endpoint,
+                                model,
+                                credential_owner: paid_by,
+                                fallback: "none".to_string(),
+                                prompt_tokens: prompt_tokens as i32,
+                                completion_tokens: completion_tokens as i32,
+                                cache_read_tokens: cache_read_tokens as i32,
+                                cache_write_tokens: cache_write_tokens as i32,
+                                reasoning_tokens: reasoning_tokens as i32,
+                            })
+                            .await
+                        {
+                            // A ledger write that fails is an operator's
+                            // problem, and loud: the bill is wrong.
+                            tracing::error!(
+                                job_id = %job_id,
+                                tenant_id = %payload.tenant_id,
+                                error = %e,
+                                "could not record usage"
+                            );
+                        }
                     }
                     Ok(ExecuteEvent::Done {
                         content,
@@ -579,7 +658,7 @@ impl Worker {
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
         let reply_id = placeholder.message.id;
 
-        let outcome = self.consume_turn(stream, &payload, reply_id).await;
+        let outcome = self.consume_turn(stream, &payload, reply_id, job_id).await;
         heartbeat.abort();
 
         let reply = match outcome {

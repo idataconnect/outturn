@@ -128,6 +128,7 @@ pub async fn send_message(
         agent_id: session.agent_id,
         message_id: message.id,
         timezone: input.timezone,
+        user_id: Some(claims.subject),
     })
     .map_err(internal)?;
     let event = serde_json::to_value(&message).map_err(internal)?;

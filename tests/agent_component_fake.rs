@@ -43,6 +43,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         progress,
         on_tool: None,
         on_tool_result: None,
+        on_usage: None,
         storage: None,
         tenant_id: Uuid::now_v7(),
         timezone: None,
@@ -588,6 +589,42 @@ async fn rounds_are_separated_before_the_second_begins_not_after() {
 }
 
 // -- Accounting ---------------------------------------------------------------
+
+/// Every model call is reported on its own, as it completes.
+///
+/// A turn that fell back to a second provider mid-way has two of these, and a
+/// turn that fails after three calls still has three -- which is what a bill
+/// needs and a sum at the end cannot give.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_model_call_reports_its_own_cost() {
+    let gateway = FakeGateway::start(Behaviour::TextThenSteer {
+        first: "One.".into(),
+        steer: "and two".into(),
+        reply: "Two.".into(),
+    })
+    .await;
+
+    let calls = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let mut opts = options(&gateway, None);
+    opts.on_usage = Some({
+        let calls = Arc::clone(&calls);
+        Arc::new(move |c: &outturn::runtime::component::CallUsage| {
+            calls.lock().expect("lock").push(c.round)
+        })
+    });
+
+    runner()
+        .run(&component(), user("one"), String::new(), opts)
+        .await
+        .expect("run");
+
+    assert_eq!(
+        *calls.lock().expect("lock"),
+        vec![0, 1],
+        "two rounds should have reported two costs, in order"
+    );
+}
+
 
 /// What a turn spent is counted by the host, across every round.
 ///

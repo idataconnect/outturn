@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::component::{
-    AgentRunner, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
-    ToolSink,
+    AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
+    ToolSink, UsageSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -123,6 +123,23 @@ pub enum ExecuteEvent {
         content: String,
         is_error: bool,
     },
+    /// One model call finished, and this is what it cost. Emitted per call
+    /// rather than summed at the end, so a turn that fails after three calls
+    /// still bills for three, and a turn that fell back mid-way names both
+    /// providers.
+    Usage {
+        /// Which call within the turn, from zero.
+        round: u32,
+        endpoint: String,
+        model: String,
+        /// Whose credential paid, as the gateway said.
+        paid_by: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_read_tokens: u32,
+        cache_write_tokens: u32,
+        reasoning_tokens: u32,
+    },
     /// Generation finished; the reply is complete, and this is what it cost.
     Done {
         content: String,
@@ -149,7 +166,7 @@ pub enum ExecuteEvent {
 /// blocked, so they cannot wait for a slow reader.
 pub fn sinks_for(
     tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>,
-) -> (ProgressSink, ToolSink, ToolResultSink) {
+) -> (ProgressSink, ToolSink, ToolResultSink, UsageSink) {
     let progress: ProgressSink = {
         let tx = tx.clone();
         let index = std::sync::atomic::AtomicI64::new(0);
@@ -186,6 +203,23 @@ pub fn sinks_for(
         })
     };
 
-    (progress, on_tool, on_tool_result)
+    let on_usage: UsageSink = {
+        let tx = tx.clone();
+        Arc::new(move |call: &CallUsage| {
+            let _ = tx.send(ExecuteEvent::Usage {
+                round: call.round,
+                endpoint: call.endpoint.clone(),
+                model: call.model.clone(),
+                paid_by: call.paid_by.clone(),
+                prompt_tokens: call.usage.prompt_tokens,
+                completion_tokens: call.usage.completion_tokens,
+                cache_read_tokens: call.usage.cache_read_tokens,
+                cache_write_tokens: call.usage.cache_write_tokens,
+                reasoning_tokens: call.usage.reasoning_tokens,
+            });
+        })
+    };
+
+    (progress, on_tool, on_tool_result, on_usage)
 }
 

@@ -32,6 +32,23 @@ pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 /// Reports what a tool produced, for the reader rather than the model.
 pub type ToolResultSink = Arc<dyn Fn(&ToolOutcome) + Send + Sync>;
 
+/// What one model call cost, and who served it.
+///
+/// Reported per call rather than summed, because a bill is cut per call: a
+/// turn that fell back to a second provider mid-way has two of these, and a
+/// turn that failed after three calls still has three.
+#[derive(Debug, Clone)]
+pub struct CallUsage {
+    pub round: u32,
+    pub endpoint: String,
+    pub model: String,
+    pub paid_by: String,
+    pub usage: Usage,
+}
+
+/// Reports each model call's cost as it completes.
+pub type UsageSink = Arc<dyn Fn(&CallUsage) + Send + Sync>;
+
 /// How long a request an agent made may take.
 ///
 /// Far shorter than a model call, because this is a request to somebody else's
@@ -93,6 +110,7 @@ pub struct AgentHost {
     reasoning_effort: Option<String>,
     on_tool: Option<ToolSink>,
     on_tool_result: Option<ToolResultSink>,
+    on_usage: Option<UsageSink>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
     /// Model calls made so far this turn, counted host-side so a guest that
@@ -321,7 +339,7 @@ impl outturn::agent::host::Host for AgentHost {
             }) as ProgressSink
         });
 
-        let (completion, arrivals, served_by) = stream_completion(
+        let (completion, arrivals, served) = stream_completion(
             &self.http,
             &self.gateway_url,
             &self.gateway_token,
@@ -336,6 +354,19 @@ impl outturn::agent::host::Host for AgentHost {
         if !completion.content.is_empty() {
             self.streamed = true;
         }
+
+        // Billed per call, the moment it is known. `rounds_used` was counted
+        // before the call, so the round is one less.
+        if let (Some(sink), Some(usage)) = (&self.on_usage, &completion.usage) {
+            sink(&CallUsage {
+                round: self.rounds_used.saturating_sub(1),
+                endpoint: served.endpoint.clone().unwrap_or_default(),
+                model: served.model.clone().unwrap_or(model.clone()),
+                paid_by: served.paid_by.clone().unwrap_or_else(|| "operator".to_string()),
+                usage: usage.clone(),
+            });
+        }
+        let served_by = served.endpoint;
 
         // Buffered rather than delivered: the guest asks at a boundary it
         // chooses, which is the only point where injecting a message does not
@@ -636,7 +667,7 @@ async fn stream_completion(
     reply_id: &uuid::Uuid,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
-) -> anyhow::Result<(Completion, Vec<Arrival>, Option<String>)> {
+) -> anyhow::Result<(Completion, Vec<Arrival>, Served)> {
     use futures::StreamExt;
 
     let response = http
@@ -657,12 +688,20 @@ async fn stream_completion(
     }
 
     // Named by the gateway, so spend attaches to the endpoint that billed
-    // for it rather than to whichever one was configured first.
-    let served_by = response
-        .headers()
-        .get("x-outturn-provider")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    // for it rather than to whichever one was configured first, and to the
+    // credential that paid.
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let mut served = Served {
+        endpoint: header("x-outturn-provider"),
+        paid_by: header("x-outturn-paid-by"),
+        model: None,
+    };
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -695,6 +734,14 @@ async fn stream_completion(
                 }
             };
 
+            // The model that actually answered, which a route may have
+            // chosen in place of the one asked for.
+            if served.model.is_none()
+                && let Some(m) = chunk["model"].as_str()
+                && !m.is_empty()
+            {
+                served.model = Some(m.to_string());
+            }
             if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str()
                 && !text.is_empty()
             {
@@ -774,7 +821,14 @@ async fn stream_completion(
             .collect(),
         finish_reason,
         usage,
-    }, arrivals, served_by))
+    }, arrivals, served))
+}
+
+/// Who answered a call, as far as the gateway said.
+struct Served {
+    endpoint: Option<String>,
+    model: Option<String>,
+    paid_by: Option<String>,
 }
 
 /// One tool call being assembled from stream fragments.
@@ -889,6 +943,7 @@ pub struct RunOptions {
     pub progress: Option<ProgressSink>,
     pub on_tool: Option<ToolSink>,
     pub on_tool_result: Option<ToolResultSink>,
+    pub on_usage: Option<UsageSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -976,6 +1031,7 @@ impl AgentRunner {
             progress: options.progress,
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
+            on_usage: options.on_usage,
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.

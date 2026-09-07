@@ -331,6 +331,14 @@ async fn chat_completions_stream(
                             axum::http::HeaderName::from_static("x-outturn-provider"),
                             provider.endpoint(),
                         ),
+                        // Whose credential paid. Every key is the operator's
+                        // until tenants can bring their own (docs/routing.md);
+                        // the ledger carries the column from the start so the
+                        // bill does not have to be re-derived when they can.
+                        (
+                            axum::http::HeaderName::from_static("x-outturn-paid-by"),
+                            "operator".to_string(),
+                        ),
                     ],
                     axum::body::Body::from_stream(body),
                 )

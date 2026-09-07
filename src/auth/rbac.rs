@@ -63,6 +63,8 @@ pub enum Authority {
     /// Files belonging to one agent's work.
     StorageAgentRead,
     StorageAgentWrite,
+    /// Reading the usage ledger: what was spent, by whom, for which customer.
+    UsageRead,
     GatewayInvoke,
     /// Taking turns off the queue and reporting what they produced.
     ///
@@ -100,6 +102,7 @@ impl Authority {
         Authority::StorageTenantWrite,
         Authority::StorageAgentRead,
         Authority::StorageAgentWrite,
+        Authority::UsageRead,
         Authority::GatewayInvoke,
         Authority::WorkTake,
     ];
@@ -129,6 +132,7 @@ impl Authority {
             Authority::StorageTenantWrite => "storage:tenant:write",
             Authority::StorageAgentRead => "storage:agent:read",
             Authority::StorageAgentWrite => "storage:agent:write",
+            Authority::UsageRead => "usage:read",
             Authority::GatewayInvoke => "gateway:invoke",
             Authority::WorkTake => "work:take",
         }
@@ -160,6 +164,7 @@ impl Authority {
             Authority::StorageTenantWrite => "Add and replace files kept for the whole workspace",
             Authority::StorageAgentRead => "Read an agent's files",
             Authority::StorageAgentWrite => "Add and replace an agent's files",
+            Authority::UsageRead => "Read the usage ledger",
             Authority::GatewayInvoke => "Call a model",
             Authority::WorkTake => "Take turns off the queue (the runtime tier)",
         }
@@ -257,6 +262,7 @@ pub const DEFAULT_ROLES: &[RoleTemplate] = &[
             Authority::StorageTenantWrite,
             Authority::StorageAgentRead,
             Authority::StorageAgentWrite,
+            Authority::UsageRead,
             Authority::GatewayInvoke,
         ],
     },

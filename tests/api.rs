@@ -78,6 +78,8 @@ async fn harness() -> Harness {
     let chat: Arc<dyn ChatStore> = Arc::new(PostgresChatStore::new(pool.clone()));
     let roles: Arc<dyn outturn::api::role::RoleStore> =
         Arc::new(outturn::api::role::PostgresRoleStore::new(pool.clone()));
+    let usage: Arc<dyn outturn::api::usage::UsageStore> =
+        Arc::new(outturn::api::usage::PostgresUsageStore::new(pool.clone()));
     let state = Arc::new(ApiState::new(
         tenants.clone(),
         users.clone(),
@@ -85,6 +87,7 @@ async fn harness() -> Harness {
         agents.clone(),
         chat.clone(),
         roles.clone(),
+        usage.clone(),
         validator,
         minter,
         runtime_key,
@@ -99,6 +102,7 @@ async fn harness() -> Harness {
         pool: pool.clone(),
         agents: agents.clone(),
         chat: chat.clone(),
+        usage: usage.clone(),
     }));
 
     Harness {
@@ -1715,6 +1719,109 @@ async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "a role that does not exist was granted: {body}");
+
+    finish!(h);
+}
+
+// -- Usage ledger ---------------------------------------------------------------
+
+/// Every model call a turn reports becomes a ledger row, tagged with the
+/// session's account, and the export pages through them by cursor.
+#[tokio::test]
+async fn each_model_call_is_written_to_the_ledger_and_exported() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{}","title":"","account":"hoa-sunnyvale"}}"#,
+                agent["id"].as_str().expect("id")
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    assert_eq!(session["account"], "hoa-sunnyvale", "the account was not stored: {body}");
+    let session_id = session["id"].as_str().expect("id");
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job");
+    let lease = assignment["lease_token"].as_str().expect("lease");
+
+    // A turn of two model calls: the second fell back to another endpoint.
+    let stream = [
+        r#"{"kind":"delta","idx":0,"text":"Hi"}"#,
+        r#"{"kind":"usage","round":0,"endpoint":"openai:http://vllm:8000","model":"qwen","paid_by":"operator","prompt_tokens":10,"completion_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":0}"#,
+        r#"{"kind":"usage","round":1,"endpoint":"anthropic:https://api.anthropic.com","model":"claude-sonnet-5","paid_by":"operator","prompt_tokens":20,"completion_tokens":5,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1}"#,
+        r#"{"kind":"done","content":"Hi","prompt_tokens":30,"completion_tokens":7,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"provider":"anthropic:https://api.anthropic.com"}"#,
+    ]
+    .join("\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    // Paged one at a time, to prove the cursor.
+    let (status, body) = h.get("/v1/usage?limit=1", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let page: serde_json::Value = serde_json::from_str(&body).expect("page");
+    let first = &page["entries"][0];
+    assert_eq!(first["round"], 0);
+    assert_eq!(first["model"], "qwen");
+    assert_eq!(first["account"], "hoa-sunnyvale");
+    assert_eq!(first["session_id"], session_id);
+    assert_eq!(first["credential_owner"], "operator");
+    assert_eq!(first["prompt_tokens"], 10);
+    let next = page["next"].as_str().expect("cursor");
+
+    let (status, body) = h
+        .get(&format!("/v1/usage?limit=1&after={next}"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let page: serde_json::Value = serde_json::from_str(&body).expect("page");
+    assert_eq!(page["entries"][0]["round"], 1);
+    assert_eq!(page["entries"][0]["model"], "claude-sonnet-5");
+    assert_eq!(page["entries"][0]["reasoning_tokens"], 1);
+    let next = page["next"].as_str().expect("cursor");
+
+    let (_, body) = h
+        .get(&format!("/v1/usage?limit=1&after={next}"), Some(&admin))
+        .await;
+    let page: serde_json::Value = serde_json::from_str(&body).expect("page");
+    assert!(page["next"].is_null(), "the ledger should be exhausted: {body}");
+
+    // Another tenant's ledger is not this admin's to read.
+    let globex = h.make_tenant("Globex", "globex").await;
+    let (status, _) = h
+        .get(&format!("/v1/usage?tenant_id={globex}"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
     finish!(h);
 }

@@ -552,6 +552,7 @@ async fn streamed_session(
             outturn::api::chat::CreateSession {
                 agent_id,
                 title: String::new(),
+                account: None,
             },
         )
         .await

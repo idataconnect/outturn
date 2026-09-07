@@ -12,6 +12,10 @@ pub struct AgentSession {
     pub tenant_id: Uuid,
     pub agent_id: Uuid,
     pub title: String,
+    /// Which of the tenant's own customers this conversation is for, in the
+    /// tenant's own terms. Copied onto every usage row the session produces
+    /// so the tenant can split its bill; meaningless to the platform.
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +110,8 @@ pub struct CreateSession {
     pub agent_id: Uuid,
     #[serde(default)]
     pub title: String,
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Token counts reported by a provider, recorded per message so usage can be

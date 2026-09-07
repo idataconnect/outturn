@@ -208,6 +208,7 @@ impl Puller {
             progress: Some(sinks.0),
             on_tool: Some(sinks.1),
             on_tool_result: Some(sinks.2),
+            on_usage: Some(sinks.3),
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,

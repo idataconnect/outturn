@@ -166,6 +166,11 @@ Storage layout and retention are written up separately, in
 ordered scope-first rather than as the hierarchy you would expect, which looks
 like a mistake until you know about S3's per-bucket lifecycle rule cap.
 
+Every model call is a row in the usage ledger, tagged with tenant, agent,
+session, user, the tenant's own account label, the model that actually served,
+and whose key paid; the export at `/v1/usage` is what bills are built from.
+Written up in [docs/usage.md](docs/usage.md).
+
 Which model answers, whose key pays and how fallback works across tenants that
 bring their own keys is in [docs/routing.md](docs/routing.md); how defaults
 cascade from operator to tenant to agent with an explicit override at each

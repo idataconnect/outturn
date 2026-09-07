@@ -25,6 +25,7 @@ fn read_session(row: &sqlx::postgres::PgRow) -> AgentSession {
         tenant_id: row.get("tenant_id"),
         agent_id: row.get("agent_id"),
         title: row.get("title"),
+        account: row.try_get("account").ok().flatten(),
     }
 }
 
@@ -69,15 +70,16 @@ impl ChatStore for PostgresChatStore {
         }
 
         let row = sqlx::query(
-            "insert into agent_sessions (id, tenant_id, agent_id, user_id, title) \
-             values ($1, $2, $3, $4, $5) \
-             returning id, tenant_id, agent_id, title",
+            "insert into agent_sessions (id, tenant_id, agent_id, user_id, title, account) \
+             values ($1, $2, $3, $4, $5, $6) \
+             returning id, tenant_id, agent_id, title, account",
         )
         .bind(Uuid::now_v7())
         .bind(tenant_id)
         .bind(input.agent_id)
         .bind(user_id)
         .bind(input.title.trim())
+        .bind(input.account.as_deref().map(str::trim).filter(|a| !a.is_empty()))
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
@@ -87,7 +89,7 @@ impl ChatStore for PostgresChatStore {
 
     async fn list_sessions(&self, tenant_id: Uuid) -> Result<Vec<AgentSession>, ChatError> {
         let rows = sqlx::query(
-            "select id, tenant_id, agent_id, title from agent_sessions \
+            "select id, tenant_id, agent_id, title, account from agent_sessions \
              where tenant_id = $1 order by created_at desc",
         )
         .bind(tenant_id)
@@ -104,7 +106,7 @@ impl ChatStore for PostgresChatStore {
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError> {
         let row = sqlx::query(
-            "select id, tenant_id, agent_id, title from agent_sessions \
+            "select id, tenant_id, agent_id, title, account from agent_sessions \
              where tenant_id = $1 and id = $2",
         )
         .bind(tenant_id)

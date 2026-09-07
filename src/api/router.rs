@@ -26,6 +26,7 @@ pub struct ApiState {
     pub(super) chat: Arc<dyn ChatStore>,
     /// What a tenant's roles mean. Consulted on every authorised request.
     pub(super) roles: Arc<dyn RoleStore>,
+    pub(super) usage: Arc<dyn super::usage::UsageStore>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
     /// What the runtime tier presents. Not a token: see `RuntimeKey`.
@@ -56,6 +57,7 @@ impl ApiState {
         agents: Arc<dyn AgentStore>,
         chat: Arc<dyn ChatStore>,
         roles: Arc<dyn RoleStore>,
+        usage: Arc<dyn super::usage::UsageStore>,
         auth: TokenValidator,
         minter: TokenMinter,
         runtime_key: crate::auth::RuntimeKey,
@@ -70,6 +72,7 @@ impl ApiState {
             agents,
             chat,
             roles,
+            usage,
             auth,
             minter,
             runtime_key,
@@ -672,6 +675,53 @@ async fn delete_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
+
+// -- Usage --------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct UsageQuery {
+    /// Inclusive start, RFC 3339.
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive end, RFC 3339. A closed month is `from` the first and `to`
+    /// the first of the next.
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    /// The `next` of the previous page.
+    after: Option<Uuid>,
+    limit: Option<i64>,
+    /// System administrators may name a tenant; everyone else gets their own.
+    tenant_id: Option<Uuid>,
+}
+
+/// The ledger, paged. What a bill is built from.
+async fn export_usage(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<UsageQuery>,
+) -> Result<Json<super::usage::UsagePage>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsageRead).await?;
+    let tenant_id = match query.tenant_id {
+        Some(other) if other != claims.tenant_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your tenant's ledger".into()));
+            }
+            other
+        }
+        _ => claims.tenant_id,
+    };
+    let page = state
+        .usage
+        .export(
+            tenant_id,
+            query.from,
+            query.to,
+            query.after,
+            query.limit.unwrap_or(500).clamp(1, 5000),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(page))
+}
+
 pub fn routes(state: Arc<ApiState>) -> Router {
     Router::new()
         .route("/v1/login", post(super::login::login))
@@ -716,6 +766,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
+        .route("/v1/usage", get(export_usage))
         .route("/v1/authorities", get(list_authorities))
         .route("/v1/roles", get(list_roles).post(create_role))
         .route(
