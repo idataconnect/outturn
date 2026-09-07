@@ -45,8 +45,23 @@ async fn main() {
                 Ok(store) => {
                     // Refuse to start rather than run without storage: a pod
                     // that comes up with a bucket it cannot reach hands every
-                    // agent an error dressed up as a listing.
-                    store.ensure_bucket().await.expect("object storage bucket");
+                    // agent an error dressed up as a listing. But wait for it
+                    // first -- on a fresh cluster this pod is usually up before
+                    // the store is, and a dependency arriving is not a fault.
+                    let mut attempt = 0u32;
+                    loop {
+                        match store.ensure_bucket().await {
+                            Ok(()) => break,
+                            Err(e) if attempt < 60 => {
+                                attempt += 1;
+                                if attempt == 1 {
+                                    tracing::info!(error = %e, "waiting for object storage");
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            }
+                            Err(e) => panic!("object storage bucket: {e}"),
+                        }
+                    }
                     // Session files are scratch and are swept. How soon is
                     // the operator's call; the runtime holds no database, so
                     // it is an environment variable rather than a setting.
