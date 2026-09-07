@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use sqlx::postgres::PgPool;
-use sqlx::{Executor, Postgres, Row};
+use sqlx::Row;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
@@ -28,19 +28,28 @@ fn internal(e: sqlx::Error) -> EventError {
 }
 
 /// Appends an event and announces it.
-///
-/// Takes any executor so callers can append inside the transaction that caused
-/// the event; the NOTIFY then fires only if that transaction commits.
-pub async fn append<'e, E>(
-    executor: E,
+pub async fn append(
+    pool: &PgPool,
     tenant_id: Uuid,
     session_id: Option<Uuid>,
     kind: &str,
     payload: serde_json::Value,
-) -> Result<Uuid, EventError>
-where
-    E: Executor<'e, Database = Postgres> + Copy,
-{
+) -> Result<Uuid, EventError> {
+    let mut conn = pool.acquire().await.map_err(internal)?;
+    append_on(&mut conn, tenant_id, session_id, kind, payload).await
+}
+
+/// Appends an event on a connection the caller holds.
+///
+/// For callers inside a transaction, so the event commits with the change
+/// that caused it and the NOTIFY fires only if that transaction commits.
+pub async fn append_on(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    session_id: Option<Uuid>,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<Uuid, EventError> {
     let id = Uuid::now_v7();
     let row = sqlx::query(
         "insert into events (id, tenant_id, session_id, kind, payload) \
@@ -51,7 +60,7 @@ where
     .bind(session_id)
     .bind(kind)
     .bind(&payload)
-    .fetch_one(executor)
+    .fetch_one(&mut *conn)
     .await
     .map_err(internal)?;
 
@@ -66,7 +75,7 @@ where
     sqlx::query("select pg_notify($1, $2)")
         .bind(CHANNEL)
         .bind(hint.to_string())
-        .execute(executor)
+        .execute(&mut *conn)
         .await
         .map_err(internal)?;
 

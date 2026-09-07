@@ -130,12 +130,25 @@ pub async fn claim(
     // cannot collide with a concurrent claimer. The ranking handles two jobs
     // for one key inside a single batch, where the advisory lock is held by
     // this same transaction and so would admit both.
+    //
+    // Keys already running are excluded *here*, before the limit is applied,
+    // and not only in the guard below. The guard alone is not enough: with a
+    // limit of one, a queued turn for a session whose previous turn is still
+    // running is the top candidate, the guard rejects it, and nothing else is
+    // ever looked at -- so one busy session stalls every claim in the fleet
+    // until its turn ends. This check is against a possibly stale snapshot,
+    // which is why the guard stays; it only has to be right often enough that
+    // the limit is not spent on work that cannot start.
     let picked: Vec<Uuid> = sqlx::query_scalar(
         "with candidate as ( \
              select id, serial_key from jobs \
              where state = 'pending' \
                and run_after <= now() \
                and (cardinality($1::text[]) = 0 or kind = any($1)) \
+               and (serial_key is null or not exists ( \
+                   select 1 from jobs running \
+                   where running.state = 'running' \
+                     and running.serial_key = jobs.serial_key)) \
              order by priority, run_after, id \
              for update skip locked \
              limit $2 \
@@ -191,12 +204,19 @@ pub async fn claim(
     Ok(rows.iter().map(|r| JobHandle { job: read_job(r) }).collect())
 }
 
-pub async fn complete(pool: &PgPool, id: Uuid) -> Result<(), JobError> {
+/// Closes a job out as done.
+///
+/// `token` is the lease the caller holds. Matched so a runtime whose lease
+/// lapsed -- and whose turn has since been handed to another pod -- cannot
+/// finish the job out from under the pod now running it. Passing None skips
+/// the check, for callers closing a job they know nobody else can hold.
+pub async fn complete(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
     let result = sqlx::query(
         "update jobs set state = 'succeeded', leased_until = null, updated_at = now() \
-         where id = $1",
+         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
     )
     .bind(id)
+    .bind(token)
     .execute(pool)
     .await
     .map_err(internal)?;
@@ -209,11 +229,15 @@ pub async fn complete(pool: &PgPool, id: Uuid) -> Result<(), JobError> {
 
 /// Records a failure. Retries with backoff while attempts remain, otherwise
 /// parks the job in `failed`.
+///
+/// `token` as for `complete`: a stale holder must not fail a job somebody
+/// else is now running.
 pub async fn fail(
     pool: &PgPool,
     id: Uuid,
     error: &str,
     backoff: Duration,
+    token: Option<Uuid>,
 ) -> Result<(), JobError> {
     let result = sqlx::query(
         "update jobs set \
@@ -222,11 +246,12 @@ pub async fn fail(
              leased_until = null, \
              run_after = now() + make_interval(secs => $3), \
              updated_at = now() \
-         where id = $1",
+         where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4)",
     )
     .bind(id)
     .bind(error)
     .bind(backoff.as_secs_f64())
+    .bind(token)
     .execute(pool)
     .await
     .map_err(internal)?;
@@ -271,6 +296,24 @@ pub async fn is_running(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
     Ok(state.as_deref() == Some("running"))
 }
 
+/// Whether `token` is the lease currently held on a running job.
+///
+/// The ticket a runtime presents when it reports or hands back a turn. A job
+/// id alone is not enough: after a lease lapses the same id is out with
+/// another pod, and the first pod's report would otherwise be written over
+/// the second's.
+pub async fn holds_lease(pool: &PgPool, id: Uuid, token: Uuid) -> Result<bool, JobError> {
+    let held: Option<bool> = sqlx::query_scalar(
+        "select lease_token = $2 from jobs where id = $1 and state = 'running'",
+    )
+    .bind(id)
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+    Ok(held == Some(true))
+}
+
 /// What became of a job that was handed back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Released {
@@ -293,11 +336,16 @@ pub enum Released {
 /// permanently full cluster claiming and releasing the same work forever, with
 /// no terminal state and nobody told -- a session showing an indicator that
 /// resolves on no timescale at all.
+///
+/// `token` as for `complete`: only the holder of the current lease may hand
+/// the job back, or a pod whose lease lapsed would return work that another
+/// pod is in the middle of.
 pub async fn release(
     pool: &PgPool,
     id: Uuid,
     delay: Duration,
     max_releases: i32,
+    token: Option<Uuid>,
 ) -> Result<Released, JobError> {
     let state: Option<String> = sqlx::query_scalar(
         "update jobs set \
@@ -309,12 +357,13 @@ pub async fn release(
              leased_until = null, \
              run_after = now() + make_interval(secs => $2), \
              updated_at = now() \
-         where id = $1 and state = 'running' \
+         where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4) \
          returning state",
     )
     .bind(id)
     .bind(delay.as_secs_f64())
     .bind(max_releases)
+    .bind(token)
     .fetch_optional(pool)
     .await
     .map_err(internal)?;
@@ -331,20 +380,30 @@ pub async fn release(
 /// This is what makes a crashed worker recoverable: the claim is a lease, not
 /// a transfer of ownership. Attempts are not incremented again here — the
 /// claim already counted it.
-pub async fn reap_abandoned(pool: &PgPool) -> Result<u64, JobError> {
-    let result = sqlx::query(
+///
+/// Returns how many were reaped, and the jobs that were parked as failed
+/// rather than retried -- those have nobody left to tell the user, so the
+/// caller has to.
+pub async fn reap_abandoned(pool: &PgPool) -> Result<(u64, Vec<Job>), JobError> {
+    let rows = sqlx::query(
         "update jobs set \
              state = case when attempts >= max_attempts then 'failed' else 'pending' end, \
              last_error = coalesce(last_error, 'lease expired'), \
              leased_until = null, \
              updated_at = now() \
-         where state = 'running' and leased_until < now()",
+         where state = 'running' and leased_until < now() \
+         returning id, tenant_id, kind, payload, attempts, max_attempts, state",
     )
-    .execute(pool)
+    .fetch_all(pool)
     .await
     .map_err(internal)?;
 
-    Ok(result.rows_affected())
+    let gave_up = rows
+        .iter()
+        .filter(|r| r.get::<String, _>("state") == "failed")
+        .map(read_job)
+        .collect();
+    Ok((rows.len() as u64, gave_up))
 }
 
 /// Extends the lease on a job this worker is still running.

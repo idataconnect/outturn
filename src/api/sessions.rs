@@ -46,7 +46,7 @@ pub async fn create_session(
     let claims = authorize(&state, &headers, Authority::SessionsCreate)?;
     let session = state
         .chat
-        .create_session(claims.tenant_id, claims.session_id, input)
+        .create_session(claims.tenant_id, claims.subject, input)
         .await?;
     Ok((StatusCode::CREATED, Json(session)))
 }
@@ -118,7 +118,7 @@ pub async fn send_message(
             input.delivery,
             // The session id on a token is the account id, which is what the
             // login path mints it from.
-            Some(claims.session_id),
+            Some(claims.subject),
         )
         .await?;
 
@@ -145,13 +145,13 @@ fn internal<E: std::fmt::Display>(e: E) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
-/// Queues the turn, then announces the message.
+/// Records the message, queues the turn and announces it, together.
 ///
-/// These are two statements rather than one transaction: sqlx's transaction
-/// guard is not Send across awaits, which disqualifies the calling axum
-/// handler. Ordering them queue-then-announce means the worst case is a queued
-/// turn the browser has not been told about, which the next poll picks up --
-/// rather than an announced message with no work queued to answer it.
+/// One transaction, so the browser is only told the message exists once the
+/// work to answer it is durably queued -- and a message never exists without
+/// its job. The earlier version ran these as separate statements, which left
+/// a window where a stored user message had no job to answer it and nothing
+/// that would ever notice.
 async fn enqueue_turn(
     pool: &sqlx::PgPool,
     tenant_id: Uuid,
@@ -159,30 +159,27 @@ async fn enqueue_turn(
     payload: serde_json::Value,
     event: serde_json::Value,
 ) -> Result<(), String> {
-    // Serialised on the session: a turn must see the previous reply, and two
-    // running at once would each answer against a history missing the other.
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
     // Somebody is in this conversation, so it counts towards how many pods the
     // fleet wants. Written here rather than derived from the transcript later:
     // the count is needed every few seconds by an autoscaler, and asking the
     // busiest table in the system for it gets more expensive exactly as the
     // cluster gets busier.
-    //
-    // Best effort. A session that fails to mark itself live is one the
-    // estimate misses, which costs a little headroom -- not a turn.
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "insert into live_sessions (session_id, expires_at) \
          values ($1, now() + interval '5 minutes') \
          on conflict (session_id) do update set expires_at = excluded.expires_at",
     )
     .bind(session_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
-    {
-        tracing::warn!(session_id = %session_id, error = %e, "could not mark a session live");
-    }
+    .map_err(|e| e.to_string())?;
 
+    // Serialised on the session: a turn must see the previous reply, and two
+    // running at once would each answer against a history missing the other.
     jobs::enqueue(
-        pool,
+        &mut *tx,
         tenant_id,
         CHAT_TURN,
         payload,
@@ -193,12 +190,12 @@ async fn enqueue_turn(
         // of them.
         jobs::PRIORITY_REALTIME,
     )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    events::append_on(&mut tx, tenant_id, Some(session_id), "chat.message", event)
         .await
         .map_err(|e| e.to_string())?;
 
-    events::append(pool, tenant_id, Some(session_id), "chat.message", event)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    tx.commit().await.map_err(|e| e.to_string())
 }

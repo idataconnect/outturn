@@ -31,7 +31,7 @@ use axum::Json;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::auth::{Authority, Role};
+use crate::auth::Authority;
 use crate::jobs;
 
 use super::router::{ApiError, ApiState};
@@ -68,6 +68,24 @@ pub struct Assignment {
     /// Minted per turn rather than held by the runtime, so what a turn may
     /// reach is bounded by what this tier granted for it.
     pub gateway_token: String,
+    /// The claim this turn was handed out under. Quoted back when the turn
+    /// is reported or handed back, so a pod whose lease lapsed cannot write
+    /// over the pod that now holds it.
+    pub lease_token: Uuid,
+}
+
+/// Header a runtime quotes its lease in.
+pub const LEASE_HEADER: &str = "x-outturn-lease";
+
+fn lease_from(headers: &axum::http::HeaderMap) -> Result<Uuid, ApiError> {
+    headers
+        .get(LEASE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("{LEASE_HEADER} must carry the lease this turn was handed out under"),
+        ))
 }
 
 /// Hands out one turn, or nothing.
@@ -101,12 +119,20 @@ pub async fn take(
             // report, and a serial key admits no second job while one is
             // running -- so dropping one here wedges that session until a
             // reaper notices, or for ever if none does.
+            let Some(lease_token) = handle.job.lease_token else {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "a claim came back without a lease".to_string(),
+                ));
+            };
+
             let Some(worker) = state.worker.get() else {
                 let _ = jobs::release(
                     &state.pool,
                     handle.job.id,
                     Duration::from_secs(0),
                     jobs::MAX_RELEASES,
+                    Some(lease_token),
                 )
                 .await;
                 return Err((
@@ -120,7 +146,7 @@ pub async fn take(
                 // it interrupted. The job is done rather than abandoned, and
                 // the runtime is not troubled with it.
                 Ok(None) => {
-                    let _ = jobs::complete(&state.pool, handle.job.id).await;
+                    let _ = jobs::complete(&state.pool, handle.job.id, handle.job.lease_token).await;
                     continue;
                 }
                 Ok(Some(request)) => {
@@ -136,6 +162,7 @@ pub async fn take(
                                     handle.job.id,
                                     Duration::from_secs(1),
                                     jobs::MAX_RELEASES,
+                                    Some(lease_token),
                                 )
                                 .await;
                                 return Err(e);
@@ -150,6 +177,7 @@ pub async fn take(
                         job_id: handle.job.id,
                         request,
                         gateway_token,
+                        lease_token,
                     })));
                 }
                 Err(e) => {
@@ -161,8 +189,25 @@ pub async fn take(
                         handle.job.id,
                         &e.to_string(),
                         Duration::from_secs(5),
+                        handle.job.lease_token,
                     )
                     .await;
+                    // Nothing was announced for this turn, so the browser
+                    // would otherwise wait on a reply that is never coming.
+                    // The last attempt is when it becomes final.
+                    if handle.job.attempts >= handle.job.max_attempts {
+                        let _ = crate::events::append(
+                            &state.pool,
+                            payload.tenant_id,
+                            Some(payload.session_id),
+                            "chat.error",
+                            serde_json::json!({
+                                "message": e.to_string(),
+                                "message_id": payload.message_id,
+                            }),
+                        )
+                        .await;
+                    }
                     continue;
                 }
             }
@@ -193,7 +238,7 @@ pub async fn take(
 pub fn mint_for(state: &ApiState, session_id: Uuid, tenant_id: Uuid) -> Result<String, ApiError> {
     state
         .minter
-        .mint(session_id, tenant_id, &[Role::Operator])
+        .mint_turn(session_id, tenant_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -216,23 +261,24 @@ pub async fn report(
         "this pod is not serving turns".to_string(),
     ))?;
 
-    // Only a turn that is actually out with a runtime may be reported. The
-    // claim is the ticket: a job that is pending was never handed out, and one
-    // that already succeeded has been reported once. Without this, holding a
-    // job id is enough to write into a transcript -- including a second time,
-    // over a reply that was already finished.
-    let running = jobs::is_running(&state.pool, job_id)
+    // Only the pod holding the current lease may report. The claim is the
+    // ticket: a job that is pending was never handed out, one that already
+    // succeeded has been reported once, and one whose lease lapsed is out
+    // with somebody else. Without this, holding a job id is enough to write
+    // into a transcript -- including over a turn another pod is streaming.
+    let lease = lease_from(&headers)?;
+    let held = jobs::holds_lease(&state.pool, job_id, lease)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if !running {
+    if !held {
         return Err((
             StatusCode::CONFLICT,
-            "that turn is not out with a runtime".to_string(),
+            "that turn is not out with this runtime".to_string(),
         ));
     }
 
     worker
-        .finish_turn(job_id, body.into_data_stream())
+        .finish_turn(job_id, lease, body.into_data_stream())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -250,13 +296,22 @@ pub async fn abandon(
     headers: axum::http::HeaderMap,
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = super::router::authorize(&state, &headers, Authority::WorkTake)?;
+    super::router::authorize(&state, &headers, Authority::WorkTake)?;
+    let lease = lease_from(&headers)?;
 
     // Given back rather than failed: nothing about the turn was wrong, the
     // pod running it could not report what it produced.
-    match jobs::release(&state.pool, job_id, Duration::from_secs(1), jobs::MAX_RELEASES).await {
+    match jobs::release(
+        &state.pool,
+        job_id,
+        Duration::from_secs(1),
+        jobs::MAX_RELEASES,
+        Some(lease),
+    )
+    .await
+    {
         Ok(jobs::Released::Queued) => {
-            tracing::info!(job_id = %job_id, actor = %claims.session_id, "a runtime handed a turn back");
+            tracing::info!(job_id = %job_id, "a runtime handed a turn back");
         }
         Ok(jobs::Released::GaveUp) => {
             tracing::error!(job_id = %job_id, "a turn was handed back too many times; giving up");

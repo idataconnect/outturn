@@ -107,6 +107,19 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
     projected
 }
 
+/// The transcript as it stood when `prompt` was sent: nothing after it.
+///
+/// A message the user sent after this prompt is already stored by the time
+/// the turn is prepared, and left in it would reach the model twice -- once
+/// here as history, and again when the gateway hands it over as a steer. The
+/// model then answers the later message in the earlier one's reply and is
+/// told about it a second time. Later messages reach this turn only as
+/// steers, once, or wait for their own turn.
+fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::Message> {
+    // Ids are UUIDv7, so id order is send order.
+    messages.into_iter().filter(|m| m.id <= prompt).collect()
+}
+
 /// What a completed turn produced.
 pub(super) struct TurnOutcome {
     content: String,
@@ -150,7 +163,7 @@ impl Worker {
             payload.tenant_id,
             Some(payload.session_id),
             "chat.error",
-            serde_json::json!({ "message": reason }),
+            serde_json::json!({ "message": reason, "message_id": payload.message_id }),
         )
         .await;
     }
@@ -319,8 +332,29 @@ impl Worker {
                     _ = shutdown.notified() => return,
                     _ = ticker.tick() => {
                         match jobs::reap_abandoned(&self.pool).await {
-                            Ok(0) => {}
-                            Ok(n) => tracing::info!(jobs = n, "returned abandoned work to the queue"),
+                            Ok((0, _)) => {}
+                            Ok((n, gave_up)) => {
+                                tracing::info!(jobs = n, "returned abandoned work to the queue");
+                                // A job the reaper parks as failed has no
+                                // worker left to clean up after it. Left
+                                // alone, its empty reply blocks the session
+                                // and the reader waits for ever.
+                                for job in gave_up {
+                                    if job.kind != CHAT_TURN {
+                                        continue;
+                                    }
+                                    match serde_json::from_value::<ChatTurnPayload>(job.payload) {
+                                        Ok(payload) => {
+                                            self.abandon_payload(
+                                                &payload,
+                                                "the turn was lost too many times and was given up on",
+                                            )
+                                            .await
+                                        }
+                                        Err(e) => tracing::error!(job_id = %job.id, error = %e, "payload"),
+                                    }
+                                }
+                            }
                             Err(e) => tracing::error!(error = %e, "could not reap abandoned work"),
                         }
 
@@ -373,6 +407,7 @@ impl Worker {
             .messages(payload.session_id)
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+        let history = up_to(history.messages, payload.message_id);
 
         let egress = super::egress::rules_for(&self.pool, payload.tenant_id)
             .await
@@ -393,12 +428,28 @@ impl Worker {
                 serde_json::to_value(&placeholder.message)?,
             )
             .await?;
+        } else {
+            // The reply already exists, so this is a retry: the pod running
+            // it was lost and the turn is starting over. Said, so a reader
+            // watching an empty reply is told why it went quiet rather than
+            // left with an indicator that means nothing.
+            events::append(
+                &self.pool,
+                payload.tenant_id,
+                Some(payload.session_id),
+                "chat.retry",
+                serde_json::json!({
+                    "message_id": placeholder.message.id,
+                    "replies_to": payload.message_id,
+                }),
+            )
+            .await?;
         }
 
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             tenant_id: payload.tenant_id,
-            conversation: project(&history.messages)
+            conversation: project(&history)
                 .into_iter()
                 .map(serde_json::from_value)
                 .collect::<Result<_, _>>()?,
@@ -419,13 +470,20 @@ impl Worker {
     /// touches the transcript stays on this tier. The job is completed or
     /// failed here rather than by the runtime, which holds no database and
     /// should not be trusted to say whether its own work succeeded.
+    ///
+    /// `lease_token` is the claim the reporting runtime holds, already checked
+    /// by the caller. Everything this writes is conditional on still holding
+    /// it: a lease that lapses mid-report means the turn is out with another
+    /// pod, whose result must stand.
     pub(super) async fn finish_turn(
         &self,
         job_id: Uuid,
+        lease_token: Uuid,
         stream: impl futures::Stream<Item = Result<axum::body::Bytes, impl std::fmt::Display>> + Unpin,
     ) -> anyhow::Result<()> {
         let job = jobs::get(&self.pool, job_id).await?;
         let payload: ChatTurnPayload = serde_json::from_value(job.payload.clone())?;
+        let lease_token = Some(lease_token);
 
         // Renewed for as long as results keep arriving. A turn runs for as
         // long as a model takes and the lease is deliberately short, so
@@ -439,7 +497,6 @@ impl Worker {
         // saying so.
         // Quoted back on every renewal, so a heartbeat outliving its claim
         // cannot extend whichever claim replaced it.
-        let lease_token = job.lease_token;
         let heartbeat = {
             let pool = self.pool.clone();
             tokio::spawn(async move {
@@ -501,14 +558,26 @@ impl Worker {
                         payload.tenant_id,
                         Some(payload.session_id),
                         "chat.error",
-                        serde_json::json!({ "message": e.to_string() }),
+                        serde_json::json!({ "message": e.to_string(), "message_id": payload.message_id }),
                     )
                     .await;
                 }
-                jobs::fail(&self.pool, job_id, &e.to_string(), Duration::from_secs(5)).await?;
+                jobs::fail(&self.pool, job_id, &e.to_string(), Duration::from_secs(5), lease_token).await?;
                 return Ok(());
             }
         };
+
+        // Checked again before anything final is written. The heartbeat has
+        // been renewing against this token; if that stopped succeeding, the
+        // lease lapsed under a stall and this turn has been handed to another
+        // pod, whose reply this must not overwrite.
+        let still_ours = match lease_token {
+            Some(token) => jobs::extend_lease(&self.pool, job_id, jobs::DEFAULT_LEASE, token).await?,
+            None => false,
+        };
+        if !still_ours {
+            anyhow::bail!("the lease on this turn lapsed while it was being reported");
+        }
 
         let agent = self
             .agents
@@ -544,7 +613,10 @@ impl Worker {
         )
         .await?;
 
-        jobs::complete(&self.pool, job_id).await?;
+        // With the token this tier read when the report began. If the lease
+        // lapsed meanwhile and the turn is running elsewhere, this returns
+        // NotFound and the other pod's result stands.
+        jobs::complete(&self.pool, job_id, lease_token).await?;
         Ok(())
     }
 
@@ -612,6 +684,9 @@ mod projection_tests {
             model: None,
             prompt_tokens: None,
             completion_tokens: None,
+            replies_to: None,
+            absorbed_by: None,
+            job_state: None,
         }
     }
 
@@ -652,6 +727,19 @@ mod projection_tests {
             }
         }
         assert!(awaiting.is_empty(), "calls left unanswered: {awaiting:?}");
+    }
+
+    #[test]
+    fn a_turn_sees_nothing_sent_after_its_own_prompt() {
+        // A later message is delivered as a steer by the gateway; delivering
+        // it here as well is how the model came to answer "Bleargh 3" in the
+        // reply to "Bleargh 2" and then be told about it again.
+        let first = message("user", "Bleargh 2", serde_json::json!({}));
+        let later = message("user", "Bleargh 3", serde_json::json!({}));
+        let prompt = first.id;
+        let kept = up_to(vec![first, later], prompt);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].content, "Bleargh 2");
     }
 
     #[test]
