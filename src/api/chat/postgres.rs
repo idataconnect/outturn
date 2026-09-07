@@ -156,6 +156,9 @@ impl ChatStore for PostgresChatStore {
                         string_agg(e.payload->>'text', '' order by e.id) as text \
                  from events e, bound \
                  where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
+                   and (e.payload->>'message_id')::uuid in ( \
+                       select id from agent_messages \
+                       where session_id = $1 and role = 'assistant' and content = '') \
                  group by 1 \
              ) \
              select m.id, m.session_id, m.role, m.metadata, \

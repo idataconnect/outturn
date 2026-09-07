@@ -365,6 +365,25 @@ impl Worker {
                         let _ = sqlx::query("delete from live_sessions where expires_at < now()")
                             .execute(&self.pool)
                             .await;
+
+                        // Deltas exist to assemble a reply that is still
+                        // streaming and to let a browser catch up on one. Once
+                        // the reply is stored they are copies of text held
+                        // elsewhere, and the events table is the one that
+                        // grows with every token ever generated. Kept a day
+                        // so a poll cursor from a long-idle tab still finds
+                        // them, then gone.
+                        let _ = sqlx::query(
+                            "delete from events e \
+                             where e.kind = 'chat.delta' \
+                               and e.created_at < now() - interval '1 day' \
+                               and exists ( \
+                                   select 1 from agent_messages m \
+                                   where m.id = (e.payload->>'message_id')::uuid \
+                                     and m.content <> '')",
+                        )
+                        .execute(&self.pool)
+                        .await;
                     },
                 }
             }
@@ -430,9 +449,26 @@ impl Worker {
             .await?;
         } else {
             // The reply already exists, so this is a retry: the pod running
-            // it was lost and the turn is starting over. Said, so a reader
-            // watching an empty reply is told why it went quiet rather than
-            // left with an indicator that means nothing.
+            // it was lost and the turn is starting over.
+            //
+            // Anything the lost attempt had absorbed goes back to pending.
+            // The gateway marked those messages as taken when it handed them
+            // over, and the attempt that took them died with them unanswered;
+            // left marked, they would never be handed over again and their
+            // own turns would complete as "already answered" -- the message
+            // simply vanishes. Unmarked, the retry is offered them as steers
+            // exactly as the first attempt was.
+            sqlx::query(
+                "update agent_messages set absorbed_by = null \
+                 where absorbed_by = $1 and session_id = $2",
+            )
+            .bind(placeholder.message.id)
+            .bind(payload.session_id)
+            .execute(&self.pool)
+            .await?;
+
+            // Said, so a reader watching an empty reply is told why it went
+            // quiet rather than left with an indicator that means nothing.
             events::append(
                 &self.pool,
                 payload.tenant_id,

@@ -99,7 +99,8 @@ spec:
         # bottleneck.
         targetQueryValue: "40"
         # The same backlog the runtime scales on: rows that cannot be claimed
-        # are not work.
+        # are not work. Summed across priorities -- the view groups by
+        # priority, and a max would count only the busier class.
         query: >-
-          select coalesce(max(claimable), 0)
+          select coalesce(sum(claimable), 0)
           from job_backlog where kind = 'chat.turn'

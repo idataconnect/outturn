@@ -598,10 +598,13 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     let history = store.messages(session_id).await.expect("history");
     assert_eq!(history.messages.len(), 1);
     assert_eq!(history.messages[0].content, full);
+    // A finished reply's deltas are not assembled -- the stored content is
+    // the answer, and the deltas are pruned in time -- so nothing is
+    // outstanding. What matters is below: none may be replayed either.
     assert_eq!(
         history.messages[0].delta_next,
-        fragments.len() as i32,
-        "content already accounts for every delta"
+        0,
+        "a finished reply has no deltas still to come"
     );
 
     // The client polls from the cursor the transcript was read at. Nothing

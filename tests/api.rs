@@ -1433,6 +1433,96 @@ async fn asking_for_work_when_there_is_none_says_so() {
     assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
 }
 
+/// A message absorbed by an attempt that was lost is offered to the retry.
+///
+/// The gateway marks a message as taken when it hands it over. If the pod
+/// running that turn then dies, the retry starts over from the prompt -- and
+/// unless the mark is cleared, the taken message is never handed over again,
+/// while its own turn completes as "already answered". The message vanishes.
+#[tokio::test]
+async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
+    let h = harness_or_skip!();
+    let acme = h.make_tenant("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, Role::Admin)))
+        .await;
+
+    let (status, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{}","title":""}}"#, agent["id"].as_str().expect("id")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    let session_id: Uuid = session["id"].as_str().expect("id").parse().expect("uuid");
+
+    // The prompt, taken by a runtime.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"one"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job: Uuid = assignment["job_id"].as_str().expect("job").parse().expect("uuid");
+    let lease = assignment["lease_token"].as_str().expect("lease").to_string();
+    let reply: Uuid = assignment["reply_id"].as_str().expect("reply").parse().expect("uuid");
+
+    // A second message arrives mid-turn and the gateway hands it over.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"two"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let taken = outturn::gateway::routing::take_pending(&h.db.pool, session_id, reply)
+        .await
+        .expect("take");
+    assert_eq!(taken.len(), 1, "the steer should have been handed over once");
+
+    // The runtime dies without reporting, and hands the turn back.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/abandon"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, &lease)
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The retry is handed the same turn, and the steer is pending again.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let retry: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    assert_eq!(retry["job_id"], assignment["job_id"], "the retry should be the same job");
+
+    let again = outturn::gateway::routing::take_pending(&h.db.pool, session_id, reply)
+        .await
+        .expect("take");
+    assert_eq!(
+        again.len(),
+        1,
+        "the message the lost attempt absorbed was never offered to the retry"
+    );
+    assert_eq!(again[0].content, "two");
+}
+
 /// Only the runtime key takes work; a signed token never does.
 ///
 /// The runtime holds no signing key, so nothing it could present is a token.

@@ -497,7 +497,14 @@ fn run_tool(call: &ToolCall) -> Message {
     // The reader gets everything; the model gets what fits. Cutting it down
     // happens here and once: what the model is handed now is what it will be
     // shown on every later turn, so the two must be the same string.
-    let is_error = content.contains("\"error\"");
+    //
+    // A failure is a result whose top-level object carries `error`. Matching
+    // the substring instead flagged any file that happened to contain the
+    // word, and a read of an error log was reported as the read having failed.
+    let is_error = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("error").map(|e| !e.is_null()))
+        .unwrap_or(false);
     let for_model = for_the_model(&content);
     host::tool_finished(&ToolOutcome {
         id: call.id.clone(),
