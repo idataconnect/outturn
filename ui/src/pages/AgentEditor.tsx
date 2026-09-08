@@ -121,7 +121,10 @@ export default function AgentEditor() {
           }),
         })
         // Straight to the editor, where the behaviour settings live: they
-        // are overrides on an agent that has to exist first.
+        // are overrides on an agent that has to exist first. Navigating here
+        // does not unmount this component -- both routes render AgentEditor
+        // in the same spot in the tree -- so saving must be cleared by hand.
+        setSaving(false)
         void navigate(`/agents/${made.id}`)
         return
       }
@@ -134,6 +137,7 @@ export default function AgentEditor() {
           enabled: form.enabled,
         }),
       })
+      setSaving(false)
       void navigate('/agents')
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save agent')
