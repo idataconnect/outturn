@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Settings,
+  BookText,
   Users as UsersIcon,
   KeyRound,
 } from 'lucide-react'
@@ -23,6 +24,8 @@ import {
 } from './lib/session'
 import Login from './pages/Login'
 import Agents from './pages/Agents'
+import Skills from './pages/Skills'
+import SkillEditor from './pages/SkillEditor'
 import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
 import Workspaces from './pages/Workspaces'
@@ -108,6 +111,7 @@ function SettingsPage() {
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
+  { to: '/skills', icon: BookText, label: 'Skills', authority: 'skills:read' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
   { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
@@ -263,6 +267,31 @@ function Shell() {
             element={
               <RequireAuthority authority="agents:read">
                 <Agents />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/skills"
+            element={
+              <RequireAuthority authority="skills:read">
+                <Skills />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/skills/new"
+            element={
+              <RequireAuthority authority="skills:write">
+                <SkillEditor />
+              </RequireAuthority>
+            }
+          />
+          {/* Read opens it; the page decides whether it can be written. */}
+          <Route
+            path="/skills/:id"
+            element={
+              <RequireAuthority authority="skills:read">
+                <SkillEditor />
               </RequireAuthority>
             }
           />
