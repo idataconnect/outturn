@@ -52,8 +52,10 @@ function SettingsPage() {
   const canEdit = authorities.includes('settings:update')
   const isOperator =
     state.status === 'authenticated' && state.session.roles.includes('system_admin')
+  const [tab, setTab] = useState<'workspace' | 'platform'>('workspace')
+
   return (
-    <div className="p-6 max-w-3xl space-y-8">
+    <div className="p-6 max-w-3xl space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Settings</h1>
         <p className="mt-2 text-surface-600 dark:text-surface-400">
@@ -61,18 +63,40 @@ function SettingsPage() {
           overridden here, and an agent can override again on its own page.
         </p>
       </div>
-      <SettingsCascade base="/v1/settings" canEdit={canEdit} levelName="this workspace" />
 
       {isOperator && (
+        <div className="flex gap-1 border-b border-surface-200 dark:border-surface-800">
+          {(
+            [
+              { key: 'workspace', label: 'This workspace' },
+              { key: 'platform', label: 'Platform defaults' },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                tab === t.key
+                  ? 'border-brand-600 text-surface-900 dark:text-surface-100'
+                  : 'border-transparent text-surface-500 dark:text-surface-400 hover:text-surface-800 dark:hover:text-surface-200'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(!isOperator || tab === 'workspace') && (
+        <SettingsCascade base="/v1/settings" canEdit={canEdit} levelName="this workspace" />
+      )}
+
+      {isOperator && tab === 'platform' && (
         <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
-              Platform defaults
-            </h2>
-            <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
-              What every workspace gets unless it overrides. Visible to the operator only.
-            </p>
-          </div>
+          <p className="text-sm text-surface-600 dark:text-surface-400">
+            What every workspace gets unless it overrides. Visible to the operator only.
+          </p>
           <SettingsCascade base="/v1/platform/settings" canEdit levelName="the platform" />
         </section>
       )}
