@@ -6,6 +6,7 @@ pub mod usage;
 pub mod settings;
 mod agents;
 mod sessions;
+mod skills;
 mod events;
 mod files;
 mod login;
@@ -14,6 +15,7 @@ mod router;
 pub mod session;
 pub mod work;
 pub mod worker;
+pub mod skill;
 pub mod workspace;
 pub mod user;
 

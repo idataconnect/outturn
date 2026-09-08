@@ -106,6 +106,9 @@ async fn main() {
         }
     };
 
+    let skills: Arc<dyn outturn::api::skill::SkillStore> =
+        Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
+
     seed::dev_seed(&users, &workspaces, &roles).await.expect("dev seed");
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
@@ -120,6 +123,7 @@ async fn main() {
         users,
         sessions,
         agents.clone(),
+        skills.clone(),
         chat.clone(),
         roles,
         usage.clone(),

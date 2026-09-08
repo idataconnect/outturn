@@ -34,6 +34,7 @@ struct Harness {
     #[allow(dead_code)]
     sessions: Arc<dyn SessionStore>,
     agents: Arc<dyn AgentStore>,
+    skills: Arc<dyn outturn::api::skill::SkillStore>,
     db: common::TestDb,
     /// Signs with the same key the app validates against, so a test can issue
     /// the platform's own credentials the way the platform does.
@@ -82,11 +83,14 @@ async fn harness() -> Harness {
         Arc::new(outturn::api::usage::PostgresUsageStore::new(pool.clone()));
     let settings: Arc<dyn outturn::api::settings::SettingsStore> =
         Arc::new(outturn::api::settings::PostgresSettingsStore::new(pool.clone()));
+    let skills: Arc<dyn outturn::api::skill::SkillStore> =
+        Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
     let state = Arc::new(ApiState::new(
         workspaces.clone(),
         users.clone(),
         sessions.clone(),
         agents.clone(),
+        skills.clone(),
         chat.clone(),
         roles.clone(),
         usage.clone(),
@@ -116,6 +120,7 @@ async fn harness() -> Harness {
         workspaces,
         sessions,
         agents,
+        skills,
         db,
         minter: test_minter,
         roles,
@@ -2065,4 +2070,274 @@ async fn an_agent_can_be_created_with_a_policy() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert!(body.contains(r#""policy":{}"#), "body: {body}");
+}
+
+// Skills -----------------------------------------------------------------------
+
+/// A workspace reads the operator's skills and cannot write them.
+///
+/// This is the line the whole feature stands on: an operator ships an
+/// integration to every customer, and a customer who could edit it in place
+/// would be editing everyone's.
+#[tokio::test]
+async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as("op@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"Call the v1 endpoint."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "operator could not ship a skill: {body}");
+    let shipped: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let skill_id = shipped["id"].as_str().expect("id").to_string();
+
+    // A workspace admin, who is not the operator.
+    let admin = h.login_as("admin@acme.example", None, Some((acme, "admin"))).await;
+
+    let (status, body) = h.get("/v1/skills", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"crm\""), "the operator's skill was not visible: {body}");
+
+    // Editing it is not forbidden but absent: the workspace's own id is what
+    // the write matches on, so there is nothing there to change.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/skills/{skill_id}"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"name":"Ours now"}"#))
+        .unwrap();
+    let (status, _) = h.send(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a workspace edited the operator's skill");
+
+    // And the platform route is closed to them.
+    let (status, _) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&admin),
+            r#"{"slug":"sneaky","name":"Sneaky","body":"x"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a workspace shipped a platform skill");
+}
+
+/// An override composes after the prose it speaks about, and applies wherever
+/// its base is used without being bound itself.
+#[tokio::test]
+async fn an_override_composes_after_its_base_and_needs_no_binding() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as("op2@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"Call the v1 endpoint."}"#,
+        )
+        .await;
+    let base: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let base_id = base["id"].as_str().expect("id").to_string();
+
+    // The workspace writes its variation once, against the operator's skill.
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            &format!(
+                r#"{{"slug":"crm-ours","name":"CRM (ours)","body":"Our region is on v2.","base_skill_id":"{base_id}"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "override refused: {body}");
+
+    // An agent binds the base alone.
+    let (_, body) = h
+        .post("/v1/agents", Some(&operator), r#"{"name":"Helper","slug":"helper"}"#)
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let agent_id = agent["id"].as_str().expect("id").to_string();
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {operator}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{base_id}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "binding refused: {body}");
+
+    let composed = h
+        .skills
+        .resolve_for_agent(acme, agent_id.parse().unwrap())
+        .await
+        .expect("resolve");
+
+    assert_eq!(composed.len(), 2, "expected base and override: {composed:?}");
+    assert_eq!(composed[0].body, "Call the v1 endpoint.");
+    assert_eq!(composed[1].body, "Our region is on v2.", "the override must come last");
+}
+
+/// An override is not a thing an agent is given on its own.
+#[tokio::test]
+async fn an_override_cannot_be_bound_by_itself() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as("op3@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post("/v1/skills", Some(&operator), r#"{"slug":"base","name":"Base","body":"b"}"#)
+        .await;
+    let base_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            &format!(r#"{{"slug":"ov","name":"Ov","body":"o","base_skill_id":"{base_id}"}}"#),
+        )
+        .await;
+    let override_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A second override of the same base has no defined order against the first.
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            &format!(r#"{{"slug":"ov2","name":"Ov2","body":"o2","base_skill_id":"{base_id}"}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a second override was allowed: {body}");
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&operator), r#"{"name":"H","slug":"h"}"#)
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {operator}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{override_id}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an override was bound directly: {body}");
+}
+
+/// When the operator edits a skill, an override written against the old version
+/// is reported as stale rather than left to rot quietly.
+#[tokio::test]
+async fn editing_a_base_marks_the_overrides_written_against_it() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as("op4@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"v1 endpoint"}"#,
+        )
+        .await;
+    let base_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, body) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            &format!(r#"{{"slug":"ours","name":"Ours","body":"stay on v1","base_skill_id":"{base_id}"}}"#),
+        )
+        .await;
+    let override_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, body) = h.get(&format!("/v1/skills/{override_id}"), Some(&operator)).await;
+    let before: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(before["base_moved"], false, "fresh override reported as stale");
+
+    // The operator ships a new version of the base.
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/skills/{base_id}/versions"),
+            Some(&operator),
+            r#"{"body":"v2 endpoint","note":"v2 migration"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "publish refused: {body}");
+
+    let (_, body) = h.get(&format!("/v1/skills/{override_id}"), Some(&operator)).await;
+    let after: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        after["base_moved"], true,
+        "the override was not reported stale after its base moved: {body}"
+    );
+}
+
+/// Rolling back writes the old body forward, so what was live on any day stays
+/// answerable from the history alone.
+#[tokio::test]
+async fn a_rollback_appends_rather_than_moving_backwards() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h.login_as("a@acme.example", None, Some((acme, "admin"))).await;
+
+    let (_, body) = h
+        .post("/v1/skills", Some(&admin), r#"{"slug":"s","name":"S","body":"one"}"#)
+        .await;
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    h.post(
+        &format!("/v1/skills/{id}/versions"),
+        Some(&admin),
+        r#"{"body":"two","note":"second"}"#,
+    )
+    .await;
+    // The rollback: version one's body, sent forward as version three.
+    h.post(
+        &format!("/v1/skills/{id}/versions"),
+        Some(&admin),
+        r#"{"body":"one","note":"rolled back to v1"}"#,
+    )
+    .await;
+
+    let (_, body) = h.get(&format!("/v1/skills/{id}/versions"), Some(&admin)).await;
+    let versions: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    assert_eq!(versions.len(), 3, "a rollback lost history: {body}");
+    assert_eq!(versions[0]["ordinal"], 3, "newest first");
+    assert_eq!(versions[0]["body"], "one", "the rollback did not carry the old body");
+
+    let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(skill["ordinal"], 3, "the live version is the newest, not the oldest");
 }

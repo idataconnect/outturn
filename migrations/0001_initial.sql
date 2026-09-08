@@ -797,6 +797,12 @@ create table skills (
 );
 
 create index skills_workspace_idx on skills (workspace_id);
+
+-- One override per base per workspace. Two would both apply to the same skill
+-- with nothing to decide which spoke last, and "last wins" is the whole of what
+-- an override means.
+create unique index skills_one_override_per_base_idx
+    on skills (workspace_id, base_skill_id) where kind = 'override';
 create index skills_base_idx on skills (base_skill_id) where base_skill_id is not null;
 
 -- Every edit, kept. Rows are written once and never updated: what a turn was

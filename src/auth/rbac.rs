@@ -63,6 +63,14 @@ pub enum Authority {
     /// Files belonging to one agent's work.
     StorageAgentRead,
     StorageAgentWrite,
+    /// Skills: the prose an agent is given beside its system prompt.
+    ///
+    /// Reading covers the operator's skills as well as the workspace's own,
+    /// since a workspace cannot decide whether to override one it cannot see.
+    /// Writing is over its own: an operator's skill is never edited in place
+    /// by a workspace, only overridden or forked.
+    SkillsRead,
+    SkillsWrite,
     /// Reading the usage ledger: what was spent, by whom, for which customer.
     UsageRead,
     GatewayInvoke,
@@ -102,6 +110,8 @@ impl Authority {
         Authority::StorageWorkspaceWrite,
         Authority::StorageAgentRead,
         Authority::StorageAgentWrite,
+        Authority::SkillsRead,
+        Authority::SkillsWrite,
         Authority::UsageRead,
         Authority::GatewayInvoke,
         Authority::WorkTake,
@@ -132,6 +142,8 @@ impl Authority {
             Authority::StorageWorkspaceWrite => "storage:workspace:write",
             Authority::StorageAgentRead => "storage:agent:read",
             Authority::StorageAgentWrite => "storage:agent:write",
+            Authority::SkillsRead => "skills:read",
+            Authority::SkillsWrite => "skills:write",
             Authority::UsageRead => "usage:read",
             Authority::GatewayInvoke => "gateway:invoke",
             Authority::WorkTake => "work:take",
@@ -164,6 +176,8 @@ impl Authority {
             Authority::StorageWorkspaceWrite => "Add and replace files kept for the whole workspace",
             Authority::StorageAgentRead => "Read an agent's files",
             Authority::StorageAgentWrite => "Add and replace an agent's files",
+            Authority::SkillsRead => "See skills, the workspace's own and the operator's",
+            Authority::SkillsWrite => "Write skills, and override or fork the operator's",
             Authority::UsageRead => "Read the usage ledger",
             Authority::GatewayInvoke => "Call a model",
             Authority::WorkTake => "Take turns off the queue (the runtime tier)",
@@ -262,6 +276,8 @@ pub const DEFAULT_ROLES: &[RoleTemplate] = &[
             Authority::StorageWorkspaceWrite,
             Authority::StorageAgentRead,
             Authority::StorageAgentWrite,
+            Authority::SkillsRead,
+            Authority::SkillsWrite,
             Authority::UsageRead,
             Authority::GatewayInvoke,
         ],
@@ -278,6 +294,8 @@ pub const DEFAULT_ROLES: &[RoleTemplate] = &[
             Authority::StorageWorkspaceRead,
             Authority::StorageAgentRead,
             Authority::StorageAgentWrite,
+            Authority::SkillsRead,
+            Authority::SkillsWrite,
             Authority::GatewayInvoke,
         ],
     },
@@ -290,6 +308,7 @@ pub const DEFAULT_ROLES: &[RoleTemplate] = &[
             Authority::SettingsRead,
             Authority::StorageWorkspaceRead,
             Authority::StorageAgentRead,
+            Authority::SkillsRead,
         ],
     },
 ];

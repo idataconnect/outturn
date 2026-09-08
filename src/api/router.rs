@@ -23,6 +23,9 @@ pub struct ApiState {
     pub(super) users: Arc<dyn UserStore>,
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) agents: Arc<dyn AgentStore>,
+    /// Prose an agent is given beside its system prompt, and which of it each
+    /// agent gets.
+    pub(super) skills: Arc<dyn super::skill::SkillStore>,
     pub(super) chat: Arc<dyn ChatStore>,
     /// What a workspace's roles mean. Consulted on every authorised request.
     pub(super) roles: Arc<dyn RoleStore>,
@@ -59,6 +62,7 @@ impl ApiState {
         users: Arc<dyn UserStore>,
         sessions: Arc<dyn SessionStore>,
         agents: Arc<dyn AgentStore>,
+        skills: Arc<dyn super::skill::SkillStore>,
         chat: Arc<dyn ChatStore>,
         roles: Arc<dyn RoleStore>,
         usage: Arc<dyn super::usage::UsageStore>,
@@ -76,6 +80,7 @@ impl ApiState {
             users,
             sessions,
             agents,
+            skills,
             chat,
             roles,
             usage,
@@ -188,6 +193,19 @@ impl From<super::egress::RuleError> for ApiError {
             RuleError::Duplicate(m) => (StatusCode::CONFLICT, m),
             RuleError::Database(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         }
+    }
+}
+
+impl From<super::skill::SkillError> for ApiError {
+    fn from(e: super::skill::SkillError) -> Self {
+        use super::skill::SkillError;
+        let status = match e {
+            SkillError::NotFound => StatusCode::NOT_FOUND,
+            SkillError::DuplicateSlug(_) => StatusCode::CONFLICT,
+            SkillError::Invalid(_) => StatusCode::BAD_REQUEST,
+            SkillError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
     }
 }
 
@@ -943,10 +961,47 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/settings/{key}",
             axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
         )
+        .route("/v1/platform/skills", post(super::skills::create_platform_skill))
+        .route(
+            "/v1/platform/skills/{id}",
+            axum::routing::patch(super::skills::update_platform_skill),
+        )
+        .route(
+            "/v1/platform/skills/{id}/versions",
+            post(super::skills::add_platform_version),
+        )
+        .route(
+            "/v1/platform/skills/{id}/retired",
+            axum::routing::put(super::skills::retire_platform_skill),
+        )
         .route("/v1/platform/settings", get(view_operator_settings))
         .route(
             "/v1/platform/settings/{key}",
             axum::routing::put(set_operator_setting).delete(clear_operator_setting),
+        )
+        .route(
+            "/v1/skills",
+            get(super::skills::list_skills).post(super::skills::create_skill),
+        )
+        .route(
+            "/v1/skills/{id}",
+            get(super::skills::get_skill)
+                .patch(super::skills::update_skill)
+                .delete(super::skills::delete_skill),
+        )
+        .route("/v1/skills/{id}/retired", axum::routing::put(super::skills::retire_skill))
+        .route(
+            "/v1/skills/{id}/versions",
+            get(super::skills::list_versions).post(super::skills::add_version),
+        )
+        .route(
+            "/v1/skills/{id}/versions/{version_id}",
+            get(super::skills::get_version),
+        )
+        .route("/v1/skills/{id}/fork", post(super::skills::fork_skill))
+        .route(
+            "/v1/agents/{id}/skills",
+            get(super::skills::list_agent_skills).put(super::skills::set_agent_skills),
         )
         .route("/v1/agents/{id}/settings", get(view_agent_settings))
         .route(
