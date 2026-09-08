@@ -882,39 +882,75 @@ create table turn_skills (
 
 create index turn_skills_version_idx on turn_skills (version_id);
 
--- Seed roles -------------------------------------------------------------------
+-- Role templates ---------------------------------------------------------------
 
--- Seed every existing workspace with the three roles the code used to define,
--- with the authorities they used to carry, so nobody's access changes.
-insert into roles (workspace_id, id, name, description)
-select w.id, gen_random_uuid(), r.name, r.description
-from workspaces w
-cross join (values
-    ('admin',    'Runs the workspace: people, roles, agents, settings and files.'),
-    ('operator', 'Builds and runs agents, and works with their files.'),
-    ('viewer',   'Reads conversations, agents, settings and files without changing them.')
-) as r (name, description);
+-- What a workspace's roles start as.
+--
+-- Rows rather than constants in code, because which bundles exist and what they
+-- are called is a deployment's business: an operator serving one trade ships
+-- different names than one serving another, and changing them should not mean a
+-- rebuild.
+--
+-- Copied into a workspace's own roles when it is created, and never consulted
+-- again. Editing a template does not reach back into workspaces that already
+-- copied it, the same way editing a role does not reach into the grants that
+-- already name it -- a workspace's roles are its own from the moment it has any.
+create table role_templates (
+    name        text primary key,
+    description text        not null default '',
+    -- The order they are created in, so every workspace's list reads alike.
+    position    int         not null default 0,
+    created_at  timestamptz not null default now()
+);
 
-insert into role_authorities (workspace_id, role_id, authority)
-select r.workspace_id, r.id, a.authority
-from roles r
-join (values
+create table role_template_authorities (
+    template_name text not null references role_templates (name) on delete cascade,
+    -- Validated against the Authority enum in code, as role_authorities is: the
+    -- vocabulary changes with the code, and a check constraint here would need a
+    -- migration every time it did. One the code does not know is dropped when it
+    -- is copied, and said so in the log rather than silently narrowing a role.
+    authority     text not null,
+    primary key (template_name, authority)
+);
+
+insert into role_templates (name, description, position) values
+    ('admin', 'Runs the workspace: people, roles, agents, settings and files.', 0),
+    ('operator', 'Builds and runs agents, and works with their files.', 1),
+    ('viewer', 'Reads conversations, agents, settings and files without changing them.', 2);
+
+insert into role_template_authorities (template_name, authority) values
     ('admin', 'users:create'), ('admin', 'users:read'), ('admin', 'users:update'),
     ('admin', 'users:delete'), ('admin', 'roles:assign'), ('admin', 'roles:manage'),
     ('admin', 'agents:create'), ('admin', 'agents:read'), ('admin', 'agents:update'),
     ('admin', 'agents:delete'), ('admin', 'sessions:create'), ('admin', 'sessions:read'),
     ('admin', 'sessions:delete'), ('admin', 'settings:read'), ('admin', 'settings:update'),
     ('admin', 'storage:workspace:read'), ('admin', 'storage:workspace:write'),
-    ('admin', 'storage:agent:read'), ('admin', 'storage:agent:write'), ('admin', 'gateway:invoke'),
-    ('admin', 'usage:read'), ('admin', 'skills:read'), ('admin', 'skills:write'),
+    ('admin', 'storage:agent:read'), ('admin', 'storage:agent:write'),
+    ('admin', 'skills:read'), ('admin', 'skills:write'),
+    ('admin', 'gateway:invoke'), ('admin', 'usage:read'),
 
     ('operator', 'agents:create'), ('operator', 'agents:read'), ('operator', 'agents:update'),
     ('operator', 'sessions:create'), ('operator', 'sessions:read'),
     ('operator', 'storage:workspace:read'), ('operator', 'storage:agent:read'),
-    ('operator', 'storage:agent:write'), ('operator', 'gateway:invoke'),
+    ('operator', 'storage:agent:write'),
     ('operator', 'skills:read'), ('operator', 'skills:write'),
+    ('operator', 'gateway:invoke'),
 
     ('viewer', 'agents:read'), ('viewer', 'sessions:read'), ('viewer', 'settings:read'),
     ('viewer', 'storage:workspace:read'), ('viewer', 'storage:agent:read'),
-    ('viewer', 'skills:read')
-) as a (role_name, authority) on a.role_name = r.name;
+    ('viewer', 'skills:read');
+
+-- Seed roles -------------------------------------------------------------------
+
+-- Every workspace that exists when this runs gets the templates copied, which is
+-- the platform workspace and nothing else. Every workspace made afterwards is
+-- copied the same way by the code that creates it, reading the same rows.
+insert into roles (workspace_id, id, name, description)
+select w.id, gen_random_uuid(), t.name, t.description
+from workspaces w
+cross join role_templates t;
+
+insert into role_authorities (workspace_id, role_id, authority)
+select r.workspace_id, r.id, a.authority
+from roles r
+join role_template_authorities a on a.template_name = r.name;

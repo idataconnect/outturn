@@ -240,79 +240,6 @@ pub fn platform_authorities(roles: &[String]) -> HashSet<Authority> {
         .collect()
 }
 
-/// A role every new workspace starts with.
-pub struct RoleTemplate {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub authorities: &'static [Authority],
-}
-
-/// What a workspace gets when it is created.
-///
-/// A starting point, copied into the workspace's own rows and editable there.
-/// Enterprise customers with different vocabularies get different templates,
-/// or edit these; nothing here is load-bearing after the copy.
-pub const DEFAULT_ROLES: &[RoleTemplate] = &[
-    RoleTemplate {
-        name: "admin",
-        description: "Runs the workspace: people, roles, agents, settings and files.",
-        authorities: &[
-            Authority::UsersCreate,
-            Authority::UsersRead,
-            Authority::UsersUpdate,
-            Authority::UsersDelete,
-            Authority::RolesAssign,
-            Authority::RolesManage,
-            Authority::AgentsCreate,
-            Authority::AgentsRead,
-            Authority::AgentsUpdate,
-            Authority::AgentsDelete,
-            Authority::SessionsCreate,
-            Authority::SessionsRead,
-            Authority::SessionsDelete,
-            Authority::SettingsRead,
-            Authority::SettingsUpdate,
-            Authority::StorageWorkspaceRead,
-            Authority::StorageWorkspaceWrite,
-            Authority::StorageAgentRead,
-            Authority::StorageAgentWrite,
-            Authority::SkillsRead,
-            Authority::SkillsWrite,
-            Authority::UsageRead,
-            Authority::GatewayInvoke,
-        ],
-    },
-    RoleTemplate {
-        name: "operator",
-        description: "Builds and runs agents, and works with their files.",
-        authorities: &[
-            Authority::AgentsCreate,
-            Authority::AgentsRead,
-            Authority::AgentsUpdate,
-            Authority::SessionsCreate,
-            Authority::SessionsRead,
-            Authority::StorageWorkspaceRead,
-            Authority::StorageAgentRead,
-            Authority::StorageAgentWrite,
-            Authority::SkillsRead,
-            Authority::SkillsWrite,
-            Authority::GatewayInvoke,
-        ],
-    },
-    RoleTemplate {
-        name: "viewer",
-        description: "Reads conversations, agents, settings and files without changing them.",
-        authorities: &[
-            Authority::AgentsRead,
-            Authority::SessionsRead,
-            Authority::SettingsRead,
-            Authority::StorageWorkspaceRead,
-            Authority::StorageAgentRead,
-            Authority::SkillsRead,
-        ],
-    },
-];
-
 impl std::fmt::Display for Role {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -354,15 +281,6 @@ mod tests {
     fn every_authority_round_trips_through_its_name() {
         for a in Authority::ALL {
             assert_eq!(Authority::parse(a.as_str()), Some(*a));
-        }
-    }
-
-    #[test]
-    fn default_roles_bundle_only_what_a_workspace_may_grant() {
-        for role in DEFAULT_ROLES {
-            for a in role.authorities {
-                assert!(a.workspace_assignable(), "{} bundles reserved {a}", role.name);
-            }
         }
     }
 

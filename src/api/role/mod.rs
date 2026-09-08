@@ -1,7 +1,7 @@
 //! Roles a workspace defines for itself.
 //!
 //! A role is a name and a bundle of authorities, owned by one workspace. Every
-//! workspace starts with copies of `rbac::DEFAULT_ROLES` and may edit them, add
+//! workspace starts with copies of the `role_templates` rows and may edit them, add
 //! to them, or replace them. Nothing about a workspace's roles is visible to or
 //! shared with another workspace, and the platform's own roles are not here at
 //! all -- see `rbac::Role` for those.
@@ -68,6 +68,18 @@ pub enum RoleError {
     Internal(String),
 }
 
+/// What a workspace's roles start as, as stored.
+///
+/// The authorities are already parsed and already filtered: a name the code
+/// does not know, or one reserved to the platform, never reaches a workspace's
+/// roles through here.
+#[derive(Debug, Clone)]
+pub struct RoleTemplate {
+    pub name: String,
+    pub description: String,
+    pub authorities: Vec<Authority>,
+}
+
 #[async_trait]
 pub trait RoleStore: Send + Sync {
     async fn list(&self, workspace_id: Uuid) -> Result<Vec<WorkspaceRole>, RoleError>;
@@ -88,7 +100,14 @@ pub trait RoleStore: Send + Sync {
         roles: &[String],
     ) -> Result<HashSet<Authority>, RoleError>;
 
-    /// Copies the default roles into a workspace that has none yet.
+    /// What a new workspace's roles are copied from.
+    ///
+    /// Read rather than compiled in, so a deployment can ship its own names and
+    /// bundles without a rebuild. Anything the code cannot honour is left out
+    /// here and said so, which is the price of the vocabulary living in rows.
+    async fn templates(&self) -> Result<Vec<RoleTemplate>, RoleError>;
+
+    /// Copies the templates into a workspace that has no roles yet.
     async fn seed_defaults(&self, workspace_id: Uuid) -> Result<(), RoleError>;
 }
 

@@ -2450,3 +2450,34 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
         "the base should be recorded first"
     );
 }
+
+/// The templates a workspace's roles are copied from must be ones the code can
+/// honour.
+///
+/// They are rows now, not constants, so nothing about them is checked when this
+/// builds. Read raw rather than through the store, which filters: the point is
+/// to catch a seed that would come out quietly narrower than it reads.
+#[tokio::test]
+async fn seeded_role_templates_are_all_honourable() {
+    let h = harness_or_skip!();
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("select template_name, authority from role_template_authorities")
+            .fetch_all(&h.db.pool)
+            .await
+            .expect("template authorities");
+    assert!(!rows.is_empty(), "no role templates were seeded");
+
+    for (template, raw) in &rows {
+        let parsed = outturn::auth::Authority::parse(raw);
+        assert!(parsed.is_some(), "{template} names {raw}, which is not an authority");
+        assert!(
+            parsed.unwrap().workspace_assignable(),
+            "{template} bundles {raw}, which is reserved to the platform"
+        );
+    }
+
+    // And what the store hands back is what a new workspace actually gets.
+    let names: Vec<String> = h.roles.templates().await.expect("templates").into_iter().map(|t| t.name).collect();
+    assert!(names.contains(&"admin".to_string()), "no admin template: {names:?}");
+}

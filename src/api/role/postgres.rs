@@ -8,7 +8,10 @@ use uuid::Uuid;
 
 use crate::auth::Authority;
 
-use super::{CreateRole, RoleError, RoleStore, WorkspaceRole, UpdateRole, validate_authorities, validate_name};
+use super::{
+    CreateRole, RoleError, RoleStore, RoleTemplate, UpdateRole, WorkspaceRole, validate_authorities,
+    validate_name,
+};
 
 /// Postgres channel a role change is announced on. The payload is the workspace.
 const CHANNEL: &str = "outturn_roles";
@@ -315,6 +318,57 @@ impl RoleStore for PostgresRoleStore {
             .collect())
     }
 
+    async fn templates(&self) -> Result<Vec<RoleTemplate>, RoleError> {
+        let rows = sqlx::query(
+            "select t.name, t.description, a.authority \
+               from role_templates t \
+               left join role_template_authorities a on a.template_name = t.name \
+              order by t.position, t.name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let mut order: Vec<String> = Vec::new();
+        let mut built: HashMap<String, RoleTemplate> = HashMap::new();
+        for row in &rows {
+            let name: String = row.get("name");
+            let entry = built.entry(name.clone()).or_insert_with(|| {
+                order.push(name.clone());
+                RoleTemplate {
+                    name: name.clone(),
+                    description: row.get("description"),
+                    authorities: Vec::new(),
+                }
+            });
+
+            let Some(raw) = row.get::<Option<String>, _>("authority") else {
+                continue;
+            };
+            // Said out loud rather than dropped quietly. A template is a
+            // deployment's to edit, so a typo here is a role that comes out
+            // narrower than whoever wrote it meant, with nothing to show for it.
+            match Authority::parse(raw.trim()) {
+                None => tracing::warn!(
+                    template = %name,
+                    authority = %raw,
+                    "role template names an authority this build does not have; ignoring it"
+                ),
+                Some(a) if !a.workspace_assignable() => tracing::warn!(
+                    template = %name,
+                    authority = %raw,
+                    "role template names an authority reserved to the platform; ignoring it"
+                ),
+                Some(a) => entry.authorities.push(a),
+            }
+        }
+
+        Ok(order
+            .into_iter()
+            .filter_map(|n| built.remove(&n))
+            .collect())
+    }
+
     async fn seed_defaults(&self, workspace_id: Uuid) -> Result<(), RoleError> {
         let existing: i64 = sqlx::query_scalar("select count(*) from roles where workspace_id = $1")
             .bind(workspace_id)
@@ -324,20 +378,21 @@ impl RoleStore for PostgresRoleStore {
         if existing > 0 {
             return Ok(());
         }
+        let templates = self.templates().await?;
         let mut tx = self.pool.begin().await.map_err(internal)?;
-        for template in crate::auth::rbac::DEFAULT_ROLES {
+        for template in &templates {
             let id = Uuid::now_v7();
             sqlx::query(
                 "insert into roles (workspace_id, id, name, description) values ($1, $2, $3, $4)",
             )
             .bind(workspace_id)
             .bind(id)
-            .bind(template.name)
-            .bind(template.description)
+            .bind(&template.name)
+            .bind(&template.description)
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
-            write_authorities(&mut tx, workspace_id, id, template.authorities)
+            write_authorities(&mut tx, workspace_id, id, &template.authorities)
                 .await
                 .map_err(internal)?;
         }

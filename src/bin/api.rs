@@ -106,6 +106,14 @@ async fn main() {
         }
     };
 
+    // Read once at boot so a template naming something this build cannot honour
+    // is complained about here, rather than at whatever hour the next workspace
+    // happens to be created.
+    match roles.templates().await {
+        Ok(t) => tracing::info!(count = t.len(), "role templates loaded"),
+        Err(e) => tracing::error!(error = %e, "could not read role templates"),
+    }
+
     let skills: Arc<dyn outturn::api::skill::SkillStore> =
         Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
 
