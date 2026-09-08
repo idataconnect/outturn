@@ -6,7 +6,7 @@ use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 use super::{Effective, Level, Resolved, SettingsError, SettingsStore, catalogue, find, validate};
-use crate::api::usage::PLATFORM_TENANT;
+use crate::api::usage::PLATFORM_WORKSPACE;
 
 pub struct PostgresSettingsStore {
     pool: PgPool,
@@ -28,7 +28,7 @@ type Rows = HashMap<String, serde_json::Value>;
 /// The (workspace, agent) pair a level's rows live under.
 fn address(level: Level) -> (Uuid, Uuid) {
     match level {
-        Level::Operator => (PLATFORM_TENANT, Uuid::nil()),
+        Level::Operator => (PLATFORM_WORKSPACE, Uuid::nil()),
         Level::Workspace(t) => (t, Uuid::nil()),
         Level::Agent { workspace_id, agent_id } => (workspace_id, agent_id),
     }

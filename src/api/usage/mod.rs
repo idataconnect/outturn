@@ -14,7 +14,7 @@ use uuid::Uuid;
 pub use postgres::PostgresUsageStore;
 
 /// The workspace the platform's own work bills to.
-pub const PLATFORM_TENANT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
+pub const PLATFORM_WORKSPACE: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
 
 /// One model call, as it will appear on a bill.
 #[derive(Debug, Clone, Serialize)]

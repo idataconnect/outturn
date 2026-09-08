@@ -63,7 +63,7 @@ pub struct SessionClaims {
 
 /// The claim names as they appear in the payload.
 const SUBJECT: &str = "sub";
-const TENANT: &str = "tid";
+const WORKSPACE: &str = "wid";
 const SCOPE: &str = "scp";
 /// Footer claim naming which public key signed the token, so verifiers can
 /// hold more than one during a rotation.
@@ -181,7 +181,7 @@ impl TokenMinter {
         claims.audience(audience).map_err(internal)?;
         claims.subject(&subject.to_string()).map_err(internal)?;
         claims
-            .add_additional(TENANT, workspace_id.to_string())
+            .add_additional(WORKSPACE, workspace_id.to_string())
             .map_err(internal)?;
 
         let scp_json = serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -273,7 +273,7 @@ impl TokenValidator {
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or(AuthError::Invalid)?;
 
-        let workspace_id = parsed[TENANT]
+        let workspace_id = parsed[WORKSPACE]
             .as_str()
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or(AuthError::Invalid)?;
