@@ -256,3 +256,96 @@ pub(super) fn validate_name(name: &str) -> Result<(), SkillError> {
     }
     Ok(())
 }
+
+/// The prose a turn is actually given: the agent's own prompt, then each skill
+/// it was bound, then whatever this workspace had to say about them.
+///
+/// Order is the mechanism. A model reads a later instruction as the one that
+/// still stands, so an override earns its precedence by being composed after
+/// the prose it speaks about rather than by anything in the data saying so.
+/// That is a soft guarantee and worth being honest about: it holds well for a
+/// direct contradiction and less well for a subtle one, which is why the text
+/// that actually ran is recorded rather than inferred from the bindings.
+///
+/// An agent with no skills is given exactly what it was before, with no
+/// heading and no preamble: prose that says "here are your skills" above an
+/// empty list is a worse prompt than silence.
+pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
+    if skills.is_empty() {
+        return system_prompt.to_string();
+    }
+
+    let mut out = String::from(system_prompt.trim_end());
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str("# Skills");
+
+    for skill in skills {
+        out.push_str("\n\n## ");
+        out.push_str(skill.name.trim());
+        out.push_str("\n\n");
+        if skill.kind == SkillKind::Override {
+            out.push_str(
+                "This workspace's own instructions. Where they conflict with the skill \
+                 above, these are the ones to follow.\n\n",
+            );
+        }
+        out.push_str(skill.body.trim());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skill(name: &str, body: &str, kind: SkillKind) -> ResolvedSkill {
+        ResolvedSkill {
+            skill_id: Uuid::nil(),
+            version_id: Uuid::nil(),
+            name: name.into(),
+            kind,
+            body: body.into(),
+            position: 0,
+        }
+    }
+
+    /// An agent with nothing bound is given what it always was.
+    #[test]
+    fn no_skills_leaves_the_prompt_alone() {
+        assert_eq!(compose("Be helpful.", &[]), "Be helpful.");
+    }
+
+    #[test]
+    fn a_skill_follows_the_prompt_under_its_own_heading() {
+        let out = compose("Be helpful.", &[skill("CRM", "Call v1.", SkillKind::Standalone)]);
+        assert_eq!(out, "Be helpful.\n\n# Skills\n\n## CRM\n\nCall v1.");
+    }
+
+    /// The override lands after the prose it corrects, and says so.
+    #[test]
+    fn an_override_is_composed_last_and_claims_precedence() {
+        let out = compose(
+            "Be helpful.",
+            &[
+                skill("CRM", "Call v1.", SkillKind::Standalone),
+                skill("CRM (ours)", "Call v2.", SkillKind::Override),
+            ],
+        );
+        let base = out.find("Call v1.").expect("base");
+        let over = out.find("Call v2.").expect("override");
+        assert!(base < over, "the override must come after its base:\n{out}");
+        assert!(
+            out.contains("these are the ones to follow"),
+            "the override did not claim precedence:\n{out}"
+        );
+    }
+
+    /// An agent may have no prompt of its own and still be given skills.
+    #[test]
+    fn an_empty_prompt_gains_no_leading_blank_lines() {
+        let out = compose("", &[skill("CRM", "Call v1.", SkillKind::Standalone)]);
+        assert!(out.starts_with("# Skills"), "{out:?}");
+    }
+}

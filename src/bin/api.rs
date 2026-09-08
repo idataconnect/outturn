@@ -143,6 +143,7 @@ async fn main() {
     let worker = Arc::new(Worker {
         pool: pool.clone(),
         agents: agents.clone(),
+        skills: skills.clone(),
         chat: chat.clone(),
         usage,
         settings,

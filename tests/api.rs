@@ -109,6 +109,7 @@ async fn harness() -> Harness {
     state.set_worker(Arc::new(outturn::api::worker::Worker {
         pool: pool.clone(),
         agents: agents.clone(),
+        skills: skills.clone(),
         chat: chat.clone(),
         usage: usage.clone(),
         settings: settings.clone(),
@@ -2340,4 +2341,112 @@ async fn a_rollback_appends_rather_than_moving_backwards() {
     let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
     let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(skill["ordinal"], 3, "the live version is the newest, not the oldest");
+}
+
+/// A turn is given its skills, and what it was given is written down.
+///
+/// This is the end the whole feature exists for: prose the operator shipped,
+/// varied by the workspace, reaching the model in an order that makes the
+/// variation the one that stands -- and a record afterwards of exactly which
+/// versions did it, since an eval cannot measure what it cannot name.
+#[tokio::test]
+async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as("op5@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"Call the v1 endpoint."}"#,
+        )
+        .await;
+    let base_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, _) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            &format!(
+                r#"{{"slug":"ours","name":"CRM (ours)","body":"Our region is on v2.","base_skill_id":"{base_id}"}}"#
+            ),
+        )
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&operator),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Only the base is bound. The override rides along because it is the
+    // workspace's standing variation on it.
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {operator}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{base_id}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "binding refused: {body}");
+
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&operator),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&operator),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "no work handed out: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let prompt = assignment["system_prompt"].as_str().expect("system_prompt");
+
+    assert!(prompt.starts_with("Be brief."), "the agent's own prompt went missing:\n{prompt}");
+    let base_at = prompt.find("Call the v1 endpoint.").expect("base prose missing");
+    let over_at = prompt.find("Our region is on v2.").expect("override prose missing");
+    assert!(base_at < over_at, "the override did not come last:\n{prompt}");
+
+    // And the turn knows what it was built from, before it has even run.
+    let reply: Uuid = assignment["reply_id"].as_str().expect("reply").parse().unwrap();
+    let recorded: Vec<(Uuid, i32)> =
+        sqlx::query_as("select skill_id, position from turn_skills where reply_id = $1 order by position")
+            .bind(reply)
+            .fetch_all(&h.db.pool)
+            .await
+            .expect("turn_skills");
+    assert_eq!(recorded.len(), 2, "the turn did not record both skills: {recorded:?}");
+    assert_eq!(
+        recorded[0].0.to_string(),
+        base_id,
+        "the base should be recorded first"
+    );
 }

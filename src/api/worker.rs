@@ -138,6 +138,8 @@ pub(super) struct TurnOutcome {
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
+    /// The prose an agent is given beside its own prompt.
+    pub skills: Arc<dyn super::skill::SkillStore>,
     pub chat: Arc<dyn ChatStore>,
     /// Where every model call is written down, as it is reported.
     pub usage: Arc<dyn super::usage::UsageStore>,
@@ -576,6 +578,25 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
 
+        // Composed here rather than in the runtime, for the same reason the
+        // settings are: the guest is handed prose and never learns which of it
+        // the operator wrote, which the workspace added, or that either could
+        // have been otherwise.
+        let skills = self
+            .skills
+            .resolve_for_agent(payload.workspace_id, payload.agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
+
+        // Written down before the turn runs, against the reply it will fill in.
+        // What was composed is a fact about this turn whether or not it goes on
+        // to succeed, and a failed turn is exactly the one an eval wants to be
+        // able to look at afterwards.
+        self.skills
+            .record_turn(placeholder.message.id, &skills)
+            .await
+            .map_err(|e| anyhow::anyhow!("recording skills: {e}"))?;
+
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             workspace_id: payload.workspace_id,
@@ -585,7 +606,7 @@ impl Worker {
                 .into_iter()
                 .map(serde_json::from_value)
                 .collect::<Result<_, _>>()?,
-            system_prompt: agent.system_prompt,
+            system_prompt: super::skill::compose(&agent.system_prompt, &skills),
             model: Some(model_for(&agent.policy)),
             timezone: payload.timezone.clone(),
             reasoning_effort: settings.reasoning_effort,
