@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Plus } from 'lucide-react'
+import { Menu, Paperclip, Plus, X } from 'lucide-react'
 
 import Thread from '../components/Thread'
 import FilesPanel from '../components/FilesPanel'
@@ -39,6 +39,10 @@ export default function Chat() {
     state.status === 'authenticated' &&
     state.session.authorities.includes('agents:create')
   const [loaded, setLoaded] = useState(false)
+  // Below `lg` the sessions list and files panel are too wide to sit beside
+  // the thread at once, so they become off-canvas drawers instead.
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -91,6 +95,7 @@ export default function Chat() {
       setSessions((prev) => [session, ...prev])
       void navigate(`/sessions/${session.id}`)
       setError(null)
+      setSessionsOpen(false)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to start session')
     }
@@ -99,13 +104,32 @@ export default function Chat() {
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
   const shown = error ?? chatError
 
+  const activeTitle = active
+    ? (sessions.find((s) => s.id === active)?.title ||
+        agentName(sessions.find((s) => s.id === active)?.agent_id ?? ''))
+    : 'Sessions'
+
   return (
-    <div className="flex h-full">
-      <aside className="w-64 border-r border-surface-200 dark:border-surface-800 flex flex-col">
-        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
-          <p className="text-xs font-medium text-surface-600 dark:text-surface-400 mb-2">
+    <div className="flex h-full relative">
+      <aside
+        className={`${
+          sessionsOpen ? 'flex' : 'hidden'
+        } lg:flex flex-col fixed lg:static inset-y-0 left-0 z-30 w-64 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
+      >
+        <div className="p-3 border-b border-surface-200 dark:border-surface-800 flex items-center justify-between gap-2">
+          <p className="text-xs font-medium text-surface-600 dark:text-surface-400">
             Start a session
           </p>
+          <button
+            type="button"
+            onClick={() => setSessionsOpen(false)}
+            aria-label="Close sessions"
+            className="lg:hidden p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+          >
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
           {agents.length === 0 ? (
             canCreateAgents ? (
               <NavLink
@@ -140,6 +164,7 @@ export default function Chat() {
             <NavLink
               key={session.id}
               to={`/sessions/${session.id}`}
+              onClick={() => setSessionsOpen(false)}
               className={({ isActive }) =>
                 `block w-full px-2 py-1.5 rounded-md text-sm text-left truncate ${
                   isActive
@@ -154,7 +179,38 @@ export default function Chat() {
         </div>
       </aside>
 
+      {sessionsOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/30 lg:hidden"
+          onClick={() => setSessionsOpen(false)}
+          aria-hidden
+        />
+      )}
+
       <div className="flex-1 flex flex-col min-w-0">
+        <div className="lg:hidden flex items-center gap-2 p-2 border-b border-surface-200 dark:border-surface-800">
+          <button
+            type="button"
+            onClick={() => setSessionsOpen(true)}
+            aria-label="Open sessions"
+            className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+          >
+            <Menu size={18} aria-hidden />
+          </button>
+          <p className="flex-1 min-w-0 truncate text-sm font-medium text-surface-800 dark:text-surface-200">
+            {activeTitle}
+          </p>
+          {active && (
+            <button
+              type="button"
+              onClick={() => setFilesOpen(true)}
+              aria-label="Open files"
+              className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+            >
+              <Paperclip size={18} aria-hidden />
+            </button>
+          )}
+        </div>
         {shown && (
           <p
             className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
@@ -170,7 +226,23 @@ export default function Chat() {
         </div>
       </div>
 
-      {active && <FilesPanel sessionId={active} />}
+      {active && (
+        <div
+          className={`${
+            filesOpen ? 'block' : 'hidden'
+          } lg:block fixed lg:static inset-y-0 right-0 z-30 bg-white dark:bg-surface-900`}
+        >
+          <FilesPanel sessionId={active} onClose={() => setFilesOpen(false)} />
+        </div>
+      )}
+
+      {filesOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-black/30 lg:hidden"
+          onClick={() => setFilesOpen(false)}
+          aria-hidden
+        />
+      )}
     </div>
   )
 }

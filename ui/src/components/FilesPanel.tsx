@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
+import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload, X } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import { deleteFile, fileUrl, listFiles, uploadFile, type StoredFile } from '../lib/chat'
@@ -55,7 +55,14 @@ function size(bytes: number): string {
  * where most uploads belong. A file put here is one the agent lists and reads
  * by the same name, so the panel's names are the agent's names.
  */
-export default function FilesPanel({ sessionId }: { sessionId: string }) {
+export default function FilesPanel({
+  sessionId,
+  onClose,
+}: {
+  sessionId: string
+  /** Shown as a close button on narrow screens, where this panel is a drawer. */
+  onClose?: () => void
+}) {
   const state = useSession()
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const writable = SCOPES.filter((s) => authorities.includes(s.write))
@@ -129,7 +136,20 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
   const ActiveIcon = active?.icon ?? Clock
 
   return (
-    <aside className="w-72 border-l border-surface-200 dark:border-surface-800 flex flex-col">
+    <aside className="w-72 h-full border-l border-surface-200 dark:border-surface-800 flex flex-col">
+      {onClose && (
+        <div className="lg:hidden flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-800">
+          <p className="text-xs font-medium text-surface-600 dark:text-surface-400">Files</p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close files"
+            className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+          >
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+      )}
       <div className="p-3 border-b border-surface-200 dark:border-surface-800 space-y-2">
         {writable.length > 0 && (
           <>
