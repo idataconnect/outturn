@@ -3,22 +3,22 @@ import { Building2, LogIn } from 'lucide-react'
 
 import ThemeToggle from '../components/ThemeToggle'
 import { ApiError, NetworkError, api } from '../lib/api'
-import { useSessionActions, type TenantMembership } from '../lib/session'
+import { useSessionActions, type WorkspaceMembership } from '../lib/session'
 
 type LoginResponse =
   | {
-      status: 'select_tenant'
+      status: 'select_workspace'
       user_id: string
       display_name: string
-      tenants: TenantMembership[]
+      workspaces: WorkspaceMembership[]
     }
   | {
       status: 'authenticated'
       user_id: string
       display_name: string
-      tenant_id: string
+      workspace_id: string
       roles: string[]
-      tenants: TenantMembership[]
+      workspaces: WorkspaceMembership[]
     }
 
 export default function Login() {
@@ -27,29 +27,29 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Populated when credentials check out but the account spans several tenants.
-  const [choices, setChoices] = useState<TenantMembership[] | null>(null)
+  // Populated when credentials check out but the account spans several workspaces.
+  const [choices, setChoices] = useState<WorkspaceMembership[] | null>(null)
 
-  async function submit(tenantId?: string) {
+  async function submit(workspaceId?: string) {
     setPending(true)
     setError(null)
     try {
       const result = await api<LoginResponse>('/v1/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password, tenant_id: tenantId ?? null }),
+        body: JSON.stringify({ email, password, workspace_id: workspaceId ?? null }),
       })
 
-      if (result.status === 'select_tenant') {
-        if (result.tenants.length === 0) {
-          setError('This account has no tenant access.')
+      if (result.status === 'select_workspace') {
+        if (result.workspaces.length === 0) {
+          setError('This account has no workspace access.')
           return
         }
-        // A single tenant needs no picker — go straight in.
-        if (result.tenants.length === 1) {
-          await submit(result.tenants[0].tenant_id)
+        // A single workspace needs no picker — go straight in.
+        if (result.workspaces.length === 1) {
+          await submit(result.workspaces[0].workspace_id)
           return
         }
-        setChoices(result.tenants)
+        setChoices(result.workspaces)
         return
       }
 
@@ -86,23 +86,23 @@ export default function Login() {
         {choices ? (
           <div className="mt-8 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
             <p className="p-4 text-sm text-surface-600 dark:text-surface-400 border-b border-surface-200 dark:border-surface-800">
-              Choose a tenant
+              Choose a workspace
             </p>
             <ul className="divide-y divide-surface-200 dark:divide-surface-800">
-              {choices.map((tenant) => (
-                <li key={tenant.tenant_id}>
+              {choices.map((workspace) => (
+                <li key={workspace.workspace_id}>
                   <button
-                    onClick={() => void submit(tenant.tenant_id)}
+                    onClick={() => void submit(workspace.workspace_id)}
                     disabled={pending}
                     className="w-full flex items-center gap-3 p-4 text-left hover:bg-surface-50 dark:hover:bg-surface-800/50 disabled:opacity-50"
                   >
                     <Building2 size={16} className="text-surface-400 shrink-0" />
                     <span className="flex-1 min-w-0">
                       <span className="block text-sm text-surface-900 dark:text-surface-100 truncate">
-                        {tenant.name}
+                        {workspace.name}
                       </span>
                       <span className="block text-xs text-surface-600 dark:text-surface-400 truncate">
-                        {tenant.roles.join(', ') || 'system access'}
+                        {workspace.roles.join(', ') || 'system access'}
                       </span>
                     </span>
                   </button>

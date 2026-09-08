@@ -24,7 +24,7 @@ fn internal(e: sqlx::Error) -> AgentError {
 fn read_agent(row: &sqlx::postgres::PgRow) -> Agent {
     Agent {
         id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
+        workspace_id: row.get("workspace_id"),
         name: row.get("name"),
         slug: row.get("slug"),
         description: row.get("description"),
@@ -36,11 +36,11 @@ fn read_agent(row: &sqlx::postgres::PgRow) -> Agent {
 
 #[async_trait]
 impl AgentStore for PostgresAgentStore {
-    async fn list(&self, tenant_id: Uuid) -> Result<Vec<Agent>, AgentError> {
+    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Agent>, AgentError> {
         let rows = sqlx::query(
-            "select id, tenant_id, name, slug, description, system_prompt, policy, enabled from agents where tenant_id = $1 order by name",
+            "select id, workspace_id, name, slug, description, system_prompt, policy, enabled from agents where workspace_id = $1 order by name",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -48,13 +48,13 @@ impl AgentStore for PostgresAgentStore {
         Ok(rows.iter().map(read_agent).collect())
     }
 
-    async fn get(&self, tenant_id: Uuid, id: Uuid) -> Result<Agent, AgentError> {
-        // Scoped by tenant as well as id: an agent belonging to another tenant
+    async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Agent, AgentError> {
+        // Scoped by workspace as well as id: an agent belonging to another workspace
         // must read as absent, not as forbidden, so ids cannot be probed.
         let row = sqlx::query(
-            "select id, tenant_id, name, slug, description, system_prompt, policy, enabled from agents where tenant_id = $1 and id = $2",
+            "select id, workspace_id, name, slug, description, system_prompt, policy, enabled from agents where workspace_id = $1 and id = $2",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -64,17 +64,17 @@ impl AgentStore for PostgresAgentStore {
         Ok(read_agent(&row))
     }
 
-    async fn create(&self, tenant_id: Uuid, input: CreateAgent) -> Result<Agent, AgentError> {
+    async fn create(&self, workspace_id: Uuid, input: CreateAgent) -> Result<Agent, AgentError> {
         validate_name(&input.name)?;
         validate_slug(&input.slug)?;
 
         let row = sqlx::query(
-            "insert into agents (id, tenant_id, name, slug, description, system_prompt, policy) \
+            "insert into agents (id, workspace_id, name, slug, description, system_prompt, policy) \
              values ($1, $2, $3, $4, $5, $6, coalesce($7, '{}'::jsonb)) \
-             returning id, tenant_id, name, slug, description, system_prompt, policy, enabled",
+             returning id, workspace_id, name, slug, description, system_prompt, policy, enabled",
         )
         .bind(Uuid::now_v7())
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(input.name.trim())
         .bind(&input.slug)
         .bind(input.description.trim())
@@ -94,7 +94,7 @@ impl AgentStore for PostgresAgentStore {
 
     async fn update(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         id: Uuid,
         input: UpdateAgent,
     ) -> Result<Agent, AgentError> {
@@ -112,10 +112,10 @@ impl AgentStore for PostgresAgentStore {
                  policy = coalesce($6, policy), \
                  enabled = coalesce($7, enabled), \
                  updated_at = now() \
-             where tenant_id = $1 and id = $2 \
-             returning id, tenant_id, name, slug, description, system_prompt, policy, enabled",
+             where workspace_id = $1 and id = $2 \
+             returning id, workspace_id, name, slug, description, system_prompt, policy, enabled",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(id)
         .bind(input.name.as_deref().map(str::trim))
         .bind(input.description.as_deref().map(str::trim))
@@ -130,9 +130,9 @@ impl AgentStore for PostgresAgentStore {
         Ok(read_agent(&row))
     }
 
-    async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), AgentError> {
-        let result = sqlx::query("delete from agents where tenant_id = $1 and id = $2")
-            .bind(tenant_id)
+    async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), AgentError> {
+        let result = sqlx::query("delete from agents where workspace_id = $1 and id = $2")
+            .bind(workspace_id)
             .bind(id)
             .execute(&self.pool)
             .await

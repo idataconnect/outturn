@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use outturn::api::tenant::{PostgresTenantStore, TenantStore};
+use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
 use outturn::api::user::{CreateUser, PostgresUserStore, UserStore};
 use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
@@ -30,7 +30,7 @@ mod common;
 struct Harness {
     app: axum::Router,
     users: Arc<dyn UserStore>,
-    tenants: Arc<dyn TenantStore>,
+    workspaces: Arc<dyn WorkspaceStore>,
     #[allow(dead_code)]
     sessions: Arc<dyn SessionStore>,
     agents: Arc<dyn AgentStore>,
@@ -71,7 +71,7 @@ async fn harness() -> Harness {
     .expect("validator");
     let runtime_key = outturn::auth::RuntimeKey::new(TEST_RUNTIME_KEY).expect("runtime key");
 
-    let tenants: Arc<dyn TenantStore> = Arc::new(PostgresTenantStore::new(pool.clone()));
+    let workspaces: Arc<dyn WorkspaceStore> = Arc::new(PostgresWorkspaceStore::new(pool.clone()));
     let users: Arc<dyn UserStore> = Arc::new(PostgresUserStore::new(pool.clone()));
     let sessions: Arc<dyn SessionStore> = Arc::new(PostgresSessionStore::new(pool.clone()));
     let agents: Arc<dyn AgentStore> = Arc::new(PostgresAgentStore::new(pool.clone()));
@@ -83,7 +83,7 @@ async fn harness() -> Harness {
     let settings: Arc<dyn outturn::api::settings::SettingsStore> =
         Arc::new(outturn::api::settings::PostgresSettingsStore::new(pool.clone()));
     let state = Arc::new(ApiState::new(
-        tenants.clone(),
+        workspaces.clone(),
         users.clone(),
         sessions.clone(),
         agents.clone(),
@@ -113,7 +113,7 @@ async fn harness() -> Harness {
     Harness {
         app: routes(Arc::clone(&state)),
         users,
-        tenants,
+        workspaces,
         sessions,
         agents,
         db,
@@ -184,17 +184,17 @@ impl Harness {
     /// A shared key rather than a token: `Role::Runtime` is granted to no user,
     /// cannot be parsed from a role name, and is never signed into anything.
     /// The runtime holds no signing key at all, which is the point of it.
-    fn runtime_token(&self, _tenant: Uuid) -> String {
+    fn runtime_token(&self, _workspace: Uuid) -> String {
         TEST_RUNTIME_KEY.to_string()
     }
 
-    /// Creates a user with the given system role and tenant role, then logs in
+    /// Creates a user with the given system role and workspace role, then logs in
     /// and returns the scoped token.
     async fn login_as(
         &self,
         email: &str,
         system_role: Option<Role>,
-        tenant_role: Option<(Uuid, &str)>,
+        workspace_role: Option<(Uuid, &str)>,
     ) -> String {
         let user = self
             .users
@@ -212,16 +212,16 @@ impl Harness {
                 .await
                 .expect("grant system role");
         }
-        if let Some((tenant_id, role)) = tenant_role {
+        if let Some((workspace_id, role)) = workspace_role {
             self.users
-                .grant_tenant_role(user.id, tenant_id, role)
+                .grant_workspace_role(user.id, workspace_id, role)
                 .await
-                .expect("grant tenant role");
+                .expect("grant workspace role");
         }
 
-        let tenant_id = match tenant_role {
+        let workspace_id = match workspace_role {
             Some((id, _)) => id,
-            None => self.tenants.list().await.expect("list")[0].id,
+            None => self.workspaces.list().await.expect("list")[0].id,
         };
 
         let req = Request::builder()
@@ -229,7 +229,7 @@ impl Harness {
             .uri("/v1/login")
             .header("content-type", "application/json")
             .body(Body::from(format!(
-                r#"{{"email":"{email}","password":"correct-horse","tenant_id":"{tenant_id}"}}"#
+                r#"{{"email":"{email}","password":"correct-horse","workspace_id":"{workspace_id}"}}"#
             )))
             .expect("request");
 
@@ -238,30 +238,30 @@ impl Harness {
         cookie.expect("login must set a session cookie")
     }
 
-    async fn make_tenant(&self, name: &str, slug: &str) -> Uuid {
-        let id = self.make_bare_tenant(name, slug).await;
-        // As the API does on creation: a tenant with no roles is one nobody
+    async fn make_workspace(&self, name: &str, slug: &str) -> Uuid {
+        let id = self.make_bare_workspace(name, slug).await;
+        // As the API does on creation: a workspace with no roles is one nobody
         // can be given access to.
         self.roles.seed_defaults(id).await.expect("seed roles");
         id
     }
 
-    async fn make_bare_tenant(&self, name: &str, slug: &str) -> Uuid {
-        self.tenants
-            .create(outturn::api::tenant::CreateTenant {
+    async fn make_bare_workspace(&self, name: &str, slug: &str) -> Uuid {
+        self.workspaces
+            .create(outturn::api::workspace::CreateWorkspace {
                 name: name.into(),
                 slug: slug.into(),
             })
             .await
-            .expect("create tenant")
+            .expect("create workspace")
             .id
     }
 }
 
 #[tokio::test]
-async fn login_without_tenant_returns_picker() {
+async fn login_without_workspace_returns_picker() {
     let h = harness_or_skip!();
-    let tenant = h.make_tenant("Acme", "acme").await;
+    let workspace = h.make_workspace("Acme", "acme").await;
 
     let user = h
         .users
@@ -273,7 +273,7 @@ async fn login_without_tenant_returns_picker() {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, tenant, "viewer")
+        .grant_workspace_role(user.id, workspace, "viewer")
         .await
         .expect("grant");
 
@@ -286,7 +286,7 @@ async fn login_without_tenant_returns_picker() {
         .await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert!(body.contains("select_tenant"), "body: {body}");
+    assert!(body.contains("select_workspace"), "body: {body}");
     assert!(body.contains("acme"), "body: {body}");
 
     finish!(h);
@@ -295,7 +295,7 @@ async fn login_without_tenant_returns_picker() {
 #[tokio::test]
 async fn bad_password_is_unauthorized() {
     let h = harness_or_skip!();
-    h.make_tenant("Acme", "acme").await;
+    h.make_workspace("Acme", "acme").await;
     h.users
         .create(CreateUser {
             email: "user@example.com".into(),
@@ -318,23 +318,23 @@ async fn bad_password_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn system_admin_sees_all_tenants_and_manages_them() {
+async fn system_admin_sees_all_workspaces_and_manages_them() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    h.make_workspace("Globex", "globex").await;
 
-    // No explicit grant in either tenant — system admin still reaches them.
+    // No explicit grant in either workspace — system admin still reaches them.
     let token = h
         .login_as("admin@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
         .await;
 
-    let (status, body) = h.get("/v1/tenants", Some(&token)).await;
+    let (status, body) = h.get("/v1/workspaces", Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("Acme") && body.contains("Globex"), "body: {body}");
 
     let (status, body) = h
         .post(
-            "/v1/tenants",
+            "/v1/workspaces",
             Some(&token),
             r#"{"name":"Initech","slug":"initech"}"#,
         )
@@ -345,18 +345,18 @@ async fn system_admin_sees_all_tenants_and_manages_them() {
 }
 
 #[tokio::test]
-async fn tenant_admin_cannot_manage_tenants() {
+async fn workspace_admin_cannot_manage_workspaces() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
 
-    let (status, _) = h.get("/v1/tenants", Some(&token)).await;
+    let (status, _) = h.get("/v1/workspaces", Some(&token)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, _) = h
-        .post("/v1/tenants", Some(&token), r#"{"name":"X","slug":"x"}"#)
+        .post("/v1/workspaces", Some(&token), r#"{"name":"X","slug":"x"}"#)
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
@@ -364,9 +364,9 @@ async fn tenant_admin_cannot_manage_tenants() {
 }
 
 #[tokio::test]
-async fn tenant_admin_can_manage_users() {
+async fn workspace_admin_can_manage_users() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -387,15 +387,15 @@ async fn tenant_admin_can_manage_users() {
     finish!(h);
 }
 
-/// A tenant's administrator sees their own tenant's accounts and nobody else's.
+/// A workspace's administrator sees their own workspace's accounts and nobody else's.
 ///
 /// The user list used to be every account on the platform, which named every
-/// other customer's staff to anyone holding users:read in any tenant.
+/// other customer's staff to anyone holding users:read in any workspace.
 #[tokio::test]
-async fn a_tenant_admin_sees_only_their_own_tenants_users() {
+async fn a_workspace_admin_sees_only_their_own_workspaces_users() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
     let acme_admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -407,7 +407,7 @@ async fn a_tenant_admin_sees_only_their_own_tenants_users() {
     assert!(body.contains("admin@acme.example"), "body: {body}");
     assert!(
         !body.contains("globex.example"),
-        "another tenant's account was listed: {body}"
+        "another workspace's account was listed: {body}"
     );
 
     // A system administrator still sees everyone.
@@ -424,7 +424,7 @@ async fn a_tenant_admin_sees_only_their_own_tenants_users() {
 #[tokio::test]
 async fn viewer_cannot_manage_users() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("viewer@acme.example", None, Some((acme, "viewer")))
         .await;
@@ -436,10 +436,10 @@ async fn viewer_cannot_manage_users() {
 }
 
 #[tokio::test]
-async fn login_to_unaffiliated_tenant_is_forbidden() {
+async fn login_to_unaffiliated_workspace_is_forbidden() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
 
     let user = h
         .users
@@ -451,7 +451,7 @@ async fn login_to_unaffiliated_tenant_is_forbidden() {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, acme, "viewer")
+        .grant_workspace_role(user.id, acme, "viewer")
         .await
         .expect("grant");
 
@@ -460,7 +460,7 @@ async fn login_to_unaffiliated_tenant_is_forbidden() {
             "/v1/login",
             None,
             &format!(
-                r#"{{"email":"acme-only@example.com","password":"correct-horse","tenant_id":"{globex}"}}"#
+                r#"{{"email":"acme-only@example.com","password":"correct-horse","workspace_id":"{globex}"}}"#
             ),
         )
         .await;
@@ -470,10 +470,10 @@ async fn login_to_unaffiliated_tenant_is_forbidden() {
 }
 
 #[tokio::test]
-async fn tenant_switch_remints_for_new_tenant() {
+async fn workspace_switch_remints_for_new_workspace() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
 
     let token = h
         .login_as("admin@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
@@ -481,23 +481,23 @@ async fn tenant_switch_remints_for_new_tenant() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/session/tenant")
+        .uri("/v1/session/workspace")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        .body(Body::from(format!(r#"{{"tenant_id":"{globex}"}}"#)))
+        .body(Body::from(format!(r#"{{"workspace_id":"{globex}"}}"#)))
         .expect("request");
     let (status, body, new_cookie) = h.send_full(req).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
 
     let parsed: Value = serde_json::from_str(&body).expect("json");
-    assert_eq!(parsed["tenant_id"].as_str().unwrap(), globex.to_string());
+    assert_eq!(parsed["workspace_id"].as_str().unwrap(), globex.to_string());
 
-    // The re-minted token must actually be scoped to the new tenant.
+    // The re-minted token must actually be scoped to the new workspace.
     let new_token = new_cookie.expect("switch must re-set the cookie");
     let (status, body) = h.get("/v1/session", Some(&new_token)).await;
     assert_eq!(status, StatusCode::OK);
     let session: Value = serde_json::from_str(&body).expect("json");
-    assert_eq!(session["tenant_id"].as_str().unwrap(), globex.to_string());
+    assert_eq!(session["workspace_id"].as_str().unwrap(), globex.to_string());
 
     finish!(h);
 }
@@ -505,7 +505,7 @@ async fn tenant_switch_remints_for_new_tenant() {
 #[tokio::test]
 async fn duplicate_email_conflicts() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -523,7 +523,7 @@ async fn duplicate_email_conflicts() {
 #[tokio::test]
 async fn missing_token_is_unauthorized() {
     let h = harness_or_skip!();
-    let (status, _) = h.get("/v1/tenants", None).await;
+    let (status, _) = h.get("/v1/workspaces", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     finish!(h);
@@ -532,7 +532,7 @@ async fn missing_token_is_unauthorized() {
 #[tokio::test]
 async fn account_can_have_several_emails() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
 
     let user = h
         .users
@@ -544,7 +544,7 @@ async fn account_can_have_several_emails() {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, acme, "admin")
+        .grant_workspace_role(user.id, acme, "admin")
         .await
         .expect("grant");
     h.users
@@ -559,7 +559,7 @@ async fn account_can_have_several_emails() {
                 "/v1/login",
                 None,
                 &format!(
-                    r#"{{"email":"{email}","password":"correct-horse","tenant_id":"{acme}"}}"#
+                    r#"{{"email":"{email}","password":"correct-horse","workspace_id":"{acme}"}}"#
                 ),
             )
             .await;
@@ -579,7 +579,7 @@ async fn account_can_have_several_emails() {
 #[tokio::test]
 async fn identities_are_globally_unique() {
     let h = harness_or_skip!();
-    h.make_tenant("Acme", "acme").await;
+    h.make_workspace("Acme", "acme").await;
 
     h.users
         .create(CreateUser {
@@ -613,7 +613,7 @@ async fn identities_are_globally_unique() {
 #[tokio::test]
 async fn last_identity_cannot_be_removed() {
     let h = harness_or_skip!();
-    h.make_tenant("Acme", "acme").await;
+    h.make_workspace("Acme", "acme").await;
 
     let user = h
         .users
@@ -653,7 +653,7 @@ async fn last_identity_cannot_be_removed() {
 #[tokio::test]
 async fn removed_identity_can_no_longer_sign_in() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
 
     let user = h
         .users
@@ -665,7 +665,7 @@ async fn removed_identity_can_no_longer_sign_in() {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, acme, "viewer")
+        .grant_workspace_role(user.id, acme, "viewer")
         .await
         .expect("grant");
     let dropped = h
@@ -684,7 +684,7 @@ async fn removed_identity_can_no_longer_sign_in() {
             "/v1/login",
             None,
             &format!(
-                r#"{{"email":"drop@example.com","password":"correct-horse","tenant_id":"{acme}"}}"#
+                r#"{{"email":"drop@example.com","password":"correct-horse","workspace_id":"{acme}"}}"#
             ),
         )
         .await;
@@ -696,7 +696,7 @@ async fn removed_identity_can_no_longer_sign_in() {
             "/v1/login",
             None,
             &format!(
-                r#"{{"email":"keep@example.com","password":"correct-horse","tenant_id":"{acme}"}}"#
+                r#"{{"email":"keep@example.com","password":"correct-horse","workspace_id":"{acme}"}}"#
             ),
         )
         .await;
@@ -708,7 +708,7 @@ async fn removed_identity_can_no_longer_sign_in() {
 #[tokio::test]
 async fn session_cookie_is_httponly_and_samesite() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
 
     let user = h
         .users
@@ -720,7 +720,7 @@ async fn session_cookie_is_httponly_and_samesite() {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, acme, "viewer")
+        .grant_workspace_role(user.id, acme, "viewer")
         .await
         .expect("grant");
 
@@ -729,7 +729,7 @@ async fn session_cookie_is_httponly_and_samesite() {
         .uri("/v1/login")
         .header("content-type", "application/json")
         .body(Body::from(format!(
-            r#"{{"email":"cookie@example.com","password":"correct-horse","tenant_id":"{acme}"}}"#
+            r#"{{"email":"cookie@example.com","password":"correct-horse","workspace_id":"{acme}"}}"#
         )))
         .expect("request");
 
@@ -760,7 +760,7 @@ async fn session_cookie_is_httponly_and_samesite() {
 #[tokio::test]
 async fn cookie_authenticates_subsequent_requests() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let cookie = h
         .login_as("cookieuser@example.com", None, Some((acme, "admin")))
         .await;
@@ -807,7 +807,7 @@ async fn logout_clears_the_cookie() {
 #[tokio::test]
 async fn refresh_outlives_the_access_token() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "lifetime@example.com", acme, "viewer").await;
 
     let response = login_raw(&h, "lifetime@example.com", acme).await;
@@ -842,13 +842,13 @@ fn cookie_named(response: &axum::response::Response, name: &str) -> Option<Strin
         })
 }
 
-async fn login_raw(h: &Harness, email: &str, tenant: Uuid) -> axum::response::Response {
+async fn login_raw(h: &Harness, email: &str, workspace: Uuid) -> axum::response::Response {
     let req = Request::builder()
         .method("POST")
         .uri("/v1/login")
         .header("content-type", "application/json")
         .body(Body::from(format!(
-            r#"{{"email":"{email}","password":"correct-horse","tenant_id":"{tenant}"}}"#
+            r#"{{"email":"{email}","password":"correct-horse","workspace_id":"{workspace}"}}"#
         )))
         .expect("request");
     h.app.clone().oneshot(req).await.expect("response")
@@ -864,7 +864,7 @@ async fn refresh_with(h: &Harness, token: &str) -> axum::response::Response {
     h.app.clone().oneshot(req).await.expect("response")
 }
 
-async fn seed_user(h: &Harness, email: &str, tenant: Uuid, role: &str) {
+async fn seed_user(h: &Harness, email: &str, workspace: Uuid, role: &str) {
     let user = h
         .users
         .create(CreateUser {
@@ -875,7 +875,7 @@ async fn seed_user(h: &Harness, email: &str, tenant: Uuid, role: &str) {
         .await
         .expect("create");
     h.users
-        .grant_tenant_role(user.id, tenant, role)
+        .grant_workspace_role(user.id, workspace, role)
         .await
         .expect("grant");
 }
@@ -883,7 +883,7 @@ async fn seed_user(h: &Harness, email: &str, tenant: Uuid, role: &str) {
 #[tokio::test]
 async fn login_issues_a_path_scoped_refresh_cookie() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "refresh@example.com", acme, "viewer").await;
 
     let response = login_raw(&h, "refresh@example.com", acme).await;
@@ -909,7 +909,7 @@ async fn login_issues_a_path_scoped_refresh_cookie() {
 #[tokio::test]
 async fn refresh_rotates_and_returns_a_working_access_token() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "rotate@example.com", acme, "admin").await;
 
     let first = login_raw(&h, "rotate@example.com", acme).await;
@@ -942,7 +942,7 @@ async fn refresh_rotates_and_returns_a_working_access_token() {
 #[tokio::test]
 async fn replaying_a_rotated_refresh_token_revokes_the_family() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "replay@example.com", acme, "viewer").await;
 
     let first = login_raw(&h, "replay@example.com", acme).await;
@@ -971,7 +971,7 @@ async fn replaying_a_rotated_refresh_token_revokes_the_family() {
 #[tokio::test]
 async fn logout_revokes_the_refresh_token_server_side() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "logout@example.com", acme, "viewer").await;
 
     let first = login_raw(&h, "logout@example.com", acme).await;
@@ -996,7 +996,7 @@ async fn logout_revokes_the_refresh_token_server_side() {
 #[tokio::test]
 async fn refresh_picks_up_revoked_roles() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     seed_user(&h, "revoked@example.com", acme, "viewer").await;
 
     let first = login_raw(&h, "revoked@example.com", acme).await;
@@ -1013,7 +1013,7 @@ async fn refresh_picks_up_revoked_roles() {
         })
         .expect("user");
     h.users
-        .revoke_tenant_role(target.id, acme, "viewer")
+        .revoke_workspace_role(target.id, acme, "viewer")
         .await
         .expect("revoke");
 
@@ -1039,9 +1039,9 @@ async fn refresh_without_a_cookie_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn operator_can_manage_agents_in_own_tenant() {
+async fn operator_can_manage_agents_in_own_workspace() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("op@acme.example", None, Some((acme, "operator")))
         .await;
@@ -1063,10 +1063,10 @@ async fn operator_can_manage_agents_in_own_tenant() {
 }
 
 #[tokio::test]
-async fn agents_are_invisible_across_tenants() {
+async fn agents_are_invisible_across_workspaces() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
 
     let acme_agent = h
         .agents
@@ -1098,17 +1098,17 @@ async fn agents_are_invisible_across_tenants() {
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
-        "another tenant's agent must read as absent"
+        "another workspace's agent must read as absent"
     );
 
     finish!(h);
 }
 
 #[tokio::test]
-async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
+async fn system_admin_sees_only_the_workspace_they_are_scoped_to() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
 
     h.agents
         .create(
@@ -1124,7 +1124,7 @@ async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
         .await
         .expect("create");
 
-    // Scoped to Acme: system_admin is not a licence to see every tenant at
+    // Scoped to Acme: system_admin is not a licence to see every workspace at
     // once, it is the ability to mint a token for any of them.
     let token = h
         .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
@@ -1134,7 +1134,7 @@ async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         !body.contains("Globex Bot"),
-        "scoped token must not cross tenants: {body}"
+        "scoped token must not cross workspaces: {body}"
     );
 
     finish!(h);
@@ -1143,7 +1143,7 @@ async fn system_admin_sees_only_the_tenant_they_are_scoped_to() {
 #[tokio::test]
 async fn viewer_cannot_create_agents() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("viewer@acme.example", None, Some((acme, "viewer")))
         .await;
@@ -1163,7 +1163,7 @@ async fn viewer_cannot_create_agents() {
 #[tokio::test]
 async fn operator_cannot_delete_agents() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let agent = h
         .agents
         .create(
@@ -1196,10 +1196,10 @@ async fn operator_cannot_delete_agents() {
 }
 
 #[tokio::test]
-async fn slugs_are_unique_per_tenant_not_globally() {
+async fn slugs_are_unique_per_workspace_not_globally() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
 
     let make = || outturn::api::agent::CreateAgent {
         name: "Support".into(),
@@ -1210,12 +1210,12 @@ async fn slugs_are_unique_per_tenant_not_globally() {
     };
 
     h.agents.create(acme, make()).await.expect("acme");
-    // Two tenants may both have a "support" agent without colliding.
+    // Two workspaces may both have a "support" agent without colliding.
     h.agents.create(globex, make()).await.expect("globex");
 
-    // But not twice within one tenant.
+    // But not twice within one workspace.
     let dup = h.agents.create(acme, make()).await;
-    assert!(dup.is_err(), "duplicate slug within a tenant must be refused");
+    assert!(dup.is_err(), "duplicate slug within a workspace must be refused");
 
     finish!(h);
 }
@@ -1223,7 +1223,7 @@ async fn slugs_are_unique_per_tenant_not_globally() {
 #[tokio::test]
 async fn partial_update_leaves_other_fields_intact() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let agent = h
         .agents
         .create(
@@ -1266,7 +1266,7 @@ async fn partial_update_leaves_other_fields_intact() {
 #[tokio::test]
 async fn a_pasted_url_becomes_an_egress_rule() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1299,7 +1299,7 @@ async fn a_pasted_url_becomes_an_egress_rule() {
 #[tokio::test]
 async fn a_rule_that_would_mislead_its_author_is_refused() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1328,7 +1328,7 @@ async fn a_rule_that_would_mislead_its_author_is_refused() {
 #[tokio::test]
 async fn a_host_cannot_be_allowed_twice() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1348,13 +1348,13 @@ async fn a_host_cannot_be_allowed_twice() {
     assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
 }
 
-/// One tenant's list is not another's, and neither is reachable from the
+/// One workspace's list is not another's, and neither is reachable from the
 /// other's token.
 #[tokio::test]
-async fn egress_rules_do_not_cross_tenants() {
+async fn egress_rules_do_not_cross_workspaces() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
-    let globex = h.make_tenant("Globex", "globex").await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
     let acme_token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1379,7 +1379,7 @@ async fn egress_rules_do_not_cross_tenants() {
 
     let (status, body) = h.get("/v1/egress-rules", Some(&globex_token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "[]", "one tenant saw another's rules: {body}");
+    assert_eq!(body, "[]", "one workspace saw another's rules: {body}");
 
     // Knowing an id is not the same as being able to use it.
     let req = Request::builder()
@@ -1392,7 +1392,7 @@ async fn egress_rules_do_not_cross_tenants() {
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
-        "a tenant deleted another tenant's rule"
+        "a workspace deleted another workspace's rule"
     );
 
     let (status, body) = h.get("/v1/egress-rules", Some(&acme_token)).await;
@@ -1401,17 +1401,17 @@ async fn egress_rules_do_not_cross_tenants() {
 
 // -- Work distribution --------------------------------------------------------
 
-/// No tenant role, however senior, can take work off the queue.
+/// No workspace role, however senior, can take work off the queue.
 ///
-/// A turn handed out carries whichever tenant's transcript it belongs to,
-/// that tenant's egress rules, and a token minted for it -- so anything that
+/// A turn handed out carries whichever workspace's transcript it belongs to,
+/// that workspace's egress rules, and a token minted for it -- so anything that
 /// can ask for work can ask for everyone's. Checking only that a Viewer is
 /// refused would pass while an Admin walked through, which is exactly what
-/// happened when these endpoints were gated on an authority tenants hold.
+/// happened when these endpoints were gated on an authority workspaces hold.
 #[tokio::test]
-async fn no_tenant_role_can_take_work() {
+async fn no_workspace_role_can_take_work() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
 
     for (email, role) in [
         ("viewer@acme.example", "viewer"),
@@ -1446,7 +1446,7 @@ async fn no_tenant_role_can_take_work() {
 #[tokio::test]
 async fn a_turn_that_is_not_running_cannot_be_reported() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let runtime = h.runtime_token(acme);
 
     // Queued but never handed out, so nothing is running it.
@@ -1481,7 +1481,7 @@ async fn a_turn_that_is_not_running_cannot_be_reported() {
 #[tokio::test]
 async fn asking_for_work_when_there_is_none_says_so() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let runtime = h.runtime_token(acme);
 
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
@@ -1498,7 +1498,7 @@ async fn asking_for_work_when_there_is_none_says_so() {
 #[tokio::test]
 async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1581,11 +1581,11 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
 
 // -- Roles as data -----------------------------------------------------------
 
-/// A tenant defines its own roles, and an edit takes effect on the next request.
+/// A workspace defines its own roles, and an edit takes effect on the next request.
 #[tokio::test]
-async fn a_tenant_can_define_a_role_and_it_works_at_once() {
+async fn a_workspace_can_define_a_role_and_it_works_at_once() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1637,7 +1637,7 @@ async fn a_tenant_can_define_a_role_and_it_works_at_once() {
 #[tokio::test]
 async fn a_role_cannot_reach_past_the_platform_or_its_editor() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1647,14 +1647,14 @@ async fn a_role_cannot_reach_past_the_platform_or_its_editor() {
         .post(
             "/v1/roles",
             Some(&admin),
-            r#"{"name":"overlord","authorities":["tenants:create"]}"#,
+            r#"{"name":"overlord","authorities":["workspaces:create"]}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a tenant role took tenants:create: {body}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a workspace role took workspaces:create: {body}");
     let (status, body) = h
         .post("/v1/roles", Some(&admin), r#"{"name":"taker","authorities":["work:take"]}"#)
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a tenant role took work:take: {body}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a workspace role took work:take: {body}");
 
     // A platform role's name cannot be reused.
     let (status, _) = h
@@ -1690,11 +1690,11 @@ async fn a_role_cannot_reach_past_the_platform_or_its_editor() {
     finish!(h);
 }
 
-/// A role somebody holds stays; a name the tenant has no role for is refused.
+/// A role somebody holds stays; a name the workspace has no role for is refused.
 #[tokio::test]
 async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1735,7 +1735,7 @@ async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
 #[tokio::test]
 async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1828,10 +1828,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let page: serde_json::Value = serde_json::from_str(&body).expect("page");
     assert!(page["next"].is_null(), "the ledger should be exhausted: {body}");
 
-    // Another tenant's ledger is not this admin's to read.
-    let globex = h.make_tenant("Globex", "globex").await;
+    // Another workspace's ledger is not this admin's to read.
+    let globex = h.make_workspace("Globex", "globex").await;
     let (status, _) = h
-        .get(&format!("/v1/usage?tenant_id={globex}"), Some(&admin))
+        .get(&format!("/v1/usage?workspace_id={globex}"), Some(&admin))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
@@ -1843,9 +1843,9 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
 /// A value walks down from the operator until a level overrides it, and a
 /// cleared override falls back to whatever is above.
 #[tokio::test]
-async fn settings_cascade_from_operator_to_tenant_to_agent() {
+async fn settings_cascade_from_operator_to_workspace_to_agent() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let root = h
         .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
         .await;
@@ -1875,21 +1875,21 @@ async fn settings_cascade_from_operator_to_tenant_to_agent() {
         .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &root, r#"{"value":"low"}"#))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    // A tenant admin may not.
+    // A workspace admin may not.
     let (status, _) = h
         .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // The tenant now inherits it.
+    // The workspace now inherits it.
     let (_, body) = h.get("/v1/settings", Some(&admin)).await;
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
     let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
     assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "operator");
-    assert!(effort["override_value"].is_null(), "no row at the tenant level yet");
+    assert!(effort["override_value"].is_null(), "no row at the workspace level yet");
 
-    // The tenant overrides; an agent inherits the tenant's value.
+    // The workspace overrides; an agent inherits the workspace's value.
     let (status, _) = h
         .send(req("PUT", "/v1/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
         .await;
@@ -1903,7 +1903,7 @@ async fn settings_cascade_from_operator_to_tenant_to_agent() {
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
     let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
     assert_eq!(effort["value"], "high");
-    assert_eq!(effort["source"], "tenant");
+    assert_eq!(effort["source"], "workspace");
     assert_eq!(effort["inherited"], "high");
 
     // Bad values are refused by the catalogue, not stored.
@@ -1912,7 +1912,7 @@ async fn settings_cascade_from_operator_to_tenant_to_agent() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
 
-    // Clearing the tenant's override falls back to the operator's value.
+    // Clearing the workspace's override falls back to the operator's value.
     let (status, _) = h
         .send(req("DELETE", "/v1/settings/reasoning_effort".into(), &admin, ""))
         .await;
@@ -1933,7 +1933,7 @@ async fn settings_cascade_from_operator_to_tenant_to_agent() {
 #[tokio::test]
 async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
@@ -1989,15 +1989,15 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
 
     // A viewer may read the conversation's files but not add to the
     // workspace's; the admin may.
-    let (status, body) = h.send(put(&viewer, "tenant/pricing.csv", "x")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote tenant files: {body}");
+    let (status, body) = h.send(put(&viewer, "workspace/pricing.csv", "x")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote workspace files: {body}");
     let (status, body) = h.send(put(&viewer, "session/mine.txt", "x")).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote session files without sessions:create: {body}");
-    let (status, body) = h.send(put(&admin, "tenant/pricing.csv", "x")).await;
+    let (status, body) = h.send(put(&admin, "workspace/pricing.csv", "x")).await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
 
     // Traversal in an upload path is refused, not repaired.
-    let (status, _) = h.send(put(&admin, "session/../tenant/oops.txt", "x")).await;
+    let (status, _) = h.send(put(&admin, "session/../workspace/oops.txt", "x")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     finish!(h);
@@ -2012,7 +2012,7 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
 #[tokio::test]
 async fn only_the_runtime_key_takes_work() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
 
     let wrong = "not-the-key-not-the-key-not-the-key-no";
     let (status, body) = h.post("/v1/work", Some(wrong), "{}").await;
@@ -2040,7 +2040,7 @@ async fn only_the_runtime_key_takes_work() {
 #[tokio::test]
 async fn an_agent_can_be_created_with_a_policy() {
     let h = harness_or_skip!();
-    let acme = h.make_tenant("Acme", "acme").await;
+    let acme = h.make_workspace("Acme", "acme").await;
     let token = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;

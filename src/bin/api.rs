@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
-use outturn::api::tenant::{PostgresTenantStore, TenantStore};
+use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
 use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::role::{PostgresRoleStore, RoleStore};
@@ -64,12 +64,12 @@ async fn main() {
     db::migrate(&pool).await.expect("migrations");
     tracing::info!("migrations applied");
 
-    let tenants: Arc<dyn TenantStore> = Arc::new(PostgresTenantStore::new(pool.clone()));
+    let workspaces: Arc<dyn WorkspaceStore> = Arc::new(PostgresWorkspaceStore::new(pool.clone()));
     let users: Arc<dyn UserStore> = Arc::new(PostgresUserStore::new(pool.clone()));
     let sessions: Arc<dyn SessionStore> = Arc::new(PostgresSessionStore::new(pool.clone()));
     let agents: Arc<dyn AgentStore> = Arc::new(PostgresAgentStore::new(pool.clone()));
     let chat: Arc<dyn ChatStore> = Arc::new(PostgresChatStore::new(pool.clone()));
-    // Roles are resolved on every request and cached per tenant; the listener
+    // Roles are resolved on every request and cached per workspace; the listener
     // is what makes an edit on one pod reach the cache on every other.
     let role_store = PostgresRoleStore::new(pool.clone());
     role_store.spawn_invalidation();
@@ -106,7 +106,7 @@ async fn main() {
         }
     };
 
-    seed::dev_seed(&users, &tenants, &roles).await.expect("dev seed");
+    seed::dev_seed(&users, &workspaces, &roles).await.expect("dev seed");
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
     let minter = TokenMinter::from_env().expect("token minter");
@@ -116,7 +116,7 @@ async fn main() {
     let bus = EventBus::spawn(pool.clone());
 
     let state = Arc::new(ApiState::new(
-        tenants,
+        workspaces,
         users,
         sessions,
         agents.clone(),

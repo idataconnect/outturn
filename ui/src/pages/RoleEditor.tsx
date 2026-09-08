@@ -4,7 +4,7 @@ import { ArrowLeft, Save, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
-import type { TenantRole } from './Roles'
+import type { WorkspaceRole } from './Roles'
 
 type AuthorityInfo = { name: string; description: string }
 
@@ -34,7 +34,7 @@ export default function RoleEditor() {
   const canManage = mine.includes('roles:manage')
 
   const [vocabulary, setVocabulary] = useState<AuthorityInfo[]>([])
-  const [role, setRole] = useState<TenantRole | null>(null)
+  const [role, setRole] = useState<WorkspaceRole | null>(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [chosen, setChosen] = useState<Set<string>>(() => new Set())
@@ -48,7 +48,7 @@ export default function RoleEditor() {
       try {
         const [vocab, found] = await Promise.all([
           api<AuthorityInfo[]>('/v1/authorities'),
-          creating ? Promise.resolve(null) : api<TenantRole>(`/v1/roles/${id}`),
+          creating ? Promise.resolve(null) : api<WorkspaceRole>(`/v1/roles/${id}`),
         ])
         if (stale) return
         setVocabulary(vocab)
@@ -84,9 +84,9 @@ export default function RoleEditor() {
     const body = { name, description, authorities: [...chosen].sort() }
     try {
       if (creating) {
-        await api<TenantRole>('/v1/roles', { method: 'POST', body: JSON.stringify(body) })
+        await api<WorkspaceRole>('/v1/roles', { method: 'POST', body: JSON.stringify(body) })
       } else {
-        await api<TenantRole>(`/v1/roles/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+        await api<WorkspaceRole>(`/v1/roles/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
       }
       void navigate('/roles')
     } catch (e) {

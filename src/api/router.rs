@@ -11,20 +11,20 @@ use uuid::Uuid;
 
 use crate::auth::{self, Authority, SessionClaims, TokenMinter, TokenValidator};
 
-use super::tenant::{CreateTenant, Tenant, TenantError, TenantStore};
+use super::workspace::{CreateWorkspace, Workspace, WorkspaceError, WorkspaceStore};
 use super::agent::AgentStore;
 use super::chat::ChatStore;
 use super::session::SessionStore;
-use super::role::{CreateRole, RoleError, RoleStore, TenantRole, UpdateRole};
-use super::user::{CreateUser, Identity, TenantMembership, User, UserStore};
+use super::role::{CreateRole, RoleError, RoleStore, WorkspaceRole, UpdateRole};
+use super::user::{CreateUser, Identity, WorkspaceMembership, User, UserStore};
 
 pub struct ApiState {
-    pub(super) tenants: Arc<dyn TenantStore>,
+    pub(super) workspaces: Arc<dyn WorkspaceStore>,
     pub(super) users: Arc<dyn UserStore>,
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) agents: Arc<dyn AgentStore>,
     pub(super) chat: Arc<dyn ChatStore>,
-    /// What a tenant's roles mean. Consulted on every authorised request.
+    /// What a workspace's roles mean. Consulted on every authorised request.
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
     pub(super) settings: Arc<dyn super::settings::SettingsStore>,
@@ -55,7 +55,7 @@ impl ApiState {
 
 impl ApiState {
     pub fn new(
-        tenants: Arc<dyn TenantStore>,
+        workspaces: Arc<dyn WorkspaceStore>,
         users: Arc<dyn UserStore>,
         sessions: Arc<dyn SessionStore>,
         agents: Arc<dyn AgentStore>,
@@ -72,7 +72,7 @@ impl ApiState {
         shutdown: Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
-            tenants,
+            workspaces,
             users,
             sessions,
             agents,
@@ -126,8 +126,8 @@ pub(super) fn authenticate(
 
 /// Everything the caller may do, resolved for this request.
 ///
-/// Platform roles resolve in code; tenant roles resolve through the role
-/// store, which caches per tenant. Done per request rather than at mint so an
+/// Platform roles resolve in code; workspace roles resolve through the role
+/// store, which caches per workspace. Done per request rather than at mint so an
 /// edit to a role takes effect on the next click, not at the next refresh.
 pub(super) async fn authorities_of(
     state: &ApiState,
@@ -137,7 +137,7 @@ pub(super) async fn authorities_of(
     granted.extend(
         state
             .roles
-            .authorities_for(claims.tenant_id, &claims.roles)
+            .authorities_for(claims.workspace_id, &claims.roles)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
     );
@@ -191,13 +191,13 @@ impl From<super::egress::RuleError> for ApiError {
     }
 }
 
-impl From<TenantError> for ApiError {
-    fn from(e: TenantError) -> Self {
+impl From<WorkspaceError> for ApiError {
+    fn from(e: WorkspaceError) -> Self {
         let status = match e {
-            TenantError::NotFound => StatusCode::NOT_FOUND,
-            TenantError::DuplicateSlug(_) => StatusCode::CONFLICT,
-            TenantError::Invalid(_) => StatusCode::BAD_REQUEST,
-            TenantError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            WorkspaceError::NotFound => StatusCode::NOT_FOUND,
+            WorkspaceError::DuplicateSlug(_) => StatusCode::CONFLICT,
+            WorkspaceError::Invalid(_) => StatusCode::BAD_REQUEST,
+            WorkspaceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, e.to_string())
     }
@@ -208,15 +208,15 @@ impl From<TenantError> for ApiError {
 /// Deliberately includes the display name and memberships, not just ids: a
 /// reload has only this endpoint to work from, and a client left to stitch the
 /// identity together from several calls renders a signed-in user as nameless
-/// and tenantless until they all land -- which is precisely what it did.
+/// and workspaceless until they all land -- which is precisely what it did.
 #[derive(Debug, Serialize)]
 struct SessionInfo {
     session_id: Uuid,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     display_name: String,
     roles: Vec<String>,
     authorities: Vec<String>,
-    tenants: Vec<TenantMembership>,
+    workspaces: Vec<WorkspaceMembership>,
 }
 
 async fn session_info(
@@ -234,94 +234,94 @@ async fn session_info(
     // The session id is the account id, which is what the login response is
     // built from too.
     let user = state.users.get(claims.subject).await?;
-    let tenants = state.users.memberships(claims.subject).await?;
+    let workspaces = state.users.memberships(claims.subject).await?;
 
     Ok(Json(SessionInfo {
         session_id: claims.subject,
-        tenant_id: claims.tenant_id,
+        workspace_id: claims.workspace_id,
         display_name: user.display_name,
         roles: claims.roles.clone(),
         authorities,
-        tenants,
+        workspaces,
     }))
 }
 
-async fn list_tenants(
+async fn list_workspaces(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<Tenant>>, ApiError> {
-    authorize(&state, &headers, Authority::TenantsRead).await?;
-    Ok(Json(state.tenants.list().await?))
+) -> Result<Json<Vec<Workspace>>, ApiError> {
+    authorize(&state, &headers, Authority::WorkspacesRead).await?;
+    Ok(Json(state.workspaces.list().await?))
 }
 
-async fn create_tenant(
+async fn create_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Json(input): Json<CreateTenant>,
-) -> Result<(StatusCode, Json<Tenant>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::TenantsCreate).await?;
-    let tenant = state.tenants.create(input).await?;
-    // A tenant with no roles is one nobody can be given access to.
-    state.roles.seed_defaults(tenant.id).await?;
+    Json(input): Json<CreateWorkspace>,
+) -> Result<(StatusCode, Json<Workspace>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesCreate).await?;
+    let workspace = state.workspaces.create(input).await?;
+    // A workspace with no roles is one nobody can be given access to.
+    state.roles.seed_defaults(workspace.id).await?;
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %tenant.id,
-        slug = %tenant.slug,
-        "tenant created"
+        workspace_id = %workspace.id,
+        slug = %workspace.slug,
+        "workspace created"
     );
-    Ok((StatusCode::CREATED, Json(tenant)))
+    Ok((StatusCode::CREATED, Json(workspace)))
 }
 
-async fn get_tenant(
+async fn get_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Tenant>, ApiError> {
-    authorize(&state, &headers, Authority::TenantsRead).await?;
-    Ok(Json(state.tenants.get(id).await?))
+) -> Result<Json<Workspace>, ApiError> {
+    authorize(&state, &headers, Authority::WorkspacesRead).await?;
+    Ok(Json(state.workspaces.get(id).await?))
 }
 
-async fn update_tenant(
+async fn update_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-    Json(input): Json<super::tenant::UpdateTenant>,
-) -> Result<Json<Tenant>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::TenantsUpdate).await?;
-    let tenant = state.tenants.rename(id, &input.name).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %id, "tenant renamed");
-    Ok(Json(tenant))
+    Json(input): Json<super::workspace::UpdateWorkspace>,
+) -> Result<Json<Workspace>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesUpdate).await?;
+    let workspace = state.workspaces.rename(id, &input.name).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace renamed");
+    Ok(Json(workspace))
 }
 
-async fn delete_tenant(
+async fn delete_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let claims = authorize(&state, &headers, Authority::TenantsDelete).await?;
-    state.tenants.delete(id).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %id, "tenant deleted");
+    let claims = authorize(&state, &headers, Authority::WorkspacesDelete).await?;
+    state.workspaces.delete(id).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
 
 #[derive(Debug, serde::Deserialize)]
 struct GrantRole {
-    /// The name of one of the tenant's roles.
+    /// The name of one of the workspace's roles.
     role: String,
 }
 
-/// The hosts this tenant's agents may reach.
+/// The hosts this workspace's agents may reach.
 ///
-/// Scoped to the caller's own tenant throughout, taken from the token rather
-/// than from a path: an egress list is the shape of what a tenant's agents can
+/// Scoped to the caller's own workspace throughout, taken from the token rather
+/// than from a path: an egress list is the shape of what a workspace's agents can
 /// reach, and reading somebody else's tells you where to aim an injection.
 async fn list_egress_rules(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<super::egress::Rule>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    Ok(Json(super::egress::list(&state.pool, claims.tenant_id).await?))
+    Ok(Json(super::egress::list(&state.pool, claims.workspace_id).await?))
 }
 
 async fn create_egress_rule(
@@ -330,12 +330,12 @@ async fn create_egress_rule(
     Json(input): Json<super::egress::CreateRule>,
 ) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
-    let rule = super::egress::create(&state.pool, claims.tenant_id, input).await?;
-    // Worth a line in the log on its own: this is the moment a tenant's agents
+    let rule = super::egress::create(&state.pool, claims.workspace_id, input).await?;
+    // Worth a line in the log on its own: this is the moment a workspace's agents
     // gained somewhere new to send things.
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         host = %rule.host,
         "egress rule added"
     );
@@ -348,12 +348,12 @@ async fn delete_egress_rule(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
-    if !super::egress::delete(&state.pool, claims.tenant_id, id).await? {
+    if !super::egress::delete(&state.pool, claims.workspace_id, id).await? {
         return Err((StatusCode::NOT_FOUND, "no such rule".into()));
     }
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         rule_id = %id,
         "egress rule removed"
     );
@@ -365,26 +365,26 @@ async fn list_users(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<User>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersRead).await?;
-    // A tenant's administrator sees the accounts in their tenant. Every
+    // A workspace's administrator sees the accounts in their workspace. Every
     // account on the platform is a system administrator's view alone: the
-    // tenant is the isolation boundary, and a user list that crossed it
+    // workspace is the isolation boundary, and a user list that crossed it
     // named every other customer's staff.
     if claims.is_system_admin() {
         Ok(Json(state.users.list().await?))
     } else {
-        Ok(Json(state.users.list_for_tenant(claims.tenant_id).await?))
+        Ok(Json(state.users.list_for_workspace(claims.workspace_id).await?))
     }
 }
 
 /// A user, with where they belong.
 ///
 /// Memberships are narrowed to what the caller may know about: their own
-/// tenant, or every tenant for a system administrator.
+/// workspace, or every workspace for a system administrator.
 #[derive(Debug, serde::Serialize)]
 struct UserDetail {
     #[serde(flatten)]
     user: User,
-    memberships: Vec<TenantMembership>,
+    memberships: Vec<WorkspaceMembership>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -407,10 +407,10 @@ async fn update_user(
     Ok(Json(user))
 }
 
-/// A new account, and optionally a role for it in the creator's tenant.
+/// A new account, and optionally a role for it in the creator's workspace.
 ///
 /// The role rides in the same request because the user list is scoped to the
-/// tenant: an account created without a role there is one its creator can no
+/// workspace: an account created without a role there is one its creator can no
 /// longer see, and two requests left a window for exactly that.
 #[derive(Debug, serde::Deserialize)]
 struct CreateUserRequest {
@@ -434,7 +434,7 @@ async fn create_user(
     if let Some(role) = role {
         state
             .users
-            .grant_tenant_role(user.id, claims.tenant_id, &role)
+            .grant_workspace_role(user.id, claims.workspace_id, &role)
             .await?;
     }
     tracing::info!(actor = %claims.subject, user_id = %user.id, "user created");
@@ -450,7 +450,7 @@ async fn get_user(
     let user = state.users.get(id).await?;
     let mut memberships = state.users.memberships(id).await?;
     if !claims.is_system_admin() {
-        memberships.retain(|m| m.tenant_id == claims.tenant_id);
+        memberships.retain(|m| m.workspace_id == claims.workspace_id);
     }
     Ok(Json(UserDetail { user, memberships }))
 }
@@ -511,51 +511,51 @@ async fn remove_identity(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn grant_tenant_role(
+async fn grant_workspace_role(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Path((user_id, tenant_id)): Path<(Uuid, Uuid)>,
+    Path((user_id, workspace_id)): Path<(Uuid, Uuid)>,
     Json(input): Json<GrantRole>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
-    // A tenant admin may only grant within their own tenant; a system admin
-    // carries the authority in whichever tenant they are scoped to.
-    if claims.tenant_id != tenant_id && !claims.is_system_admin() {
-        return Err((StatusCode::FORBIDDEN, "cannot grant outside your tenant".into()));
+    // A workspace admin may only grant within their own workspace; a system admin
+    // carries the authority in whichever workspace they are scoped to.
+    if claims.workspace_id != workspace_id && !claims.is_system_admin() {
+        return Err((StatusCode::FORBIDDEN, "cannot grant outside your workspace".into()));
     }
     state
         .users
-        .grant_tenant_role(user_id, tenant_id, &input.role)
+        .grant_workspace_role(user_id, workspace_id, &input.role)
         .await?;
     tracing::info!(
         actor = %claims.subject,
         user_id = %user_id,
-        tenant_id = %tenant_id,
+        workspace_id = %workspace_id,
         role = %input.role,
-        "tenant role granted"
+        "workspace role granted"
     );
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn revoke_tenant_role(
+async fn revoke_workspace_role(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Path((user_id, tenant_id, role)): Path<(Uuid, Uuid, String)>,
+    Path((user_id, workspace_id, role)): Path<(Uuid, Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
-    if claims.tenant_id != tenant_id && !claims.is_system_admin() {
-        return Err((StatusCode::FORBIDDEN, "cannot revoke outside your tenant".into()));
+    if claims.workspace_id != workspace_id && !claims.is_system_admin() {
+        return Err((StatusCode::FORBIDDEN, "cannot revoke outside your workspace".into()));
     }
     state
         .users
-        .revoke_tenant_role(user_id, tenant_id, &role)
+        .revoke_workspace_role(user_id, workspace_id, &role)
         .await?;
     tracing::info!(
         actor = %claims.subject,
         user_id = %user_id,
-        tenant_id = %tenant_id,
+        workspace_id = %workspace_id,
         role = %role,
-        "tenant role revoked"
+        "workspace role revoked"
     );
     Ok(StatusCode::NO_CONTENT)
 }
@@ -578,7 +578,7 @@ async fn list_authorities(
     Ok(Json(
         Authority::ALL
             .iter()
-            .filter(|a| a.tenant_assignable())
+            .filter(|a| a.workspace_assignable())
             .map(|a| AuthorityInfo {
                 name: a.as_str(),
                 description: a.describe(),
@@ -592,33 +592,33 @@ async fn list_authorities(
 async fn list_roles(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<TenantRole>>, ApiError> {
+) -> Result<Json<Vec<WorkspaceRole>>, ApiError> {
     let claims = authenticate(&state, &headers)?;
     let granted = authorities_of(&state, &claims).await?;
     if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
         return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
     }
-    Ok(Json(state.roles.list(claims.tenant_id).await?))
+    Ok(Json(state.roles.list(claims.workspace_id).await?))
 }
 
 async fn get_role(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<TenantRole>, ApiError> {
+) -> Result<Json<WorkspaceRole>, ApiError> {
     let claims = authenticate(&state, &headers)?;
     let granted = authorities_of(&state, &claims).await?;
     if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
         return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
     }
-    Ok(Json(state.roles.get(claims.tenant_id, id).await?))
+    Ok(Json(state.roles.get(claims.workspace_id, id).await?))
 }
 
 /// A role may bundle only what its editor already holds.
 ///
 /// Otherwise `roles:manage` is a ladder: define a role with everything, grant
 /// it to yourself, climb. The check is against the editor's resolved
-/// authorities, which for a system administrator is everything a tenant may
+/// authorities, which for a system administrator is everything a workspace may
 /// hold anyway.
 fn within_reach(
     granted: &std::collections::HashSet<Authority>,
@@ -644,15 +644,15 @@ async fn create_role(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateRole>,
-) -> Result<(StatusCode, Json<TenantRole>), ApiError> {
+) -> Result<(StatusCode, Json<WorkspaceRole>), ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesManage).await?;
     // Reserved-to-the-platform first, so the answer names the real reason:
-    // nobody holds `tenants:create` in a tenant, and "you do not hold it"
+    // nobody holds `workspaces:create` in a workspace, and "you do not hold it"
     // would send the editor looking for someone who does.
     super::role::validate_authorities(&input.authorities)?;
     within_reach(&authorities_of(&state, &claims).await?, &input.authorities)?;
-    let role = state.roles.create(claims.tenant_id, input).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role = %role.name, "role created");
+    let role = state.roles.create(claims.workspace_id, input).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role = %role.name, "role created");
     Ok((StatusCode::CREATED, Json(role)))
 }
 
@@ -661,14 +661,14 @@ async fn update_role(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateRole>,
-) -> Result<Json<TenantRole>, ApiError> {
+) -> Result<Json<WorkspaceRole>, ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesManage).await?;
     if let Some(authorities) = &input.authorities {
         super::role::validate_authorities(authorities)?;
         within_reach(&authorities_of(&state, &claims).await?, authorities)?;
     }
-    let role = state.roles.update(claims.tenant_id, id, input).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role = %role.name, "role updated");
+    let role = state.roles.update(claims.workspace_id, id, input).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role = %role.name, "role updated");
     Ok(Json(role))
 }
 
@@ -678,8 +678,8 @@ async fn delete_role(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesManage).await?;
-    state.roles.delete(claims.tenant_id, id).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, role_id = %id, "role deleted");
+    state.roles.delete(claims.workspace_id, id).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role_id = %id, "role deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -696,8 +696,8 @@ struct UsageQuery {
     /// The `next` of the previous page.
     after: Option<Uuid>,
     limit: Option<i64>,
-    /// System administrators may name a tenant; everyone else gets their own.
-    tenant_id: Option<Uuid>,
+    /// System administrators may name a workspace; everyone else gets their own.
+    workspace_id: Option<Uuid>,
 }
 
 /// The ledger, paged. What a bill is built from.
@@ -707,19 +707,19 @@ async fn export_usage(
     axum::extract::Query(query): axum::extract::Query<UsageQuery>,
 ) -> Result<Json<super::usage::UsagePage>, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsageRead).await?;
-    let tenant_id = match query.tenant_id {
-        Some(other) if other != claims.tenant_id => {
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
             if !claims.is_system_admin() {
-                return Err((StatusCode::FORBIDDEN, "not your tenant's ledger".into()));
+                return Err((StatusCode::FORBIDDEN, "not your workspace's ledger".into()));
             }
             other
         }
-        _ => claims.tenant_id,
+        _ => claims.workspace_id,
     };
     let page = state
         .usage
         .export(
-            tenant_id,
+            workspace_id,
             query.from,
             query.to,
             query.after,
@@ -760,7 +760,7 @@ async fn may_write(state: &ApiState, claims: &SessionClaims, level: Level, key: 
                 return Err((StatusCode::FORBIDDEN, "only the operator sets platform defaults".into()));
             }
         }
-        Level::Tenant(_) | Level::Agent { .. } => {
+        Level::Workspace(_) | Level::Agent { .. } => {
             require(state, claims, Authority::SettingsUpdate).await?;
             if setting.owner == Owner::OperatorOnly {
                 return Err((
@@ -808,45 +808,45 @@ async fn clear_operator_setting(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn view_tenant_settings(
+async fn view_workspace_settings(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    Ok(Json(state.settings.view(Level::Tenant(claims.tenant_id)).await?))
+    Ok(Json(state.settings.view(Level::Workspace(claims.workspace_id)).await?))
 }
 
-async fn set_tenant_setting(
+async fn set_workspace_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(key): Path<String>,
     Json(input): Json<SetSetting>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
-    let level = Level::Tenant(claims.tenant_id);
+    let level = Level::Workspace(claims.workspace_id);
     may_write(&state, &claims, level, &key).await?;
     state.settings.set(level, &key, input.value).await?;
-    tracing::info!(actor = %claims.subject, tenant_id = %claims.tenant_id, key = %key, "tenant setting set");
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, key = %key, "workspace setting set");
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn clear_tenant_setting(
+async fn clear_workspace_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
-    let level = Level::Tenant(claims.tenant_id);
+    let level = Level::Workspace(claims.workspace_id);
     may_write(&state, &claims, level, &key).await?;
     state.settings.clear(level, &key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The agent must be the caller's tenant's, or the level would let a tenant
+/// The agent must be the caller's workspace's, or the level would let a workspace
 /// write settings onto somebody else's agent.
 async fn agent_level(state: &ApiState, claims: &SessionClaims, agent_id: Uuid) -> Result<Level, ApiError> {
-    state.agents.get(claims.tenant_id, agent_id).await?;
-    Ok(Level::Agent { tenant_id: claims.tenant_id, agent_id })
+    state.agents.get(claims.workspace_id, agent_id).await?;
+    Ok(Level::Agent { workspace_id: claims.workspace_id, agent_id })
 }
 
 async fn view_agent_settings(
@@ -888,7 +888,7 @@ async fn clear_agent_setting(
 pub fn routes(state: Arc<ApiState>) -> Router {
     Router::new()
         .route("/v1/login", post(super::login::login))
-        .route("/v1/session/tenant", post(super::login::select_tenant))
+        .route("/v1/session/workspace", post(super::login::select_workspace))
         .route("/v1/logout", post(super::login::logout))
         .route("/v1/session/refresh", post(super::login::refresh))
         .route(
@@ -925,7 +925,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         // Runtimes ask here for work and report back what it produced. Both
         // require GatewayInvoke, which is the platform's own tier rather than
-        // a tenant's.
+        // a workspace's.
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
@@ -938,10 +938,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(super::files::MAX_UPLOAD_BYTES)),
         )
         .route("/v1/usage", get(export_usage))
-        .route("/v1/settings", get(view_tenant_settings))
+        .route("/v1/settings", get(view_workspace_settings))
         .route(
             "/v1/settings/{key}",
-            axum::routing::put(set_tenant_setting).delete(clear_tenant_setting),
+            axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
         )
         .route("/v1/platform/settings", get(view_operator_settings))
         .route(
@@ -967,14 +967,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             axum::routing::delete(remove_identity),
         )
         .route(
-            "/v1/users/{user_id}/tenants/{tenant_id}/roles",
-            post(grant_tenant_role),
+            "/v1/users/{user_id}/workspaces/{workspace_id}/roles",
+            post(grant_workspace_role),
         )
         .route(
-            "/v1/users/{user_id}/tenants/{tenant_id}/roles/{role}",
-            axum::routing::delete(revoke_tenant_role),
+            "/v1/users/{user_id}/workspaces/{workspace_id}/roles/{role}",
+            axum::routing::delete(revoke_workspace_role),
         )
-        .route("/v1/tenants", get(list_tenants).post(create_tenant))
-        .route("/v1/tenants/{id}", get(get_tenant).patch(update_tenant).delete(delete_tenant))
+        .route("/v1/workspaces", get(list_workspaces).post(create_workspace))
+        .route("/v1/workspaces/{id}", get(get_workspace).patch(update_workspace).delete(delete_workspace))
         .with_state(state)
 }

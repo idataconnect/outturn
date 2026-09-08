@@ -155,7 +155,7 @@ export const pollEvents = (sessionId: string, after: string, signal?: AbortSigna
 export type StoredFile = {
   /** As the agent names it: `session/report.pdf`. */
   path: string
-  scope: 'session' | 'agent' | 'tenant'
+  scope: 'session' | 'agent' | 'workspace'
   size: number
 }
 

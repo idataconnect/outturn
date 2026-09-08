@@ -20,7 +20,7 @@ export type User = {
 }
 
 type Membership = {
-  tenant_id: string
+  workspace_id: string
   name: string
   slug: string
   roles: string[]
@@ -28,25 +28,25 @@ type Membership = {
 
 type UserDetail = User & { memberships: Membership[] }
 
-type TenantRoleOption = { id: string; name: string; description: string }
+type WorkspaceRoleOption = { id: string; name: string; description: string }
 
 /**
- * The tenant's roles, for a picker. Empty when the caller may not see them
+ * The workspace's roles, for a picker. Empty when the caller may not see them
  * -- listing roles takes roles:assign or roles:manage -- in which case the
  * picker is not shown at all.
  */
-function useTenantRoles(): TenantRoleOption[] {
+function useWorkspaceRoles(): WorkspaceRoleOption[] {
   const state = useSession()
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   const allowed =
     state.status === 'authenticated' &&
     (state.session.authorities.includes('roles:assign') ||
       state.session.authorities.includes('roles:manage'))
-  const [roles, setRoles] = useState<TenantRoleOption[]>([])
+  const [roles, setRoles] = useState<WorkspaceRoleOption[]>([])
   useEffect(() => {
     if (!allowed) return
     let stale = false
-    void api<TenantRoleOption[]>('/v1/roles')
+    void api<WorkspaceRoleOption[]>('/v1/roles')
       .then((found) => {
         if (!stale) setRoles(found)
       })
@@ -54,7 +54,7 @@ function useTenantRoles(): TenantRoleOption[] {
     return () => {
       stale = true
     }
-  }, [tenantId, allowed])
+  }, [workspaceId, allowed])
   return roles
 }
 
@@ -74,8 +74,8 @@ function message(e: unknown, fallback: string): string {
  * Creating a user, or looking after one.
  *
  * `/users/new` makes an account with its first sign-in and a role in the
- * current tenant. `/users/:id` shows the account: its name, every way it can
- * sign in, and its roles in the tenant being viewed. Each section saves on
+ * current workspace. `/users/:id` shows the account: its name, every way it can
+ * sign in, and its roles in the workspace being viewed. Each section saves on
  * its own -- an identity is added or removed the moment you say so, a role
  * likewise -- because they are separate facts about the account and a single
  * "save" button would have to pretend otherwise.
@@ -89,15 +89,15 @@ export default function UserEditor() {
 function CreateUser() {
   const navigate = useNavigate()
   const state = useSession()
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
-  const manyTenants =
-    state.status === 'authenticated' && state.session.tenants.length > 1
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
+  const manyWorkspaces =
+    state.status === 'authenticated' && state.session.workspaces.length > 1
 
-  const roles = useTenantRoles()
+  const roles = useWorkspaceRoles()
   const [form, setForm] = useState({ email: '', display_name: '', password: '' })
   const [role, setRole] = useState<string>('')
   const [saving, setSaving] = useState(false)
-  // Default to the least the tenant offers, once the list is known.
+  // Default to the least the workspace offers, once the list is known.
   useEffect(() => {
     if (role === '' && roles.length > 0) {
       const least = [...roles].sort((a, b) => a.name.localeCompare(b.name)).at(-1)
@@ -108,10 +108,10 @@ function CreateUser() {
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
-    if (!tenantId) return
+    if (!workspaceId) return
     setSaving(true)
     try {
-      // The role is granted in the same request, in the tenant the admin is
+      // The role is granted in the same request, in the workspace the admin is
       // currently scoped to. Two requests left a window where the account
       // existed with no role here and so vanished from the creator's list.
       const user = await api<User>('/v1/users', {
@@ -130,8 +130,8 @@ function CreateUser() {
       <Back />
       <h1 className="mt-2 text-2xl font-semibold text-surface-900 dark:text-surface-100">New user</h1>
       <p className="mt-2 text-surface-600 dark:text-surface-400">
-        {manyTenants
-          ? 'The role is granted in the tenant you are currently viewing.'
+        {manyWorkspaces
+          ? 'The role is granted in the workspace you are currently viewing.'
           : 'The role is granted here.'}
       </p>
 
@@ -190,7 +190,7 @@ function CreateUser() {
 
 function EditUser({ id }: { id: string }) {
   const state = useSession()
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   // The session's id is the account id: that is what the login path mints
   // the token's subject from.
@@ -200,7 +200,7 @@ function EditUser({ id }: { id: string }) {
   const canUpdate = self || authorities.includes('users:update')
   const canAssign = authorities.includes('roles:assign')
 
-  const roles = useTenantRoles()
+  const roles = useWorkspaceRoles()
   const [user, setUser] = useState<UserDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -267,12 +267,12 @@ function EditUser({ id }: { id: string }) {
   }
 
   async function onToggleRole(role: string, held: boolean) {
-    if (!tenantId) return
+    if (!workspaceId) return
     try {
       if (held) {
-        await api<void>(`/v1/users/${id}/tenants/${tenantId}/roles/${role}`, { method: 'DELETE' })
+        await api<void>(`/v1/users/${id}/workspaces/${workspaceId}/roles/${role}`, { method: 'DELETE' })
       } else {
-        await api<void>(`/v1/users/${id}/tenants/${tenantId}/roles`, {
+        await api<void>(`/v1/users/${id}/workspaces/${workspaceId}/roles`, {
           method: 'POST',
           body: JSON.stringify({ role }),
         })
@@ -283,7 +283,7 @@ function EditUser({ id }: { id: string }) {
     }
   }
 
-  const here = user?.memberships.find((m) => m.tenant_id === tenantId)
+  const here = user?.memberships.find((m) => m.workspace_id === workspaceId)
   const heldRoles = new Set(here?.roles ?? [])
   const isSystem = user?.system_roles.includes('system_admin') ?? false
 
@@ -440,7 +440,7 @@ function EditUser({ id }: { id: string }) {
               <p className="text-xs text-surface-500 dark:text-surface-400">
                 Also a member of{' '}
                 {user.memberships
-                  .filter((m) => m.tenant_id !== tenantId)
+                  .filter((m) => m.workspace_id !== workspaceId)
                   .map((m) => `${m.name} (${m.roles.join(', ')})`)
                   .join('; ')}
                 .
@@ -458,7 +458,7 @@ function RoleSelect({
   value,
   onChange,
 }: {
-  roles: TenantRoleOption[]
+  roles: WorkspaceRoleOption[]
   value: string
   onChange: (v: string) => void
 }) {

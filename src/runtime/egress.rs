@@ -2,21 +2,21 @@
 //!
 //! Two questions, asked in this order and both by the host.
 //!
-//! Is the tenant willing? An agent reaches nothing by default. A tenant names
+//! Is the workspace willing? An agent reaches nothing by default. A workspace names
 //! the hosts its agents may call, and anything unnamed is refused -- a default
 //! of "allow" would mean a prompt injection is a data exfiltration primitive,
-//! and the tenant would have consented to it by not thinking about it.
+//! and the workspace would have consented to it by not thinking about it.
 //!
-//! Is the address safe? A name a tenant allowed can still resolve somewhere
+//! Is the address safe? A name a workspace allowed can still resolve somewhere
 //! nobody meant: the cluster's own gateway, the database, the node's metadata
-//! service. That check is not the tenant's to waive, so it is applied after
+//! service. That check is not the workspace's to waive, so it is applied after
 //! theirs and cannot be configured away.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// One host a tenant's agents may reach.
+/// One host a workspace's agents may reach.
 ///
-/// Deliberately about hosts rather than URLs. A tenant adding an API knows its
+/// Deliberately about hosts rather than URLs. A workspace adding an API knows its
 /// hostname and would have to guess at its paths, and a rule written in paths
 /// silently stops matching when the vendor reorganises them. Scheme, port and
 /// path are the request's business; whether this host may be spoken to at all
@@ -48,7 +48,7 @@ pub enum Refused {
     Scheme(String),
     /// The URL carries no host, or one that cannot be parsed.
     NoHost,
-    /// The tenant has not allowed this host.
+    /// The workspace has not allowed this host.
     NotAllowed(String),
     /// Allowed by name, but the name resolves somewhere it must not reach.
     PrivateAddress { host: String, addr: IpAddr },
@@ -84,7 +84,7 @@ impl std::fmt::Display for Refused {
 /// Headers a guest may not set.
 ///
 /// `authorization` and the vendor key headers because the host attaches those
-/// and a guest that could overwrite one could use a tenant's credential
+/// and a guest that could overwrite one could use a workspace's credential
 /// against a different endpoint. `host` because it decides which site a
 /// request reaches, independently of the URL that was checked.
 const RESERVED_HEADERS: &[&str] = &[
@@ -98,7 +98,7 @@ const RESERVED_HEADERS: &[&str] = &[
 /// Whether a host matches a rule.
 ///
 /// `*.example.com` covers any subdomain, at any depth, and deliberately not
-/// `example.com` itself: a tenant allowing subdomains has said nothing about
+/// `example.com` itself: a workspace allowing subdomains has said nothing about
 /// the apex, and the apex is usually where the interesting things are.
 pub fn host_matches(rule: &str, host: &str) -> bool {
     let rule = rule.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -200,7 +200,7 @@ pub fn normalise_host(input: &str) -> Result<String, String> {
     Ok(host)
 }
 
-/// The rule permitting this host, if a tenant wrote one.
+/// The rule permitting this host, if a workspace wrote one.
 pub fn rule_for<'a>(rules: &'a [EgressRule], host: &str) -> Option<&'a EgressRule> {
     // First match wins, and exact rules are tried before wildcards so a
     // specific host can carry its own credential while its siblings share
@@ -267,7 +267,7 @@ pub fn check_header(name: &str) -> Result<(), Refused> {
     Ok(())
 }
 
-/// Checks a URL against a tenant's rules, before anything is resolved.
+/// Checks a URL against a workspace's rules, before anything is resolved.
 ///
 /// Returns the host and the rule that admitted it, so the caller can resolve
 /// once and attach whatever credential the rule names.

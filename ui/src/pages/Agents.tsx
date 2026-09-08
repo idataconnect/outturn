@@ -7,7 +7,7 @@ import { useSession } from '../lib/session'
 import type { Agent } from './AgentEditor'
 
 /**
- * The tenant's agents, as a list.
+ * The workspace's agents, as a list.
  *
  * Creating and editing live on their own routes (`/agents/new`,
  * `/agents/:id`), so this page is only ever the list. An always-open editor
@@ -23,11 +23,11 @@ export default function Agents() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('agents:create')
   const canDelete = authorities.includes('agents:delete')
-  // Only worth saying to somebody who can be looking at more than one tenant.
+  // Only worth saying to somebody who can be looking at more than one workspace.
   // To everybody else there is no "currently viewing" -- there is only their
   // workspace -- and the sentence raises a question they cannot act on.
-  const manyTenants =
-    state.status === 'authenticated' && state.session.tenants.length > 1
+  const manyWorkspaces =
+    state.status === 'authenticated' && state.session.workspaces.length > 1
 
   async function refresh() {
     try {
@@ -40,11 +40,11 @@ export default function Agents() {
     }
   }
 
-  // Agents are scoped to the active tenant, so switching reloads the list.
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  // Agents are scoped to the active workspace, so switching reloads the list.
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   useEffect(() => {
     void refresh()
-  }, [tenantId])
+  }, [workspaceId])
 
   async function onDelete(agent: Agent) {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
@@ -61,9 +61,9 @@ export default function Agents() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
-          {manyTenants && (
+          {manyWorkspaces && (
             <p className="mt-2 text-surface-600 dark:text-surface-400">
-              Agents belong to the tenant you are currently viewing.
+              Agents belong to the workspace you are currently viewing.
             </p>
           )}
         </div>

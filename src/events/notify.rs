@@ -12,7 +12,7 @@ pub const CHANNEL: &str = "outturn_events";
 /// notification costs a poll cycle rather than an update.
 #[derive(Debug, Clone, Copy)]
 pub struct EventHint {
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub session_id: Option<Uuid>,
 }
 
@@ -67,7 +67,7 @@ async fn listen_loop(
             // A send error just means nobody is parked right now.
             Ok(p) => {
                 let _ = tx.send(EventHint {
-                    tenant_id: p.tenant_id,
+                    workspace_id: p.workspace_id,
                     session_id: p.session_id,
                 });
             }
@@ -78,6 +78,6 @@ async fn listen_loop(
 
 #[derive(serde::Deserialize)]
 struct Payload {
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     session_id: Option<Uuid>,
 }

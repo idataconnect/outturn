@@ -2,13 +2,13 @@
 //!
 //! A setting is defined once, here: its key, its type, its default and who may
 //! override it. Values that differ from the default are rows, one per level
-//! that has chosen to differ -- operator, tenant, agent -- and resolution
-//! walks agent, tenant, operator, default. A row's existence is the override
+//! that has chosen to differ -- operator, workspace, agent -- and resolution
+//! walks agent, workspace, operator, default. A row's existence is the override
 //! toggle; deleting it is turning the toggle off. See docs/settings.md.
 //!
 //! A catalogue in code rather than a free key-value store, because the
 //! catalogue is what keeps the settings page honest about types, defaults
-//! and who may touch what, and what lets a tenant who has never heard of
+//! and who may touch what, and what lets a workspace who has never heard of
 //! temperature see a value that is already right and a checkbox to leave
 //! alone.
 
@@ -24,11 +24,11 @@ pub use postgres::PostgresSettingsStore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Owner {
-    /// The operator sets it once for everyone. Tenants see it, cannot change
+    /// The operator sets it once for everyone. Workspaces see it, cannot change
     /// it.
     OperatorOnly,
-    /// Tenants may override, and agents within a tenant may override again.
-    TenantOverridable,
+    /// Workspaces may override, and agents within a workspace may override again.
+    WorkspaceOverridable,
 }
 
 /// What kind of value a setting takes, for validation and for the control
@@ -65,7 +65,7 @@ pub fn catalogue() -> Vec<Setting> {
                           higher is more varied. Unset leaves it to the provider.",
             kind: Kind::Number { min: 0.0, max: 2.0, step: 0.1, nullable: true },
             default: serde_json::Value::Null,
-            owner: Owner::TenantOverridable,
+            owner: Owner::WorkspaceOverridable,
         },
         Setting {
             key: "reasoning_effort",
@@ -76,7 +76,7 @@ pub fn catalogue() -> Vec<Setting> {
                           costing three hundred tokens of thought first.",
             kind: Kind::Choice { options: &["none", "low", "medium", "high"] },
             default: serde_json::json!("none"),
-            owner: Owner::TenantOverridable,
+            owner: Owner::WorkspaceOverridable,
         },
         Setting {
             key: "agent_writes_agent_files",
@@ -86,18 +86,18 @@ pub fn catalogue() -> Vec<Setting> {
                           they are the agent's scratch space.",
             kind: Kind::Choice { options: &["allow", "deny"] },
             default: serde_json::json!("allow"),
-            owner: Owner::TenantOverridable,
+            owner: Owner::WorkspaceOverridable,
         },
         Setting {
-            key: "agent_writes_tenant_files",
+            key: "agent_writes_workspace_files",
             label: "Agents may write workspace files",
-            description: "Whether an agent may write under tenant/, the files the whole \
+            description: "Whether an agent may write under workspace/, the files the whole \
                           workspace shares. Off unless somebody decides otherwise: a \
                           prompt that talks an agent into overwriting shared reference \
                           material should find it cannot.",
             kind: Kind::Choice { options: &["allow", "deny"] },
             default: serde_json::json!("deny"),
-            owner: Owner::TenantOverridable,
+            owner: Owner::WorkspaceOverridable,
         },
         Setting {
             key: "max_tool_rounds",
@@ -107,7 +107,7 @@ pub fn catalogue() -> Vec<Setting> {
                           tokens. Zero means no limit.",
             kind: Kind::Integer { min: 0, max: 10_000 },
             default: serde_json::json!(100),
-            owner: Owner::TenantOverridable,
+            owner: Owner::WorkspaceOverridable,
         },
     ]
 }
@@ -122,7 +122,7 @@ pub fn find(key: &str) -> Option<Setting> {
 pub enum Source {
     Default,
     Operator,
-    Tenant,
+    Workspace,
     Agent,
 }
 
@@ -147,8 +147,8 @@ pub struct Effective {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Operator,
-    Tenant(Uuid),
-    Agent { tenant_id: Uuid, agent_id: Uuid },
+    Workspace(Uuid),
+    Agent { workspace_id: Uuid, agent_id: Uuid },
 }
 
 /// What a turn runs with, after the walk.
@@ -158,7 +158,7 @@ pub struct Resolved {
     pub reasoning_effort: Option<String>,
     pub max_tool_rounds: u32,
     /// Storage scopes the agent may write: always "session", plus whichever
-    /// of "agent" and "tenant" the cascade allows.
+    /// of "agent" and "workspace" the cascade allows.
     pub write_scopes: Vec<String>,
 }
 
@@ -181,8 +181,8 @@ pub trait SettingsStore: Send + Sync {
     async fn set(&self, level: Level, key: &str, value: serde_json::Value) -> Result<(), SettingsError>;
     /// Turns the override off at `level`.
     async fn clear(&self, level: Level, key: &str) -> Result<(), SettingsError>;
-    /// The values a turn of `agent_id` in `tenant_id` runs with.
-    async fn resolve(&self, tenant_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError>;
+    /// The values a turn of `agent_id` in `workspace_id` runs with.
+    async fn resolve(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError>;
 }
 
 /// Checks a value against a setting's kind.

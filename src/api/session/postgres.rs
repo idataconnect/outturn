@@ -40,7 +40,7 @@ fn hash_token(token: &str) -> String {
 async fn insert(
     pool: &PgPool,
     user_id: Uuid,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     family_id: Uuid,
     user_agent: Option<&str>,
 ) -> Result<IssuedRefresh, SessionError> {
@@ -49,12 +49,12 @@ async fn insert(
 
     sqlx::query(
         "insert into refresh_tokens \
-             (id, user_id, tenant_id, token_hash, family_id, user_agent, expires_at) \
+             (id, user_id, workspace_id, token_hash, family_id, user_agent, expires_at) \
          values ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))",
     )
     .bind(id)
     .bind(user_id)
-    .bind(tenant_id)
+    .bind(workspace_id)
     .bind(hash_token(&token))
     .bind(family_id)
     .bind(user_agent)
@@ -68,7 +68,7 @@ async fn insert(
         session: RefreshSession {
             id,
             user_id,
-            tenant_id,
+            workspace_id,
             family_id,
         },
     })
@@ -79,12 +79,12 @@ impl SessionStore for PostgresSessionStore {
     async fn issue(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         user_agent: Option<&str>,
     ) -> Result<IssuedRefresh, SessionError> {
         // A login starts its own family, so revoking one compromised session
         // does not disturb the user's other devices.
-        insert(&self.pool, user_id, tenant_id, Uuid::now_v7(), user_agent).await
+        insert(&self.pool, user_id, workspace_id, Uuid::now_v7(), user_agent).await
     }
 
     async fn rotate(
@@ -100,7 +100,7 @@ impl SessionStore for PostgresSessionStore {
         let retired = sqlx::query(
             "update refresh_tokens set rotated_at = now() \
              where token_hash = $1 and rotated_at is null \
-             returning id, user_id, tenant_id, family_id, revoked_at, \
+             returning id, user_id, workspace_id, family_id, revoked_at, \
                        expires_at < now() as expired",
         )
         .bind(hash_token(token))
@@ -151,7 +151,7 @@ impl SessionStore for PostgresSessionStore {
         insert(
             &self.pool,
             row.get("user_id"),
-            row.get("tenant_id"),
+            row.get("workspace_id"),
             family_id,
             user_agent,
         )

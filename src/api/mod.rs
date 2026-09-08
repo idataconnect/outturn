@@ -14,7 +14,7 @@ mod router;
 pub mod session;
 pub mod work;
 pub mod worker;
-pub mod tenant;
+pub mod workspace;
 pub mod user;
 
 pub use router::{ApiState, routes};

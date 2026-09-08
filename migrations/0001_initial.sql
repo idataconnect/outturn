@@ -2,9 +2,9 @@
 
 create extension if not exists vector;
 
--- Tenants --------------------------------------------------------------------
+-- Workspaces -------------------------------------------------------------------
 
-create table tenants (
+create table workspaces (
     id          uuid primary key,
     name        text        not null,
     slug        text        not null unique,
@@ -71,7 +71,7 @@ create index user_identities_subject_idx on user_identities (provider_subject);
 create table refresh_tokens (
     id            uuid        primary key,
     user_id       uuid        not null references users (id) on delete cascade,
-    tenant_id     uuid        not null references tenants (id) on delete cascade,
+    workspace_id  uuid        not null references workspaces (id) on delete cascade,
 
     token_hash    text        not null unique,
 
@@ -103,8 +103,9 @@ create index refresh_tokens_expiry_idx on refresh_tokens (expires_at);
 -- without pinning the authority mapping to the schema.
 --
 -- Grants are split by scope rather than distinguished by a nullable column:
--- system roles are not tenant-scoped, tenant roles always are. Both attach to
--- the account, so which identity was used to sign in never changes access.
+-- system roles are not workspace-scoped, workspace roles always are. Both
+-- attach to the account, so which identity was used to sign in never changes
+-- access.
 
 create table user_system_roles (
     user_id     uuid        not null references users (id) on delete cascade,
@@ -113,25 +114,60 @@ create table user_system_roles (
     primary key (user_id, role)
 );
 
-create table user_tenant_roles (
-    user_id     uuid        not null references users (id) on delete cascade,
-    tenant_id   uuid        not null references tenants (id) on delete cascade,
-    role        text        not null check (role in ('admin', 'operator', 'viewer')),
-    created_at  timestamptz not null default now(),
-    primary key (user_id, tenant_id, role)
+-- Roles become the workspace's to define.
+--
+-- Authorities are the fixed vocabulary in code; a role bundles them, and
+-- which bundles exist and what they are called is a workspace's business.
+-- Every workspace starts with copies of the defaults the code used to
+-- hard-code, and may edit them from there.
+--
+-- Workspace-scoped on every row, with composite keys, so a role's authority
+-- row cannot point at another workspace's role and row-level security can be
+-- switched on later with a policy rather than a rewrite. The platform's own
+-- roles (system_admin, runtime, turn) are not rows: they stay in code, so
+-- this table holds one kind of thing with one owner.
+
+create table roles (
+    workspace_id uuid        not null references workspaces (id) on delete cascade,
+    id           uuid        not null,
+    name         text        not null,
+    description  text        not null default '',
+    created_at   timestamptz not null default now(),
+    primary key (workspace_id, id),
+    unique (workspace_id, name)
 );
 
-create index user_tenant_roles_tenant_idx on user_tenant_roles (tenant_id);
+create table role_authorities (
+    workspace_id uuid not null,
+    role_id      uuid not null,
+    -- Validated against the Authority enum in code on write, not here: the
+    -- vocabulary changes with the code, and a check constraint would need a
+    -- migration every time it did.
+    authority    text not null,
+    primary key (workspace_id, role_id, authority),
+    foreign key (workspace_id, role_id) references roles (workspace_id, id) on delete cascade
+);
+
+create table user_workspace_roles (
+    user_id      uuid        not null references users (id) on delete cascade,
+    workspace_id uuid        not null references workspaces (id) on delete cascade,
+    role_id      uuid        not null,
+    created_at   timestamptz not null default now(),
+    primary key (user_id, workspace_id, role_id),
+    foreign key (workspace_id, role_id) references roles (workspace_id, id) on delete cascade
+);
+
+create index user_workspace_roles_workspace_idx on user_workspace_roles (workspace_id);
 
 -- Agents ---------------------------------------------------------------------
 
--- Agents belong to exactly one tenant. Every query is scoped by the tenant on
--- the caller's token rather than by anything in the request, so reaching
--- another tenant's agents requires holding a token minted for that tenant --
--- which in turn requires a role grant there.
+-- Agents belong to exactly one workspace. Every query is scoped by the
+-- workspace on the caller's token rather than by anything in the request, so
+-- reaching another workspace's agents requires holding a token minted for
+-- that workspace -- which in turn requires a role grant there.
 create table agents (
     id             uuid        primary key,
-    tenant_id      uuid        not null references tenants (id) on delete cascade,
+    workspace_id   uuid        not null references workspaces (id) on delete cascade,
 
     name           text        not null,
     slug           text        not null,
@@ -149,30 +185,35 @@ create table agents (
     created_at     timestamptz not null default now(),
     updated_at     timestamptz not null default now(),
 
-    -- Unique per tenant, not globally: two orgs may both have a "support"
+    -- Unique per workspace, not globally: two orgs may both have a "support"
     -- agent without knowing about each other.
-    unique (tenant_id, slug)
+    unique (workspace_id, slug)
 );
 
-create index agents_tenant_idx on agents (tenant_id);
+create index agents_workspace_idx on agents (workspace_id);
 
 -- Agent sessions -------------------------------------------------------------
 
 -- A session is one conversation with an agent: starting a new session is how a
--- user gets a fresh context. Tenant-scoped like everything else.
+-- user gets a fresh context. Workspace-scoped like everything else.
 create table agent_sessions (
-    id          uuid        primary key,
-    tenant_id   uuid        not null references tenants (id) on delete cascade,
-    agent_id    uuid        not null references agents (id) on delete cascade,
+    id            uuid        primary key,
+    workspace_id  uuid        not null references workspaces (id) on delete cascade,
+    agent_id      uuid        not null references agents (id) on delete cascade,
     -- Who started it, for attribution. Kept when the account goes away so the
     -- transcript is not silently rewritten.
-    user_id     uuid        references users (id) on delete set null,
-    title       text        not null default '',
-    created_at  timestamptz not null default now(),
-    updated_at  timestamptz not null default now()
+    user_id       uuid        references users (id) on delete set null,
+    title         text        not null default '',
+    -- Which of the workspace's own customers this conversation is for. The
+    -- platform does not know what an account is, only that a session may
+    -- carry one and the ledger copies it, so a workspace can join its bill to
+    -- its own records.
+    account       text,
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now()
 );
 
-create index agent_sessions_tenant_idx on agent_sessions (tenant_id, created_at desc);
+create index agent_sessions_workspace_idx on agent_sessions (workspace_id, created_at desc);
 create index agent_sessions_agent_idx on agent_sessions (agent_id);
 
 -- The conversation itself. Ordered by `id`, which is a UUIDv7: the ordering
@@ -260,15 +301,15 @@ create unique index agent_messages_replies_to_idx
 -- Without that, a row could commit below a cursor another poller had already
 -- passed, and be missed.
 create table events (
-    id          uuid        primary key,
-    tenant_id   uuid        not null references tenants (id) on delete cascade,
-    session_id  uuid,
-    kind        text        not null,
-    payload     jsonb       not null default '{}'::jsonb,
-    created_at  timestamptz not null default now()
+    id            uuid        primary key,
+    workspace_id  uuid        not null references workspaces (id) on delete cascade,
+    session_id    uuid,
+    kind          text        not null,
+    payload       jsonb       not null default '{}'::jsonb,
+    created_at    timestamptz not null default now()
 );
 
-create index events_tenant_id_idx on events (tenant_id, id);
+create index events_workspace_id_idx on events (workspace_id, id);
 create index events_session_id_idx on events (session_id, id) where session_id is not null;
 
 -- Provider health -------------------------------------------------------------
@@ -315,8 +356,8 @@ create table provider_health (
 -- database are configuration; an API key would be a leak waiting to happen.
 create table traffic_routes (
     id             uuid        primary key,
-    -- Null means the system default, used by any tenant without its own.
-    tenant_id      uuid        references tenants (id) on delete cascade,
+    -- Null means the system default, used by any workspace without its own.
+    workspace_id   uuid        references workspaces (id) on delete cascade,
     traffic_type   text        not null,
     priority       int         not null,
     provider       text        not null check (provider in ('openai', 'anthropic')),
@@ -328,28 +369,28 @@ create table traffic_routes (
 );
 
 -- A surrogate key rather than the natural one, because a primary key cannot
--- contain nulls and the system defaults are exactly the rows whose tenant is
--- null. Uniqueness is enforced by two partial indexes instead, one for each
--- case, since nulls do not compare equal in a unique index either.
-create unique index traffic_routes_tenant_idx
-    on traffic_routes (tenant_id, traffic_type, priority) where tenant_id is not null;
+-- contain nulls and the system defaults are exactly the rows whose workspace
+-- is null. Uniqueness is enforced by two partial indexes instead, one for
+-- each case, since nulls do not compare equal in a unique index either.
+create unique index traffic_routes_workspace_idx
+    on traffic_routes (workspace_id, traffic_type, priority) where workspace_id is not null;
 create unique index traffic_routes_system_idx
-    on traffic_routes (traffic_type, priority) where tenant_id is null;
+    on traffic_routes (traffic_type, priority) where workspace_id is null;
 
 -- Job queue ------------------------------------------------------------------
 
 -- Worked with SELECT ... FOR UPDATE SKIP LOCKED. Enqueue happens in the same
 -- transaction as the state change that caused it, so there is no dual-write
 -- to reconcile.
--- Hosts a tenant's agents may reach.
+-- Hosts a workspace's agents may reach.
 --
 -- Empty means an agent reaches nothing, which is the default and the point: a
--- tenant that has not thought about egress has not consented to it. Adding a
--- row is the whole of the ceremony, and it is about a hostname rather than a
--- URL because that is the part a tenant knows without guessing.
+-- workspace that has not thought about egress has not consented to it. Adding
+-- a row is the whole of the ceremony, and it is about a hostname rather than a
+-- URL because that is the part a workspace knows without guessing.
 create table egress_rules (
     id             uuid        primary key,
-    tenant_id      uuid        not null references tenants (id) on delete cascade,
+    workspace_id   uuid        not null references workspaces (id) on delete cascade,
     -- `api.stripe.com`, or `*.example.com` for its subdomains but not its apex.
     host           text        not null,
     -- The header a credential travels in, attached by the host on the way out.
@@ -362,15 +403,15 @@ create table egress_rules (
     credential_env text,
     enabled        boolean     not null default true,
     created_at     timestamptz not null default now(),
-    -- One rule per host per tenant: two rules for one host would differ only
-    -- in which credential they attached, and which won would depend on
+    -- One rule per host per workspace: two rules for one host would differ
+    -- only in which credential they attached, and which won would depend on
     -- insertion order.
-    unique (tenant_id, host)
+    unique (workspace_id, host)
 );
 
 create table jobs (
     id            uuid primary key,
-    tenant_id     uuid        not null references tenants (id) on delete cascade,
+    workspace_id  uuid        not null references workspaces (id) on delete cascade,
     kind          text        not null,
     payload       jsonb       not null default '{}'::jsonb,
     state         text        not null default 'pending'
@@ -430,6 +471,14 @@ create index jobs_serial_running_idx on jobs (serial_key)
 create index jobs_lease_idx on jobs (leased_until)
     where state = 'running';
 
+-- The transcript reports, per user message, the state of the job answering
+-- it -- so a reader can be told "queued", "failed" or nothing rather than
+-- guessing from an empty reply. That is a lookup by the message id inside the
+-- payload, which without this is a scan of every turn ever queued.
+create index jobs_chat_turn_message_idx
+    on jobs (((payload->>'message_id')::uuid))
+    where kind = 'chat.turn';
+
 -- What an autoscaler should read: work that could start now, not work that is
 -- waiting. A serial key admits one running job at a time, so a session with a
 -- hundred queued turns is one unit of work rather than a hundred -- counting
@@ -475,7 +524,7 @@ group by kind, priority;
 -- many people are mid-conversation", and deriving that from `agent_messages`
 -- means a count(distinct) over a time range on the busiest table in the
 -- system -- which gets more expensive exactly as the cluster gets busier, and
--- which scans every partition once that table is partitioned by tenant.
+-- which scans every partition once that table is partitioned by workspace.
 --
 -- Bounded by concurrency rather than by history: a row exists only while a
 -- session is live, so this table is the size of the conversations happening
@@ -550,3 +599,177 @@ alter table jobs set (
     autovacuum_vacuum_scale_factor = 0.02,
     autovacuum_analyze_scale_factor = 0.02
 );
+
+-- Usage ledger -----------------------------------------------------------------
+
+-- One row per model call, with every dimension a bill might be cut along.
+--
+-- Append-only. Tokens as the provider reported them, never prices: rate cards
+-- change and disputes happen, and a ledger that stored a computed cost would
+-- have to be corrected where one that stores tokens is re-priced by whoever
+-- is billing. The export is the product -- an operator bills workspaces from
+-- it, a workspace bills its customers from it -- and nobody needs a billing
+-- system inside outturn.
+
+-- Work the platform does on its own initiative -- titles, summaries, whatever
+-- comes -- bills to a workspace that is the operator. A reserved row rather
+-- than a null keeps the ledger's partitioning uniform and its foreign keys
+-- real.
+insert into workspaces (id, name, slug)
+values ('00000000-0000-0000-0000-000000000001', 'Platform', 'platform')
+on conflict (id) do nothing;
+
+create or replace function protect_platform_workspace() returns trigger as $$
+begin
+    if old.id = '00000000-0000-0000-0000-000000000001' then
+        raise exception 'the platform workspace cannot be deleted';
+    end if;
+    return old;
+end;
+$$ language plpgsql;
+
+create trigger platform_workspace_stays
+    before delete on workspaces
+    for each row execute function protect_platform_workspace();
+
+create table usage_ledger (
+    workspace_id       uuid        not null references workspaces (id) on delete cascade,
+    id                 uuid        not null,
+    occurred_at        timestamptz not null default now(),
+
+    -- Who.
+    agent_id           uuid,
+    session_id         uuid,
+    user_id            uuid,
+    account            text,
+
+    -- What produced it.
+    reply_id           uuid,
+    job_id             uuid,
+    -- Which model call within the turn, from zero.
+    round              int         not null,
+    traffic_type       text        not null,
+    -- "openai:https://api.openai.com": protocol and base URL, as the gateway
+    -- reports it.
+    endpoint           text        not null,
+    -- The model that actually answered, which routing may have chosen.
+    model              text        not null,
+    -- Whose key paid: 'operator' or 'workspace'.
+    credential_owner   text        not null,
+    -- 'none', 'same_model' or 'cross_model'. See docs/routing.md.
+    fallback           text        not null default 'none',
+
+    -- How much, in the units it is billed in. See the usage record in
+    -- wit/agent.wit for why these are split.
+    prompt_tokens      int         not null default 0,
+    completion_tokens  int         not null default 0,
+    cache_read_tokens  int         not null default 0,
+    cache_write_tokens int         not null default 0,
+    reasoning_tokens   int         not null default 0,
+
+    -- The provider's usage object, verbatim, beside the normalised columns.
+    --
+    -- The five token columns are what every provider agrees on and every rate
+    -- card needs. They are not a superset and never will be: cache writes
+    -- priced by TTL, service tiers, long-context thresholds, server-side
+    -- tools billed per call, audio and image tokens -- each provider adds
+    -- dimensions on its own schedule. Chasing them as columns is a migration
+    -- per release and a schema still behind.
+    --
+    -- So the raw object is kept as it came off the wire. The normalised
+    -- columns build today's bill; the raw object lets someone re-price
+    -- yesterday's calls under a dimension nobody thought to normalise,
+    -- without a backfill, because the data was never dropped.
+    provider_usage     jsonb,
+    -- Normalised on its own because it changes the price of every other
+    -- number on the row: OpenAI's flex and priority tiers bill the same
+    -- tokens at different rates.
+    service_tier       text,
+
+    primary key (workspace_id, id)
+) partition by hash (workspace_id);
+
+do $$
+begin
+    for i in 0..15 loop
+        execute format(
+            'create table usage_ledger_p%s partition of usage_ledger '
+            'for values with (modulus 16, remainder %s)', i, i);
+    end loop;
+end $$;
+
+-- The export: a workspace's rows in time order, paged by id. The id is a
+-- UUIDv7 so it orders by time and doubles as the cursor.
+create index usage_ledger_export_idx on usage_ledger (workspace_id, id);
+create index usage_ledger_session_idx on usage_ledger (workspace_id, session_id);
+
+-- Settings ---------------------------------------------------------------------
+
+-- Overrides for the settings catalogue in code. See docs/settings.md.
+--
+-- The catalogue (src/api/settings/mod.rs) says what settings exist, their
+-- types, their defaults and who may override them. This table holds only the
+-- levels that have chosen to differ: a row is the "override" toggle being on,
+-- and deleting it is the toggle going off, so that level falls back to
+-- whatever is above it. Nothing is ever copied down.
+--
+-- Three levels share one table: the operator's system defaults (workspace_id
+-- is the platform workspace, agent_id nil), a workspace's (its own
+-- workspace_id, agent_id nil), and an agent's (workspace_id and agent_id).
+-- Nil rather than null for "no agent" so the primary key can carry it.
+create table setting_overrides (
+    workspace_id uuid        not null references workspaces (id) on delete cascade,
+    agent_id     uuid        not null default '00000000-0000-0000-0000-000000000000',
+    key          text        not null,
+    value        jsonb       not null,
+    updated_at   timestamptz not null default now(),
+    primary key (workspace_id, agent_id, key)
+);
+
+-- Agent rows go when the agent does. A plain foreign key cannot express
+-- "nil or a real agent", so a trigger does.
+create or replace function drop_agent_setting_overrides() returns trigger as $$
+begin
+    delete from setting_overrides where workspace_id = old.workspace_id and agent_id = old.id;
+    return old;
+end;
+$$ language plpgsql;
+
+create trigger agent_setting_overrides_go_with_the_agent
+    after delete on agents
+    for each row execute function drop_agent_setting_overrides();
+
+-- Seed roles -------------------------------------------------------------------
+
+-- Seed every existing workspace with the three roles the code used to define,
+-- with the authorities they used to carry, so nobody's access changes.
+insert into roles (workspace_id, id, name, description)
+select w.id, gen_random_uuid(), r.name, r.description
+from workspaces w
+cross join (values
+    ('admin',    'Runs the workspace: people, roles, agents, settings and files.'),
+    ('operator', 'Builds and runs agents, and works with their files.'),
+    ('viewer',   'Reads conversations, agents, settings and files without changing them.')
+) as r (name, description);
+
+insert into role_authorities (workspace_id, role_id, authority)
+select r.workspace_id, r.id, a.authority
+from roles r
+join (values
+    ('admin', 'users:create'), ('admin', 'users:read'), ('admin', 'users:update'),
+    ('admin', 'users:delete'), ('admin', 'roles:assign'), ('admin', 'roles:manage'),
+    ('admin', 'agents:create'), ('admin', 'agents:read'), ('admin', 'agents:update'),
+    ('admin', 'agents:delete'), ('admin', 'sessions:create'), ('admin', 'sessions:read'),
+    ('admin', 'sessions:delete'), ('admin', 'settings:read'), ('admin', 'settings:update'),
+    ('admin', 'storage:workspace:read'), ('admin', 'storage:workspace:write'),
+    ('admin', 'storage:agent:read'), ('admin', 'storage:agent:write'), ('admin', 'gateway:invoke'),
+    ('admin', 'usage:read'),
+
+    ('operator', 'agents:create'), ('operator', 'agents:read'), ('operator', 'agents:update'),
+    ('operator', 'sessions:create'), ('operator', 'sessions:read'),
+    ('operator', 'storage:workspace:read'), ('operator', 'storage:agent:read'),
+    ('operator', 'storage:agent:write'), ('operator', 'gateway:invoke'),
+
+    ('viewer', 'agents:read'), ('viewer', 'sessions:read'), ('viewer', 'settings:read'),
+    ('viewer', 'storage:workspace:read'), ('viewer', 'storage:agent:read')
+) as a (role_name, authority) on a.role_name = r.name;

@@ -22,7 +22,7 @@ pub const CHAT_TURN: &str = "chat.turn";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatTurnPayload {
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub session_id: Uuid,
     pub agent_id: Uuid,
     /// The user message this turn answers. The reply hangs off it, so a
@@ -168,7 +168,7 @@ impl Worker {
 
         let _ = events::append(
             &self.pool,
-            payload.tenant_id,
+            payload.workspace_id,
             Some(payload.session_id),
             "chat.error",
             serde_json::json!({ "message": reason, "message_id": payload.message_id }),
@@ -217,7 +217,7 @@ impl Worker {
                     Ok(ExecuteEvent::Delta { idx, text }) => {
                         events::append(
                             &self.pool,
-                            payload.tenant_id,
+                            payload.workspace_id,
                             Some(payload.session_id),
                             "chat.delta",
                             serde_json::json!({
@@ -249,7 +249,7 @@ impl Worker {
                         tools.push(call.clone());
                         events::append(
                             &self.pool,
-                            payload.tenant_id,
+                            payload.workspace_id,
                             Some(payload.session_id),
                             "chat.tool",
                             serde_json::json!({
@@ -281,7 +281,7 @@ impl Worker {
                         }
                         events::append(
                             &self.pool,
-                            payload.tenant_id,
+                            payload.workspace_id,
                             Some(payload.session_id),
                             "chat.tool_result",
                             serde_json::json!({
@@ -314,7 +314,7 @@ impl Worker {
                             None => {
                                 let found = self
                                     .chat
-                                    .get_session(payload.tenant_id, payload.session_id)
+                                    .get_session(payload.workspace_id, payload.session_id)
                                     .await
                                     .ok()
                                     .and_then(|s| s.account);
@@ -325,7 +325,7 @@ impl Worker {
                         if let Err(e) = self
                             .usage
                             .record(super::usage::RecordUsage {
-                                tenant_id: payload.tenant_id,
+                                workspace_id: payload.workspace_id,
                                 agent_id: Some(payload.agent_id),
                                 session_id: Some(payload.session_id),
                                 user_id: payload.user_id,
@@ -336,7 +336,7 @@ impl Worker {
                                 traffic_type: traffic_type_for(
                                     &self
                                         .agents
-                                        .get(payload.tenant_id, payload.agent_id)
+                                        .get(payload.workspace_id, payload.agent_id)
                                         .await
                                         .map(|a| a.policy)
                                         .unwrap_or(serde_json::Value::Null),
@@ -359,7 +359,7 @@ impl Worker {
                             // problem, and loud: the bill is wrong.
                             tracing::error!(
                                 job_id = %job_id,
-                                tenant_id = %payload.tenant_id,
+                                workspace_id = %payload.workspace_id,
                                 error = %e,
                                 "could not record usage"
                             );
@@ -489,7 +489,7 @@ impl Worker {
     ) -> anyhow::Result<Option<crate::runtime::router::ExecuteRequest>> {
         let agent = self
             .agents
-            .get(payload.tenant_id, payload.agent_id)
+            .get(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
@@ -513,7 +513,7 @@ impl Worker {
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
         let history = up_to(history.messages, payload.message_id);
 
-        let egress = super::egress::rules_for(&self.pool, payload.tenant_id)
+        let egress = super::egress::rules_for(&self.pool, payload.workspace_id)
             .await
             .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
 
@@ -526,7 +526,7 @@ impl Worker {
         if placeholder.created {
             events::append(
                 &self.pool,
-                payload.tenant_id,
+                payload.workspace_id,
                 Some(payload.session_id),
                 "chat.message",
                 serde_json::to_value(&placeholder.message)?,
@@ -556,7 +556,7 @@ impl Worker {
             // quiet rather than left with an indicator that means nothing.
             events::append(
                 &self.pool,
-                payload.tenant_id,
+                payload.workspace_id,
                 Some(payload.session_id),
                 "chat.retry",
                 serde_json::json!({
@@ -568,17 +568,17 @@ impl Worker {
         }
 
         // Resolved here, above the runtime, so the guest is handed values
-        // and never learns whether the operator, the tenant or the agent
+        // and never learns whether the operator, the workspace or the agent
         // chose them.
         let settings = self
             .settings
-            .resolve(payload.tenant_id, payload.agent_id)
+            .resolve(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
 
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
-            tenant_id: payload.tenant_id,
+            workspace_id: payload.workspace_id,
             agent_id: payload.agent_id,
             write_scopes: settings.write_scopes,
             conversation: project(&history)
@@ -688,7 +688,7 @@ impl Worker {
                 } else {
                     let _ = events::append(
                         &self.pool,
-                        payload.tenant_id,
+                        payload.workspace_id,
                         Some(payload.session_id),
                         "chat.error",
                         serde_json::json!({ "message": e.to_string(), "message_id": payload.message_id }),
@@ -714,7 +714,7 @@ impl Worker {
 
         let agent = self
             .agents
-            .get(payload.tenant_id, payload.agent_id)
+            .get(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
@@ -739,7 +739,7 @@ impl Worker {
 
         events::append(
             &self.pool,
-            payload.tenant_id,
+            payload.workspace_id,
             Some(payload.session_id),
             "chat.done",
             serde_json::json!({ "message_id": finished.id }),

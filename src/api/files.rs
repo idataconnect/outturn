@@ -1,6 +1,6 @@
 //! Files a person puts into, or takes out of, a conversation's storage.
 //!
-//! The same three scopes the agent sees -- session/, agent/, tenant/ -- with
+//! The same three scopes the agent sees -- session/, agent/, workspace/ -- with
 //! the same layout underneath, so a file a person uploads is a file the agent
 //! can list and read by the same name, and a file the agent wrote is one the
 //! person can download. The browser uploads through this tier rather than the
@@ -44,7 +44,7 @@ fn read_authority(scope: Scope) -> Authority {
     match scope {
         Scope::Session => Authority::SessionsRead,
         Scope::Agent => Authority::StorageAgentRead,
-        Scope::Tenant => Authority::StorageTenantRead,
+        Scope::Workspace => Authority::StorageWorkspaceRead,
     }
 }
 
@@ -52,22 +52,22 @@ fn write_authority(scope: Scope) -> Authority {
     match scope {
         Scope::Session => Authority::SessionsCreate,
         Scope::Agent => Authority::StorageAgentWrite,
-        Scope::Tenant => Authority::StorageTenantWrite,
+        Scope::Workspace => Authority::StorageWorkspaceWrite,
     }
 }
 
 fn parse_scope(s: &str) -> Result<Scope, ApiError> {
     Scope::parse(s).ok_or((
         StatusCode::NOT_FOUND,
-        format!("{s} is not a scope; use session, agent or tenant"),
+        format!("{s} is not a scope; use session, agent or workspace"),
     ))
 }
 
-/// The space a session's files live in, checked to be the caller's tenant's.
-async fn space_for(state: &ApiState, tenant_id: Uuid, session_id: Uuid) -> Result<Space, ApiError> {
-    let session = state.chat.get_session(tenant_id, session_id).await?;
+/// The space a session's files live in, checked to be the caller's workspace's.
+async fn space_for(state: &ApiState, workspace_id: Uuid, session_id: Uuid) -> Result<Space, ApiError> {
+    let session = state.chat.get_session(workspace_id, session_id).await?;
     Ok(Space {
-        tenant_id,
+        workspace_id,
         agent_id: session.agent_id,
         session_id,
     })
@@ -101,7 +101,7 @@ pub async fn list(
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<Vec<StoredFile>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
-    let space = space_for(&state, claims.tenant_id, session_id).await?;
+    let space = space_for(&state, claims.workspace_id, session_id).await?;
     let store = storage(&state)?;
     let granted = authorities_of(&state, &claims).await?;
 
@@ -137,7 +137,7 @@ pub async fn upload(
 ) -> Result<(StatusCode, Json<StoredFile>), ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, write_authority(s)).await?;
-    let space = space_for(&state, claims.tenant_id, session_id).await?;
+    let space = space_for(&state, claims.workspace_id, session_id).await?;
     let store = storage(&state)?;
 
     let scoped = format!("{}/{path}", s.as_str());
@@ -169,7 +169,7 @@ pub async fn download(
 ) -> Result<Response, ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, read_authority(s)).await?;
-    let space = space_for(&state, claims.tenant_id, session_id).await?;
+    let space = space_for(&state, claims.workspace_id, session_id).await?;
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
@@ -196,7 +196,7 @@ pub async fn delete(
 ) -> Result<StatusCode, ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, write_authority(s)).await?;
-    let space = space_for(&state, claims.tenant_id, session_id).await?;
+    let space = space_for(&state, claims.workspace_id, session_id).await?;
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;

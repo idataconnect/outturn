@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, FileText, Trash2, Upload } from 'lucide-react'
+import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import { deleteFile, fileUrl, listFiles, uploadFile, type StoredFile } from '../lib/chat'
@@ -7,27 +7,37 @@ import { useSession } from '../lib/session'
 
 type Scope = StoredFile['scope']
 
-const SCOPES: { scope: Scope; label: string; hint: string; write: string; read: string }[] = [
+const SCOPES: {
+  scope: Scope
+  label: string
+  hint: string
+  icon: typeof Clock
+  write: string
+  read: string
+}[] = [
   {
     scope: 'session',
     label: 'This conversation',
-    hint: 'Swept after a while. Where files for right now go.',
+    hint: 'Short-lived files only needed for this session.',
+    icon: Clock,
     write: 'sessions:create',
     read: 'sessions:read',
   },
   {
     scope: 'agent',
     label: 'This agent',
-    hint: 'Kept while the agent exists, across conversations.',
+    hint: 'Files that may be used by this agent across multiple sessions',
+    icon: MessagesSquare,
     write: 'storage:agent:write',
     read: 'storage:agent:read',
   },
   {
-    scope: 'tenant',
+    scope: 'workspace',
     label: 'Workspace',
-    hint: 'Shared by every agent here. Kept until deleted.',
-    write: 'storage:tenant:write',
-    read: 'storage:tenant:read',
+    hint: 'Files shared with every agent.',
+    icon: Building2,
+    write: 'storage:workspace:write',
+    read: 'storage:workspace:read',
   },
 ]
 
@@ -53,7 +63,9 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
   const [files, setFiles] = useState<StoredFile[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     try {
@@ -104,30 +116,23 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
 
   const canWrite = (s: Scope) => authorities.includes(SCOPES.find((x) => x.scope === s)!.write)
 
+  useEffect(() => {
+    if (!menuOpen) return
+    function onClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [menuOpen])
+
+  const active = SCOPES.find((s) => s.scope === scope)
+  const ActiveIcon = active?.icon ?? Clock
+
   return (
     <aside className="w-72 border-l border-surface-200 dark:border-surface-800 flex flex-col">
       <div className="p-3 border-b border-surface-200 dark:border-surface-800 space-y-2">
-        <p className="text-xs font-medium text-surface-600 dark:text-surface-400">Files</p>
         {writable.length > 0 && (
           <>
-            <label className="block">
-              <span className="sr-only">Where to put uploads</span>
-              <select
-                value={scope}
-                onChange={(e) => setScope(e.target.value as Scope)}
-                title={SCOPES.find((s) => s.scope === scope)?.hint}
-                className="w-full px-2 py-1.5 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm text-surface-900 dark:text-surface-100"
-              >
-                {SCOPES.map((s) => (
-                  <option key={s.scope} value={s.scope} disabled={!canWrite(s.scope)}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p className="text-xs text-surface-500 dark:text-surface-400">
-              {SCOPES.find((s) => s.scope === scope)?.hint}
-            </p>
             <input
               ref={input}
               type="file"
@@ -135,15 +140,68 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
               className="hidden"
               onChange={(e) => void onPick(e.target.files)}
             />
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => input.current?.click()}
-              className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
-            >
-              <Upload size={14} aria-hidden />
-              {busy ? 'Uploading…' : 'Upload'}
-            </button>
+            <div className="relative flex gap-1.5" ref={menuRef}>
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                aria-haspopup="listbox"
+                aria-expanded={menuOpen}
+                aria-label={`Upload destination: ${active?.label}`}
+                title={`${active?.label} — ${active?.hint}`}
+                className="flex items-center justify-center gap-0.5 w-10 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50"
+              >
+                <ActiveIcon size={14} aria-hidden />
+                <ChevronDown size={12} aria-hidden />
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => input.current?.click()}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
+              >
+                <Upload size={14} aria-hidden />
+                {busy ? 'Uploading…' : 'Upload'}
+              </button>
+
+              {menuOpen && (
+                <ul
+                  role="listbox"
+                  className="absolute z-10 top-full mt-1 left-0 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg py-1"
+                >
+                  {SCOPES.map((s) => {
+                    const disabled = !canWrite(s.scope)
+                    const selected = s.scope === scope
+                    const Icon = s.icon
+                    return (
+                      <li key={s.scope}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          disabled={disabled}
+                          onClick={() => {
+                            setScope(s.scope)
+                            setMenuOpen(false)
+                          }}
+                          className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-surface-50 dark:hover:bg-surface-800/50 disabled:opacity-40 disabled:hover:bg-transparent"
+                        >
+                          <Icon size={14} className="mt-0.5 shrink-0 text-surface-400" aria-hidden />
+                          <span className="flex-1">
+                            <span className="block text-sm text-surface-900 dark:text-surface-100">{s.label}</span>
+                            <span className="block text-xs text-surface-500 dark:text-surface-400">{s.hint}</span>
+                          </span>
+                          <Check
+                            size={14}
+                            className={`mt-0.5 shrink-0 ${selected ? 'text-brand-600 dark:text-brand-400' : 'text-transparent'}`}
+                            aria-hidden
+                          />
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
           </>
         )}
       </div>

@@ -45,7 +45,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_tool_result: None,
         on_usage: None,
         storage: None,
-        tenant_id: Uuid::now_v7(),
+        workspace_id: Uuid::now_v7(),
         agent_id: Uuid::now_v7(),
         write_scopes: vec!["session".into(), "agent".into()],
         timezone: None,
@@ -57,7 +57,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
         // Nothing reachable unless a test says so, which is the default a
-        // tenant gets.
+        // workspace gets.
         egress: Vec::new(),
         fuel: 10_000_000_000,
     }
@@ -428,7 +428,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
 
 /// The limit is the host's, not the guest's.
 ///
-/// A component is deployed by a tenant, so a bound that lives only in guest
+/// A component is deployed by a workspace, so a bound that lives only in guest
 /// code is a suggestion. The host counts the calls it makes and refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
@@ -652,7 +652,7 @@ async fn each_model_call_reports_its_own_cost() {
 /// What a turn spent is counted by the host, across every round.
 ///
 /// The guest never sees these numbers and cannot report them: asking a
-/// component deployed by a tenant to declare its own spend is asking the party
+/// component deployed by a workspace to declare its own spend is asking the party
 /// being billed to write the invoice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_reports_what_it_spent() {
@@ -739,22 +739,22 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
 
 // -- Object storage -----------------------------------------------------------
 
-/// An agent reads and writes only within its own tenant's space.
+/// An agent reads and writes only within its own workspace's space.
 ///
-/// The guest is never told which tenant it belongs to, so it cannot name
+/// The guest is never told which workspace it belongs to, so it cannot name
 /// another; and the host resolves every path rather than trusting one, so a
 /// component that tries to climb out is refused rather than quietly corrected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
+async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let ours = scope::Space { tenant_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
-    let theirs = scope::Space { tenant_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
+    let ours = scope::Space { workspace_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
+    let theirs = scope::Space { workspace_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
 
     // Somebody else's object, which our agent must not be able to reach.
     store
-        .write(&scope::resolve(&theirs, "tenant/secrets.txt").unwrap(), 0, b"not yours")
+        .write(&scope::resolve(&theirs, "workspace/secrets.txt").unwrap(), 0, b"not yours")
         .await
         .expect("seed");
 
@@ -768,7 +768,7 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
     let runner = runner();
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
-    options.tenant_id = ours.tenant_id;
+    options.workspace_id = ours.workspace_id;
     options.agent_id = ours.agent_id;
     options.session_id = ours.session_id;
 
@@ -786,11 +786,11 @@ async fn storage_is_scoped_to_the_tenant_and_traversal_is_refused() {
 
     // And the neighbour's file is untouched and unreachable by name.
     assert!(
-        scope::resolve(&ours, "tenant/../../{theirs}/secrets.txt").is_err(),
+        scope::resolve(&ours, "workspace/../../{theirs}/secrets.txt").is_err(),
         "a path climbing out of the space must be refused"
     );
     let theirs_still = store
-        .read(&scope::resolve(&theirs, "tenant/secrets.txt").unwrap(), 0, u32::MAX)
+        .read(&scope::resolve(&theirs, "workspace/secrets.txt").unwrap(), 0, u32::MAX)
         .await
         .expect("still there");
     assert_eq!(theirs_still, b"not yours");
@@ -831,7 +831,7 @@ async fn a_scopeless_path_is_corrected_not_just_refused() {
         .to_string();
     assert!(result.contains("session/notes.txt"), "{result}");
     assert!(result.contains("agent/notes.txt"), "{result}");
-    assert!(result.contains("tenant/notes.txt"), "{result}");
+    assert!(result.contains("workspace/notes.txt"), "{result}");
 }
 
 /// Writing to a scope the cascade did not allow is refused, with a way out.
@@ -842,7 +842,7 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "write_object".into(),
-        arguments: r#"{"path":"tenant/pricing.csv","content":"cheap","action":"Updating prices"}"#.into(),
+        arguments: r#"{"path":"workspace/pricing.csv","content":"cheap","action":"Updating prices"}"#.into(),
         reply: "Refused.".into(),
     })
     .await;
@@ -851,7 +851,7 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     // Session and agent only, which is the default the cascade resolves to.
     options.write_scopes = vec!["session".into(), "agent".into()];
     let space = scope::Space {
-        tenant_id: options.tenant_id,
+        workspace_id: options.workspace_id,
         agent_id: options.agent_id,
         session_id: options.session_id,
     };
@@ -863,10 +863,10 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
 
     assert!(
         store
-            .read(&scope::resolve(&space, "tenant/pricing.csv").unwrap(), 0, u32::MAX)
+            .read(&scope::resolve(&space, "workspace/pricing.csv").unwrap(), 0, u32::MAX)
             .await
             .is_err(),
-        "the write to tenant scope went through"
+        "the write to workspace scope went through"
     );
     let requests = gateway.requests();
     let result = requests[1]["messages"]
@@ -901,7 +901,7 @@ async fn a_large_file_is_read_from_both_ends() {
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
     let space = scope::Space {
-        tenant_id: options.tenant_id,
+        workspace_id: options.workspace_id,
         agent_id: options.agent_id,
         session_id: options.session_id,
     };
@@ -978,9 +978,9 @@ async fn tool_result(arguments: &str, egress: Vec<outturn::runtime::egress::Egre
     results.first().cloned().unwrap_or_default()
 }
 
-/// An agent reaches nothing until a tenant says otherwise.
+/// An agent reaches nothing until a workspace says otherwise.
 ///
-/// The default matters more than any rule: a tenant who has not thought about
+/// The default matters more than any rule: a workspace who has not thought about
 /// egress has not agreed to it, and an agent that could reach anything makes a
 /// prompt injection into a way out with the data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -999,12 +999,12 @@ async fn an_agent_reaches_nothing_it_was_not_allowed() {
 
 /// Allowing a name does not allow what the name resolves to.
 ///
-/// This is the check a tenant cannot waive. `localhost` is a host like any
-/// other as far as a rule is concerned, and a tenant could name it by accident
+/// This is the check a workspace cannot waive. `localhost` is a host like any
+/// other as far as a rule is concerned, and a workspace could name it by accident
 /// or be talked into it -- what stops the request is that the address it
 /// resolves to is inside the network this runs in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_name_the_tenant_allowed_still_cannot_reach_the_cluster() {
+async fn a_name_the_workspace_allowed_still_cannot_reach_the_cluster() {
     let result = tool_result(
         r#"{"url":"http://localhost:5432/","action":"Looking something up"}"#,
         vec![outturn::runtime::egress::EgressRule {
@@ -1040,7 +1040,7 @@ async fn the_node_metadata_service_is_not_reachable() {
     );
 }
 
-/// A guest cannot aim the tenant's credential somewhere else.
+/// A guest cannot aim the workspace's credential somewhere else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_guest_cannot_set_the_headers_the_host_owns() {
     let result = tool_result(
@@ -1099,7 +1099,7 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
     let space = scope::Space {
-        tenant_id: options.tenant_id,
+        workspace_id: options.workspace_id,
         agent_id: options.agent_id,
         session_id: options.session_id,
     };
@@ -1172,7 +1172,7 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
     let space = scope::Space {
-        tenant_id: options.tenant_id,
+        workspace_id: options.workspace_id,
         agent_id: options.agent_id,
         session_id: options.session_id,
     };

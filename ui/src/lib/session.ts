@@ -1,7 +1,7 @@
 import { createContext, use } from 'react'
 
-export type TenantMembership = {
-  tenant_id: string
+export type WorkspaceMembership = {
+  workspace_id: string
   name: string
   slug: string
   roles: string[]
@@ -9,11 +9,11 @@ export type TenantMembership = {
 
 export type Session = {
   session_id: string
-  tenant_id: string
+  workspace_id: string
   display_name: string
   roles: string[]
   authorities: string[]
-  tenants: TenantMembership[]
+  workspaces: WorkspaceMembership[]
 }
 
 export type SessionState =
@@ -28,7 +28,7 @@ export type SessionState =
       status: 'authenticated'
       session: Session
       displayName: string
-      tenants: TenantMembership[]
+      workspaces: WorkspaceMembership[]
     }
 
 export type SessionActions = {
@@ -36,7 +36,7 @@ export type SessionActions = {
    *  the API rather than passed in, so every entry point agrees on it. */
   signIn: () => void
   signOut: () => void
-  switchTenant: (tenantId: string) => Promise<void>
+  switchWorkspace: (workspaceId: string) => Promise<void>
 }
 
 export const SessionContext = createContext<SessionState>({ status: 'loading' })

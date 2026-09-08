@@ -3,16 +3,16 @@ use std::sync::Arc;
 use crate::auth::Role;
 
 use super::role::RoleStore;
-use super::tenant::{CreateTenant, TenantStore};
+use super::workspace::{CreateWorkspace, WorkspaceStore};
 use super::user::{CreateUser, UserStore};
 
-/// Seeds a system admin and a starter tenant for local development.
+/// Seeds a system admin and a starter workspace for local development.
 ///
 /// Runs only when OUTTURN_DEV_SEED is set and the users table is empty, so it
 /// is inert against any database that already has accounts.
 pub async fn dev_seed(
     users: &Arc<dyn UserStore>,
-    tenants: &Arc<dyn TenantStore>,
+    workspaces: &Arc<dyn WorkspaceStore>,
     roles: &Arc<dyn RoleStore>,
 ) -> anyhow::Result<()> {
     if std::env::var("OUTTURN_DEV_SEED").is_err() {
@@ -39,22 +39,22 @@ pub async fn dev_seed(
 
     users.grant_system_role(admin.id, Role::SystemAdmin).await?;
 
-    let tenant = tenants
-        .create(CreateTenant {
+    let workspace = workspaces
+        .create(CreateWorkspace {
             name: "Acme".into(),
             slug: "acme".into(),
         })
         .await?;
 
-    roles.seed_defaults(tenant.id).await?;
+    roles.seed_defaults(workspace.id).await?;
     users
-        .grant_tenant_role(admin.id, tenant.id, "admin")
+        .grant_workspace_role(admin.id, workspace.id, "admin")
         .await?;
 
     tracing::warn!(
         email = %email,
         password = %password,
-        tenant = %tenant.slug,
+        workspace = %workspace.slug,
         "dev seed created a system admin — never enable OUTTURN_DEV_SEED outside local development"
     );
 

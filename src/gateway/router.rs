@@ -53,7 +53,7 @@ impl GatewayState {
     /// means steering simply does not happen rather than the call failing.
     async fn take_pending(
         &self,
-        tenant_id: uuid::Uuid,
+        workspace_id: uuid::Uuid,
         session_id: uuid::Uuid,
         reply: Option<uuid::Uuid>,
     ) -> Vec<routing::Pending> {
@@ -68,7 +68,7 @@ impl GatewayState {
                 for message in &pending {
                     if let Err(e) = crate::events::append(
                         pool,
-                        tenant_id,
+                        workspace_id,
                         Some(session_id),
                         "chat.absorbed",
                         serde_json::json!({
@@ -96,9 +96,9 @@ impl GatewayState {
     /// configured for this traffic type -- the statically built providers are
     /// used in their configured order, so an unconfigured system behaves as it
     /// always has rather than refusing to serve.
-    async fn attempts(&self, tenant_id: uuid::Uuid, traffic_type: &str) -> Vec<Attempt> {
+    async fn attempts(&self, workspace_id: uuid::Uuid, traffic_type: &str) -> Vec<Attempt> {
         if let Some(pool) = &self.health {
-            match routing::routes_for(pool, tenant_id, traffic_type).await {
+            match routing::routes_for(pool, workspace_id, traffic_type).await {
                 Ok(routes) if !routes.is_empty() => {
                     let mut attempts = Vec::with_capacity(routes.len());
                     for route in routes {
@@ -208,7 +208,7 @@ async fn chat_completions(
 
     tracing::debug!(
         session_id = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         model = %request.model,
         "chat completion request"
     );
@@ -216,7 +216,7 @@ async fn chat_completions(
     let mut last_error = None;
     let traffic = traffic_type(&headers);
 
-    for attempt in state.attempts(claims.tenant_id, &traffic).await {
+    for attempt in state.attempts(claims.workspace_id, &traffic).await {
         let provider = &attempt.provider;
         if !state.admits(provider).await {
             continue;
@@ -264,7 +264,7 @@ async fn chat_completions_stream(
 
     tracing::debug!(
         session_id = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         model = %request.model,
         "streaming chat completion request"
     );
@@ -276,10 +276,10 @@ async fn chat_completions_stream(
     // this call is picked up by the next one, which is the next round -- the
     // only boundary where injecting it is safe anyway.
     let pending = state
-        .take_pending(claims.tenant_id, claims.subject, reply_id(&headers))
+        .take_pending(claims.workspace_id, claims.subject, reply_id(&headers))
         .await;
 
-    for attempt in state.attempts(claims.tenant_id, &traffic).await {
+    for attempt in state.attempts(claims.workspace_id, &traffic).await {
         let provider = &attempt.provider;
         if !state.admits(provider).await {
             continue;
@@ -332,7 +332,7 @@ async fn chat_completions_stream(
                             provider.endpoint(),
                         ),
                         // Whose credential paid. Every key is the operator's
-                        // until tenants can bring their own (docs/routing.md);
+                        // until workspaces can bring their own (docs/routing.md);
                         // the ledger carries the column from the start so the
                         // bill does not have to be re-derived when they can.
                         (

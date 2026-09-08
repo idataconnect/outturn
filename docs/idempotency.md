@@ -6,7 +6,7 @@ What happens to a write when nobody sees the answer.
 
 A turn is a loop: the model generates, asks for a tool, the tool runs, the
 result goes back, it generates again. Tools are the only part of that loop
-which touches anything outside the transcript — `fetch` reaches a tenant's
+which touches anything outside the transcript — `fetch` reaches a workspace's
 allowed hosts, `write-object` puts bytes in a bucket.
 
 So there is a window, between a request leaving the pod and its response
@@ -124,7 +124,7 @@ whether repetition is meaningful:
 
 ## Why the host owns it
 
-Same argument as egress. If the guest owns idempotency, a tenant's untrusted
+Same argument as egress. If the guest owns idempotency, a workspace's untrusted
 code decides whether its own writes dedupe, and "did this happen twice" depends
 on code we did not write.
 
@@ -163,7 +163,7 @@ still free: today there is `fetch` and object storage, so the pressure is low.
 The pieces, roughly in order:
 
 - A `tool_invocations` table holding the tristate, keyed and scoped as above.
-  Partitioned by tenant like everything else that grows per-tenant.
+  Partitioned by workspace like everything else that grows per-workspace.
 - Derivation policy in the WIT, so a tool declares its level and scope.
 - The replay path in the host's tool dispatch.
 - Then stop, which reads it.

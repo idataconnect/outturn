@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
     pub id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub kind: String,
     pub payload: serde_json::Value,
     pub attempts: i32,
@@ -42,7 +42,7 @@ fn read_job(row: &sqlx::postgres::PgRow) -> Job {
     // token, and reading one it has no business with would invite quoting it.
     Job {
         id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
+        workspace_id: row.get("workspace_id"),
         kind: row.get("kind"),
         payload: row.get("payload"),
         attempts: row.get("attempts"),
@@ -57,7 +57,7 @@ fn read_job(row: &sqlx::postgres::PgRow) -> Job {
 /// that caused it: commit together or not at all, with no outbox to reconcile.
 pub async fn enqueue<'e, E>(
     executor: E,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     kind: &str,
     payload: serde_json::Value,
     delay: Option<Duration>,
@@ -75,11 +75,11 @@ where
     let delay_secs = delay.map(|d| d.as_secs_f64()).unwrap_or(0.0);
 
     sqlx::query(
-        "insert into jobs (id, tenant_id, kind, payload, run_after, serial_key, priority) \
+        "insert into jobs (id, workspace_id, kind, payload, run_after, serial_key, priority) \
          values ($1, $2, $3, $4, now() + make_interval(secs => $5), $6, $7)",
     )
     .bind(id)
-    .bind(tenant_id)
+    .bind(workspace_id)
     .bind(kind)
     .bind(&payload)
     .bind(delay_secs)
@@ -191,7 +191,7 @@ pub async fn claim(
                        and running.serial_key = jobs.serial_key \
                  ) \
                ) \
-         returning id, tenant_id, kind, payload, attempts, max_attempts, lease_token",
+         returning id, workspace_id, kind, payload, attempts, max_attempts, lease_token",
     )
     .bind(&picked)
     .bind(lease.as_secs_f64())
@@ -269,7 +269,7 @@ pub async fn fail(
 /// lapsed while it ran still has to be recognisable when its results arrive.
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
     let row = sqlx::query(
-        "select id, tenant_id, kind, payload, attempts, max_attempts, lease_token \
+        "select id, workspace_id, kind, payload, attempts, max_attempts, lease_token \
          from jobs where id = $1",
     )
     .bind(id)
@@ -392,7 +392,7 @@ pub async fn reap_abandoned(pool: &PgPool) -> Result<(u64, Vec<Job>), JobError> 
              leased_until = null, \
              updated_at = now() \
          where state = 'running' and leased_until < now() \
-         returning id, tenant_id, kind, payload, attempts, max_attempts, state",
+         returning id, workspace_id, kind, payload, attempts, max_attempts, state",
     )
     .fetch_all(pool)
     .await

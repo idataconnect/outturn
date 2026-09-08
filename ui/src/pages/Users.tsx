@@ -10,8 +10,8 @@ import type { User } from './UserEditor'
  * The accounts this administrator may see, as a list.
  *
  * Creating and editing live on their own routes (`/users/new`, `/users/:id`),
- * so this page is only ever the list. The API scopes it: a tenant's
- * administrator sees the accounts holding a role in their tenant, a system
+ * so this page is only ever the list. The API scopes it: a workspace's
+ * administrator sees the accounts holding a role in their workspace, a system
  * administrator sees everyone.
  */
 export default function Users() {
@@ -23,7 +23,7 @@ export default function Users() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('users:create')
   const canDelete = authorities.includes('users:delete')
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
 
   async function refresh() {
     try {
@@ -36,10 +36,10 @@ export default function Users() {
     }
   }
 
-  // The list is scoped to the tenant being viewed, so switching reloads it.
+  // The list is scoped to the workspace being viewed, so switching reloads it.
   useEffect(() => {
     void refresh()
-  }, [tenantId])
+  }, [workspaceId])
 
   async function onDelete(user: User) {
     if (!window.confirm(`Delete ${user.display_name}? Their sign-ins and roles go with them.`)) {

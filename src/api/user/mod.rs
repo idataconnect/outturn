@@ -30,13 +30,13 @@ pub struct Identity {
 /// The password provider. Named rather than inlined so the string appears once.
 pub const PROVIDER_PASSWORD: &str = "password";
 
-/// A tenant the user may sign in to, with the roles they hold there.
+/// A workspace the user may sign in to, with the roles they hold there.
 #[derive(Debug, Clone, Serialize)]
-pub struct TenantMembership {
-    pub tenant_id: Uuid,
+pub struct WorkspaceMembership {
+    pub workspace_id: Uuid,
     pub name: String,
     pub slug: String,
-    /// Names of the tenant's roles this account holds there.
+    /// Names of the workspace's roles this account holds there.
     pub roles: Vec<String>,
 }
 
@@ -67,9 +67,9 @@ pub enum UserError {
 #[async_trait]
 pub trait UserStore: Send + Sync {
     async fn list(&self) -> Result<Vec<User>, UserError>;
-    /// Accounts holding a role in one tenant. What a tenant's administrator
-    /// is shown: the accounts of other tenants are not theirs to see.
-    async fn list_for_tenant(&self, tenant_id: Uuid) -> Result<Vec<User>, UserError>;
+    /// Accounts holding a role in one workspace. What a workspace's administrator
+    /// is shown: the accounts of other workspaces are not theirs to see.
+    async fn list_for_workspace(&self, workspace_id: Uuid) -> Result<Vec<User>, UserError>;
     async fn get(&self, id: Uuid) -> Result<User, UserError>;
     async fn rename(&self, id: Uuid, display_name: &str) -> Result<User, UserError>;
     async fn create(&self, input: CreateUser) -> Result<User, UserError>;
@@ -78,15 +78,15 @@ pub trait UserStore: Send + Sync {
     /// Verifies the password and returns the user on success.
     async fn authenticate(&self, email: &str, password: &str) -> Result<User, UserError>;
 
-    /// Tenants this user may sign in to. A system admin sees every tenant.
-    async fn memberships(&self, user_id: Uuid) -> Result<Vec<TenantMembership>, UserError>;
+    /// Workspaces this user may sign in to. A system admin sees every workspace.
+    async fn memberships(&self, user_id: Uuid) -> Result<Vec<WorkspaceMembership>, UserError>;
 
-    /// Names of the roles the user holds in one tenant, with their platform
+    /// Names of the roles the user holds in one workspace, with their platform
     /// roles alongside. This is what a token carries.
-    async fn roles_for_tenant(
+    async fn roles_for_workspace(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
     ) -> Result<Vec<String>, UserError>;
 
     /// Adds another way to sign in to an existing account.
@@ -102,18 +102,18 @@ pub trait UserStore: Send + Sync {
     async fn remove_identity(&self, user_id: Uuid, identity_id: Uuid) -> Result<(), UserError>;
 
     async fn grant_system_role(&self, user_id: Uuid, role: Role) -> Result<(), UserError>;
-    /// Grants one of the tenant's roles, by name. A name the tenant has no
+    /// Grants one of the workspace's roles, by name. A name the workspace has no
     /// role for is refused rather than recorded.
-    async fn grant_tenant_role(
+    async fn grant_workspace_role(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         role: &str,
     ) -> Result<(), UserError>;
-    async fn revoke_tenant_role(
+    async fn revoke_workspace_role(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         role: &str,
     ) -> Result<(), UserError>;
 

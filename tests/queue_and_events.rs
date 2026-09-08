@@ -20,17 +20,17 @@ async fn setup() -> (common::TestDb, Uuid) {
     let db = common::TestDb::new().await;
     let pool = &db.pool;
 
-    // Events and jobs are tenant-scoped by foreign key, so a tenant must exist.
-    let tenant_id = Uuid::now_v7();
-    sqlx::query("insert into tenants (id, name, slug) values ($1, $2, $3)")
-        .bind(tenant_id)
-        .bind(format!("T{tenant_id}"))
-        .bind(format!("t-{}", tenant_id.simple()))
+    // Events and jobs are workspace-scoped by foreign key, so a workspace must exist.
+    let workspace_id = Uuid::now_v7();
+    sqlx::query("insert into workspaces (id, name, slug) values ($1, $2, $3)")
+        .bind(workspace_id)
+        .bind(format!("T{workspace_id}"))
+        .bind(format!("t-{}", workspace_id.simple()))
         .execute(pool)
         .await
-        .expect("tenant");
+        .expect("workspace");
 
-    (db, tenant_id)
+    (db, workspace_id)
 }
 
 macro_rules! setup_or_skip {
@@ -49,17 +49,17 @@ macro_rules! finish {
 
 #[tokio::test]
 async fn events_return_immediately_when_already_present() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    events::append(pool, tenant, None, "test.one", serde_json::json!({"n": 1}))
+    events::append(pool, workspace, None, "test.one", serde_json::json!({"n": 1}))
         .await
         .expect("append");
 
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         None,
         Uuid::nil(),
         100,
@@ -77,7 +77,7 @@ async fn events_return_immediately_when_already_present() {
 
 #[tokio::test]
 async fn long_poll_wakes_on_notify() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
@@ -87,7 +87,7 @@ async fn long_poll_wakes_on_notify() {
     let writer = pool.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(400)).await;
-        events::append(&writer, tenant, None, "test.late", serde_json::json!({}))
+        events::append(&writer, workspace, None, "test.late", serde_json::json!({}))
             .await
             .expect("append");
     });
@@ -95,7 +95,7 @@ async fn long_poll_wakes_on_notify() {
     let start = std::time::Instant::now();
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         None,
         Uuid::nil(),
         100,
@@ -117,7 +117,7 @@ async fn long_poll_wakes_on_notify() {
 
 #[tokio::test]
 async fn long_poll_returns_empty_on_timeout() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
@@ -131,7 +131,7 @@ async fn long_poll_returns_empty_on_timeout() {
     let started = tokio::time::Instant::now();
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         None,
         Uuid::nil(),
         100,
@@ -152,7 +152,7 @@ async fn long_poll_returns_empty_on_timeout() {
 
 #[tokio::test]
 async fn shutdown_releases_parked_poll() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
@@ -172,7 +172,7 @@ async fn shutdown_releases_parked_poll() {
     let started = std::time::Instant::now();
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         None,
         Uuid::nil(),
         100,
@@ -197,19 +197,19 @@ async fn shutdown_releases_parked_poll() {
 
 #[tokio::test]
 async fn session_scoped_poll_ignores_other_sessions() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
     let mine = Uuid::now_v7();
     let theirs = Uuid::now_v7();
 
-    events::append(pool, tenant, Some(theirs), "other", serde_json::json!({}))
+    events::append(pool, workspace, Some(theirs), "other", serde_json::json!({}))
         .await
         .expect("append");
 
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         Some(mine),
         Uuid::nil(),
         100,
@@ -226,20 +226,20 @@ async fn session_scoped_poll_ignores_other_sessions() {
 
 #[tokio::test]
 async fn cursor_advances_and_does_not_repeat() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    let first = events::append(pool, tenant, None, "a", serde_json::json!({}))
+    let first = events::append(pool, workspace, None, "a", serde_json::json!({}))
         .await
         .expect("append");
-    events::append(pool, tenant, None, "b", serde_json::json!({}))
+    events::append(pool, workspace, None, "b", serde_json::json!({}))
         .await
         .expect("append");
 
     let found = events::wait_for(pool,
         &bus,
-        tenant,
+        workspace,
         None,
         first,
         100,
@@ -257,11 +257,11 @@ async fn cursor_advances_and_does_not_repeat() {
 
 #[tokio::test]
 async fn concurrent_workers_claim_disjoint_jobs() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     for i in 0..10 {
-        jobs::enqueue(pool, tenant, "test.work", serde_json::json!({"i": i}), None, None, jobs::PRIORITY_BACKGROUND)
+        jobs::enqueue(pool, workspace, "test.work", serde_json::json!({"i": i}), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -287,9 +287,9 @@ async fn concurrent_workers_claim_disjoint_jobs() {
 
 #[tokio::test]
 async fn claimed_job_is_not_reclaimed_while_leased() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lease", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.lease", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -308,9 +308,9 @@ async fn claimed_job_is_not_reclaimed_while_leased() {
 
 #[tokio::test]
 async fn abandoned_lease_is_reaped_and_retried() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.reap", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.reap", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -334,9 +334,9 @@ async fn abandoned_lease_is_reaped_and_retried() {
 
 #[tokio::test]
 async fn job_fails_permanently_after_max_attempts() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let id = jobs::enqueue(pool, tenant, "test.fail", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    let id = jobs::enqueue(pool, workspace, "test.fail", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -368,10 +368,10 @@ async fn job_fails_permanently_after_max_attempts() {
 
 #[tokio::test]
 async fn delayed_job_is_not_claimable_yet() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     jobs::enqueue(pool,
-        tenant,
+        workspace,
         "test.delay",
         serde_json::json!({}),
         Some(Duration::from_secs(300)),
@@ -391,11 +391,11 @@ async fn delayed_job_is_not_claimable_yet() {
 
 #[tokio::test]
 async fn enqueue_rolls_back_with_its_transaction() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     let mut tx = pool.begin().await.expect("begin");
-    jobs::enqueue(&mut *tx, tenant, "test.tx", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(&mut *tx, workspace, "test.tx", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
     tx.rollback().await.expect("rollback");
@@ -410,9 +410,9 @@ async fn enqueue_rolls_back_with_its_transaction() {
 
 #[tokio::test]
 async fn heartbeat_keeps_a_long_job_from_being_reaped() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.slow", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.slow", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -454,9 +454,9 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
 
 #[tokio::test]
 async fn extend_lease_reports_when_the_job_was_taken_away() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.lost", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.lost", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -523,7 +523,7 @@ fn lease_and_heartbeat_are_consistent() {
 /// deltas are still in the event log behind it.
 async fn streamed_session(
     pool: &PgPool,
-    tenant: Uuid,
+    workspace: Uuid,
 ) -> (Uuid, std::sync::Arc<dyn outturn::api::chat::ChatStore>) {
     let user_id = Uuid::now_v7();
     sqlx::query("insert into users (id, display_name) values ($1, $2)")
@@ -534,9 +534,9 @@ async fn streamed_session(
         .expect("user");
 
     let agent_id = Uuid::now_v7();
-    sqlx::query("insert into agents (id, tenant_id, name, slug) values ($1, $2, $3, $4)")
+    sqlx::query("insert into agents (id, workspace_id, name, slug) values ($1, $2, $3, $4)")
         .bind(agent_id)
-        .bind(tenant)
+        .bind(workspace)
         .bind("A")
         .bind(format!("a-{}", agent_id.simple()))
         .execute(pool)
@@ -547,7 +547,7 @@ async fn streamed_session(
         std::sync::Arc::new(outturn::api::chat::PostgresChatStore::new(pool.clone()));
     let session = store
         .create_session(
-            tenant,
+            workspace,
             user_id,
             outturn::api::chat::CreateSession {
                 agent_id,
@@ -569,9 +569,9 @@ async fn streamed_session(
 /// returned with the transcript is what forecloses it.
 #[tokio::test]
 async fn transcript_cursor_excludes_deltas_already_in_content() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     let reply = store
         .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
@@ -582,7 +582,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     for (idx, text) in fragments.iter().enumerate() {
         events::append(
             pool,
-            tenant,
+            workspace,
             Some(session_id),
             "chat.delta",
             serde_json::json!({ "message_id": reply.id, "idx": idx, "text": text }),
@@ -610,7 +610,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
 
     // The client polls from the cursor the transcript was read at. Nothing
     // behind it may come back, or the content would be appended to itself.
-    let replayed = events::since(pool, tenant, Some(session_id), history.cursor, 100)
+    let replayed = events::since(pool, workspace, Some(session_id), history.cursor, 100)
         .await
         .expect("since");
     assert!(
@@ -625,9 +625,9 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
 /// Reconnecting mid-turn resumes the stream rather than restarting it.
 #[tokio::test]
 async fn transcript_mid_stream_returns_partial_content_and_resumes() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     // Created empty and streamed into; content is not stored until the turn
     // ends, so the transcript must assemble it from the deltas so far.
@@ -639,7 +639,7 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     for (idx, text) in ["Half ", "a "].iter().enumerate() {
         events::append(
             pool,
-            tenant,
+            workspace,
             Some(session_id),
             "chat.delta",
             serde_json::json!({ "message_id": reply.id, "idx": idx, "text": text }),
@@ -655,7 +655,7 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     // The rest of the turn arrives over the feed, and only the rest.
     events::append(
         pool,
-        tenant,
+        workspace,
         Some(session_id),
         "chat.delta",
         serde_json::json!({ "message_id": reply.id, "idx": 2, "text": "thought." }),
@@ -663,7 +663,7 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     .await
     .expect("delta");
 
-    let arrived = events::since(pool, tenant, Some(session_id), history.cursor, 100)
+    let arrived = events::since(pool, workspace, Some(session_id), history.cursor, 100)
         .await
         .expect("since");
     assert_eq!(arrived.len(), 1, "only what the content does not already cover");
@@ -683,9 +683,9 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
 /// UUIDv7 keys rather than a separate sequence column.
 #[tokio::test]
 async fn transcript_orders_by_uuidv7_key() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     for n in 0..5 {
         store
@@ -715,9 +715,9 @@ async fn transcript_orders_by_uuidv7_key() {
 /// what a redeploy during a turn produced.
 #[tokio::test]
 async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
         .append_message(session_id, "user", "hello", None, Default::default(), Default::default(), None)
@@ -767,9 +767,9 @@ async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
 /// reply -- which a "reuse the newest empty message" rule would have done.
 #[tokio::test]
 async fn concurrent_turns_do_not_claim_each_others_reply() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     let first_prompt = store
         .append_message(session_id, "user", "one", None, Default::default(), Default::default(), None)
@@ -779,7 +779,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
     // the reply as one somebody is still filling.
     jobs::enqueue(
         pool,
-        tenant,
+        workspace,
         "chat.turn",
         serde_json::json!({ "message_id": first_prompt.id }),
         None,
@@ -822,9 +822,9 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
 /// was over for good.
 #[tokio::test]
 async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
         .append_message(session_id, "user", "list my files", None, Default::default(), Default::default(), None)
@@ -834,7 +834,7 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
     // The turn ran to completion: its job succeeded.
     let job = jobs::enqueue(
         pool,
-        tenant,
+        workspace,
         "chat.turn",
         serde_json::json!({ "message_id": prompt.id }),
         None,
@@ -870,9 +870,9 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
 
 #[tokio::test]
 async fn an_abandoned_reply_refuses_further_messages() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, store) = streamed_session(pool, tenant).await;
+    let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
         .append_message(session_id, "user", "hello", None, Default::default(), Default::default(), None)
@@ -915,7 +915,7 @@ use outturn::gateway::breaker::{self, Verdict};
 /// The circuit opens only after repeated failures, not on the first one.
 #[tokio::test]
 async fn the_circuit_opens_after_repeated_failures() {
-    let (db, _tenant) = setup_or_skip!();
+    let (db, _workspace) = setup_or_skip!();
     let pool = &db.pool;
     let endpoint = format!("openai:http://{}", Uuid::now_v7());
 
@@ -943,7 +943,7 @@ async fn the_circuit_opens_after_repeated_failures() {
 /// with a storm rather than a single request.
 #[tokio::test]
 async fn only_one_replica_claims_the_probe() {
-    let (db, _tenant) = setup_or_skip!();
+    let (db, _workspace) = setup_or_skip!();
     let pool = &db.pool;
     let endpoint = format!("openai:http://{}", Uuid::now_v7());
 
@@ -973,7 +973,7 @@ async fn only_one_replica_claims_the_probe() {
 /// A success closes the circuit and clears the history behind it.
 #[tokio::test]
 async fn a_success_closes_the_circuit() {
-    let (db, _tenant) = setup_or_skip!();
+    let (db, _workspace) = setup_or_skip!();
     let pool = &db.pool;
     let endpoint = format!("openai:http://{}", Uuid::now_v7());
 
@@ -1031,7 +1031,7 @@ use outturn::gateway::routing;
 
 async fn add_route(
     pool: &PgPool,
-    tenant: Option<Uuid>,
+    workspace: Option<Uuid>,
     traffic: &str,
     priority: i32,
     base_url: &str,
@@ -1039,10 +1039,10 @@ async fn add_route(
 ) {
     sqlx::query(
         "insert into traffic_routes \
-             (id, tenant_id, traffic_type, priority, provider, base_url, model) \
+             (id, workspace_id, traffic_type, priority, provider, base_url, model) \
          values (uuidv7(), $1, $2, $3, 'openai', $4, $5)",
     )
-    .bind(tenant)
+    .bind(workspace)
     .bind(traffic)
     .bind(priority)
     .bind(base_url)
@@ -1055,14 +1055,14 @@ async fn add_route(
 /// Routes come back in precedence order, not insertion order.
 #[tokio::test]
 async fn routes_are_ordered_by_precedence() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     add_route(pool, None, "assistant", 30, "http://third", "c").await;
     add_route(pool, None, "assistant", 10, "http://first", "a").await;
     add_route(pool, None, "assistant", 20, "http://second", "b").await;
 
-    let routes = routing::routes_for(pool, tenant, "assistant")
+    let routes = routing::routes_for(pool, workspace, "assistant")
         .await
         .expect("routes");
     let models: Vec<&str> = routes.iter().map(|r| r.model.as_str()).collect();
@@ -1071,23 +1071,23 @@ async fn routes_are_ordered_by_precedence() {
     finish!(db);
 }
 
-/// A tenant's own routes replace the system defaults rather than extending
+/// A workspace's own routes replace the system defaults rather than extending
 /// them, so its traffic cannot quietly fall through to somebody else's
 /// endpoint once it has said where it wants to go.
 #[tokio::test]
-async fn tenant_routes_replace_the_system_defaults() {
-    let (db, tenant) = setup_or_skip!();
+async fn workspace_routes_replace_the_system_defaults() {
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     add_route(pool, None, "assistant", 10, "http://shared", "default").await;
-    let inherited = routing::routes_for(pool, tenant, "assistant")
+    let inherited = routing::routes_for(pool, workspace, "assistant")
         .await
         .expect("routes");
-    assert_eq!(inherited.len(), 1, "a tenant with no routes uses the defaults");
+    assert_eq!(inherited.len(), 1, "a workspace with no routes uses the defaults");
     assert_eq!(inherited[0].model, "default");
 
-    add_route(pool, Some(tenant), "assistant", 10, "http://theirs", "theirs").await;
-    let own = routing::routes_for(pool, tenant, "assistant")
+    add_route(pool, Some(workspace), "assistant", 10, "http://theirs", "theirs").await;
+    let own = routing::routes_for(pool, workspace, "assistant")
         .await
         .expect("routes");
     assert_eq!(own.len(), 1, "configured routes replace, not extend");
@@ -1100,15 +1100,15 @@ async fn tenant_routes_replace_the_system_defaults() {
 /// nothing about another.
 #[tokio::test]
 async fn traffic_types_route_separately() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     add_route(pool, None, "assistant", 10, "http://good", "expensive").await;
     add_route(pool, None, "title", 10, "http://cheap", "small").await;
 
-    let assistant = routing::routes_for(pool, tenant, "assistant").await.expect("a");
-    let title = routing::routes_for(pool, tenant, "title").await.expect("t");
-    let unknown = routing::routes_for(pool, tenant, "nothing-here").await.expect("u");
+    let assistant = routing::routes_for(pool, workspace, "assistant").await.expect("a");
+    let title = routing::routes_for(pool, workspace, "title").await.expect("t");
+    let unknown = routing::routes_for(pool, workspace, "nothing-here").await.expect("u");
 
     assert_eq!(assistant[0].model, "expensive");
     assert_eq!(title[0].model, "small");
@@ -1121,13 +1121,13 @@ async fn traffic_types_route_separately() {
 /// skipped, and the next in precedence order serves the request.
 #[tokio::test]
 async fn an_open_circuit_removes_a_destination_from_the_list() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     add_route(pool, None, "assistant", 10, "http://primary", "a").await;
     add_route(pool, None, "assistant", 20, "http://fallback", "b").await;
 
-    let routes = routing::routes_for(pool, tenant, "assistant").await.expect("routes");
+    let routes = routing::routes_for(pool, workspace, "assistant").await.expect("routes");
     for _ in 0..5 {
         breaker::record_failure(pool, &routes[0].endpoint(), "down").await;
     }
@@ -1153,14 +1153,14 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
 /// -- and the stored transcript then implies a causality that never happened.
 #[tokio::test]
 async fn work_sharing_a_key_does_not_run_concurrently() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let session = Uuid::now_v7().to_string();
 
     for i in 0..3 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "test.serial",
             serde_json::json!({ "i": i }),
             None,
@@ -1201,14 +1201,14 @@ async fn work_sharing_a_key_does_not_run_concurrently() {
 /// sending two messages froze dispatch for the whole cluster.
 #[tokio::test]
 async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let busy = Uuid::now_v7().to_string();
     let other = Uuid::now_v7().to_string();
 
     // The busy session: one turn taken, one waiting behind it.
     for i in 0..2 {
-        jobs::enqueue(pool, tenant, "test.hol", serde_json::json!({ "i": i }), None, Some(&busy), jobs::PRIORITY_REALTIME)
+        jobs::enqueue(pool, workspace, "test.hol", serde_json::json!({ "i": i }), None, Some(&busy), jobs::PRIORITY_REALTIME)
             .await
             .expect("enqueue");
     }
@@ -1218,7 +1218,7 @@ async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
     assert_eq!(running.len(), 1);
 
     // Another session, queued after the busy one's second turn.
-    let waiting = jobs::enqueue(pool, tenant, "test.hol", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_REALTIME)
+    let waiting = jobs::enqueue(pool, workspace, "test.hol", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_REALTIME)
         .await
         .expect("enqueue");
 
@@ -1237,14 +1237,14 @@ async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
 /// Serialisation is per key: different conversations still run in parallel.
 #[tokio::test]
 async fn different_keys_still_run_in_parallel() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     for _ in 0..3 {
         let session = Uuid::now_v7().to_string();
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "test.parallel",
             serde_json::json!({}),
             None,
@@ -1264,11 +1264,11 @@ async fn different_keys_still_run_in_parallel() {
 /// Work with no key is unconstrained, as it was before serialisation existed.
 #[tokio::test]
 async fn unkeyed_work_is_not_serialised() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     for i in 0..4 {
-        jobs::enqueue(pool, tenant, "test.unkeyed", serde_json::json!({ "i": i }), None, None, jobs::PRIORITY_BACKGROUND)
+        jobs::enqueue(pool, workspace, "test.unkeyed", serde_json::json!({ "i": i }), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -1287,14 +1287,14 @@ async fn unkeyed_work_is_not_serialised() {
 /// is where two workers would otherwise both decide yes.
 #[tokio::test]
 async fn racing_claimers_cannot_both_take_one_key() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let session = Uuid::now_v7().to_string();
 
     for i in 0..6 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "test.race",
             serde_json::json!({ "i": i }),
             None,
@@ -1342,9 +1342,9 @@ async fn racing_claimers_cannot_both_take_one_key() {
 
 #[tokio::test]
 async fn a_released_job_is_not_held_to_have_tried() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.release", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.release", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1381,9 +1381,9 @@ async fn a_released_job_is_not_held_to_have_tried() {
 
 #[tokio::test]
 async fn a_released_job_waits_before_it_is_offered_again() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.backoff", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.backoff", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1406,9 +1406,9 @@ async fn a_released_job_waits_before_it_is_offered_again() {
 
 #[tokio::test]
 async fn only_a_running_job_can_be_released() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.norun", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.norun", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1432,7 +1432,7 @@ async fn only_a_running_job_can_be_released() {
 
 #[tokio::test]
 async fn the_backlog_counts_work_that_could_actually_start() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     // One session with six queued turns is one unit of work, not six: the
@@ -1442,7 +1442,7 @@ async fn the_backlog_counts_work_that_could_actually_start() {
     for i in 0..6 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "chat.turn",
             serde_json::json!({ "i": i }),
             None,
@@ -1453,12 +1453,12 @@ async fn the_backlog_counts_work_that_could_actually_start() {
     // Two more sessions, and two jobs with nothing to serialise on.
     for _ in 0..2 {
         let other = Uuid::now_v7().to_string();
-        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_BACKGROUND)
+        jobs::enqueue(pool, workspace, "chat.turn", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
     for _ in 0..2 {
-        jobs::enqueue(pool, tenant, "chat.turn", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+        jobs::enqueue(pool, workspace, "chat.turn", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
             .await
             .expect("enqueue");
     }
@@ -1498,9 +1498,9 @@ async fn the_backlog_counts_work_that_could_actually_start() {
 
 #[tokio::test]
 async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.noroom", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.noroom", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1554,9 +1554,9 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
 /// streaming the same turn into the same reply.
 #[tokio::test]
 async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, tenant, "test.stolen", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
+    jobs::enqueue(pool, workspace, "test.stolen", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
         .await
         .expect("enqueue");
 
@@ -1612,9 +1612,9 @@ async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
 async fn a_turn_reports_against_its_reply_not_its_prompt() {
     use outturn::api::chat::{Delivery, Usage};
 
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let (session_id, chat) = streamed_session(pool, tenant).await;
+    let (session_id, chat) = streamed_session(pool, workspace).await;
 
     let prompt = chat
         .append_message(
@@ -1680,14 +1680,14 @@ async fn a_turn_reports_against_its_reply_not_its_prompt() {
 /// the next slot to free anywhere in the fleet goes to whoever is waiting.
 #[tokio::test]
 async fn a_person_waiting_is_served_before_scheduled_work() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     // Queued first, and plenty of it.
     for i in 0..20 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "test.qos",
             serde_json::json!({ "background": i }),
             None,
@@ -1701,7 +1701,7 @@ async fn a_person_waiting_is_served_before_scheduled_work() {
     // Queued last, by somebody who is waiting.
     jobs::enqueue(
         pool,
-        tenant,
+        workspace,
         "test.qos",
         serde_json::json!({ "realtime": true }),
         None,
@@ -1738,7 +1738,7 @@ async fn a_person_waiting_is_served_before_scheduled_work() {
 /// for each kind of demand at its own weight.
 #[tokio::test]
 async fn the_pod_count_leads_the_queue_rather_than_following_it() {
-    let (db, tenant) = setup_or_skip!();
+    let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     let pods = || async {
@@ -1753,7 +1753,7 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
 
     // Conversations somebody is in raise it before any work is queued, which
     // is the half of the estimate that leads rather than follows.
-    let (session_id, _) = streamed_session(pool, tenant).await;
+    let (session_id, _) = streamed_session(pool, workspace).await;
     sqlx::query(
         "insert into live_sessions (session_id, expires_at) \
          values ($1, now() + interval '5 minutes')",
@@ -1785,7 +1785,7 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
     for i in 0..8 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "chat.turn",
             serde_json::json!({ "i": i }),
             None,
@@ -1806,7 +1806,7 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
     for i in 0..8 {
         jobs::enqueue(
             pool,
-            tenant,
+            workspace,
             "chat.turn",
             serde_json::json!({ "r": i }),
             None,

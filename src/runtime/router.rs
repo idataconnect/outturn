@@ -31,7 +31,7 @@ pub struct RuntimeState {
     pub runner: Arc<AgentRunner>,
     /// The component every agent currently runs.
     pub agent_module: Arc<Vec<u8>>,
-    /// Object storage, shared by every tenant and partitioned by prefix. The
+    /// Object storage, shared by every workspace and partitioned by prefix. The
     /// host resolves which part a turn may touch; the guest never learns.
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     /// Whether this pod has room for another turn.
@@ -41,7 +41,7 @@ pub struct RuntimeState {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExecuteRequest {
     pub session_id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     /// Whose files the agent/ scope is. Nil for a turn nobody attributed to
     /// an agent, which should not happen and resolves to a space nothing
     /// else uses.
@@ -76,7 +76,7 @@ pub struct ExecuteRequest {
     /// The reply this turn is writing, so a message absorbed mid-turn can
     /// name what took it.
     pub reply_id: Uuid,
-    /// Hosts this tenant's agents may reach. Sent with the turn because the
+    /// Hosts this workspace's agents may reach. Sent with the turn because the
     /// runtime holds no database; absent means the agent reaches nothing.
     #[serde(default)]
     pub egress: Vec<crate::runtime::egress::EgressRule>,

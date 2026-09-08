@@ -39,27 +39,27 @@ impl Route {
 
 /// Routes for a traffic type, in the order to try them.
 ///
-/// A tenant's own routes replace the system defaults rather than extending
-/// them: a tenant that has configured where its traffic goes should not have
+/// A workspace's own routes replace the system defaults rather than extending
+/// them: a workspace that has configured where its traffic goes should not have
 /// requests quietly fall through to somebody else's endpoint.
 pub async fn routes_for(
     pool: &PgPool,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     traffic_type: &str,
 ) -> Result<Vec<Route>, sqlx::Error> {
     let rows = sqlx::query(
         "select provider, base_url, model, credential_ref \
          from traffic_routes \
          where enabled and traffic_type = $2 \
-           and tenant_id is not distinct from ( \
+           and workspace_id is not distinct from ( \
                select case when exists ( \
                    select 1 from traffic_routes \
-                   where enabled and tenant_id = $1 and traffic_type = $2 \
+                   where enabled and workspace_id = $1 and traffic_type = $2 \
                ) then $1 else null end \
            ) \
          order by priority",
     )
-    .bind(tenant_id)
+    .bind(workspace_id)
     .bind(traffic_type)
     .fetch_all(pool)
     .await?;

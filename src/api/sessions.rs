@@ -33,7 +33,7 @@ pub async fn list_sessions(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<AgentSession>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
-    Ok(Json(state.chat.list_sessions(claims.tenant_id).await?))
+    Ok(Json(state.chat.list_sessions(claims.workspace_id).await?))
 }
 
 /// Starting a session is how a user gets a fresh context: history is per
@@ -46,7 +46,7 @@ pub async fn create_session(
     let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
     let session = state
         .chat
-        .create_session(claims.tenant_id, claims.subject, input)
+        .create_session(claims.workspace_id, claims.subject, input)
         .await?;
     Ok((StatusCode::CREATED, Json(session)))
 }
@@ -58,8 +58,8 @@ pub async fn get_messages(
 ) -> Result<Json<History>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     // Ownership is checked before reading messages, which are not themselves
-    // tenant-scoped.
-    state.chat.get_session(claims.tenant_id, id).await?;
+    // workspace-scoped.
+    state.chat.get_session(claims.workspace_id, id).await?;
     Ok(Json(state.chat.messages(id).await?))
 }
 
@@ -69,7 +69,7 @@ pub async fn delete_session(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsDelete).await?;
-    state.chat.delete_session(claims.tenant_id, id).await?;
+    state.chat.delete_session(claims.workspace_id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -105,7 +105,7 @@ pub async fn send_message(
         return Err((StatusCode::BAD_REQUEST, "message must not be empty".into()));
     }
 
-    let session = state.chat.get_session(claims.tenant_id, id).await?;
+    let session = state.chat.get_session(claims.workspace_id, id).await?;
 
     let message = state
         .chat
@@ -123,7 +123,7 @@ pub async fn send_message(
         .await?;
 
     let payload = serde_json::to_value(ChatTurnPayload {
-        tenant_id: claims.tenant_id,
+        workspace_id: claims.workspace_id,
         session_id: id,
         agent_id: session.agent_id,
         message_id: message.id,
@@ -135,7 +135,7 @@ pub async fn send_message(
 
     // Enqueue and announce in one transaction: the browser is only told the
     // message exists once the work to answer it is durably queued.
-    enqueue_turn(&state.pool, claims.tenant_id, id, payload, event)
+    enqueue_turn(&state.pool, claims.workspace_id, id, payload, event)
         .await
         .map_err(internal)?;
 
@@ -155,7 +155,7 @@ fn internal<E: std::fmt::Display>(e: E) -> ApiError {
 /// that would ever notice.
 async fn enqueue_turn(
     pool: &sqlx::PgPool,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     session_id: Uuid,
     payload: serde_json::Value,
     event: serde_json::Value,
@@ -181,7 +181,7 @@ async fn enqueue_turn(
     // running at once would each answer against a history missing the other.
     jobs::enqueue(
         &mut *tx,
-        tenant_id,
+        workspace_id,
         CHAT_TURN,
         payload,
         None,
@@ -194,7 +194,7 @@ async fn enqueue_turn(
     .await
     .map_err(|e| e.to_string())?;
 
-    events::append_on(&mut tx, tenant_id, Some(session_id), "chat.message", event)
+    events::append_on(&mut tx, workspace_id, Some(session_id), "chat.message", event)
         .await
         .map_err(|e| e.to_string())?;
 

@@ -13,13 +13,13 @@ Every dimension a bill might be cut along is on the row:
 
 | Column | Says |
 |---|---|
-| `tenant_id` | Whose ledger. The partition key. |
+| `workspace_id` | Whose ledger. The partition key. |
 | `agent_id`, `session_id`, `user_id` | Which agent, conversation and person |
-| `account` | The tenant's own label for whose conversation this was |
+| `account` | The workspace's own label for whose conversation this was |
 | `reply_id`, `job_id`, `round` | Which reply, which job, which call within the turn |
 | `traffic_type` | What class of work it was |
 | `endpoint`, `model` | Who answered, and with what. The model that *actually* served, which routing may have chosen |
-| `credential_owner` | Whose key paid: `operator` or `tenant` |
+| `credential_owner` | Whose key paid: `operator` or `workspace` |
 | `fallback` | `none`, `same_model` or `cross_model` |
 | five token columns | As the provider reported them, normalised |
 | `provider_usage` | The provider's usage object verbatim, for dimensions the columns do not model |
@@ -43,16 +43,16 @@ returns the same rows every time it is run.
 
 ## The account label
 
-A session may carry an `account`: free text the tenant sets when opening the
-conversation, meaning whatever the tenant's business means by it -- an HOA, a
+A session may carry an `account`: free text the workspace sets when opening the
+conversation, meaning whatever the workspace's business means by it -- an HOA, a
 customer number, a matter. The platform never interprets it. The ledger copies
-it onto every row the session produces, so a tenant can join its bill to its
+it onto every row the session produces, so a workspace can join its bill to its
 own records without the platform knowing what those records are.
 
-## The platform tenant
+## The platform workspace
 
 Work the platform does on its own initiative -- titles, summaries, anything
-that comes later -- bills to a reserved tenant, `platform`, with a fixed id
+that comes later -- bills to a reserved workspace, `platform`, with a fixed id
 and a trigger that refuses its deletion. A reserved row rather than a null
 keeps partitioning uniform and foreign keys real, and makes "what did the
 platform itself spend" the same export as everyone else's.
@@ -66,13 +66,13 @@ platform itself spend" the same export as everyone else's.
 - `after`: the `next` of the previous page. Ids are UUIDv7, so id order is
   time order and the id doubles as the cursor.
 - `limit`: up to 5000, default 500.
-- `tenant_id`: system administrators only. Everyone else gets their own.
+- `workspace_id`: system administrators only. Everyone else gets their own.
 
 The response is `{ entries: [...], next: <id> | null }`. A null `next` means
 the window is exhausted.
 
-The export is the product. An operator runs it across tenants and bills them.
-A tenant runs it on its own ledger, joins `account` to its records, applies its
+The export is the product. An operator runs it across workspaces and bills them.
+A workspace runs it on its own ledger, joins `account` to its records, applies its
 own rates, and bills its customers. Nobody needs a billing system inside
 outturn, which is good, because every customer's is different.
 
@@ -88,13 +88,13 @@ and a quiet one is worse than a loud one.
 ## Not yet
 
 - `credential_owner` is always `operator` and `fallback` always `none`, because
-  routing does not yet support tenant-held keys or record fallback kind. The
+  routing does not yet support workspace-held keys or record fallback kind. The
   columns exist so the bill does not have to be re-derived when it does; see
   [routing.md](routing.md).
-- Nothing spends on the platform tenant's behalf yet. The row exists for when
+- Nothing spends on the platform workspace's behalf yet. The row exists for when
   something does.
 - No UI. The export is an API, and the first consumer is a billing system, not
-  a page. A per-tenant usage page can be built on the same call when somebody
+  a page. A per-workspace usage page can be built on the same call when somebody
   wants to look rather than bill.
 - Retention. The ledger grows with every call and is never pruned. A billing
   obligation decides how long rows must be kept, and that is a policy the

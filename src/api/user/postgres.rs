@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::auth::{Role, password};
 
 use super::{
-    CreateUser, Identity, PROVIDER_PASSWORD, TenantMembership, User, UserError, UserStore, validate,
+    CreateUser, Identity, PROVIDER_PASSWORD, WorkspaceMembership, User, UserError, UserStore, validate,
 };
 
 pub struct PostgresUserStore {
@@ -104,18 +104,18 @@ impl UserStore for PostgresUserStore {
         Ok(users)
     }
 
-    async fn list_for_tenant(&self, tenant_id: Uuid) -> Result<Vec<User>, UserError> {
+    async fn list_for_workspace(&self, workspace_id: Uuid) -> Result<Vec<User>, UserError> {
         let rows = sqlx::query(
             "select u.id, u.display_name, \
                     coalesce(array_agg(sr.role) filter (where sr.role is not null), '{}') as roles \
              from users u \
              left join user_system_roles sr on sr.user_id = u.id \
-             where exists (select 1 from user_tenant_roles tr \
-                           where tr.user_id = u.id and tr.tenant_id = $1) \
+             where exists (select 1 from user_workspace_roles tr \
+                           where tr.user_id = u.id and tr.workspace_id = $1) \
              group by u.id, u.display_name \
              order by u.display_name",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -251,24 +251,24 @@ impl UserStore for PostgresUserStore {
         self.get(row.get("user_id")).await
     }
 
-    async fn memberships(&self, user_id: Uuid) -> Result<Vec<TenantMembership>, UserError> {
-        // A system admin may sign in to any tenant, so every tenant is listed
+    async fn memberships(&self, user_id: Uuid) -> Result<Vec<WorkspaceMembership>, UserError> {
+        // A system admin may sign in to any workspace, so every workspace is listed
         // even where no explicit grant row exists.
         let is_system_admin = self.system_roles(user_id).await?.contains(&Role::SystemAdmin);
 
         let sql = if is_system_admin {
             "select t.id, t.name, t.slug, \
                     coalesce(array_agg(r.name order by r.name) filter (where r.name is not null), '{}') as roles \
-             from tenants t \
-             left join user_tenant_roles g on g.tenant_id = t.id and g.user_id = $1 \
-             left join roles r on r.tenant_id = g.tenant_id and r.id = g.role_id \
+             from workspaces t \
+             left join user_workspace_roles g on g.workspace_id = t.id and g.user_id = $1 \
+             left join roles r on r.workspace_id = g.workspace_id and r.id = g.role_id \
              group by t.id, t.name, t.slug \
              order by t.name"
         } else {
             "select t.id, t.name, t.slug, array_agg(r.name order by r.name) as roles \
-             from tenants t \
-             join user_tenant_roles g on g.tenant_id = t.id and g.user_id = $1 \
-             join roles r on r.tenant_id = g.tenant_id and r.id = g.role_id \
+             from workspaces t \
+             join user_workspace_roles g on g.workspace_id = t.id and g.user_id = $1 \
+             join roles r on r.workspace_id = g.workspace_id and r.id = g.role_id \
              group by t.id, t.name, t.slug \
              order by t.name"
         };
@@ -281,8 +281,8 @@ impl UserStore for PostgresUserStore {
 
         Ok(rows
             .iter()
-            .map(|r| TenantMembership {
-                tenant_id: r.get("id"),
+            .map(|r| WorkspaceMembership {
+                workspace_id: r.get("id"),
                 name: r.get("name"),
                 slug: r.get("slug"),
                 roles: r.get::<Vec<String>, _>("roles"),
@@ -290,20 +290,20 @@ impl UserStore for PostgresUserStore {
             .collect())
     }
 
-    async fn roles_for_tenant(&self, user_id: Uuid, tenant_id: Uuid) -> Result<Vec<String>, UserError> {
+    async fn roles_for_workspace(&self, user_id: Uuid, workspace_id: Uuid) -> Result<Vec<String>, UserError> {
         let mut roles: Vec<String> = sqlx::query_scalar(
-            "select r.name from user_tenant_roles g \
-             join roles r on r.tenant_id = g.tenant_id and r.id = g.role_id \
-             where g.user_id = $1 and g.tenant_id = $2 \
+            "select r.name from user_workspace_roles g \
+             join roles r on r.workspace_id = g.workspace_id and r.id = g.role_id \
+             where g.user_id = $1 and g.workspace_id = $2 \
              order by r.name",
         )
         .bind(user_id)
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
 
-        // Platform roles apply in whichever tenant the user selects.
+        // Platform roles apply in whichever workspace the user selects.
         for role in self.system_roles(user_id).await? {
             let name = role.to_string();
             if !roles.contains(&name) {
@@ -397,20 +397,20 @@ impl UserStore for PostgresUserStore {
         Ok(())
     }
 
-    async fn grant_tenant_role(
+    async fn grant_workspace_role(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         role: &str,
     ) -> Result<(), UserError> {
         let inserted = sqlx::query(
-            "insert into user_tenant_roles (user_id, tenant_id, role_id) \
-             select $1, r.tenant_id, r.id from roles r \
-             where r.tenant_id = $2 and r.name = $3 \
+            "insert into user_workspace_roles (user_id, workspace_id, role_id) \
+             select $1, r.workspace_id, r.id from roles r \
+             where r.workspace_id = $2 and r.name = $3 \
              on conflict do nothing",
         )
         .bind(user_id)
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(role)
         .execute(&self.pool)
         .await
@@ -428,9 +428,9 @@ impl UserStore for PostgresUserStore {
         // the error message.
         if inserted.rows_affected() == 0 {
             let exists: bool = sqlx::query_scalar(
-                "select exists(select 1 from roles where tenant_id = $1 and name = $2)",
+                "select exists(select 1 from roles where workspace_id = $1 and name = $2)",
             )
-            .bind(tenant_id)
+            .bind(workspace_id)
             .bind(role)
             .fetch_one(&self.pool)
             .await
@@ -442,20 +442,20 @@ impl UserStore for PostgresUserStore {
         Ok(())
     }
 
-    async fn revoke_tenant_role(
+    async fn revoke_workspace_role(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         role: &str,
     ) -> Result<(), UserError> {
         sqlx::query(
-            "delete from user_tenant_roles g \
+            "delete from user_workspace_roles g \
              using roles r \
-             where r.tenant_id = g.tenant_id and r.id = g.role_id \
-               and g.user_id = $1 and g.tenant_id = $2 and r.name = $3",
+             where r.workspace_id = g.workspace_id and r.id = g.role_id \
+               and g.user_id = $1 and g.workspace_id = $2 and r.name = $3",
         )
         .bind(user_id)
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(role)
         .execute(&self.pool)
         .await

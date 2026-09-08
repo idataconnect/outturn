@@ -134,7 +134,7 @@ pub struct AgentHost {
     ///
     /// Counted by the host rather than reported by the guest, for the same
     /// reason the round limit is enforced here: a component is deployed by a
-    /// tenant, and asking it to declare its own spend is asking the party
+    /// workspace, and asking it to declare its own spend is asking the party
     /// being billed to write the invoice.
     spent: Usage,
     /// Which endpoint served this turn, as the gateway reported it.
@@ -146,14 +146,14 @@ pub struct AgentHost {
     /// leaves the guest with no storage at all rather than with somebody
     /// else's.
     storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
-    tenant_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
     space: crate::runtime::storage::scope::Space,
     /// Scopes the guest may write, resolved above the runtime. Reads are
     /// always allowed within the space; a guest that could not read its own
-    /// tenant's reference material could not do its job.
+    /// workspace's reference material could not do its job.
     write_scopes: Vec<crate::runtime::storage::scope::Scope>,
-    /// Hosts this tenant's agents may reach. Empty means none, which is what a
-    /// tenant who has not thought about it has consented to.
+    /// Hosts this workspace's agents may reach. Empty means none, which is what a
+    /// workspace who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
     /// What the guest may grow to. Consulted by wasmtime on every memory or
     /// table growth; a request past it fails inside the guest rather than
@@ -188,14 +188,14 @@ impl AgentHost {
     ///
     /// A platform fault -- no bucket, no connection, bad credentials -- is
     /// logged at warn, because an operator has to fix it and nothing on the
-    /// transcript reaches one. Everything else is the tenant's outcome: the
+    /// transcript reaches one. Everything else is the workspace's outcome: the
     /// transcript already records it as a failed tool, and putting it in the
     /// process log would page the operator for somebody else's typo.
     fn storage_failed(&self, what: &str, e: crate::runtime::storage::StorageError) -> String {
         if e.is_platform_fault() {
             tracing::warn!(
                 session_id = %self.session_id,
-                tenant_id = %self.tenant_id,
+                workspace_id = %self.workspace_id,
                 error = %e,
                 "object storage failed during {what}"
             );
@@ -208,7 +208,7 @@ impl AgentHost {
     /// Resolves a guest path, or refuses it.
     ///
     /// The check is here rather than in the guest for the same reason the
-    /// credential is: a component is deployed by a tenant, and a boundary it
+    /// credential is: a component is deployed by a workspace, and a boundary it
     /// enforces on itself is not a boundary.
     fn object_at(
         &self,
@@ -428,7 +428,7 @@ impl outturn::agent::host::Host for AgentHost {
     /// Every refusal comes back as an error the model can read, because a tool
     /// that fails opaquely gets called again the same way. None of them tell
     /// the model anything it could use: that a host is not allowed is a fact
-    /// about the tenant's settings, and that one resolves inside the cluster is
+    /// about the workspace's settings, and that one resolves inside the cluster is
     /// a fact it already had to guess to ask.
     async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
         use crate::runtime::egress;
@@ -442,7 +442,7 @@ impl outturn::agent::host::Host for AgentHost {
         let (host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
 
         // A credential travels only where it cannot be read on the way. The
-        // rule names the host; the request names the scheme; and a tenant who
+        // rule names the host; the request names the scheme; and a workspace who
         // configured a key for a host did not consent to it going out in
         // clear because a model typed http.
         if rule.credential_env.is_some() && url.scheme() != "https" {
@@ -889,7 +889,7 @@ struct PartialToolCall {
 
 /// Compiled components to keep, keyed by the bytes they came from.
 ///
-/// A cap because the map is keyed by tenant-supplied content: without one,
+/// A cap because the map is keyed by workspace-supplied content: without one,
 /// uploading a component is a way to make the runtime allocate, over and over,
 /// with nothing to reclaim it. Small, because in practice a node serves a
 /// handful of distinct agents and a miss costs one compile, not a failure.
@@ -897,7 +897,7 @@ const COMPILED_CACHE_ENTRIES: usize = 32;
 
 /// How long an unused compiled component is kept.
 ///
-/// Long enough that an idle tenant does not pay a compile on every message,
+/// Long enough that an idle workspace does not pay a compile on every message,
 /// short enough that a redeployed agent's previous build is gone within the
 /// hour rather than at the next pod recycle.
 const COMPILED_CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -978,7 +978,7 @@ impl<T: Clone> CompiledCache<T> {
 pub struct AgentRunner {
     engine: Engine,
     /// Built once. A linker describes what the host offers, which does not
-    /// vary by turn, by guest, or by tenant.
+    /// vary by turn, by guest, or by workspace.
     linker: Linker<AgentHost>,
     compiled: CompiledCache,
 }
@@ -1006,14 +1006,14 @@ pub struct RunOptions {
     pub max_tool_rounds: u32,
     /// The reply being written, so messages absorbed mid-turn can name it.
     pub reply_id: uuid::Uuid,
-    /// Object storage the guest may reach, within its tenant's own space.
+    /// Object storage the guest may reach, within its workspace's own space.
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
-    /// Hosts this turn may reach, from the tenant's own rules.
+    /// Hosts this turn may reach, from the workspace's own rules.
     pub egress: Vec<crate::runtime::egress::EgressRule>,
     /// Whose space that is. The guest is never told.
-    pub tenant_id: uuid::Uuid,
+    pub workspace_id: uuid::Uuid,
     pub agent_id: uuid::Uuid,
-    /// Scopes the guest may write: "session", "agent", "tenant".
+    /// Scopes the guest may write: "session", "agent", "workspace".
     pub write_scopes: Vec<String>,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
@@ -1105,9 +1105,9 @@ impl AgentRunner {
             served_by: None,
             streamed: false,
             storage: options.storage,
-            tenant_id: options.tenant_id,
+            workspace_id: options.workspace_id,
             space: crate::runtime::storage::scope::Space {
-                tenant_id: options.tenant_id,
+                workspace_id: options.workspace_id,
                 agent_id: options.agent_id,
                 session_id: options.session_id,
             },

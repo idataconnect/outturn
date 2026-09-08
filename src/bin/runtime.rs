@@ -48,7 +48,7 @@ async fn main() {
     // only "the runtime tier", and the API mints everything a turn needs.
     let runtime_key = std::env::var("OUTTURN_RUNTIME_KEY").expect("OUTTURN_RUNTIME_KEY not set");
 
-    // One bucket, partitioned by tenant prefix. Buckets are a limited
+    // One bucket, partitioned by workspace prefix. Buckets are a limited
     // resource -- a hundred per AWS account by default -- and a limit on
     // buckets would become a limit on customers.
     let storage: Option<Arc<dyn StorageBackend>> = match std::env::var("OUTTURN_S3_ENDPOINT") {

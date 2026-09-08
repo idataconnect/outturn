@@ -3,7 +3,7 @@
 //!
 //! Append-only, tokens not prices, exported rather than summed. See
 //! `migrations/0004_usage_ledger.sql` for why, and docs/routing.md for the
-//! columns that routing will fill in once tenants can bring their own keys.
+//! columns that routing will fill in once workspaces can bring their own keys.
 
 mod postgres;
 
@@ -13,19 +13,19 @@ use uuid::Uuid;
 
 pub use postgres::PostgresUsageStore;
 
-/// The tenant the platform's own work bills to.
+/// The workspace the platform's own work bills to.
 pub const PLATFORM_TENANT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
 
 /// One model call, as it will appear on a bill.
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageEntry {
     pub id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
     pub agent_id: Option<Uuid>,
     pub session_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
-    /// The tenant's own label for whose conversation this was.
+    /// The workspace's own label for whose conversation this was.
     pub account: Option<String>,
     pub reply_id: Option<Uuid>,
     pub job_id: Option<Uuid>,
@@ -48,7 +48,7 @@ pub struct UsageEntry {
 /// What a caller records. The id and timestamp are the store's.
 #[derive(Debug, Clone)]
 pub struct RecordUsage {
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub agent_id: Option<Uuid>,
     pub session_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
@@ -89,12 +89,12 @@ pub enum UsageError {
 pub trait UsageStore: Send + Sync {
     async fn record(&self, entry: RecordUsage) -> Result<(), UsageError>;
 
-    /// A tenant's rows in id order -- which is time order, ids being UUIDv7 --
+    /// A workspace's rows in id order -- which is time order, ids being UUIDv7 --
     /// within a window, from a cursor. Stable for a closed window: nothing is
     /// ever updated or deleted, so the same call returns the same rows.
     async fn export(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         from: Option<chrono::DateTime<chrono::Utc>>,
         to: Option<chrono::DateTime<chrono::Utc>>,
         after: Option<Uuid>,

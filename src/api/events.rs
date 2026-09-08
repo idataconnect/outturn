@@ -46,12 +46,12 @@ pub async fn poll(
 
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_LIMIT);
 
-    // Events are read against the token's tenant, never a caller-supplied one,
-    // so a cursor cannot be used to reach across tenants.
+    // Events are read against the token's workspace, never a caller-supplied one,
+    // so a cursor cannot be used to reach across workspaces.
     let found = events::wait_for(
         &state.pool,
         &state.bus,
-        claims.tenant_id,
+        claims.workspace_id,
         query.session_id,
         query.after,
         limit,

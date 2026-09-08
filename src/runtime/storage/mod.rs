@@ -38,7 +38,7 @@ pub trait StorageBackend: Send + Sync {
 /// Why a storage call did not do what was asked.
 ///
 /// The variants separate two owners. `NotFound` and `PermissionDenied` are
-/// outcomes of what an agent asked for, and belong to the tenant: they are
+/// outcomes of what an agent asked for, and belong to the workspace: they are
 /// reported on the transcript and nowhere else. `Unavailable` means the
 /// platform is broken -- no bucket, no connection, rejected credentials --
 /// and is the only variant an operator should ever be told about.

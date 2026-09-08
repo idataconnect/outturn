@@ -9,12 +9,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSession {
     pub id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub agent_id: Uuid,
     pub title: String,
-    /// Which of the tenant's own customers this conversation is for, in the
-    /// tenant's own terms. Copied onto every usage row the session produces
-    /// so the tenant can split its bill; meaningless to the platform.
+    /// Which of the workspace's own customers this conversation is for, in the
+    /// workspace's own terms. Copied onto every usage row the session produces
+    /// so the workspace can split its bill; meaningless to the platform.
     pub account: Option<String>,
 }
 
@@ -115,7 +115,7 @@ pub struct CreateSession {
 }
 
 /// Token counts reported by a provider, recorded per message so usage can be
-/// attributed to a tenant later.
+/// attributed to a workspace later.
 ///
 /// Reported rather than counted. The breakdown is where the price differences
 /// live -- cached input is cheaper, thinking is billed as output -- and none
@@ -150,20 +150,20 @@ pub enum ChatError {
 pub trait ChatStore: Send + Sync {
     async fn create_session(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         user_id: Uuid,
         input: CreateSession,
     ) -> Result<AgentSession, ChatError>;
 
-    async fn list_sessions(&self, tenant_id: Uuid) -> Result<Vec<AgentSession>, ChatError>;
+    async fn list_sessions(&self, workspace_id: Uuid) -> Result<Vec<AgentSession>, ChatError>;
 
     async fn get_session(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError>;
 
-    async fn delete_session(&self, tenant_id: Uuid, session_id: Uuid) -> Result<(), ChatError>;
+    async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError>;
 
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError>;
 

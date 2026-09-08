@@ -2,15 +2,15 @@
 //!
 //! Two audiences, because the tiers that verify tokens trust different
 //! things. A browser token is a person acting inside the API; a turn token is
-//! the platform letting one turn reach the gateway on a tenant's behalf. Both
+//! the platform letting one turn reach the gateway on a workspace's behalf. Both
 //! used to verify under the same rules and differed only in their roles, which
-//! made every turn token a working API credential for its tenant -- and every
+//! made every turn token a working API credential for its workspace -- and every
 //! Operator's cookie a working gateway credential. The audience claim is what
 //! separates them now, and each validator insists on its own.
 //!
 //! The runtime tier holds no signing key. It presents a shared key that only
 //! ever means "I am the tier that runs turns", checked in constant time, so a
-//! compromised runtime pod -- the tier that executes tenant code -- cannot
+//! compromised runtime pod -- the tier that executes workspace code -- cannot
 //! mint anything for anyone. See `RuntimeKey`.
 
 use std::time::Duration;
@@ -53,9 +53,9 @@ pub struct SessionClaims {
     /// belongs to. The audience says which, so a validator never has to
     /// guess -- and a token of one kind is never read as the other.
     pub subject: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     /// Role names. Platform roles resolve in code (`rbac::platform_authorities`);
-    /// tenant roles mean whatever the tenant's role rows say, which the API
+    /// workspace roles mean whatever the workspace's role rows say, which the API
     /// resolves on every request. Never authorities: a role may bundle
     /// hundreds, and a token that carried them would grow with every one.
     pub roles: Vec<String>,
@@ -125,13 +125,13 @@ impl TokenMinter {
     pub fn mint_session(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         roles: &[String],
     ) -> Result<String, AuthError> {
         self.mint_with_lifetime(
             AUDIENCE_API,
             user_id,
-            tenant_id,
+            workspace_id,
             roles,
             Duration::from_secs(SESSION_TOKEN_LIFETIME_SECS),
         )
@@ -142,11 +142,11 @@ impl TokenMinter {
     /// Carries `Role::Turn`, which holds `GatewayInvoke` and nothing else, and
     /// the gateway audience, so even if it leaked to something that could
     /// reach the API it would be refused there.
-    pub fn mint_turn(&self, chat_session_id: Uuid, tenant_id: Uuid) -> Result<String, AuthError> {
+    pub fn mint_turn(&self, chat_session_id: Uuid, workspace_id: Uuid) -> Result<String, AuthError> {
         self.mint_with_lifetime(
             AUDIENCE_GATEWAY,
             chat_session_id,
-            tenant_id,
+            workspace_id,
             &[Role::Turn.to_string()],
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
         )
@@ -156,7 +156,7 @@ impl TokenMinter {
         &self,
         audience: &str,
         subject: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         roles: &[String],
         lifetime: Duration,
     ) -> Result<String, AuthError> {
@@ -181,7 +181,7 @@ impl TokenMinter {
         claims.audience(audience).map_err(internal)?;
         claims.subject(&subject.to_string()).map_err(internal)?;
         claims
-            .add_additional(TENANT, tenant_id.to_string())
+            .add_additional(TENANT, workspace_id.to_string())
             .map_err(internal)?;
 
         let scp_json = serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -273,12 +273,12 @@ impl TokenValidator {
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or(AuthError::Invalid)?;
 
-        let tenant_id = parsed[TENANT]
+        let workspace_id = parsed[TENANT]
             .as_str()
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or(AuthError::Invalid)?;
 
-        // Names, not meanings: a tenant role means whatever the tenant's
+        // Names, not meanings: a workspace role means whatever the workspace's
         // rows say at the moment of the request, so nothing about it can be
         // settled here. A token naming no role at all grants nothing and is
         // refused as such.
@@ -296,7 +296,7 @@ impl TokenValidator {
 
         Ok(SessionClaims {
             subject,
-            tenant_id,
+            workspace_id,
             roles,
         })
     }
@@ -305,7 +305,7 @@ impl TokenValidator {
 /// The credential the runtime tier presents to the API.
 ///
 /// A shared key rather than a signed token, on purpose. The runtime is the
-/// tier that executes tenant-supplied components, so it must hold nothing
+/// tier that executes workspace-supplied components, so it must hold nothing
 /// that could mint a credential for anyone else -- and a key that means only
 /// "the runtime tier" cannot. It is compared in constant time and checked
 /// only on the bearer path, never from a cookie.
@@ -344,7 +344,7 @@ impl RuntimeKey {
     pub fn claims() -> SessionClaims {
         SessionClaims {
             subject: Uuid::nil(),
-            tenant_id: Uuid::nil(),
+            workspace_id: Uuid::nil(),
             roles: vec![Role::Runtime.to_string()],
         }
     }
@@ -380,7 +380,7 @@ impl SessionClaims {
     ///
     /// Only platform roles are consulted: this is what a tier without a
     /// database can decide on its own, and it is all the gateway needs. The
-    /// API resolves tenant roles as well, through its role store.
+    /// API resolves workspace roles as well, through its role store.
     pub fn has_platform_authority(&self, authority: super::rbac::Authority) -> bool {
         super::rbac::platform_authorities(&self.roles).contains(&authority)
     }

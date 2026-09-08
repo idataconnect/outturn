@@ -224,7 +224,7 @@ pub mod outturn {
                 pub url: _rt::String,
                 /// Headers the agent sets. The ones carrying credentials are refused
                 /// here and attached by the host instead, so a component cannot read a
-                /// tenant's key and cannot aim one somewhere it was not meant for.
+                /// workspace's key and cannot aim one somewhere it was not meant for.
                 pub headers: _rt::Vec<(_rt::String, _rt::String)>,
                 pub body: Option<_rt::String>,
             }
@@ -323,7 +323,7 @@ pub mod outturn {
             /// Read by a guest so it can wind down gracefully -- deliver what it has,
             /// stop reaching for tools -- rather than being cut off mid-loop. They are
             /// also enforced by the host, because a guest is not trusted to respect
-            /// them: components are deployed by tenants, and a limit that lives only
+            /// them: components are deployed by workspaces, and a limit that lives only
             /// in the guest is a suggestion.
             #[repr(C)]
             #[derive(Clone, Copy)]
@@ -382,7 +382,7 @@ pub mod outturn {
             /// Ranged rather than whole-file, because a guest reading a large object
             /// pulls it into linear memory and a sandbox has less of that than the
             /// store has objects. Paths are relative and rooted: a guest is never told
-            /// which tenant it belongs to, so it cannot name another one, and anything
+            /// which workspace it belongs to, so it cannot name another one, and anything
             /// that tries to climb out is refused rather than quietly corrected.
             pub fn read_object(
                 path: &str,
@@ -623,13 +623,13 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
-            /// Makes a request to a host the tenant has allowed.
+            /// Makes a request to a host the workspace has allowed.
             ///
             /// Every part of the decision is the host's: which hosts are reachable,
             /// which are refused for being inside the network this runs in, what
             /// credential goes with which host, and how much of a response may come
-            /// back. A guest that could influence any of those could use a tenant's
-            /// credentials against somewhere the tenant never named.
+            /// back. A guest that could influence any of those could use a workspace's
+            /// credentials against somewhere the workspace never named.
             ///
             /// Redirects are not followed. A redirect names a new host, and following
             /// one would mean a request that was checked ends up somewhere that was

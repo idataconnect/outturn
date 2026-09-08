@@ -87,7 +87,7 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
-          # No signing key here, on purpose: this tier runs tenant code, and
+          # No signing key here, on purpose: this tier runs workspace code, and
           # must hold nothing that could mint a credential for anyone. The
           # API mints each turn's gateway token and hands it over with the
           # turn; this key only says "I am the runtime tier".
@@ -100,7 +100,7 @@ patches:
           # runtime that cannot reach the API sits idle rather than failing.
           - name: OUTTURN_API_URL
             value: "http://outturn-api:8080"
-          # Object storage for agent files. One bucket, partitioned by tenant
+          # Object storage for agent files. One bucket, partitioned by workspace
           # prefix; the runtime resolves which part a turn may touch. Without
           # these the runtime falls back to memory, which loses everything on
           # restart -- fine for a smoke test, misleading for anything else.

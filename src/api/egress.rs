@@ -1,4 +1,4 @@
-//! Where a tenant's egress rules are kept and read.
+//! Where a workspace's egress rules are kept and read.
 //!
 //! Read here rather than in the runtime, because the runtime holds no
 //! database: it is given a conversation and returns a reply. The rules travel
@@ -11,19 +11,19 @@ use uuid::Uuid;
 
 use crate::runtime::egress::EgressRule;
 
-/// The hosts this tenant's agents may reach.
+/// The hosts this workspace's agents may reach.
 ///
-/// An empty list is the ordinary case for a new tenant and means exactly what
+/// An empty list is the ordinary case for a new workspace and means exactly what
 /// it says. Nothing is inherited from a system default: a default that reached
-/// somewhere would be a decision made on a tenant's behalf about who their
+/// somewhere would be a decision made on a workspace's behalf about who their
 /// agents may talk to.
-pub async fn rules_for(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<EgressRule>, sqlx::Error> {
+pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRule>, sqlx::Error> {
     let rows = sqlx::query(
         "select host, header, credential_env from egress_rules \
-         where tenant_id = $1 and enabled \
+         where workspace_id = $1 and enabled \
          order by host",
     )
-    .bind(tenant_id)
+    .bind(workspace_id)
     .fetch_all(pool)
     .await?;
 
@@ -37,7 +37,7 @@ pub async fn rules_for(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<EgressRule>
         .collect())
 }
 
-/// A rule as a tenant sees it.
+/// A rule as a workspace sees it.
 ///
 /// `credential_env` is the name of an environment variable, never a secret, so
 /// this is safe to return, log and show in a browser. That is the point of
@@ -67,7 +67,7 @@ pub struct CreateRule {
 pub enum RuleError {
     /// The host is not one, or would not mean what its author thought.
     Invalid(String),
-    /// This tenant already has a rule for this host.
+    /// This workspace already has a rule for this host.
     Duplicate(String),
     Database(String),
 }
@@ -82,12 +82,12 @@ impl std::fmt::Display for RuleError {
     }
 }
 
-pub async fn list(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<Rule>, RuleError> {
+pub async fn list(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<Rule>, RuleError> {
     let rows = sqlx::query(
         "select id, host, header, credential_env, enabled from egress_rules \
-         where tenant_id = $1 order by host",
+         where workspace_id = $1 order by host",
     )
-    .bind(tenant_id)
+    .bind(workspace_id)
     .fetch_all(pool)
     .await
     .map_err(|e| RuleError::Database(e.to_string()))?;
@@ -95,7 +95,7 @@ pub async fn list(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<Rule>, RuleError
     Ok(rows.iter().map(read_rule).collect())
 }
 
-pub async fn create(pool: &PgPool, tenant_id: Uuid, input: CreateRule) -> Result<Rule, RuleError> {
+pub async fn create(pool: &PgPool, workspace_id: Uuid, input: CreateRule) -> Result<Rule, RuleError> {
     let host = crate::runtime::egress::normalise_host(&input.host).map_err(RuleError::Invalid)?;
 
     // A header without a variable would attach nothing; a variable without a
@@ -124,12 +124,12 @@ pub async fn create(pool: &PgPool, tenant_id: Uuid, input: CreateRule) -> Result
     }
 
     let row = sqlx::query(
-        "insert into egress_rules (id, tenant_id, host, header, credential_env) \
+        "insert into egress_rules (id, workspace_id, host, header, credential_env) \
          values ($1, $2, $3, $4, $5) \
          returning id, host, header, credential_env, enabled",
     )
     .bind(Uuid::now_v7())
-    .bind(tenant_id)
+    .bind(workspace_id)
     .bind(&host)
     .bind(&input.header)
     .bind(&input.credential_env)
@@ -145,12 +145,12 @@ pub async fn create(pool: &PgPool, tenant_id: Uuid, input: CreateRule) -> Result
     Ok(read_rule(&row))
 }
 
-pub async fn delete(pool: &PgPool, tenant_id: Uuid, id: Uuid) -> Result<bool, RuleError> {
-    // Scoped by tenant as well as id, so knowing an id from somewhere else is
+pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, RuleError> {
+    // Scoped by workspace as well as id, so knowing an id from somewhere else is
     // not the same as being able to use it.
-    let result = sqlx::query("delete from egress_rules where id = $1 and tenant_id = $2")
+    let result = sqlx::query("delete from egress_rules where id = $1 and workspace_id = $2")
         .bind(id)
-        .bind(tenant_id)
+        .bind(workspace_id)
         .execute(pool)
         .await
         .map_err(|e| RuleError::Database(e.to_string()))?;

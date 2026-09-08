@@ -25,10 +25,10 @@ import Login from './pages/Login'
 import Agents from './pages/Agents'
 import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
-import Tenants from './pages/Tenants'
+import Workspaces from './pages/Workspaces'
 import Roles from './pages/Roles'
 import RoleEditor from './pages/RoleEditor'
-import TenantEditor from './pages/TenantEditor'
+import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
 
@@ -87,7 +87,7 @@ const navItems = [
   { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
   { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
-  { to: '/tenants', icon: Building2, label: 'Tenants', authority: 'tenants:read' },
+  { to: '/workspaces', icon: Building2, label: 'Workspaces', authority: 'workspaces:read' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
@@ -97,7 +97,7 @@ function useSessionState(): [SessionState, SessionActions] {
   /**
    * The one place a session becomes state.
    *
-   * Every entry point -- first load, signing in, switching tenant -- reads the
+   * Every entry point -- first load, signing in, switching workspace -- reads the
    * session back from the API rather than assembling it from whatever the
    * calling response happened to contain. A cold load has only this endpoint,
    * so anything it cannot supply is missing on every reload.
@@ -119,7 +119,7 @@ function useSessionState(): [SessionState, SessionActions] {
           status: 'authenticated',
           session,
           displayName: session.display_name,
-          tenants: session.tenants,
+          workspaces: session.workspaces,
         })
         return
       } catch (e) {
@@ -161,19 +161,19 @@ function useSessionState(): [SessionState, SessionActions] {
     })
   }, [])
 
-  const switchTenant = useCallback(
-    async (tenantId: string) => {
-      // The response re-sets the session cookie for the new tenant.
-      await api<unknown>('/v1/session/tenant', {
+  const switchWorkspace = useCallback(
+    async (workspaceId: string) => {
+      // The response re-sets the session cookie for the new workspace.
+      await api<unknown>('/v1/session/workspace', {
         method: 'POST',
-        body: JSON.stringify({ tenant_id: tenantId }),
+        body: JSON.stringify({ workspace_id: workspaceId }),
       })
       await load()
     },
     [load],
   )
 
-  return [state, { signIn, signOut, switchTenant }]
+  return [state, { signIn, signOut, switchWorkspace }]
 }
 
 function RequireAuthority({
@@ -227,10 +227,10 @@ function Shell() {
         </div>
       </nav>
       <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-900">
-        {/* Keyed by tenant so a switch remounts every page. State loaded
-            under the previous tenant -- lists, editors, an open thread --
+        {/* Keyed by workspace so a switch remounts every page. State loaded
+            under the previous workspace -- lists, editors, an open thread --
             is gone rather than shown until something happens to refetch it. */}
-        <Routes key={state.status === 'authenticated' ? state.session.tenant_id : 'anon'}>
+        <Routes key={state.status === 'authenticated' ? state.session.workspace_id : 'anon'}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
@@ -309,26 +309,26 @@ function Shell() {
             }
           />
           <Route
-            path="/tenants"
+            path="/workspaces"
             element={
-              <RequireAuthority authority="tenants:read">
-                <Tenants />
+              <RequireAuthority authority="workspaces:read">
+                <Workspaces />
               </RequireAuthority>
             }
           />
           <Route
-            path="/tenants/new"
+            path="/workspaces/new"
             element={
-              <RequireAuthority authority="tenants:create">
-                <TenantEditor />
+              <RequireAuthority authority="workspaces:create">
+                <WorkspaceEditor />
               </RequireAuthority>
             }
           />
           <Route
-            path="/tenants/:id"
+            path="/workspaces/:id"
             element={
-              <RequireAuthority authority="tenants:update">
-                <TenantEditor />
+              <RequireAuthority authority="workspaces:update">
+                <WorkspaceEditor />
               </RequireAuthority>
             }
           />

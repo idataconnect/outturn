@@ -29,9 +29,9 @@ export default function Chat() {
   const active = sessionId ?? null
   const { runtime, error: chatError } = useChatRuntime(active)
 
-  // Agents and sessions are tenant-scoped, so switching tenant reloads both.
+  // Agents and sessions are workspace-scoped, so switching workspace reloads both.
   // Selecting a session does not: that only changes which one is shown.
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   // Offered as a way out only to somebody who could act on it. Sending a
   // reader to a page where they can look but not create leaves them exactly
   // where they started, having been told to do something they cannot.
@@ -60,9 +60,9 @@ export default function Chat() {
     return () => {
       cancelled = true
     }
-  }, [tenantId])
+  }, [workspaceId])
 
-  // Reconcile the URL against what this tenant can actually see, once loaded.
+  // Reconcile the URL against what this workspace can actually see, once loaded.
   useEffect(() => {
     if (!loaded) return
 
@@ -76,11 +76,11 @@ export default function Chat() {
       return
     }
 
-    // A session in the URL this tenant cannot see -- a stale link, or one left
-    // behind by a tenant switch -- would otherwise leave a blank pane with no
+    // A session in the URL this workspace cannot see -- a stale link, or one left
+    // behind by a workspace switch -- would otherwise leave a blank pane with no
     // explanation.
     if (!sessions.some((session) => session.id === sessionId)) {
-      setError('That session is not available in this tenant.')
+      setError('That session is not available in this workspace.')
       void navigate('/sessions', { replace: true })
     }
   }, [loaded, sessionId, sessions, navigate])

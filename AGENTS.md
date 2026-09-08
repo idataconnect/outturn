@@ -1,6 +1,6 @@
 # Working on outturn
 
-outturn is a multitenant agent platform: tenants deploy agents that serve their
+outturn is a multiworkspace agent platform: workspaces deploy agents that serve their
 own customers, with isolation, usage attribution and security boundaries built
 in rather than added later. Rust, Axum, Tokio, PostgreSQL, WASM sandboxing,
 Kubernetes. Apache-2.0, edition 2024.
@@ -152,12 +152,12 @@ webhooks cannot be installed inertly. So `k8s/autoscaling` is applied
 deliberately, after `helm install keda`, and local development runs without it.
 
 Who may do what is written up in [docs/authorities.md](docs/authorities.md):
-authorities are the fixed vocabulary in code, roles are tenant-owned rows that
+authorities are the fixed vocabulary in code, roles are workspace-owned rows that
 bundle them, a token carries role names only, and the API resolves them on
-every request through a per-tenant cache invalidated over LISTEN/NOTIFY.
+every request through a per-workspace cache invalidated over LISTEN/NOTIFY.
 
 Tenancy, whose credential pays and what is attributed are written up in
-[docs/tenancy.md](docs/tenancy.md) — the short version being that `tenant_id`
+[docs/tenancy.md](docs/tenancy.md) — the short version being that `workspace_id`
 is the isolation boundary and stays that way, with organizations added above it
 rather than nesting beneath it.
 
@@ -166,14 +166,14 @@ Storage layout and retention are written up separately, in
 ordered scope-first rather than as the hierarchy you would expect, which looks
 like a mistake until you know about S3's per-bucket lifecycle rule cap.
 
-Every model call is a row in the usage ledger, tagged with tenant, agent,
-session, user, the tenant's own account label, the model that actually served,
+Every model call is a row in the usage ledger, tagged with workspace, agent,
+session, user, the workspace's own account label, the model that actually served,
 and whose key paid; the export at `/v1/usage` is what bills are built from.
 Written up in [docs/usage.md](docs/usage.md).
 
-Which model answers, whose key pays and how fallback works across tenants that
+Which model answers, whose key pays and how fallback works across workspaces that
 bring their own keys is in [docs/routing.md](docs/routing.md); how defaults
-cascade from operator to tenant to agent with an explicit override at each
+cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
 says what exists.
 
@@ -224,15 +224,15 @@ invisible below the application layer — and the job heartbeat renews the lease
 while a worker waits, so nothing else would ever reclaim it.
 
 **An agent reaches nothing it was not allowed.** Egress rules name hosts, per
-tenant, and an empty list is the default -- a tenant who has not thought about
-it has not consented to it. The tenant's list is checked first and the resolved
+workspace, and an empty list is the default -- a workspace who has not thought about
+it has not consented to it. The workspace's list is checked first and the resolved
 address second, and the second check is not theirs to waive: an allowed name
 that resolves inside the cluster is still refused. Names are resolved once and
 the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
 nobody checked.
 
-**The runtime signs nothing.** It executes tenant components, so it holds no
+**The runtime signs nothing.** It executes workspace components, so it holds no
 key that could mint a credential for anyone: it presents `OUTTURN_RUNTIME_KEY`,
 which is compared in constant time and means only "the runtime tier", and the
 API mints the gateway token each turn travels with. Giving the runtime the
@@ -240,7 +240,7 @@ signing secret would let a compromised component's host mint `system_admin`.
 
 **A token is good for one audience.** Browser tokens carry `outturn:api`,
 turn tokens carry `outturn:gateway`, and each validator insists on its own.
-Before this, a turn token was a working API credential for its tenant and an
+Before this, a turn token was a working API credential for its workspace and an
 Operator's cookie a working gateway one -- the roles differed, the verifier did
 not. Turn tokens also carry `Role::Turn`, which holds `GatewayInvoke` alone.
 The subject claim is a user id in the first kind and a chat session id in the
@@ -320,15 +320,15 @@ source, check pod age before theorising.
 ## Direction
 
 Intended but not yet built, so that nobody mistakes these for facts about the
-code: Redis caching, per-tenant usage attribution, OpenTelemetry, and workflows
+code: Redis caching, per-workspace usage attribution, OpenTelemetry, and workflows
 as scripted tasks in sub-sessions.
 
-A tenant's egress list is managed through `/v1/egress-rules` and has no UI
+A workspace's egress list is managed through `/v1/egress-rules` and has no UI
 yet, so allowing a host means an API call.
 
-There is no per-tenant fairness in the queue, on purpose for now. Priority
+There is no per-workspace fairness in the queue, on purpose for now. Priority
 classes put a waiting person ahead of background work; within a class, order
-is arrival. One tenant's burst can therefore sit in front of another's until
+is arrival. One workspace's burst can therefore sit in front of another's until
 the autoscaler catches up, and the bet is that it catches up fast enough for
 this not to matter. If that bet fails, the fix is a fairness term in the
 claim's ordering, which means changing the claim index and the backlog view

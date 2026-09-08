@@ -4,7 +4,7 @@ import { ArrowLeft, Plus, Save, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 
-export type Tenant = {
+export type Workspace = {
   id: string
   name: string
   slug: string
@@ -24,12 +24,12 @@ function slugify(name: string): string {
 }
 
 /**
- * Creating a tenant, or renaming and removing one.
+ * Creating a workspace, or renaming and removing one.
  *
- * The slug is settled at creation: it names the tenant in URLs and in every
+ * The slug is settled at creation: it names the workspace in URLs and in every
  * token minted for it, so it is shown afterwards but not editable.
  */
-export default function TenantEditor() {
+export default function WorkspaceEditor() {
   const { id } = useParams<{ id?: string }>()
   const creating = id === undefined
   const navigate = useNavigate()
@@ -37,7 +37,7 @@ export default function TenantEditor() {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
-  const [tenant, setTenant] = useState<Tenant | null>(null)
+  const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [loading, setLoading] = useState(!creating)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -47,13 +47,13 @@ export default function TenantEditor() {
     let stale = false
     void (async () => {
       try {
-        const found = await api<Tenant>(`/v1/tenants/${id}`)
+        const found = await api<Workspace>(`/v1/workspaces/${id}`)
         if (stale) return
-        setTenant(found)
+        setWorkspace(found)
         setName(found.name)
         setSlug(found.slug)
       } catch (e) {
-        if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load tenant')
+        if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load workspace')
       } finally {
         if (!stale) setLoading(false)
       }
@@ -73,37 +73,37 @@ export default function TenantEditor() {
     setSaving(true)
     try {
       if (creating) {
-        await api<Tenant>('/v1/tenants', {
+        await api<Workspace>('/v1/workspaces', {
           method: 'POST',
           body: JSON.stringify({ name, slug }),
         })
       } else {
-        await api<Tenant>(`/v1/tenants/${id}`, {
+        await api<Workspace>(`/v1/workspaces/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ name }),
         })
       }
-      void navigate('/tenants')
+      void navigate('/workspaces')
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'failed to save tenant')
+      setError(e instanceof ApiError ? e.message : 'failed to save workspace')
       setSaving(false)
     }
   }
 
   async function onDelete() {
-    if (!tenant) return
+    if (!workspace) return
     if (
       !window.confirm(
-        `Delete ${tenant.name}? Every agent, session and role grant in it goes with it.`,
+        `Delete ${workspace.name}? Every agent, session and role grant in it goes with it.`,
       )
     ) {
       return
     }
     try {
-      await api<void>(`/v1/tenants/${id}`, { method: 'DELETE' })
-      void navigate('/tenants')
+      await api<void>(`/v1/workspaces/${id}`, { method: 'DELETE' })
+      void navigate('/workspaces')
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'failed to delete tenant')
+      setError(e instanceof ApiError ? e.message : 'failed to delete workspace')
     }
   }
 
@@ -112,14 +112,14 @@ export default function TenantEditor() {
   return (
     <div className="p-6 max-w-3xl">
       <Link
-        to="/tenants"
+        to="/workspaces"
         className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
       >
         <ArrowLeft size={14} aria-hidden />
-        Tenants
+        Workspaces
       </Link>
       <h1 className="mt-2 text-2xl font-semibold text-surface-900 dark:text-surface-100">
-        {creating ? 'New tenant' : (tenant?.name ?? 'Tenant')}
+        {creating ? 'New workspace' : (workspace?.name ?? 'Workspace')}
       </h1>
 
       {error && (
@@ -163,10 +163,10 @@ export default function TenantEditor() {
           <div className="flex items-center gap-3">
             <button type="submit" disabled={saving || !complete} className={primary}>
               {creating ? <Plus size={16} aria-hidden /> : <Save size={16} aria-hidden />}
-              {saving ? 'Saving…' : creating ? 'Create tenant' : 'Save changes'}
+              {saving ? 'Saving…' : creating ? 'Create workspace' : 'Save changes'}
             </button>
             <Link
-              to="/tenants"
+              to="/workspaces"
               className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
             >
               Cancel
@@ -178,7 +178,7 @@ export default function TenantEditor() {
                 className="ml-auto flex items-center gap-2 px-3 py-2 rounded-md text-sm text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
               >
                 <Trash2 size={16} aria-hidden />
-                Delete tenant
+                Delete workspace
               </button>
             )}
           </div>

@@ -28,10 +28,10 @@ pub async fn list_agents(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<Agent>>, ApiError> {
-    // The tenant comes from the token, never from the request: a caller can
-    // only reach agents in a tenant they hold a minted token for.
+    // The workspace comes from the token, never from the request: a caller can
+    // only reach agents in a workspace they hold a minted token for.
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    Ok(Json(state.agents.list(claims.tenant_id).await?))
+    Ok(Json(state.agents.list(claims.workspace_id).await?))
 }
 
 pub async fn create_agent(
@@ -40,10 +40,10 @@ pub async fn create_agent(
     Json(input): Json<CreateAgent>,
 ) -> Result<(StatusCode, Json<Agent>), ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsCreate).await?;
-    let agent = state.agents.create(claims.tenant_id, input).await?;
+    let agent = state.agents.create(claims.workspace_id, input).await?;
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         agent_id = %agent.id,
         "agent created"
     );
@@ -56,7 +56,7 @@ pub async fn get_agent(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Agent>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    Ok(Json(state.agents.get(claims.tenant_id, id).await?))
+    Ok(Json(state.agents.get(claims.workspace_id, id).await?))
 }
 
 pub async fn update_agent(
@@ -66,10 +66,10 @@ pub async fn update_agent(
     Json(input): Json<UpdateAgent>,
 ) -> Result<Json<Agent>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
-    let agent = state.agents.update(claims.tenant_id, id, input).await?;
+    let agent = state.agents.update(claims.workspace_id, id, input).await?;
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         agent_id = %agent.id,
         "agent updated"
     );
@@ -82,10 +82,10 @@ pub async fn delete_agent(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsDelete).await?;
-    state.agents.delete(claims.tenant_id, id).await?;
+    state.agents.delete(claims.workspace_id, id).await?;
     tracing::info!(
         actor = %claims.subject,
-        tenant_id = %claims.tenant_id,
+        workspace_id = %claims.workspace_id,
         agent_id = %id,
         "agent deleted"
     );

@@ -9,31 +9,31 @@ use crate::auth;
 
 use super::router::{ApiError, ApiState};
 use super::session::{IssuedRefresh, REFRESH_LIFETIME_SECS, SessionError};
-use super::user::{TenantMembership, UserError};
+use super::user::{WorkspaceMembership, UserError};
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
-    /// Optional: when omitted the caller gets the tenant list and picks one.
-    pub tenant_id: Option<Uuid>,
+    /// Optional: when omitted the caller gets the workspace list and picks one.
+    pub workspace_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LoginResponse {
-    /// Credentials were good but no tenant was chosen; the UI shows a picker.
-    SelectTenant {
+    /// Credentials were good but no workspace was chosen; the UI shows a picker.
+    SelectWorkspace {
         user_id: Uuid,
         display_name: String,
-        tenants: Vec<TenantMembership>,
+        workspaces: Vec<WorkspaceMembership>,
     },
     Authenticated {
         user_id: Uuid,
         display_name: String,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         roles: Vec<String>,
-        tenants: Vec<TenantMembership>,
+        workspaces: Vec<WorkspaceMembership>,
     },
 }
 
@@ -73,31 +73,31 @@ pub async fn login(
         .authenticate(&request.email, &request.password)
         .await?;
 
-    let tenants = state.users.memberships(user.id).await?;
+    let workspaces = state.users.memberships(user.id).await?;
 
-    let Some(tenant_id) = request.tenant_id else {
-        return Ok(Json(LoginResponse::SelectTenant {
+    let Some(workspace_id) = request.workspace_id else {
+        return Ok(Json(LoginResponse::SelectWorkspace {
             user_id: user.id,
             display_name: user.display_name,
-            tenants,
+            workspaces,
         })
         .into_response());
     };
 
-    // Selecting a tenant the user has no standing in must not mint a token.
-    if !tenants.iter().any(|t| t.tenant_id == tenant_id) {
-        return Err((StatusCode::FORBIDDEN, "no access to that tenant".into()));
+    // Selecting a workspace the user has no standing in must not mint a token.
+    if !workspaces.iter().any(|t| t.workspace_id == workspace_id) {
+        return Err((StatusCode::FORBIDDEN, "no access to that workspace".into()));
     }
 
-    let roles = state.users.roles_for_tenant(user.id, tenant_id).await?;
+    let roles = state.users.roles_for_workspace(user.id, workspace_id).await?;
     if roles.is_empty() {
-        return Err((StatusCode::FORBIDDEN, "no roles in that tenant".into()));
+        return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
 
-    let token = mint(state.as_ref(), user.id, tenant_id, &roles)?;
+    let token = mint(state.as_ref(), user.id, workspace_id, &roles)?;
     let refresh = state
         .sessions
-        .issue(user.id, tenant_id, user_agent(&headers))
+        .issue(user.id, workspace_id, user_agent(&headers))
         .await?;
 
     Ok(authenticated_response(
@@ -106,9 +106,9 @@ pub async fn login(
         LoginResponse::Authenticated {
             user_id: user.id,
             display_name: user.display_name,
-            tenant_id,
+            workspace_id,
             roles: roles.iter().map(|r| r.to_string()).collect(),
-            tenants,
+            workspaces,
         },
     ))
 }
@@ -161,22 +161,22 @@ pub async fn refresh(
     let user = state.users.get(rotated.session.user_id).await?;
     let roles = state
         .users
-        .roles_for_tenant(rotated.session.user_id, rotated.session.tenant_id)
+        .roles_for_workspace(rotated.session.user_id, rotated.session.workspace_id)
         .await?;
 
     if roles.is_empty() {
         // Access was removed while the session was live.
         state.sessions.revoke(&rotated.token).await?;
-        return Err((StatusCode::FORBIDDEN, "no roles in that tenant".into()));
+        return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
 
     let token = mint(
         state.as_ref(),
         rotated.session.user_id,
-        rotated.session.tenant_id,
+        rotated.session.workspace_id,
         &roles,
     )?;
-    let tenants = state.users.memberships(rotated.session.user_id).await?;
+    let workspaces = state.users.memberships(rotated.session.user_id).await?;
 
     Ok(authenticated_response(
         &token,
@@ -184,9 +184,9 @@ pub async fn refresh(
         LoginResponse::Authenticated {
             user_id: rotated.session.user_id,
             display_name: user.display_name,
-            tenant_id: rotated.session.tenant_id,
+            workspace_id: rotated.session.workspace_id,
             roles: roles.iter().map(|r| r.to_string()).collect(),
-            tenants,
+            workspaces,
         },
     ))
 }
@@ -209,43 +209,43 @@ pub async fn logout(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SelectTenantRequest {
-    pub tenant_id: Uuid,
+pub struct SelectWorkspaceRequest {
+    pub workspace_id: Uuid,
 }
 
-/// Re-mints the caller's token against a different tenant. Used by the tenant
+/// Re-mints the caller's token against a different workspace. Used by the workspace
 /// dropdown, so switching does not require re-entering a password.
-pub async fn select_tenant(
+pub async fn select_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Json(request): Json<SelectTenantRequest>,
+    Json(request): Json<SelectWorkspaceRequest>,
 ) -> Result<Response, ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let user = state.users.get(claims.subject).await?;
 
-    let tenants = state.users.memberships(user.id).await?;
-    if !tenants.iter().any(|t| t.tenant_id == request.tenant_id) {
-        return Err((StatusCode::FORBIDDEN, "no access to that tenant".into()));
+    let workspaces = state.users.memberships(user.id).await?;
+    if !workspaces.iter().any(|t| t.workspace_id == request.workspace_id) {
+        return Err((StatusCode::FORBIDDEN, "no access to that workspace".into()));
     }
 
     let roles = state
         .users
-        .roles_for_tenant(user.id, request.tenant_id)
+        .roles_for_workspace(user.id, request.workspace_id)
         .await?;
     if roles.is_empty() {
-        return Err((StatusCode::FORBIDDEN, "no roles in that tenant".into()));
+        return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
 
-    let token = mint(state.as_ref(), user.id, request.tenant_id, &roles)?;
+    let token = mint(state.as_ref(), user.id, request.workspace_id, &roles)?;
 
-    // The refresh token carries the tenant, so switching starts a new family
+    // The refresh token carries the workspace, so switching starts a new family
     // and retires the old session.
     if let Some(old) = auth::refresh_from_cookies(&headers) {
         state.sessions.revoke(old).await?;
     }
     let refresh = state
         .sessions
-        .issue(user.id, request.tenant_id, user_agent(&headers))
+        .issue(user.id, request.workspace_id, user_agent(&headers))
         .await?;
 
     Ok(authenticated_response(
@@ -254,9 +254,9 @@ pub async fn select_tenant(
         LoginResponse::Authenticated {
             user_id: user.id,
             display_name: user.display_name,
-            tenant_id: request.tenant_id,
+            workspace_id: request.workspace_id,
             roles: roles.iter().map(|r| r.to_string()).collect(),
-            tenants,
+            workspaces,
         },
     ))
 }
@@ -264,11 +264,11 @@ pub async fn select_tenant(
 fn mint(
     state: &ApiState,
     user_id: Uuid,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     roles: &[String],
 ) -> Result<String, ApiError> {
     state
         .minter
-        .mint_session(user_id, tenant_id, roles)
+        .mint_session(user_id, workspace_id, roles)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

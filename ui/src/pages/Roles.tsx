@@ -5,9 +5,9 @@ import { KeyRound, Plus } from 'lucide-react'
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
 
-export type TenantRole = {
+export type WorkspaceRole = {
   id: string
-  tenant_id: string
+  workspace_id: string
   name: string
   description: string
   authorities: string[]
@@ -15,28 +15,28 @@ export type TenantRole = {
 }
 
 /**
- * The roles this tenant has defined.
+ * The roles this workspace has defined.
  *
- * Roles are the tenant's own: what they are called and what they allow is
+ * Roles are the workspace's own: what they are called and what they allow is
  * decided here, not in code. Creating and editing live on their own routes;
  * deleting lives on the edit page, beside the name and the count of people
  * who hold it.
  */
 export default function Roles() {
   const state = useSession()
-  const [roles, setRoles] = useState<TenantRole[]>([])
+  const [roles, setRoles] = useState<WorkspaceRole[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canManage = authorities.includes('roles:manage')
-  const tenantId = state.status === 'authenticated' ? state.session.tenant_id : null
+  const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
 
   useEffect(() => {
     let stale = false
     void (async () => {
       try {
-        const found = await api<TenantRole[]>('/v1/roles')
+        const found = await api<WorkspaceRole[]>('/v1/roles')
         if (!stale) setRoles(found)
       } catch (e) {
         if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load roles')
@@ -47,7 +47,7 @@ export default function Roles() {
     return () => {
       stale = true
     }
-  }, [tenantId])
+  }, [workspaceId])
 
   return (
     <div className="p-6 max-w-3xl">

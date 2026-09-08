@@ -25,22 +25,22 @@ fn internal(e: sqlx::Error) -> SettingsError {
 /// The rows at one level, by key.
 type Rows = HashMap<String, serde_json::Value>;
 
-/// The (tenant, agent) pair a level's rows live under.
+/// The (workspace, agent) pair a level's rows live under.
 fn address(level: Level) -> (Uuid, Uuid) {
     match level {
         Level::Operator => (PLATFORM_TENANT, Uuid::nil()),
-        Level::Tenant(t) => (t, Uuid::nil()),
-        Level::Agent { tenant_id, agent_id } => (tenant_id, agent_id),
+        Level::Workspace(t) => (t, Uuid::nil()),
+        Level::Agent { workspace_id, agent_id } => (workspace_id, agent_id),
     }
 }
 
 impl PostgresSettingsStore {
     async fn rows_at(&self, level: Level) -> Result<Rows, SettingsError> {
-        let (tenant_id, agent_id) = address(level);
+        let (workspace_id, agent_id) = address(level);
         let rows = sqlx::query(
-            "select key, value from setting_overrides where tenant_id = $1 and agent_id = $2",
+            "select key, value from setting_overrides where workspace_id = $1 and agent_id = $2",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(agent_id)
         .fetch_all(&self.pool)
         .await
@@ -57,14 +57,14 @@ impl PostgresSettingsStore {
         out.push((super::Source::Operator, self.rows_at(Level::Operator).await?));
         match level {
             Level::Operator => {}
-            Level::Tenant(t) => {
-                out.push((super::Source::Tenant, self.rows_at(Level::Tenant(t)).await?));
+            Level::Workspace(t) => {
+                out.push((super::Source::Workspace, self.rows_at(Level::Workspace(t)).await?));
             }
-            Level::Agent { tenant_id, agent_id } => {
-                out.push((super::Source::Tenant, self.rows_at(Level::Tenant(tenant_id)).await?));
+            Level::Agent { workspace_id, agent_id } => {
+                out.push((super::Source::Workspace, self.rows_at(Level::Workspace(workspace_id)).await?));
                 out.push((
                     super::Source::Agent,
-                    self.rows_at(Level::Agent { tenant_id, agent_id }).await?,
+                    self.rows_at(Level::Agent { workspace_id, agent_id }).await?,
                 ));
             }
         }
@@ -111,14 +111,14 @@ impl SettingsStore for PostgresSettingsStore {
     async fn set(&self, level: Level, key: &str, value: serde_json::Value) -> Result<(), SettingsError> {
         let setting = find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
         validate(&setting, &value)?;
-        let (tenant_id, agent_id) = address(level);
+        let (workspace_id, agent_id) = address(level);
         sqlx::query(
-            "insert into setting_overrides (tenant_id, agent_id, key, value) \
+            "insert into setting_overrides (workspace_id, agent_id, key, value) \
              values ($1, $2, $3, $4) \
-             on conflict (tenant_id, agent_id, key) \
+             on conflict (workspace_id, agent_id, key) \
              do update set value = excluded.value, updated_at = now()",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(agent_id)
         .bind(key)
         .bind(value)
@@ -130,11 +130,11 @@ impl SettingsStore for PostgresSettingsStore {
 
     async fn clear(&self, level: Level, key: &str) -> Result<(), SettingsError> {
         find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
-        let (tenant_id, agent_id) = address(level);
+        let (workspace_id, agent_id) = address(level);
         sqlx::query(
-            "delete from setting_overrides where tenant_id = $1 and agent_id = $2 and key = $3",
+            "delete from setting_overrides where workspace_id = $1 and agent_id = $2 and key = $3",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(agent_id)
         .bind(key)
         .execute(&self.pool)
@@ -143,8 +143,8 @@ impl SettingsStore for PostgresSettingsStore {
         Ok(())
     }
 
-    async fn resolve(&self, tenant_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError> {
-        let chain = self.chain(Level::Agent { tenant_id, agent_id }).await?;
+    async fn resolve(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError> {
+        let chain = self.chain(Level::Agent { workspace_id, agent_id }).await?;
         let get = |key: &str| {
             let setting = find(key).expect("catalogue key");
             walk(&chain, key, &setting.default).0
@@ -168,8 +168,8 @@ impl SettingsStore for PostgresSettingsStore {
                 if get("agent_writes_agent_files").as_str() == Some("allow") {
                     scopes.push("agent".to_string());
                 }
-                if get("agent_writes_tenant_files").as_str() == Some("allow") {
-                    scopes.push("tenant".to_string());
+                if get("agent_writes_workspace_files").as_str() == Some("allow") {
+                    scopes.push("workspace".to_string());
                 }
                 scopes
             },

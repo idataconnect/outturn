@@ -15,13 +15,13 @@ use uuid::Uuid;
 
 const DEV_SECRET: &str = "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887";
 
-fn dev_token(session_id: Uuid, tenant_id: Uuid) -> String {
+fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
     let mut bytes = [0u8; 32];
     for i in 0..32 {
         bytes[i] = u8::from_str_radix(&DEV_SECRET[i * 2..i * 2 + 2], 16).unwrap();
     }
     let minter = TokenMinter::new(&bytes).expect("minter");
-    minter.mint_turn(session_id, tenant_id).expect("mint")
+    minter.mint_turn(session_id, workspace_id).expect("mint")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -47,7 +47,7 @@ async fn component_runs_a_turn_and_streams_progress() {
     };
 
     let session_id = Uuid::now_v7();
-    let tenant_id = Uuid::now_v7();
+    let workspace_id = Uuid::now_v7();
 
     let reply = runner
         .run(
@@ -62,7 +62,7 @@ async fn component_runs_a_turn_and_streams_progress() {
             RunOptions {
                 session_id,
                 gateway_url,
-                gateway_token: dev_token(session_id, tenant_id),
+                gateway_token: dev_token(session_id, workspace_id),
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
                     .unwrap_or_else(|_| "llama3.1".into()),
                 progress: Some(sink),
@@ -70,7 +70,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_tool_result: None,
                 on_usage: None,
                 storage: None,
-                tenant_id,
+                workspace_id,
                 agent_id: Uuid::now_v7(),
                 write_scopes: vec!["session".into()],
                 timezone: None,

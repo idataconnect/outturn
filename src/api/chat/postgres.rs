@@ -22,7 +22,7 @@ fn internal(e: sqlx::Error) -> ChatError {
 fn read_session(row: &sqlx::postgres::PgRow) -> AgentSession {
     AgentSession {
         id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
+        workspace_id: row.get("workspace_id"),
         agent_id: row.get("agent_id"),
         title: row.get("title"),
         account: row.try_get("account").ok().flatten(),
@@ -52,16 +52,16 @@ fn read_message(row: &sqlx::postgres::PgRow) -> Message {
 impl ChatStore for PostgresChatStore {
     async fn create_session(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         user_id: Uuid,
         input: CreateSession,
     ) -> Result<AgentSession, ChatError> {
-        // The agent lookup is tenant-scoped, so a session cannot be opened
-        // against another tenant's agent by supplying its id.
+        // The agent lookup is workspace-scoped, so a session cannot be opened
+        // against another workspace's agent by supplying its id.
         let exists: Option<Uuid> =
-            sqlx::query_scalar("select id from agents where id = $1 and tenant_id = $2")
+            sqlx::query_scalar("select id from agents where id = $1 and workspace_id = $2")
                 .bind(input.agent_id)
-                .bind(tenant_id)
+                .bind(workspace_id)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(internal)?;
@@ -70,12 +70,12 @@ impl ChatStore for PostgresChatStore {
         }
 
         let row = sqlx::query(
-            "insert into agent_sessions (id, tenant_id, agent_id, user_id, title, account) \
+            "insert into agent_sessions (id, workspace_id, agent_id, user_id, title, account) \
              values ($1, $2, $3, $4, $5, $6) \
-             returning id, tenant_id, agent_id, title, account",
+             returning id, workspace_id, agent_id, title, account",
         )
         .bind(Uuid::now_v7())
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(input.agent_id)
         .bind(user_id)
         .bind(input.title.trim())
@@ -87,12 +87,12 @@ impl ChatStore for PostgresChatStore {
         Ok(read_session(&row))
     }
 
-    async fn list_sessions(&self, tenant_id: Uuid) -> Result<Vec<AgentSession>, ChatError> {
+    async fn list_sessions(&self, workspace_id: Uuid) -> Result<Vec<AgentSession>, ChatError> {
         let rows = sqlx::query(
-            "select id, tenant_id, agent_id, title, account from agent_sessions \
-             where tenant_id = $1 order by created_at desc",
+            "select id, workspace_id, agent_id, title, account from agent_sessions \
+             where workspace_id = $1 order by created_at desc",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -102,14 +102,14 @@ impl ChatStore for PostgresChatStore {
 
     async fn get_session(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError> {
         let row = sqlx::query(
-            "select id, tenant_id, agent_id, title, account from agent_sessions \
-             where tenant_id = $1 and id = $2",
+            "select id, workspace_id, agent_id, title, account from agent_sessions \
+             where workspace_id = $1 and id = $2",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
@@ -119,10 +119,10 @@ impl ChatStore for PostgresChatStore {
         Ok(read_session(&row))
     }
 
-    async fn delete_session(&self, tenant_id: Uuid, session_id: Uuid) -> Result<(), ChatError> {
+    async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError> {
         let result =
-            sqlx::query("delete from agent_sessions where tenant_id = $1 and id = $2")
-                .bind(tenant_id)
+            sqlx::query("delete from agent_sessions where workspace_id = $1 and id = $2")
+                .bind(workspace_id)
                 .bind(session_id)
                 .execute(&self.pool)
                 .await

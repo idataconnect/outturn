@@ -14,7 +14,7 @@ pub const REFRESH_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
 pub struct RefreshSession {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub family_id: Uuid,
 }
 
@@ -45,7 +45,7 @@ pub trait SessionStore: Send + Sync {
     async fn issue(
         &self,
         user_id: Uuid,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         user_agent: Option<&str>,
     ) -> Result<IssuedRefresh, SessionError>;
 

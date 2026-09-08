@@ -9,7 +9,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize)]
 pub struct Agent {
     pub id: Uuid,
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub name: String,
     pub slug: String,
     pub description: String,
@@ -61,21 +61,21 @@ pub enum AgentError {
     Internal(String),
 }
 
-/// Every method takes the tenant explicitly: it comes from the caller's token,
-/// and passing it on each call keeps a tenant-scoped predicate in every query
+/// Every method takes the workspace explicitly: it comes from the caller's token,
+/// and passing it on each call keeps a workspace-scoped predicate in every query
 /// rather than relying on callers to remember to filter.
 #[async_trait]
 pub trait AgentStore: Send + Sync {
-    async fn list(&self, tenant_id: Uuid) -> Result<Vec<Agent>, AgentError>;
-    async fn get(&self, tenant_id: Uuid, id: Uuid) -> Result<Agent, AgentError>;
-    async fn create(&self, tenant_id: Uuid, input: CreateAgent) -> Result<Agent, AgentError>;
+    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Agent>, AgentError>;
+    async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Agent, AgentError>;
+    async fn create(&self, workspace_id: Uuid, input: CreateAgent) -> Result<Agent, AgentError>;
     async fn update(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         id: Uuid,
         input: UpdateAgent,
     ) -> Result<Agent, AgentError>;
-    async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), AgentError>;
+    async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), AgentError>;
 }
 
 pub(super) fn validate_name(name: &str) -> Result<(), AgentError> {

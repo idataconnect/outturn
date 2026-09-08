@@ -46,7 +46,7 @@ struct Assignment {
 pub struct Puller {
     pub api_url: String,
     /// What this pod presents to the API. A shared key that means only "the
-    /// runtime tier": this pod executes tenant components and so holds
+    /// runtime tier": this pod executes workspace components and so holds
     /// nothing that could mint a credential for anyone. See `RuntimeKey`.
     pub runtime_key: String,
     pub http: reqwest::Client,
@@ -223,7 +223,7 @@ impl Puller {
             },
             reply_id: request.reply_id,
             storage: self.storage.clone(),
-            tenant_id: request.tenant_id,
+            workspace_id: request.workspace_id,
             agent_id: request.agent_id,
             write_scopes: if request.write_scopes.is_empty() {
                 vec!["session".to_string()]

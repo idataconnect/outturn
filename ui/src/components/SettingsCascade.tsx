@@ -13,9 +13,9 @@ export type Effective = {
   description: string
   kind: Kind
   default: unknown
-  owner: 'operator_only' | 'tenant_overridable'
+  owner: 'operator_only' | 'workspace_overridable'
   value: unknown
-  source: 'default' | 'operator' | 'tenant' | 'agent'
+  source: 'default' | 'operator' | 'workspace' | 'agent'
   override_value: unknown | undefined
   inherited: unknown
 }
@@ -23,7 +23,7 @@ export type Effective = {
 const SOURCE_LABEL: Record<Effective['source'], string> = {
   default: 'the built-in default',
   operator: 'the platform',
-  tenant: 'this workspace',
+  workspace: 'this workspace',
   agent: 'this agent',
 }
 
@@ -42,7 +42,7 @@ function show(value: unknown): string {
  * down, so an operator changing a default reaches every level that never
  * chose otherwise.
  *
- * `base` is where this level's settings live: `/v1/settings` for the tenant,
+ * `base` is where this level's settings live: `/v1/settings` for the workspace,
  * `/v1/platform/settings` for the operator, `/v1/agents/:id/settings` for an
  * agent. The component does not know which it is drawing; the API's answer
  * says what applies here and what this level may change.

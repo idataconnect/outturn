@@ -96,10 +96,10 @@ pub async fn take(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Option<Assignment>>, ApiError> {
-    // WorkTake rather than GatewayInvoke: the latter is held by tenant Admins
-    // and Operators, and a turn handed out carries whichever tenant's
+    // WorkTake rather than GatewayInvoke: the latter is held by workspace Admins
+    // and Operators, and a turn handed out carries whichever workspace's
     // transcript it belongs to. Anything that can ask for work can ask for
-    // everyone's, so this has to be an authority no tenant role holds.
+    // everyone's, so this has to be an authority no workspace role holds.
     super::router::authorize(&state, &headers, Authority::WorkTake).await?;
 
     let deadline = tokio::time::Instant::now() + WORK_POLL_TIMEOUT;
@@ -151,7 +151,7 @@ pub async fn take(
                 }
                 Ok(Some(request)) => {
                     let gateway_token =
-                        match mint_for(&state, payload.session_id, payload.tenant_id) {
+                        match mint_for(&state, payload.session_id, payload.workspace_id) {
                             Ok(token) => token,
                             Err(e) => {
                                 // The placeholder is already written and
@@ -198,7 +198,7 @@ pub async fn take(
                     if handle.job.attempts >= handle.job.max_attempts {
                         let _ = crate::events::append(
                             &state.pool,
-                            payload.tenant_id,
+                            payload.workspace_id,
                             Some(payload.session_id),
                             "chat.error",
                             serde_json::json!({
@@ -235,10 +235,10 @@ pub async fn take(
 /// Minted here rather than held by the runtime, so what a turn may reach is
 /// bounded by what this tier granted for that turn rather than by whatever the
 /// runtime happens to hold.
-pub fn mint_for(state: &ApiState, session_id: Uuid, tenant_id: Uuid) -> Result<String, ApiError> {
+pub fn mint_for(state: &ApiState, session_id: Uuid, workspace_id: Uuid) -> Result<String, ApiError> {
     state
         .minter
-        .mint_turn(session_id, tenant_id)
+        .mint_turn(session_id, workspace_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 

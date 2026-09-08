@@ -1,8 +1,8 @@
 //! Mapping what a guest asks for onto where it actually lives.
 //!
-//! A guest names `session/notes.md` or `tenant/reference/pricing.csv` and never
-//! learns which tenant, agent or session it is. That is the point: a component
-//! cannot get a tenant wrong if it is never told one, and cannot reach another's
+//! A guest names `session/notes.md` or `workspace/reference/pricing.csv` and never
+//! learns which workspace, agent or session it is. That is the point: a component
+//! cannot get a workspace wrong if it is never told one, and cannot reach another's
 //! data by constructing a path, because every path is resolved by the host
 //! against the space this turn was given.
 //!
@@ -17,9 +17,9 @@
 //! hierarchy cannot carry retention):
 //!
 //! ```text
-//! tenant/...   ->  tenants/<tenant>/...                       kept until deleted
-//! agent/...    ->  agents/<tenant>/<agent>/...                kept while the agent exists
-//! session/...  ->  sessions/<tenant>/<agent>/<session>/...    swept
+//! workspace/...   ->  workspaces/<workspace>/...                       kept until deleted
+//! agent/...    ->  agents/<workspace>/<agent>/...                kept while the agent exists
+//! session/...  ->  sessions/<workspace>/<agent>/<session>/...    swept
 //! ```
 
 use uuid::Uuid;
@@ -29,7 +29,7 @@ use super::StorageError;
 /// Where a turn's files live: the three ids every scope is built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Space {
-    pub tenant_id: Uuid,
+    pub workspace_id: Uuid,
     pub agent_id: Uuid,
     pub session_id: Uuid,
 }
@@ -38,18 +38,18 @@ pub struct Space {
 /// prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
-    Tenant,
+    Workspace,
     Agent,
     Session,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 3] = [Scope::Session, Scope::Agent, Scope::Tenant];
+    pub const ALL: [Scope; 3] = [Scope::Session, Scope::Agent, Scope::Workspace];
 
     /// The segment a guest writes.
     pub fn as_str(self) -> &'static str {
         match self {
-            Scope::Tenant => "tenant",
+            Scope::Workspace => "workspace",
             Scope::Agent => "agent",
             Scope::Session => "session",
         }
@@ -57,18 +57,18 @@ impl Scope {
 
     pub fn parse(segment: &str) -> Option<Scope> {
         match segment {
-            "tenant" => Some(Scope::Tenant),
+            "workspace" => Some(Scope::Workspace),
             "agent" => Some(Scope::Agent),
             "session" => Some(Scope::Session),
             _ => None,
         }
     }
 
-    /// The bucket prefix everything in this scope, across all tenants, sits
+    /// The bucket prefix everything in this scope, across all workspaces, sits
     /// under. One lifecycle rule per scope matches this.
     pub fn bucket_prefix(self) -> &'static str {
         match self {
-            Scope::Tenant => "tenants/",
+            Scope::Workspace => "workspaces/",
             Scope::Agent => "agents/",
             Scope::Session => "sessions/",
         }
@@ -78,11 +78,11 @@ impl Scope {
 /// The real prefix of one scope of one space.
 pub fn root_for(space: &Space, scope: Scope) -> String {
     match scope {
-        Scope::Tenant => format!("tenants/{}/", space.tenant_id),
-        Scope::Agent => format!("agents/{}/{}/", space.tenant_id, space.agent_id),
+        Scope::Workspace => format!("workspaces/{}/", space.workspace_id),
+        Scope::Agent => format!("agents/{}/{}/", space.workspace_id, space.agent_id),
         Scope::Session => format!(
             "sessions/{}/{}/{}/",
-            space.tenant_id, space.agent_id, space.session_id
+            space.workspace_id, space.agent_id, space.session_id
         ),
     }
 }
@@ -92,9 +92,9 @@ pub fn root_for(space: &Space, scope: Scope) -> String {
 /// same way, and this is the one storage error it will hit most.
 fn scope_hint(path: &str) -> StorageError {
     StorageError::Refused(format!(
-        "paths start with session/, agent/ or tenant/. For something you are working on \
+        "paths start with session/, agent/ or workspace/. For something you are working on \
          now use session/{0}; for something this agent should keep use agent/{0}; for \
-         something the whole workspace shares use tenant/{0}.",
+         something the whole workspace shares use workspace/{0}.",
         path.trim_start_matches('/')
     ))
 }
@@ -190,7 +190,7 @@ mod tests {
 
     fn space() -> Space {
         Space {
-            tenant_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bfd").unwrap(),
+            workspace_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bfd").unwrap(),
             agent_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871aaa").unwrap(),
             session_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bbb").unwrap(),
         }
@@ -200,8 +200,8 @@ mod tests {
     fn each_scope_lands_under_its_own_prefix() {
         let s = space();
         assert_eq!(
-            resolve(&s, "tenant/reports/q3.csv").unwrap(),
-            "tenants/01a06545-c926-7672-ae22-5971b4871bfd/reports/q3.csv"
+            resolve(&s, "workspace/reports/q3.csv").unwrap(),
+            "workspaces/01a06545-c926-7672-ae22-5971b4871bfd/reports/q3.csv"
         );
         assert_eq!(
             resolve(&s, "agent/procedures.md").unwrap(),
@@ -219,15 +219,15 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("session/notes.md"), "{text}");
         assert!(text.contains("agent/notes.md"), "{text}");
-        assert!(text.contains("tenant/notes.md"), "{text}");
+        assert!(text.contains("workspace/notes.md"), "{text}");
     }
 
     #[test]
     fn traversal_is_refused_however_it_is_spelled() {
         for attempt in [
-            "session/../tenant/secrets",
+            "session/../workspace/secrets",
             "agent/reports/../../other/secrets",
-            "tenant/..",
+            "workspace/..",
             "session/a/b/../../../c",
         ] {
             assert!(
@@ -262,10 +262,10 @@ mod tests {
     }
 
     #[test]
-    fn a_tenant_cannot_reach_another_by_naming_it() {
+    fn a_workspace_cannot_reach_another_by_naming_it() {
         let s = space();
-        let resolved = resolve(&s, "tenant/tenants/00000000-0000-0000-0000-000000000000/x").unwrap();
-        assert!(resolved.starts_with(&root_for(&s, Scope::Tenant)));
+        let resolved = resolve(&s, "workspace/workspaces/00000000-0000-0000-0000-000000000000/x").unwrap();
+        assert!(resolved.starts_with(&root_for(&s, Scope::Workspace)));
     }
 
     #[test]
@@ -273,6 +273,6 @@ mod tests {
         let s = space();
         let stored = resolve(&s, "agent/reports/q3.csv").unwrap();
         assert_eq!(strip_root(&s, &stored).unwrap(), "agent/reports/q3.csv");
-        assert_eq!(strip_root(&s, "tenants/somebody-else/x"), None);
+        assert_eq!(strip_root(&s, "workspaces/somebody-else/x"), None);
     }
 }

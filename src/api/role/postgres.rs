@@ -8,20 +8,20 @@ use uuid::Uuid;
 
 use crate::auth::Authority;
 
-use super::{CreateRole, RoleError, RoleStore, TenantRole, UpdateRole, validate_authorities, validate_name};
+use super::{CreateRole, RoleError, RoleStore, WorkspaceRole, UpdateRole, validate_authorities, validate_name};
 
-/// Postgres channel a role change is announced on. The payload is the tenant.
+/// Postgres channel a role change is announced on. The payload is the workspace.
 const CHANNEL: &str = "outturn_roles";
 
-/// Role name to authorities, for one tenant.
-type TenantMap = HashMap<String, HashSet<Authority>>;
+/// Role name to authorities, for one workspace.
+type WorkspaceMap = HashMap<String, HashSet<Authority>>;
 
 pub struct PostgresRoleStore {
     pool: PgPool,
-    /// Resolved roles by tenant. Filled on first use, dropped for a tenant
+    /// Resolved roles by workspace. Filled on first use, dropped for a workspace
     /// when any of its roles change -- on this pod directly, on every other
     /// pod through the notification a write sends.
-    cache: Arc<Mutex<HashMap<Uuid, Arc<TenantMap>>>>,
+    cache: Arc<Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>>,
 }
 
 fn internal(e: sqlx::Error) -> RoleError {
@@ -37,7 +37,7 @@ impl PostgresRoleStore {
     }
 
     /// Listens for role changes made by any pod and forgets what it knew
-    /// about that tenant. Reconnects if the connection drops; a notification
+    /// about that workspace. Reconnects if the connection drops; a notification
     /// missed while disconnected costs a stale entry until the next write,
     /// which is the same as a cache with no invalidation at all -- so the
     /// listener also clears everything when it reconnects.
@@ -58,18 +58,18 @@ impl PostgresRoleStore {
         });
     }
 
-    fn forget(&self, tenant_id: Uuid) {
+    fn forget(&self, workspace_id: Uuid) {
         if let Ok(mut c) = self.cache.lock() {
-            c.remove(&tenant_id);
+            c.remove(&workspace_id);
         }
     }
 
-    /// Tells every pod, this one included, that a tenant's roles changed.
-    async fn announce(&self, tenant_id: Uuid) {
-        self.forget(tenant_id);
+    /// Tells every pod, this one included, that a workspace's roles changed.
+    async fn announce(&self, workspace_id: Uuid) {
+        self.forget(workspace_id);
         if let Err(e) = sqlx::query("select pg_notify($1, $2)")
             .bind(CHANNEL)
-            .bind(tenant_id.to_string())
+            .bind(workspace_id.to_string())
             .execute(&self.pool)
             .await
         {
@@ -77,22 +77,22 @@ impl PostgresRoleStore {
         }
     }
 
-    async fn load(&self, tenant_id: Uuid) -> Result<Arc<TenantMap>, RoleError> {
-        if let Some(found) = self.cache.lock().ok().and_then(|c| c.get(&tenant_id).cloned()) {
+    async fn load(&self, workspace_id: Uuid) -> Result<Arc<WorkspaceMap>, RoleError> {
+        if let Some(found) = self.cache.lock().ok().and_then(|c| c.get(&workspace_id).cloned()) {
             return Ok(found);
         }
         let rows = sqlx::query(
             "select r.name, a.authority \
              from roles r \
-             left join role_authorities a on a.tenant_id = r.tenant_id and a.role_id = r.id \
-             where r.tenant_id = $1",
+             left join role_authorities a on a.workspace_id = r.workspace_id and a.role_id = r.id \
+             where r.workspace_id = $1",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
 
-        let mut map: TenantMap = HashMap::new();
+        let mut map: WorkspaceMap = HashMap::new();
         for row in &rows {
             let entry = map.entry(row.get::<String, _>("name")).or_default();
             if let Some(a) = row
@@ -105,24 +105,24 @@ impl PostgresRoleStore {
         }
         let map = Arc::new(map);
         if let Ok(mut c) = self.cache.lock() {
-            c.insert(tenant_id, Arc::clone(&map));
+            c.insert(workspace_id, Arc::clone(&map));
         }
         Ok(map)
     }
 
-    async fn read(&self, tenant_id: Uuid, id: Uuid) -> Result<TenantRole, RoleError> {
+    async fn read(&self, workspace_id: Uuid, id: Uuid) -> Result<WorkspaceRole, RoleError> {
         let row = sqlx::query(
-            "select r.id, r.tenant_id, r.name, r.description, \
+            "select r.id, r.workspace_id, r.name, r.description, \
                     coalesce(array_agg(a.authority order by a.authority) \
                              filter (where a.authority is not null), '{}') as authorities, \
-                    (select count(*) from user_tenant_roles g \
-                      where g.tenant_id = r.tenant_id and g.role_id = r.id) as holders \
+                    (select count(*) from user_workspace_roles g \
+                      where g.workspace_id = r.workspace_id and g.role_id = r.id) as holders \
              from roles r \
-             left join role_authorities a on a.tenant_id = r.tenant_id and a.role_id = r.id \
-             where r.tenant_id = $1 and r.id = $2 \
-             group by r.id, r.tenant_id, r.name, r.description",
+             left join role_authorities a on a.workspace_id = r.workspace_id and a.role_id = r.id \
+             where r.workspace_id = $1 and r.id = $2 \
+             group by r.id, r.workspace_id, r.name, r.description",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -132,10 +132,10 @@ impl PostgresRoleStore {
     }
 }
 
-fn read_role(row: &sqlx::postgres::PgRow) -> TenantRole {
-    TenantRole {
+fn read_role(row: &sqlx::postgres::PgRow) -> WorkspaceRole {
+    WorkspaceRole {
         id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
+        workspace_id: row.get("workspace_id"),
         name: row.get("name"),
         description: row.get("description"),
         authorities: row.get("authorities"),
@@ -147,15 +147,15 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
-async fn listen(pool: &PgPool, cache: &Mutex<HashMap<Uuid, Arc<TenantMap>>>) -> Result<(), sqlx::Error> {
+async fn listen(pool: &PgPool, cache: &Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
     loop {
         let notification = listener.recv().await?;
         match notification.payload().parse::<Uuid>() {
-            Ok(tenant_id) => {
+            Ok(workspace_id) => {
                 if let Ok(mut c) = cache.lock() {
-                    c.remove(&tenant_id);
+                    c.remove(&workspace_id);
                 }
             }
             Err(_) => tracing::warn!("malformed role change notification"),
@@ -166,20 +166,20 @@ async fn listen(pool: &PgPool, cache: &Mutex<HashMap<Uuid, Arc<TenantMap>>>) -> 
 /// Writes a role's authorities, replacing what was there.
 async fn write_authorities(
     tx: &mut sqlx::PgConnection,
-    tenant_id: Uuid,
+    workspace_id: Uuid,
     role_id: Uuid,
     authorities: &[Authority],
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("delete from role_authorities where tenant_id = $1 and role_id = $2")
-        .bind(tenant_id)
+    sqlx::query("delete from role_authorities where workspace_id = $1 and role_id = $2")
+        .bind(workspace_id)
         .bind(role_id)
         .execute(&mut *tx)
         .await?;
     for a in authorities {
         sqlx::query(
-            "insert into role_authorities (tenant_id, role_id, authority) values ($1, $2, $3)",
+            "insert into role_authorities (workspace_id, role_id, authority) values ($1, $2, $3)",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(role_id)
         .bind(a.as_str())
         .execute(&mut *tx)
@@ -190,40 +190,40 @@ async fn write_authorities(
 
 #[async_trait]
 impl RoleStore for PostgresRoleStore {
-    async fn list(&self, tenant_id: Uuid) -> Result<Vec<TenantRole>, RoleError> {
+    async fn list(&self, workspace_id: Uuid) -> Result<Vec<WorkspaceRole>, RoleError> {
         let rows = sqlx::query(
-            "select r.id, r.tenant_id, r.name, r.description, \
+            "select r.id, r.workspace_id, r.name, r.description, \
                     coalesce(array_agg(a.authority order by a.authority) \
                              filter (where a.authority is not null), '{}') as authorities, \
-                    (select count(*) from user_tenant_roles g \
-                      where g.tenant_id = r.tenant_id and g.role_id = r.id) as holders \
+                    (select count(*) from user_workspace_roles g \
+                      where g.workspace_id = r.workspace_id and g.role_id = r.id) as holders \
              from roles r \
-             left join role_authorities a on a.tenant_id = r.tenant_id and a.role_id = r.id \
-             where r.tenant_id = $1 \
-             group by r.id, r.tenant_id, r.name, r.description \
+             left join role_authorities a on a.workspace_id = r.workspace_id and a.role_id = r.id \
+             where r.workspace_id = $1 \
+             group by r.id, r.workspace_id, r.name, r.description \
              order by r.name",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
         Ok(rows.iter().map(read_role).collect())
     }
 
-    async fn get(&self, tenant_id: Uuid, id: Uuid) -> Result<TenantRole, RoleError> {
-        self.read(tenant_id, id).await
+    async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<WorkspaceRole, RoleError> {
+        self.read(workspace_id, id).await
     }
 
-    async fn create(&self, tenant_id: Uuid, input: CreateRole) -> Result<TenantRole, RoleError> {
+    async fn create(&self, workspace_id: Uuid, input: CreateRole) -> Result<WorkspaceRole, RoleError> {
         let name = validate_name(&input.name)?;
         let authorities = validate_authorities(&input.authorities)?;
         let id = Uuid::now_v7();
 
         let mut tx = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
-            "insert into roles (tenant_id, id, name, description) values ($1, $2, $3, $4)",
+            "insert into roles (workspace_id, id, name, description) values ($1, $2, $3, $4)",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(id)
         .bind(&name)
         .bind(input.description.trim())
@@ -236,16 +236,16 @@ impl RoleStore for PostgresRoleStore {
                 internal(e)
             }
         })?;
-        write_authorities(&mut tx, tenant_id, id, &authorities)
+        write_authorities(&mut tx, workspace_id, id, &authorities)
             .await
             .map_err(internal)?;
         tx.commit().await.map_err(internal)?;
 
-        self.announce(tenant_id).await;
-        self.read(tenant_id, id).await
+        self.announce(workspace_id).await;
+        self.read(workspace_id, id).await
     }
 
-    async fn update(&self, tenant_id: Uuid, id: Uuid, input: UpdateRole) -> Result<TenantRole, RoleError> {
+    async fn update(&self, workspace_id: Uuid, id: Uuid, input: UpdateRole) -> Result<WorkspaceRole, RoleError> {
         let name = input.name.as_deref().map(validate_name).transpose()?;
         let authorities = input
             .authorities
@@ -258,9 +258,9 @@ impl RoleStore for PostgresRoleStore {
             "update roles set \
                  name = coalesce($3, name), \
                  description = coalesce($4, description) \
-             where tenant_id = $1 and id = $2",
+             where workspace_id = $1 and id = $2",
         )
-        .bind(tenant_id)
+        .bind(workspace_id)
         .bind(id)
         .bind(name.as_deref())
         .bind(input.description.as_deref().map(str::trim))
@@ -277,37 +277,37 @@ impl RoleStore for PostgresRoleStore {
             return Err(RoleError::NotFound);
         }
         if let Some(authorities) = &authorities {
-            write_authorities(&mut tx, tenant_id, id, authorities)
+            write_authorities(&mut tx, workspace_id, id, authorities)
                 .await
                 .map_err(internal)?;
         }
         tx.commit().await.map_err(internal)?;
 
-        self.announce(tenant_id).await;
-        self.read(tenant_id, id).await
+        self.announce(workspace_id).await;
+        self.read(workspace_id, id).await
     }
 
-    async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), RoleError> {
-        let role = self.read(tenant_id, id).await?;
+    async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), RoleError> {
+        let role = self.read(workspace_id, id).await?;
         if role.holders > 0 {
             return Err(RoleError::InUse(role.holders));
         }
-        sqlx::query("delete from roles where tenant_id = $1 and id = $2")
-            .bind(tenant_id)
+        sqlx::query("delete from roles where workspace_id = $1 and id = $2")
+            .bind(workspace_id)
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-        self.announce(tenant_id).await;
+        self.announce(workspace_id).await;
         Ok(())
     }
 
     async fn authorities_for(
         &self,
-        tenant_id: Uuid,
+        workspace_id: Uuid,
         roles: &[String],
     ) -> Result<HashSet<Authority>, RoleError> {
-        let map = self.load(tenant_id).await?;
+        let map = self.load(workspace_id).await?;
         Ok(roles
             .iter()
             .filter_map(|r| map.get(r))
@@ -315,9 +315,9 @@ impl RoleStore for PostgresRoleStore {
             .collect())
     }
 
-    async fn seed_defaults(&self, tenant_id: Uuid) -> Result<(), RoleError> {
-        let existing: i64 = sqlx::query_scalar("select count(*) from roles where tenant_id = $1")
-            .bind(tenant_id)
+    async fn seed_defaults(&self, workspace_id: Uuid) -> Result<(), RoleError> {
+        let existing: i64 = sqlx::query_scalar("select count(*) from roles where workspace_id = $1")
+            .bind(workspace_id)
             .fetch_one(&self.pool)
             .await
             .map_err(internal)?;
@@ -328,21 +328,21 @@ impl RoleStore for PostgresRoleStore {
         for template in crate::auth::rbac::DEFAULT_ROLES {
             let id = Uuid::now_v7();
             sqlx::query(
-                "insert into roles (tenant_id, id, name, description) values ($1, $2, $3, $4)",
+                "insert into roles (workspace_id, id, name, description) values ($1, $2, $3, $4)",
             )
-            .bind(tenant_id)
+            .bind(workspace_id)
             .bind(id)
             .bind(template.name)
             .bind(template.description)
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
-            write_authorities(&mut tx, tenant_id, id, template.authorities)
+            write_authorities(&mut tx, workspace_id, id, template.authorities)
                 .await
                 .map_err(internal)?;
         }
         tx.commit().await.map_err(internal)?;
-        self.announce(tenant_id).await;
+        self.announce(workspace_id).await;
         Ok(())
     }
 }

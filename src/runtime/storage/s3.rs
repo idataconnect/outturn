@@ -110,7 +110,7 @@ impl S3Storage {
     }
 
     /// Sweeps session-scope files after `days`, with a rule the store applies
-    /// on its own. One rule for every tenant, because the scope is the prefix
+    /// on its own. One rule for every workspace, because the scope is the prefix
     /// (see docs/storage.md); a hierarchy laid out the obvious way would need
     /// a rule per agent and hit the per-bucket cap almost at once.
     ///
