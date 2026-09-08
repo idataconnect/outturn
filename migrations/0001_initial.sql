@@ -739,6 +739,143 @@ create trigger agent_setting_overrides_go_with_the_agent
     after delete on agents
     for each row execute function drop_agent_setting_overrides();
 
+-- Skills -----------------------------------------------------------------------
+
+-- Prose an agent is given alongside its system prompt: how to drive a tool,
+-- how this workspace wants a job done.
+--
+-- Kept in the database rather than in object storage for two reasons. An agent
+-- holds write access to its workspace's files, so a skill living there would be
+-- one the agent could rewrite mid-turn; and an eval is worth nothing unless the
+-- exact text that ran can be named afterwards, which a mutable path cannot do.
+--
+-- Ownership is the platform workspace for a skill the operator ships to
+-- everyone, and the workspace's own id for one it wrote itself -- the same
+-- split setting_overrides uses to tell an operator default from a workspace's.
+create table skills (
+    id           uuid primary key,
+    workspace_id uuid not null references workspaces (id) on delete cascade,
+    slug         text not null,
+    name         text not null,
+    description  text not null default '',
+
+    -- 'standalone' is prose in its own right, whoever owns it. 'override' is a
+    -- workspace's instructions layered over somebody else's skill when the
+    -- prompt is composed; it is never merged into the base and means nothing
+    -- without it.
+    kind         text not null default 'standalone'
+                 check (kind in ('standalone', 'override')),
+
+    -- What an override layers onto. Restricted rather than cascading: retiring
+    -- is how a skill is withdrawn, and a delete that reached across into a
+    -- workspace's own writing would be the operator destroying a customer's
+    -- work to tidy up their own.
+    base_skill_id uuid references skills (id) on delete restrict,
+
+    -- Where a fork was taken, and from which version. Provenance only: nothing
+    -- is merged back, because two people editing the same prose conflict in
+    -- ways no algorithm should be trusted to settle silently. Keeping the exact
+    -- ancestor is what lets a fork be diffed against what the base has done
+    -- since -- and it is the common ancestor a three-way merge would need if
+    -- one is ever offered.
+    forked_from_skill_id   uuid references skills (id) on delete set null,
+    forked_from_version_id uuid,
+
+    -- Withdrawn rather than deleted. Bindings that exist keep working and no
+    -- new ones can be made, so an operator can retire an integration without
+    -- breaking the workspaces already leaning on it.
+    retired_at   timestamptz,
+
+    created_by   uuid references users (id) on delete set null,
+    created_at   timestamptz not null default now(),
+    updated_at   timestamptz not null default now(),
+
+    unique (workspace_id, slug),
+
+    -- An override needs a base; a standalone must not carry one.
+    check ((kind = 'override') = (base_skill_id is not null))
+);
+
+create index skills_workspace_idx on skills (workspace_id);
+create index skills_base_idx on skills (base_skill_id) where base_skill_id is not null;
+
+-- Every edit, kept. Rows are written once and never updated: what a turn was
+-- given has to stay answerable after the skill has moved on, which is the whole
+-- of the audit trail and the only way an eval can name what it measured.
+--
+-- Rolling back appends rather than repointing. If "current" could move
+-- backwards there would be no way to ask what was live on a given day without
+-- keeping a second history of the pointer -- so the newest version is always
+-- the live one, and a rollback reads as a further version carrying the old
+-- body. There is no current_version_id for the same reason: a pointer beside
+-- the history is a second thing to disagree with it.
+create table skill_versions (
+    id           uuid primary key,
+    workspace_id uuid not null references workspaces (id) on delete cascade,
+    skill_id     uuid not null references skills (id) on delete cascade,
+    -- Monotonic per skill, so a person can say "v3" and be understood.
+    ordinal      int  not null,
+    body         text not null,
+    -- What changed, in the words of whoever saved it.
+    note         text not null default '',
+
+    -- For an override's version: the base version it was written against.
+    -- The base moves on the operator's schedule, so this is what says whether
+    -- the instructions still address the prose they were written to correct --
+    -- an override going stale is silent otherwise, since nothing errors when a
+    -- correction stops matching what it was correcting.
+    based_on_version_id uuid references skill_versions (id) on delete set null,
+
+    created_by   uuid references users (id) on delete set null,
+    created_at   timestamptz not null default now(),
+
+    unique (skill_id, ordinal)
+);
+
+-- A skill's live version is its highest ordinal, and this is the lookup that
+-- composes a prompt.
+create index skill_versions_current_idx on skill_versions (skill_id, ordinal desc);
+
+-- Deferred because the two tables reference each other.
+alter table skills
+    add foreign key (forked_from_version_id) references skill_versions (id) on delete set null;
+
+-- Which skills an agent is given, and in what order they are composed.
+create table agent_skills (
+    workspace_id uuid not null references workspaces (id) on delete cascade,
+    agent_id     uuid not null references agents (id) on delete cascade,
+    skill_id     uuid not null references skills (id) on delete cascade,
+    -- Null follows the skill as it is edited, which is what makes an operator's
+    -- skill a way to ship a fix to everyone at once. Set pins this agent to one
+    -- version, for a workspace that wants changes to stop arriving unreviewed.
+    version_id   uuid references skill_versions (id) on delete set null,
+    position     int  not null default 0,
+    created_at   timestamptz not null default now(),
+    primary key (agent_id, skill_id)
+);
+
+create index agent_skills_skill_idx on agent_skills (skill_id);
+
+-- What a reply was actually composed from.
+--
+-- The binding above is policy and changes; this is the fact. It answers "which
+-- turns ran v3" long after v4 landed, which is what an eval keys off and what
+-- an audit asks for. An override is a skill in its own right, so it takes its
+-- own row and a composition is simply the list.
+--
+-- Cascading, because a workspace that is deleted takes its transcripts with it
+-- and this is part of one. Within a live workspace a skill is retired rather
+-- than deleted, which is what keeps the record whole.
+create table turn_skills (
+    reply_id   uuid not null references agent_messages (id) on delete cascade,
+    skill_id   uuid not null references skills (id) on delete cascade,
+    version_id uuid not null references skill_versions (id) on delete cascade,
+    position   int  not null,
+    primary key (reply_id, skill_id)
+);
+
+create index turn_skills_version_idx on turn_skills (version_id);
+
 -- Seed roles -------------------------------------------------------------------
 
 -- Seed every existing workspace with the three roles the code used to define,
@@ -763,13 +900,15 @@ join (values
     ('admin', 'sessions:delete'), ('admin', 'settings:read'), ('admin', 'settings:update'),
     ('admin', 'storage:workspace:read'), ('admin', 'storage:workspace:write'),
     ('admin', 'storage:agent:read'), ('admin', 'storage:agent:write'), ('admin', 'gateway:invoke'),
-    ('admin', 'usage:read'),
+    ('admin', 'usage:read'), ('admin', 'skills:read'), ('admin', 'skills:write'),
 
     ('operator', 'agents:create'), ('operator', 'agents:read'), ('operator', 'agents:update'),
     ('operator', 'sessions:create'), ('operator', 'sessions:read'),
     ('operator', 'storage:workspace:read'), ('operator', 'storage:agent:read'),
     ('operator', 'storage:agent:write'), ('operator', 'gateway:invoke'),
+    ('operator', 'skills:read'), ('operator', 'skills:write'),
 
     ('viewer', 'agents:read'), ('viewer', 'sessions:read'), ('viewer', 'settings:read'),
-    ('viewer', 'storage:workspace:read'), ('viewer', 'storage:agent:read')
+    ('viewer', 'storage:workspace:read'), ('viewer', 'storage:agent:read'),
+    ('viewer', 'skills:read')
 ) as a (role_name, authority) on a.role_name = r.name;
