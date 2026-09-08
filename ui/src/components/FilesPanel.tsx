@@ -164,10 +164,11 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
               </button>
 
               {menuOpen && (
-                <ul
-                  role="listbox"
-                  className="absolute z-10 top-full mt-1 left-0 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg py-1"
-                >
+                <div className="absolute z-10 top-full mt-1 left-0 w-64 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg py-1">
+                  <p className="px-3 py-1.5 text-xs font-medium text-surface-500 dark:text-surface-400 border-b border-surface-200 dark:border-surface-700">
+                    Upload destination
+                  </p>
+                  <ul role="listbox" className="py-1">
                   {SCOPES.map((s) => {
                     const disabled = !canWrite(s.scope)
                     const selected = s.scope === scope
@@ -199,7 +200,8 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
                       </li>
                     )
                   })}
-                </ul>
+                  </ul>
+                </div>
               )}
             </div>
           </>
@@ -215,7 +217,7 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
       <ul className="flex-1 overflow-auto p-2 space-y-1">
         {files.length === 0 && (
           <li className="px-2 py-1.5 text-xs text-surface-500 dark:text-surface-400">
-            No files yet. The agent will see anything uploaded here under the same name.
+            No files yet.
           </li>
         )}
         {files.map((f) => (
