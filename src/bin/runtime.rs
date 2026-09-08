@@ -17,6 +17,25 @@ async fn main() {
 
     let health = Health::new();
 
+    // Health is served before anything that can wait. A pod that opens its
+    // port only once storage has answered looks dead to the readiness probe
+    // for as long as storage takes, and a deploy tool watching it gives up;
+    // one that answers "not ready" is a pod that is starting, which is true.
+    health.set_ready(false);
+    let app = Router::new().merge(lifecycle::routes(health.clone()));
+    let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".into());
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    tracing::info!("listening on {addr}");
+    let serving = {
+        let health = health.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(lifecycle::shutdown_signal(health))
+                .await
+                .unwrap();
+        })
+    };
+
     // Read once at startup: it is the same bytes for every session, and
     // compiling it per turn would be waste.
     let agent_module = std::fs::read(
@@ -120,16 +139,11 @@ async fn main() {
     })
     .spawn(health.shutdown_signal());
 
-    let app = Router::new()
-        .merge(lifecycle::routes(health.clone()));
-
-    let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".into());
-    let listener = TcpListener::bind(&addr).await.unwrap();
-    tracing::info!("listening on {addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(lifecycle::shutdown_signal(health))
-        .await
-        .unwrap();
+    // Everything a turn needs is in place: storage answered, the puller is
+    // asking. Now the pod is ready.
+    health.set_ready(true);
+    tracing::info!("ready to take work");
+    serving.await.unwrap();
 
     // The puller has stopped asking, but turns it already took are still
     // streaming. Leaving now would kill them mid-reply and leave each one to
