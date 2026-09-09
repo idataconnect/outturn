@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
-import { AlertTriangle, ArrowLeft, GitFork, History, Layers } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, GitFork, Globe, History, Layers, ShieldCheck } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import {
+  approveHosts,
   createSkill,
   forkSkill,
   getSkill,
   listSkills,
   listVersions,
+  parseHosts,
   publishVersion,
   retireSkill,
   slugify,
@@ -41,11 +43,21 @@ export default function SkillEditor() {
     state.status === 'authenticated' && state.session.roles.includes('system_admin')
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canWrite = authorities.includes('skills:write')
+  // Opening a host is writing an egress rule, which is a different authority
+  // from writing the skill that asks for one.
+  const canApprove = authorities.includes('settings:update')
 
   const [skill, setSkill] = useState<Skill | null>(null)
   const [base, setBase] = useState<Skill | null>(null)
   const [versions, setVersions] = useState<SkillVersion[]>([])
-  const [form, setForm] = useState({ name: '', slug: '', description: '', body: '', note: '' })
+  const [form, setForm] = useState({
+    name: '',
+    slug: '',
+    description: '',
+    body: '',
+    note: '',
+    hosts: '',
+  })
   const [slugEdited, setSlugEdited] = useState(false)
   // Only an operator sees this, and only when writing something new.
   const [forEveryone, setForEveryone] = useState(false)
@@ -88,6 +100,7 @@ export default function SkillEditor() {
           description: s.description,
           body: v[0]?.body ?? '',
           note: '',
+          hosts: s.hosts.join('\n'),
         })
         setError(null)
       } catch (e) {
@@ -108,6 +121,7 @@ export default function SkillEditor() {
           name: form.name,
           description: form.description,
           body: form.body,
+          hosts: parseHosts(form.hosts),
           ...(overriding ? { base_skill_id: overriding } : {}),
         },
         // An override always belongs to the workspace that wrote it, whoever
@@ -135,9 +149,12 @@ export default function SkillEditor() {
           operators,
         )
       }
+      // A version carries its hosts, so a change to either publishes one.
       const live = versions[0]
-      if (!live || live.body !== form.body) {
-        await publishVersion(skill.id, form.body, form.note, operators)
+      const hosts = parseHosts(form.hosts)
+      const hostsChanged = hosts.join('\n') !== skill.hosts.join('\n')
+      if (!live || live.body !== form.body || hostsChanged) {
+        await publishVersion(skill.id, form.body, form.note, hosts, operators)
       }
       const [s, v] = await Promise.all([getSkill(skill.id), listVersions(skill.id)])
       setSkill(s)
@@ -146,6 +163,20 @@ export default function SkillEditor() {
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to publish')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function onApprove() {
+    if (!skill) return
+    setSaving(true)
+    try {
+      await approveHosts(skill.id)
+      setSkill(await getSkill(skill.id))
+      setError(null)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to allow those hosts')
     } finally {
       setSaving(false)
     }
@@ -235,6 +266,43 @@ export default function SkillEditor() {
         </p>
       )}
 
+      {skill && skill.unmet_hosts.length > 0 && (
+        <div className="mt-4 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-3">
+          <p className="flex items-start gap-2 text-sm text-amber-800 dark:text-amber-400">
+            <Globe size={16} className="mt-0.5 shrink-0" aria-hidden />
+            <span>
+              This skill reaches {skill.unmet_hosts.length === 1 ? 'a host' : 'hosts'} your
+              workspace has not allowed. Agents cannot be given it until{' '}
+              {skill.unmet_hosts.length === 1 ? 'that host is' : 'those hosts are'} opened.
+            </span>
+          </p>
+          <ul className="mt-2 ml-6 space-y-0.5">
+            {skill.unmet_hosts.map((h) => (
+              <li key={h} className="text-sm font-mono text-amber-900 dark:text-amber-300">
+                {h}
+              </li>
+            ))}
+          </ul>
+          {canApprove ? (
+            <button
+              type="button"
+              onClick={() => void onApprove()}
+              disabled={saving}
+              className="mt-3 ml-6 flex items-center gap-2 px-3 py-1.5 rounded-md bg-amber-700 hover:bg-amber-600 text-white text-sm font-medium disabled:opacity-50"
+            >
+              <ShieldCheck size={14} aria-hidden />
+              Allow {skill.unmet_hosts.length === 1 ? 'this host' : 'these hosts'}
+            </button>
+          ) : (
+            <p className="mt-2 ml-6 text-xs text-amber-800 dark:text-amber-400">
+              You can write skills but not open the network. Ask somebody who can change this
+              workspace's settings to allow{' '}
+              {skill.unmet_hosts.length === 1 ? 'it' : 'them'}.
+            </p>
+          )}
+        </div>
+      )}
+
       {error && (
         <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
@@ -299,6 +367,24 @@ export default function SkillEditor() {
               rows={16}
               className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
+          </label>
+
+          <label className="block">
+            <span className="text-sm font-medium text-surface-800 dark:text-surface-200">
+              Hosts it reaches
+            </span>
+            <textarea
+              value={form.hosts}
+              disabled={!editable}
+              onChange={(e) => setForm((f) => ({ ...f, hosts: e.target.value }))}
+              rows={3}
+              placeholder="api.open-meteo.com"
+              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
+            />
+            <span className="mt-1 block text-xs text-surface-600 dark:text-surface-400">
+              One per line. Naming a host asks for it; somebody who can change this
+              workspace's settings still has to allow it.
+            </span>
           </label>
 
           {creating && isOperator && !overriding && (

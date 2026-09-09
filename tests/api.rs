@@ -2481,3 +2481,169 @@ async fn seeded_role_templates_are_all_honourable() {
     let names: Vec<String> = h.roles.templates().await.expect("templates").into_iter().map(|t| t.name).collect();
     assert!(names.contains(&"admin".to_string()), "no admin template: {names:?}");
 }
+
+/// A skill that reaches somewhere the workspace has not allowed cannot be bound.
+///
+/// Declaring a host is a statement of what a skill needs, never a grant. The
+/// egress rules stay the only thing that opens one, so the refusal names the
+/// hosts and leaves the decision with somebody who can make it.
+#[tokio::test]
+async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h.login_as("wx@acme.example", None, Some((acme, "admin"))).await;
+
+    let (_, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"weather","name":"Weather","body":"Call open-meteo.",
+                "hosts":["https://api.open-meteo.com/v1/forecast"]}"#,
+        )
+        .await;
+    let skill: serde_json::Value = serde_json::from_str(&body).expect("skill");
+    let skill_id = skill["id"].as_str().expect("id").to_string();
+
+    // The URL is reduced to a host, the same way a hand-written rule is.
+    assert_eq!(skill["hosts"][0], "api.open-meteo.com", "not normalised: {body}");
+    assert_eq!(skill["unmet_hosts"][0], "api.open-meteo.com", "should be unmet: {body}");
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"W","slug":"w"}"#)
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bind = |token: &str, body: String| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/agents/{agent_id}/skills"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    let (status, body) = h
+        .send(bind(&admin, format!(r#"[{{"skill_id":"{skill_id}"}}]"#)))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "bound without access: {body}");
+    assert!(
+        body.contains("api.open-meteo.com"),
+        "the refusal must name the host: {body}"
+    );
+
+    // Approving opens it, and reports what it opened.
+    let (status, body) = h
+        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&admin), "")
+        .await;
+    assert_eq!(status, StatusCode::OK, "approve failed: {body}");
+    assert!(body.contains("api.open-meteo.com"), "body: {body}");
+
+    let (status, body) = h
+        .send(bind(&admin, format!(r#"[{{"skill_id":"{skill_id}"}}]"#)))
+        .await;
+    assert_eq!(status, StatusCode::OK, "still refused after approval: {body}");
+
+    // And the rule remembers which skill asked for it.
+    let from: Option<Uuid> =
+        sqlx::query_scalar("select from_skill_id from egress_rules where host = 'api.open-meteo.com'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("rule");
+    assert_eq!(from.map(|u| u.to_string()), Some(skill_id), "provenance not recorded");
+}
+
+/// Authoring a skill is not consent to what it reaches.
+///
+/// The operator role may write skills and may not open the network. Without
+/// this, declaring a host and installing one's own skill would be a way around
+/// the authority that governs egress.
+#[tokio::test]
+async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h.login_as("op9@acme.example", None, Some((acme, "operator"))).await;
+
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            r#"{"slug":"weather","name":"Weather","body":"x","hosts":["api.open-meteo.com"]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "an operator may write a skill: {body}");
+    let skill_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // But not open what it names.
+    let (status, body) = h
+        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&operator), "")
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an operator granted itself network access through a skill: {body}"
+    );
+
+    // An admin, who may write the rule by hand, may approve it.
+    let admin = h.login_as("ad9@acme.example", None, Some((acme, "admin"))).await;
+    let (status, _) = h
+        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&admin), "")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A version that adds a host is unvetted again; one that only rewords is not.
+#[tokio::test]
+async fn only_a_new_host_asks_for_approval_again() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h.login_as("rv@acme.example", None, Some((acme, "admin"))).await;
+
+    let (_, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"w","name":"W","body":"one","hosts":["api.open-meteo.com"]}"#,
+        )
+        .await;
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    h.post(&format!("/v1/skills/{id}/hosts/approve"), Some(&admin), "").await;
+
+    // Reworded, same hosts: nothing to approve.
+    h.post(
+        &format!("/v1/skills/{id}/versions"),
+        Some(&admin),
+        r#"{"body":"two","note":"reworded","hosts":["api.open-meteo.com"]}"#,
+    )
+    .await;
+    let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
+    let after: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        after["unmet_hosts"].as_array().unwrap().len(),
+        0,
+        "a reworded version asked for approval again: {body}"
+    );
+
+    // A version that reaches somewhere new does need approving, and only for
+    // the host that is new.
+    h.post(
+        &format!("/v1/skills/{id}/versions"),
+        Some(&admin),
+        r#"{"body":"three","note":"adds a host","hosts":["api.open-meteo.com","api.example.com"]}"#,
+    )
+    .await;
+    let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
+    let after: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let unmet = after["unmet_hosts"].as_array().unwrap();
+    assert_eq!(unmet.len(), 1, "should ask about the new host alone: {body}");
+    assert_eq!(unmet[0], "api.example.com");
+}

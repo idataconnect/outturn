@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { AlertTriangle, Layers } from 'lucide-react'
+import { AlertTriangle, Globe, Layers } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import { agentSkills, listSkills, setAgentSkills, type Skill } from '../lib/skills'
@@ -64,6 +64,12 @@ export default function AgentSkills({ agentId }: { agentId: string }) {
   const overrideFor = (id: string) =>
     skills.find((s) => s.kind === 'override' && s.base_skill_id === id && !s.retired_at)
 
+  // A skill reaching somewhere the workspace has not allowed cannot be given to
+  // an agent -- nor can one whose override reaches somewhere new, since the
+  // override rides along with it.
+  const blocked = (skill: Skill) =>
+    skill.unmet_hosts.length > 0 || (overrideFor(skill.id)?.unmet_hosts.length ?? 0) > 0
+
   if (loading) return null
 
   return (
@@ -99,7 +105,10 @@ export default function AgentSkills({ agentId }: { agentId: string }) {
                   type="checkbox"
                   id={`skill-${skill.id}`}
                   checked={chosen.includes(skill.id)}
-                  disabled={!canEdit}
+                  // Blocked rather than refused on click: the server would say
+                  // no anyway, and a disabled box beside the reason is a
+                  // shorter way to find out.
+                  disabled={!canEdit || (blocked(skill) && !chosen.includes(skill.id))}
                   onChange={(e) => void toggle(skill.id, e.target.checked)}
                   className="mt-1"
                 />
@@ -118,6 +127,25 @@ export default function AgentSkills({ agentId }: { agentId: string }) {
                   {skill.description && (
                     <p className="text-xs text-surface-600 dark:text-surface-400">
                       {skill.description}
+                    </p>
+                  )}
+                  {blocked(skill) && (
+                    <p className="mt-1 flex items-start gap-1 text-xs text-amber-700 dark:text-amber-500">
+                      <Globe size={12} className="mt-0.5 shrink-0" aria-hidden />
+                      <span>
+                        Reaches{' '}
+                        <span className="font-mono">
+                          {[
+                            ...skill.unmet_hosts,
+                            ...(overrideFor(skill.id)?.unmet_hosts ?? []),
+                          ].join(', ')}
+                        </span>
+                        , which this workspace has not allowed.{' '}
+                        <Link to={`/skills/${skill.id}`} className="underline underline-offset-2">
+                          Review it
+                        </Link>
+                        .
+                      </span>
                     </p>
                   )}
                   {variation && chosen.includes(skill.id) && (

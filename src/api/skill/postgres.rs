@@ -20,6 +20,39 @@ impl PostgresSkillStore {
     }
 }
 
+/// Declared hosts go through the same normaliser a hand-written rule does, so
+/// `https://api.example.com/v1/x` and `api.example.com` are one host and the
+/// comparison against the egress rules is a string match rather than a guess.
+fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, SkillError> {
+    let mut out: Vec<String> = Vec::new();
+    for h in hosts {
+        if h.trim().is_empty() {
+            continue;
+        }
+        let host = crate::runtime::egress::normalise_host(h).map_err(SkillError::Invalid)?;
+        if !out.contains(&host) {
+            out.push(host);
+        }
+    }
+    Ok(out)
+}
+
+async fn write_hosts(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    version_id: Uuid,
+    hosts: &[String],
+) -> Result<(), SkillError> {
+    for host in hosts {
+        sqlx::query("insert into skill_version_hosts (version_id, host) values ($1, $2)")
+            .bind(version_id)
+            .bind(host)
+            .execute(&mut **tx)
+            .await
+            .map_err(internal)?;
+    }
+    Ok(())
+}
+
 fn internal(e: sqlx::Error) -> SkillError {
     SkillError::Internal(e.to_string())
 }
@@ -57,6 +90,14 @@ macro_rules! select_skill {
             "select s.id, s.workspace_id, s.slug, s.name, s.description, s.kind, ",
             "s.base_skill_id, s.forked_from_skill_id, s.forked_from_version_id, ",
             "s.retired_at, v.id as version_id, v.ordinal, ",
+            "coalesce((select array_agg(h.host order by h.host) ",
+            "            from skill_version_hosts h where h.version_id = v.id), '{}') as hosts, ",
+            "coalesce((select array_agg(h.host order by h.host) ",
+            "            from skill_version_hosts h ",
+            "           where h.version_id = v.id ",
+            "             and not exists (select 1 from egress_rules e ",
+            "                              where e.workspace_id = $2 and e.host = h.host and e.enabled)), ",
+            "         '{}') as unmet_hosts, ",
             "coalesce( ",
             "    v.based_on_version_id is not null ",
             "    and v.based_on_version_id is distinct from ( ",
@@ -86,6 +127,8 @@ fn read_skill(row: &sqlx::postgres::PgRow) -> Skill {
         forked_from_skill_id: row.get("forked_from_skill_id"),
         forked_from_version_id: row.get("forked_from_version_id"),
         retired_at: row.get("retired_at"),
+        hosts: row.get("hosts"),
+        unmet_hosts: row.get("unmet_hosts"),
         version_id: row.get("version_id"),
         ordinal: row.get("ordinal"),
         base_moved: row.get("base_moved"),
@@ -100,6 +143,7 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
         body: row.get("body"),
         note: row.get("note"),
         based_on_version_id: row.get("based_on_version_id"),
+        hosts: Vec::new(),
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
     }
@@ -114,6 +158,7 @@ impl SkillStore for PostgresSkillStore {
             "where s.workspace_id = any($1) order by s.name"
         ))
         .bind(vec![workspace_id, PLATFORM_WORKSPACE])
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -122,9 +167,10 @@ impl SkillStore for PostgresSkillStore {
 
     async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Skill, SkillError> {
         let row = sqlx::query(select_skill!(
-            "where s.workspace_id = any($1) and s.id = $2"
+            "where s.workspace_id = any($1) and s.id = $3"
         ))
         .bind(vec![workspace_id, PLATFORM_WORKSPACE])
+        .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -176,6 +222,7 @@ impl SkillStore for PostgresSkillStore {
             None => None,
         };
 
+        let hosts = clean_hosts(&input.hosts)?;
         let id = Uuid::now_v7();
         sqlx::query(
             "insert into skills (id, workspace_id, slug, name, description, kind, base_skill_id, created_by) \
@@ -193,11 +240,12 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(|e| map_write_error(e, &input.slug))?;
 
+        let first = Uuid::now_v7();
         sqlx::query(
             "insert into skill_versions (id, workspace_id, skill_id, ordinal, body, note, based_on_version_id, created_by) \
              values ($1, $2, $3, 1, $4, 'first version', $5, $6)",
         )
-        .bind(Uuid::now_v7())
+        .bind(first)
         .bind(workspace_id)
         .bind(id)
         .bind(&input.body)
@@ -206,6 +254,7 @@ impl SkillStore for PostgresSkillStore {
         .execute(&mut *tx)
         .await
         .map_err(internal)?;
+        write_hosts(&mut tx, first, &hosts).await?;
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await
@@ -273,6 +322,8 @@ impl SkillStore for PostgresSkillStore {
             None => None,
         };
 
+        let hosts = clean_hosts(&input.hosts)?;
+        let version_id = Uuid::now_v7();
         let row = sqlx::query(
             "insert into skill_versions (id, workspace_id, skill_id, ordinal, body, note, based_on_version_id, created_by) \
              values ($1, $2, $3, \
@@ -280,7 +331,7 @@ impl SkillStore for PostgresSkillStore {
                      $4, $5, $6, $7) \
              returning id, skill_id, ordinal, body, note, based_on_version_id, created_by, created_at",
         )
-        .bind(Uuid::now_v7())
+        .bind(version_id)
         .bind(workspace_id)
         .bind(id)
         .bind(&input.body)
@@ -291,6 +342,7 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(internal)?;
 
+        write_hosts(&mut tx, version_id, &hosts).await?;
         sqlx::query("update skills set updated_at = now() where id = $1")
             .bind(id)
             .execute(&mut *tx)
@@ -298,7 +350,9 @@ impl SkillStore for PostgresSkillStore {
             .map_err(internal)?;
 
         tx.commit().await.map_err(internal)?;
-        Ok(read_version(&row))
+        let mut version = read_version(&row);
+        version.hosts = hosts;
+        Ok(version)
     }
 
     async fn versions(&self, workspace_id: Uuid, id: Uuid) -> Result<Vec<SkillVersion>, SkillError> {
@@ -482,6 +536,38 @@ impl SkillStore for PostgresSkillStore {
             }
         }
 
+        // Checked here because binding is the moment a skill becomes something a
+        // turn will actually run. The overrides that ride along are included:
+        // they compose with the base whether or not anybody bound them, so
+        // their declarations count the same.
+        let ids: Vec<Uuid> = bindings.iter().map(|b| b.skill_id).collect();
+        let unmet: Vec<String> = sqlx::query_scalar(
+            "select distinct h.host \
+               from skill_version_hosts h \
+               join skill_versions v on v.id = h.version_id \
+               join skills s on s.id = v.skill_id \
+              where v.ordinal = (select max(ordinal) from skill_versions where skill_id = s.id) \
+                and (s.id = any($2) \
+                     or (s.workspace_id = $1 and s.kind = 'override' \
+                         and s.base_skill_id = any($2))) \
+                and not exists (select 1 from egress_rules e \
+                                 where e.workspace_id = $1 and e.host = h.host and e.enabled) \
+              order by h.host",
+        )
+        .bind(workspace_id)
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal)?;
+
+        if !unmet.is_empty() {
+            // Refused rather than queued. When there is somewhere to send a
+            // request for access, this is the branch that raises it -- the
+            // hosts are already in hand, and the approver is whoever may write
+            // an egress rule.
+            return Err(SkillError::HostsNotAllowed(unmet));
+        }
+
         sqlx::query("delete from agent_skills where workspace_id = $1 and agent_id = $2")
             .bind(workspace_id)
             .bind(agent_id)
@@ -562,6 +648,47 @@ impl SkillStore for PostgresSkillStore {
                 position: i as i32,
             })
             .collect())
+    }
+
+    async fn approve_hosts(
+        &self,
+        workspace_id: Uuid,
+        skill_id: Uuid,
+        actor: Uuid,
+    ) -> Result<Vec<String>, SkillError> {
+        // Visible to this workspace, which is what lets it approve the hosts of
+        // the operator's skill without being able to edit it.
+        self.get(workspace_id, skill_id).await?;
+
+        // `do nothing` rather than an error on conflict: a host somebody
+        // already allowed is not a failure, it is the case where there was
+        // nothing left to approve. What comes back is what actually opened.
+        let opened: Vec<String> = sqlx::query_scalar(
+            "insert into egress_rules (id, workspace_id, host, from_skill_id) \
+             select uuidv7(), $1, h.host, $2 \
+               from skill_version_hosts h \
+               join skill_versions v on v.id = h.version_id \
+              where v.skill_id = $2 \
+                and v.ordinal = (select max(ordinal) from skill_versions where skill_id = $2) \
+             on conflict (workspace_id, host) do nothing \
+             returning host",
+        )
+        .bind(workspace_id)
+        .bind(skill_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        if !opened.is_empty() {
+            tracing::info!(
+                actor = %actor,
+                workspace_id = %workspace_id,
+                skill_id = %skill_id,
+                hosts = %opened.join(", "),
+                "network access approved for a skill"
+            );
+        }
+        Ok(opened)
     }
 
     async fn record_turn(

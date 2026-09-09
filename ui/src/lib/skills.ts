@@ -21,6 +21,10 @@ export type Skill = {
   forked_from_skill_id: string | null
   forked_from_version_id: string | null
   retired_at: string | null
+  /** Hosts the live version says it will reach. Names them; opens nothing. */
+  hosts: string[]
+  /** Those this workspace has not allowed. Empty means ready to bind. */
+  unmet_hosts: string[]
   /** The live version, which is always the newest. */
   version_id: string | null
   ordinal: number | null
@@ -36,6 +40,7 @@ export type SkillVersion = {
   body: string
   note: string
   based_on_version_id: string | null
+  hosts: string[]
   created_by: string | null
   created_at: string
 }
@@ -71,6 +76,7 @@ export type NewSkill = {
   body?: string
   /** Set to write an override of another skill rather than a skill of one's own. */
   base_skill_id?: string
+  hosts?: string[]
 }
 
 /**
@@ -104,12 +110,31 @@ export function publishVersion(
   id: string,
   body: string,
   note: string,
+  hosts: string[],
   platform = false,
 ): Promise<SkillVersion> {
   return api<SkillVersion>(
     platform ? `/v1/platform/skills/${id}/versions` : `/v1/skills/${id}/versions`,
-    { method: 'POST', body: JSON.stringify({ body, note }) },
+    { method: 'POST', body: JSON.stringify({ body, note, hosts }) },
   )
+}
+
+/**
+ * Opens the hosts this skill names that the workspace has not allowed.
+ *
+ * Needs the authority that writes an egress rule, which is deliberately not the
+ * one that writes skills: declaring a host asks for access, it does not take it.
+ */
+export function approveHosts(id: string): Promise<string[]> {
+  return api<string[]>(`/v1/skills/${id}/hosts/approve`, { method: 'POST' })
+}
+
+/** One host per line, as the editor shows them. */
+export function parseHosts(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((h) => h.trim())
+    .filter(Boolean)
 }
 
 export function retireSkill(id: string, retired: boolean, platform = false): Promise<Skill> {

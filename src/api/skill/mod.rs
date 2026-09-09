@@ -50,6 +50,16 @@ pub struct Skill {
     pub forked_from_skill_id: Option<Uuid>,
     pub forked_from_version_id: Option<Uuid>,
     pub retired_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What the live version says it will reach.
+    pub hosts: Vec<String>,
+    /// The declared hosts this workspace has not allowed.
+    ///
+    /// Computed against the caller's own egress rules, so the operator's skill
+    /// reads as unmet to a workspace that has not opened those hosts even
+    /// though the operator has. Empty means the skill is ready to bind: every
+    /// host it names is one the workspace already permits, whether somebody
+    /// allowed it by hand or approved it here.
+    pub unmet_hosts: Vec<String>,
     /// The live version, which is the newest. Absent only for the moment
     /// between a skill being created and its first version landing.
     pub version_id: Option<Uuid>,
@@ -72,6 +82,7 @@ pub struct SkillVersion {
     pub body: String,
     pub note: String,
     pub based_on_version_id: Option<Uuid>,
+    pub hosts: Vec<String>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -88,6 +99,9 @@ pub struct CreateSkill {
     /// own. The base may belong to the operator or to this workspace.
     #[serde(default)]
     pub base_skill_id: Option<Uuid>,
+    /// Hosts this skill will reach. Names them; opens nothing.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 /// Fields omitted are left unchanged. The body is not here: prose changes by
@@ -103,6 +117,10 @@ pub struct NewVersion {
     pub body: String,
     #[serde(default)]
     pub note: String,
+    /// The hosts this version reaches. Sent in full rather than as a change,
+    /// so a version that drops one says so by leaving it out.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +164,15 @@ pub enum SkillError {
     DuplicateSlug(String),
     #[error("invalid skill: {0}")]
     Invalid(String),
+    /// Bound a skill that reaches hosts this workspace has not allowed.
+    ///
+    /// Carries the hosts rather than a sentence about them, so a caller can
+    /// name them, and so the approval flow has something to act on. When there
+    /// is somewhere to send a request for access, this is where it is raised
+    /// from -- see `approve_hosts`, which is the same step taken by somebody
+    /// who already holds the authority.
+    #[error("needs network access to {}", .0.join(", "))]
+    HostsNotAllowed(Vec<String>),
     #[error("skill store error: {0}")]
     Internal(String),
 }
@@ -225,6 +252,21 @@ pub trait SkillStore: Send + Sync {
         workspace_id: Uuid,
         agent_id: Uuid,
     ) -> Result<Vec<ResolvedSkill>, SkillError>;
+
+    /// Opens the declared hosts this workspace has not allowed yet.
+    ///
+    /// The caller must hold the authority that writes an egress rule: this is
+    /// the ordinary rule-writing act, done in one step and tagged with the
+    /// skill that asked for it. Returns what it opened, which is what an
+    /// approver should be shown afterwards -- and, before approving, is
+    /// exactly `unmet_hosts`, so nobody is asked to re-approve a host they
+    /// already allowed.
+    async fn approve_hosts(
+        &self,
+        workspace_id: Uuid,
+        skill_id: Uuid,
+        actor: Uuid,
+    ) -> Result<Vec<String>, SkillError>;
 
     /// Records what a reply was composed from, which is what an eval reads and
     /// what an audit asks for.

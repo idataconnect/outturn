@@ -173,6 +173,27 @@ pub async fn fork_skill(
     Ok((StatusCode::CREATED, Json(skill)))
 }
 
+/// Opens the hosts a skill declares and this workspace has not allowed.
+///
+/// Gated on the authority that writes an egress rule, not the one that writes
+/// skills: otherwise a role allowed to author skills but not to open the
+/// network could grant itself network access by declaring a host and installing
+/// its own skill. Authoring is not consent, and the consent has to come from
+/// somebody who could have written the rule by hand.
+pub async fn approve_skill_hosts(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    Ok(Json(
+        state
+            .skills
+            .approve_hosts(claims.workspace_id, id, claims.subject)
+            .await?,
+    ))
+}
+
 pub async fn list_agent_skills(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

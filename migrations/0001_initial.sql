@@ -846,6 +846,33 @@ create index skill_versions_current_idx on skill_versions (skill_id, ordinal des
 alter table skills
     add foreign key (forked_from_version_id) references skill_versions (id) on delete set null;
 
+-- What a skill will be reaching for, declared with the version that needs it.
+--
+-- Declared, never granted. A workspace's egress rules stay the only thing that
+-- opens a host; this says which ones a skill expects to reach, so the gap
+-- between the two can be shown to somebody who can close it.
+--
+-- Per version rather than per skill, because a version that adds a host is the
+-- moment worth interrupting somebody for, and the difference between the two
+-- sets is how that moment is found. A version that only rewords declares the
+-- same hosts and disturbs nobody.
+create table skill_version_hosts (
+    version_id uuid not null references skill_versions (id) on delete cascade,
+    host       text not null,
+    primary key (version_id, host)
+);
+
+create index skill_version_hosts_host_idx on skill_version_hosts (host);
+
+-- Which skill's declaration opened a rule, where one did.
+--
+-- Null when somebody added the host themselves. Set null rather than cascading
+-- when the skill goes: a host is unique per workspace, so another skill may be
+-- leaning on the same rule, and withdrawing network access as a side effect of
+-- deleting a skill would be a surprise in the dangerous direction.
+alter table egress_rules
+    add column from_skill_id uuid references skills (id) on delete set null;
+
 -- Which skills an agent is given, and in what order they are composed.
 create table agent_skills (
     workspace_id uuid not null references workspaces (id) on delete cascade,

@@ -203,6 +203,9 @@ impl From<super::skill::SkillError> for ApiError {
             SkillError::NotFound => StatusCode::NOT_FOUND,
             SkillError::DuplicateSlug(_) => StatusCode::CONFLICT,
             SkillError::Invalid(_) => StatusCode::BAD_REQUEST,
+            // Not forbidden to this caller so much as not yet allowed to
+            // anyone here: the workspace has not opened those hosts.
+            SkillError::HostsNotAllowed(_) => StatusCode::CONFLICT,
             SkillError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, e.to_string())
@@ -999,6 +1002,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::skills::get_version),
         )
         .route("/v1/skills/{id}/fork", post(super::skills::fork_skill))
+        .route(
+            "/v1/skills/{id}/hosts/approve",
+            post(super::skills::approve_skill_hosts),
+        )
         .route(
             "/v1/agents/{id}/skills",
             get(super::skills::list_agent_skills).put(super::skills::set_agent_skills),
