@@ -681,7 +681,7 @@ create table usage_ledger (
     -- yesterday's calls under a dimension nobody thought to normalise,
     -- without a backfill, because the data was never dropped.
     provider_usage     jsonb,
-    -- Normalised on its own because it changes the price of every other
+    -- Normalized on its own because it changes the price of every other
     -- number on the row: OpenAI's flex and priority tiers bill the same
     -- tokens at different rates.
     service_tier       text,

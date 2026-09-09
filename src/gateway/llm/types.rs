@@ -87,7 +87,7 @@ pub struct FunctionDef {
     pub parameters: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
     pub id: String,
     #[serde(rename = "type")]
@@ -95,7 +95,7 @@ pub struct ToolCall {
     pub function: FunctionCall,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
@@ -117,6 +117,49 @@ pub struct Choice {
     pub index: u32,
     pub message: Message,
     pub finish_reason: Option<String>,
+    /// The reply in the order the model produced it.
+    ///
+    /// A reply is a sequence, not a body of text with some calls attached to
+    /// it. Anthropic says so outright -- its content is a list of blocks that
+    /// may alternate text and tool_use -- and any model asked to say something
+    /// before it looks something up produces exactly that shape. Order cannot
+    /// be recovered once the pieces are sorted into "all the text" and "all
+    /// the calls", so it is carried here rather than reconstructed later.
+    ///
+    /// `message.content` and `message.tool_calls` are the flattening of this,
+    /// kept for the OpenAI-shaped wire until the callers of this gateway read
+    /// parts directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
+}
+
+/// One piece of an assistant's reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Part {
+    Text { text: String },
+    ToolCall { call: ToolCall },
+}
+
+impl Part {
+    /// The OpenAI-shaped projection: every text joined, every call listed
+    /// after it.
+    ///
+    /// Lossy on purpose and named so, because the protocol it is shaped for
+    /// cannot say what the parts can. Everything that reads a reply should
+    /// move to the parts; this exists so that moving them can happen one
+    /// caller at a time.
+    pub fn flatten(parts: &[Part]) -> (String, Vec<ToolCall>) {
+        let mut text = String::new();
+        let mut calls = Vec::new();
+        for part in parts {
+            match part {
+                Part::Text { text: t } => text.push_str(t),
+                Part::ToolCall { call } => calls.push(call.clone()),
+            }
+        }
+        (text, calls)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -140,35 +140,42 @@ pub fn anthropic_to_openai(
     let id = resp["id"].as_str().unwrap_or("").to_string();
     let model = resp["model"].as_str().unwrap_or("").to_string();
 
-    let mut text_parts = Vec::new();
-    let mut tool_calls = Vec::new();
+    // Walked in order and kept in order. Anthropic's content is a sequence,
+    // and a reply that says something, looks something up, then says something
+    // more is three blocks whose arrangement is the whole of its meaning.
+    let mut parts: Vec<Part> = Vec::new();
 
     if let Some(content) = resp["content"].as_array() {
         for block in content {
             match block["type"].as_str() {
                 Some("text") => {
                     if let Some(t) = block["text"].as_str() {
-                        text_parts.push(t.to_string());
+                        parts.push(Part::Text { text: t.to_string() });
                     }
                 }
                 Some("tool_use") => {
-                    tool_calls.push(ToolCall {
-                        id: block["id"].as_str().unwrap_or("").to_string(),
-                        tool_type: "function".to_string(),
-                        function: FunctionCall {
-                            name: block["name"].as_str().unwrap_or("").to_string(),
-                            arguments: block["input"].to_string(),
+                    parts.push(Part::ToolCall {
+                        call: ToolCall {
+                            id: block["id"].as_str().unwrap_or("").to_string(),
+                            tool_type: "function".to_string(),
+                            function: FunctionCall {
+                                name: block["name"].as_str().unwrap_or("").to_string(),
+                                arguments: block["input"].to_string(),
+                            },
                         },
                     });
                 }
-                // Drop thinking blocks — they don't round-trip
+                // Dropped: a thinking block cannot be replayed to the provider
+                // on a later turn, so keeping it here would only put it in a
+                // transcript that must not send it back. What it cost is still
+                // counted -- see `reasoning_tokens` in the usage below.
                 Some("thinking") | Some("redacted_thinking") => {}
                 _ => {}
             }
         }
     }
 
-    let content_text = text_parts.join("");
+    let (content_text, tool_calls) = Part::flatten(&parts);
     let message = Message {
         role: Role::Assistant,
         content: MessageContent::Text(content_text),
@@ -226,6 +233,7 @@ pub fn anthropic_to_openai(
             index: 0,
             message,
             finish_reason,
+            parts,
         }],
         usage,
     })
@@ -237,5 +245,99 @@ pub struct TranslateError(pub String);
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    /// Anthropic's content is a sequence, and the sequence is the meaning.
+    ///
+    /// A reply that says something, looks something up, says something more,
+    /// then looks something else up is four blocks whose arrangement cannot be
+    /// recovered from "all the text" plus "all the calls". This is the case the
+    /// old translation lost.
+    #[test]
+    fn interleaved_blocks_keep_their_order() {
+        let resp = serde_json::json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-5",
+            "stop_reason": "tool_use",
+            "content": [
+                {"type": "text", "text": "Let me check that."},
+                {"type": "tool_use", "id": "a", "name": "fetch", "input": {"url": "one"}},
+                {"type": "text", "text": "And the other one."},
+                {"type": "tool_use", "id": "b", "name": "fetch", "input": {"url": "two"}},
+            ]
+        });
+
+        let out = anthropic_to_openai(&resp).expect("translate");
+        let parts = &out.choices[0].parts;
+
+        let shape: Vec<&str> = parts
+            .iter()
+            .map(|p| match p {
+                Part::Text { .. } => "text",
+                Part::ToolCall { .. } => "call",
+            })
+            .collect();
+        assert_eq!(shape, ["text", "call", "text", "call"], "order lost: {parts:?}");
+
+        match (&parts[0], &parts[1]) {
+            (Part::Text { text }, Part::ToolCall { call }) => {
+                assert_eq!(text, "Let me check that.");
+                assert_eq!(call.id, "a");
+            }
+            other => panic!("wrong parts at the front: {other:?}"),
+        }
+    }
+
+    /// The flattening still produces what the OpenAI-shaped fields expect, so
+    /// nothing downstream changes until it is ready to read the parts.
+    #[test]
+    fn the_flattening_still_matches_the_openai_shape() {
+        let resp = serde_json::json!({
+            "id": "msg_2",
+            "model": "claude-sonnet-5",
+            "stop_reason": "tool_use",
+            "content": [
+                {"type": "text", "text": "one "},
+                {"type": "tool_use", "id": "a", "name": "fetch", "input": {}},
+                {"type": "text", "text": "two"},
+            ]
+        });
+
+        let out = anthropic_to_openai(&resp).expect("translate");
+        let msg = &out.choices[0].message;
+        match &msg.content {
+            MessageContent::Text(t) => assert_eq!(t, "one two"),
+            other => panic!("expected flattened text, got {other:?}"),
+        }
+        assert_eq!(msg.tool_calls.as_ref().map(Vec::len), Some(1));
+        // And the parts still hold what the flattening cannot say.
+        assert_eq!(out.choices[0].parts.len(), 3);
+    }
+
+    /// A thinking block is not replayable, so it is dropped -- but it must not
+    /// disturb the order of what remains.
+    #[test]
+    fn dropping_a_thinking_block_leaves_the_rest_in_order() {
+        let resp = serde_json::json!({
+            "id": "msg_3",
+            "model": "claude-sonnet-5",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "hmm"},
+                {"type": "text", "text": "before"},
+                {"type": "tool_use", "id": "a", "name": "fetch", "input": {}},
+                {"type": "text", "text": "after"},
+            ]
+        });
+
+        let parts = anthropic_to_openai(&resp).expect("translate").choices[0].parts.clone();
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(parts[0], Part::Text { text: "before".into() });
+        assert_eq!(parts[2], Part::Text { text: "after".into() });
     }
 }

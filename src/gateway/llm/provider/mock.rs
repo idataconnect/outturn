@@ -53,6 +53,7 @@ impl LlmProvider for MockProvider {
                     model: request.model.clone(),
                     choices: vec![Choice {
                         index: 0,
+                        parts: Vec::new(),
                         message: Message {
                             role: Role::Assistant,
                             content: MessageContent::Text(String::new()),
@@ -96,6 +97,7 @@ impl LlmProvider for MockProvider {
             model: request.model.clone(),
             choices: vec![Choice {
                 index: 0,
+                parts: Vec::new(),
                 message: Message {
                     role: Role::Assistant,
                     content: MessageContent::Text(response_text),
