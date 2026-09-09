@@ -66,8 +66,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
 fn user(text: &str) -> Vec<Message> {
     vec![Message {
         role: "user".into(),
-        content: text.into(),
-        tool_calls: Vec::new(),
+        parts: vec![outturn::runtime::component::ContentPart::Text(text.into())],
         tool_call_id: None,
     }]
 }

@@ -125,27 +125,60 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
   id: message.id,
   role: message.role === 'tool' ? 'assistant' : message.role,
   metadata: { custom: { status: message.status ?? null } },
-  content: [
-    // Tools lead the reply, because that is the order they happened in: the
-    // agent went and looked something up, then answered.
-    ...(message.metadata.tool_calls ?? []).map((call) => ({
-      type: 'tool-call' as const,
-      toolCallId: call.id,
-      toolName: call.name,
-      // The action is the model's own account of what it is doing, and the
-      // only argument the user is shown.
-      // Absent rather than undefined: the part must be plain JSON, and an
-      // explicit undefined is not.
-      args: {
-        action: call.action,
-        details: call.details ?? '',
-        isError: call.is_error ?? false,
-      },
-      argsText: JSON.stringify({ action: call.action }),
-    })),
-    { type: 'text' as const, text: message.content },
-  ] as ThreadMessageLike['content'],
+  content: parts(message),
 })
+
+/**
+ * A reply in the order it was produced.
+ *
+ * Not tools-then-text: an agent asked to say what it is about to do says it
+ * first, and drawing the call above those words shows a turn that never
+ * happened. The order is recorded on the message; a message stored before it
+ * was kept is read the way it used to be replayed -- its calls, then its
+ * words -- which is what those turns were.
+ */
+function parts(message: Message): ThreadMessageLike['content'] {
+  const calls = message.metadata.tool_calls ?? []
+  const drawn = (call: ToolCallRecord) => ({
+    type: 'tool-call' as const,
+    toolCallId: call.id,
+    toolName: call.name,
+    // The action is the model's own account of what it is doing, and the
+    // only argument the user is shown.
+    // Absent rather than undefined: the part must be plain JSON, and an
+    // explicit undefined is not.
+    args: {
+      action: call.action,
+      details: call.details ?? '',
+      isError: call.is_error ?? false,
+    },
+    argsText: JSON.stringify({ action: call.action }),
+  })
+
+  const recorded = message.metadata.parts
+  if (!recorded || recorded.length === 0) {
+    return [
+      ...calls.map(drawn),
+      { type: 'text' as const, text: message.content },
+    ] as ThreadMessageLike['content']
+  }
+
+  const out = []
+  for (const part of recorded) {
+    if (part.type === 'text') {
+      if (part.text !== '') out.push({ type: 'text' as const, text: part.text })
+      continue
+    }
+    const call = calls.find((c) => c.id === part.id)
+    if (call) out.push(drawn(call))
+  }
+  // A call that arrived after the parts were written -- the live stream adds
+  // to both, and the message can be read between the two.
+  for (const call of calls) {
+    if (!recorded.some((p) => p.type === 'call' && p.id === call.id)) out.push(drawn(call))
+  }
+  return out as ThreadMessageLike['content']
+}
 
 /** Ids are UUIDv7, so lexical order is insertion order. */
 const byId = (a: Message, b: Message) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -252,7 +285,12 @@ export function useChatRuntime(sessionId: string | null) {
                 // The same call can arrive twice if a poll overlaps a
                 // reload, and a tool run once must not be drawn twice.
                 if (calls.some((c) => c.id === call.id)) return m
-                return { ...m, metadata: { ...m.metadata, tool_calls: [...calls, call] } }
+                const parts = [...(m.metadata.parts ?? [])]
+                parts.push({ type: 'call', id: call.id })
+                return {
+                  ...m,
+                  metadata: { ...m.metadata, tool_calls: [...calls, call], parts },
+                }
               }),
             )
           }
@@ -319,9 +357,25 @@ export function useChatRuntime(sessionId: string | null) {
             }
             deltaProgress.current.set(message_id, idx + 1)
             setMessages((prev) =>
-              prev.map((m) =>
-                m.id === message_id ? { ...m, content: m.content + text } : m,
-              ),
+              prev.map((m) => {
+                if (m.id !== message_id) return m
+                // Kept in step with the content, so a reply reads the same
+                // while it streams as it does once stored. Without this the
+                // order only appears on reload, and a preamble jumps below
+                // the call it came before the moment that call arrives.
+                const parts = [...(m.metadata.parts ?? [])]
+                const last = parts[parts.length - 1]
+                if (last && last.type === 'text') {
+                  parts[parts.length - 1] = { type: 'text', text: last.text + text }
+                } else {
+                  parts.push({ type: 'text', text })
+                }
+                return {
+                  ...m,
+                  content: m.content + text,
+                  metadata: { ...m.metadata, parts },
+                }
+              }),
             )
             // Text arriving is the end of any retry: the turn is underway.
             setRetrying((prev) => {

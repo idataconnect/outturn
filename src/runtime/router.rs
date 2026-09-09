@@ -82,19 +82,26 @@ pub struct ExecuteRequest {
     pub egress: Vec<crate::runtime::egress::EgressRule>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConversationPart {
+    Text { text: String },
+    Call { call: ConversationToolCall },
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationMessage {
     pub role: String,
-    pub content: String,
-    /// On an assistant message, the tools it asked for on that turn.
+    /// The message in the order it was produced: prose and the calls that sat
+    /// between it. A user's is a single text part.
     #[serde(default)]
-    pub tool_calls: Vec<ConversationToolCall>,
+    pub parts: Vec<ConversationPart>,
     /// On a tool message, which call it answers.
     #[serde(default)]
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConversationToolCall {
     pub id: String,
     pub name: String,

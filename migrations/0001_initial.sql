@@ -262,9 +262,20 @@ create table agent_messages (
     -- one session cannot claim each other's reply.
     replies_to   uuid        references agent_messages (id) on delete cascade,
 
-    -- What the agent did on the way to this reply: tool calls, each with the
-    -- model's own reason for making it. Kept with the message rather than as
-    -- events, so reopening a session shows the work and not just the answer.
+    -- What the agent did on the way to this reply, and in what order.
+    --
+    -- `tool_calls` holds each call with the model's own reason for making it.
+    -- `parts` holds the sequence: text where it was said, and a call named by
+    -- id where it was made. A reply is a sequence, not prose with calls
+    -- attached -- an agent asked to say what it is about to do says it before
+    -- it does it -- and the arrangement cannot be recovered once the pieces
+    -- are sorted into "all the text" and "all the calls".
+    --
+    -- Kept with the message rather than as events, so reopening a session
+    -- shows the work and not just the answer. Text lives in `parts`; a call
+    -- lives in `tool_calls` and is only referenced, so nothing is written
+    -- twice. `content` is the text of the parts joined, for everything that
+    -- wants the prose and not the shape.
     metadata     jsonb       not null default '{}'::jsonb,
 
     -- Usage attribution. Null until a provider reports it; the model is

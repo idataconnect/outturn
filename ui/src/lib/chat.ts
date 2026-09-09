@@ -15,13 +15,22 @@ export type ToolCallRecord = {
   is_error?: boolean
 }
 
+/** One piece of a reply, in the order it was produced. A call names the tool
+ *  it refers to by id; the tool itself is in `metadata.tool_calls`, so nothing
+ *  about a call is written down twice. */
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'call'; id: string }
+
 export type Message = {
   /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
-  /** What the agent did on the way to this reply. */
-  metadata: { tool_calls?: ToolCallRecord[] }
+  /** What the agent did on the way to this reply, and in what order it
+   *  happened. `parts` is absent on messages stored before the order was
+   *  kept; those are read as their text followed by their calls. */
+  metadata: { tool_calls?: ToolCallRecord[]; parts?: MessagePart[] }
   /** How many deltas `content` already accounts for. */
   delta_next: number
   model: string | null

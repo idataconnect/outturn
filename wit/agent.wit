@@ -22,12 +22,28 @@ interface host {
         parameters: string,
     }
 
+    /// One piece of a reply, in the order the model produced it.
+    ///
+    /// A reply is a sequence, not a body of text with some calls attached to
+    /// it. A model asked to say what it is about to do, do it, then report
+    /// what it found produces text, a call, and more text, in that order --
+    /// and the order is the whole of what it means. Flattening it into "all
+    /// the text" and "all the calls" cannot be undone, so it is never done:
+    /// what the provider sent is what a transcript shows and what a later
+    /// turn replays.
+    variant content-part {
+        /// Prose, as the user reads it.
+        text(string),
+        /// A tool the model asked for.
+        call(tool-call),
+    }
+
     /// A message in the conversation.
     record message {
         role: string,
-        content: string,
-        /// On an assistant message, the tools it asked for.
-        tool-calls: list<tool-call>,
+        /// The message in order. A user's is one text part; an assistant's is
+        /// however many pieces it produced.
+        parts: list<content-part>,
         /// On a tool message, which call this answers.
         tool-call-id: option<string>,
     }
@@ -64,11 +80,11 @@ interface host {
     }
 
     record completion {
-        content: string,
-        /// Tools the model wants run before it can answer. When this is not
-        /// empty the turn is unfinished: run them, append the results, and
-        /// call again.
-        tool-calls: list<tool-call>,
+        /// What the model produced, in order.
+        ///
+        /// A call part means the turn is unfinished: run the tools, append
+        /// the results, and call again.
+        parts: list<content-part>,
         finish-reason: option<string>,
         usage: option<usage>,
     }

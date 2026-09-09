@@ -54,8 +54,9 @@ async fn component_runs_a_turn_and_streams_progress() {
             &component,
             vec![outturn::runtime::component::Message {
                 role: "user".into(),
-                content: "Count from one to twenty in words, separated by commas.".into(),
-                tool_calls: Vec::new(),
+                parts: vec![outturn::runtime::component::ContentPart::Text(
+                    "Count from one to twenty in words, separated by commas.".into(),
+                )],
                 tool_call_id: None,
             }],
             "You are concise but complete.".into(),

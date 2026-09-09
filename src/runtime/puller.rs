@@ -180,14 +180,20 @@ impl Puller {
             .into_iter()
             .map(|m| Message {
                 role: m.role,
-                content: m.content,
-                tool_calls: m
-                    .tool_calls
+                parts: m
+                    .parts
                     .into_iter()
-                    .map(|c| super::component::ToolCall {
-                        id: c.id,
-                        name: c.name,
-                        arguments: c.arguments,
+                    .map(|p| match p {
+                        super::router::ConversationPart::Text { text } => {
+                            super::component::ContentPart::Text(text)
+                        }
+                        super::router::ConversationPart::Call { call } => {
+                            super::component::ContentPart::Call(super::component::ToolCall {
+                                id: call.id,
+                                name: call.name,
+                                arguments: call.arguments,
+                            })
+                        }
                     })
                     .collect(),
                 tool_call_id: m.tool_call_id,

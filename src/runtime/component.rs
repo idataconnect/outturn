@@ -18,10 +18,29 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Arrival, Clock, Completion, CompletionRequest, HttpRequest, HttpResponse, Limits, Message,
-    ObjectInfo, ToolActivity,
+    Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
+    Message, ObjectInfo, ToolActivity,
     ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
+
+/// The OpenAI-shaped projection of an ordered message: the text joined, the
+/// calls listed after it.
+///
+/// That protocol has no way to say a call came between two pieces of text, so
+/// anything sent over it loses the arrangement. The parts travel beside it
+/// under `outturn.parts` for providers that can say it -- see
+/// `openai_to_anthropic` in the gateway.
+pub(crate) fn flatten_parts(parts: &[ContentPart]) -> (String, Vec<ToolCall>) {
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for part in parts {
+        match part {
+            ContentPart::Text(t) => text.push_str(t),
+            ContentPart::Call(c) => calls.push(c.clone()),
+        }
+    }
+    (text, calls)
+}
 
 /// Reports text as the model produces it, before the turn finishes.
 pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -292,13 +311,30 @@ impl outturn::agent::host::Host for AgentHost {
             .messages
             .iter()
             .map(|m| {
+                let (content, tool_calls) = flatten_parts(&m.parts);
                 let mut value = serde_json::json!({
                     "role": m.role,
-                    "content": m.content,
+                    "content": content,
                 });
-                if !m.tool_calls.is_empty() {
+                // Sent beside the flattening, not instead of it: a provider
+                // that can hold the order gets it, and one that cannot reads
+                // the fields it already understands and ignores this.
+                if m.parts.len() > 1 {
+                    value["outturn"] = serde_json::json!({
+                        "parts": m.parts.iter().map(|p| match p {
+                            ContentPart::Text(t) => serde_json::json!({"type": "text", "text": t}),
+                            ContentPart::Call(c) => serde_json::json!({
+                                "type": "tool_call",
+                                "id": c.id,
+                                "name": c.name,
+                                "arguments": c.arguments,
+                            }),
+                        }).collect::<Vec<_>>()
+                    });
+                }
+                if !tool_calls.is_empty() {
                     value["tool_calls"] = serde_json::json!(
-                        m.tool_calls
+                        tool_calls
                             .iter()
                             .map(|c| serde_json::json!({
                                 "id": c.id,
@@ -383,7 +419,11 @@ impl outturn::agent::host::Host for AgentHost {
         .await
         .map_err(|e| e.to_string())?;
 
-        if !completion.content.is_empty() {
+        if completion
+            .parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::Text(t) if !t.is_empty()))
+        {
             self.streamed = true;
         }
 
@@ -745,14 +785,16 @@ async fn stream_completion(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
-    let mut content = String::new();
+    // Built in arrival order. A tool call is assembled across several chunks,
+    // so its place in the sequence is where it first appeared, not where it
+    // finished -- which is what `call_slots` remembers.
+    let mut parts: Vec<ContentPart> = Vec::new();
+    let mut call_slots: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
     let mut finish_reason = None;
     let mut usage = None;
     // Tool calls arrive in fragments keyed by index, and the arguments are a
     // JSON string spread across chunks. Kept sparse by index rather than
     // pushed, since a provider is free to interleave two calls.
-    let mut partial_calls: std::collections::BTreeMap<u32, PartialToolCall> =
-        std::collections::BTreeMap::new();
     let mut arrivals: Vec<Arrival> = Vec::new();
 
     while let Some(bytes) = stream.next().await {
@@ -785,7 +827,10 @@ async fn stream_completion(
             if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str()
                 && !text.is_empty()
             {
-                content.push_str(text);
+                match parts.last_mut() {
+                    Some(ContentPart::Text(t)) => t.push_str(text),
+                    _ => parts.push(ContentPart::Text(text.to_string())),
+                }
                 if let Some(sink) = progress {
                     sink(text);
                 }
@@ -807,7 +852,17 @@ async fn stream_completion(
             if let Some(calls) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
                 for call in calls {
                     let index = call["index"].as_u64().unwrap_or(0) as u32;
-                    let entry = partial_calls.entry(index).or_default();
+                    let slot = *call_slots.entry(index).or_insert_with(|| {
+                        parts.push(ContentPart::Call(ToolCall {
+                            id: String::new(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        }));
+                        parts.len() - 1
+                    });
+                    let Some(ContentPart::Call(entry)) = parts.get_mut(slot) else {
+                        continue;
+                    };
                     if let Some(id) = call["id"].as_str() {
                         entry.id = id.to_string();
                     }
@@ -853,17 +908,11 @@ async fn stream_completion(
     }
 
     Ok((Completion {
-        content,
-        tool_calls: partial_calls
-            .into_values()
-            // A call with no name is a fragment of something that never
-            // arrived; passing it on would have the guest dispatch on "".
-            .filter(|c| !c.name.is_empty())
-            .map(|c| ToolCall {
-                id: c.id,
-                name: c.name,
-                arguments: c.arguments,
-            })
+        // A call with no name is a fragment of something that never arrived;
+        // passing it on would have the guest dispatch on "".
+        parts: parts
+            .into_iter()
+            .filter(|p| !matches!(p, ContentPart::Call(c) if c.name.is_empty()))
             .collect(),
         finish_reason,
         usage,
@@ -879,13 +928,6 @@ struct Served {
     service_tier: Option<String>,
 }
 
-/// One tool call being assembled from stream fragments.
-#[derive(Default)]
-struct PartialToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
 
 /// Compiled components to keep, keyed by the bytes they came from.
 ///

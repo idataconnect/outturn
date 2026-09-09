@@ -14,6 +14,7 @@ mod bindings;
 
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
+    ContentPart,
     self, Arrival, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition, ToolOutcome,
 };
 
@@ -135,14 +136,44 @@ fn arg<'a>(args: &'a serde_json::Value, name: &str) -> &'a str {
 /// Several at once are numbered and the model is told to answer each. Given
 /// two bare user messages in a row a model answers the last one and drops
 /// the first -- someone who typed "two" then "three" was told about three.
+/// A message that is only prose, which is most of them.
+fn text_message(role: &str, text: String) -> Message {
+    Message {
+        role: role.to_string(),
+        parts: vec![ContentPart::Text(text)],
+        tool_call_id: None,
+    }
+}
+
+/// The prose of a reply, with the calls between it left out.
+fn text_of(parts: &[ContentPart]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        if let ContentPart::Text(t) = part {
+            out.push_str(t);
+        }
+    }
+    out
+}
+
+/// The calls a reply asked for, in the order it asked.
+fn calls_of(parts: &[ContentPart]) -> Vec<ToolCall> {
+    parts
+        .iter()
+        .filter_map(|p| match p {
+            ContentPart::Call(c) => Some(c.clone()),
+            ContentPart::Text(_) => None,
+        })
+        .collect()
+}
+
 fn injected(arrivals: &[Arrival]) -> Vec<Message> {
     let total = arrivals.len();
     arrivals
         .iter()
         .enumerate()
-        .map(|(i, arrival)| Message {
-            role: "user".to_string(),
-            content: if total == 1 {
+        .map(|(i, arrival)| {
+            let text = if total == 1 {
                 format!("[mid-turn message from user] {}", arrival.content)
             } else {
                 format!(
@@ -152,9 +183,8 @@ fn injected(arrivals: &[Arrival]) -> Vec<Message> {
                     total,
                     arrival.content
                 )
-            },
-            tool_calls: Vec::new(),
-            tool_call_id: None,
+            };
+            text_message("user", text)
         })
         .collect()
 }
@@ -523,8 +553,7 @@ fn run_tool(call: &ToolCall) -> Message {
 
     Message {
         role: "tool".to_string(),
-        content: for_model,
-        tool_calls: Vec::new(),
+        parts: vec![ContentPart::Text(for_model)],
         tool_call_id: Some(call.id.clone()),
     }
 }
@@ -556,12 +585,7 @@ impl Guest for Component {
         // of only on new sessions.
         let mut messages = Vec::with_capacity(conversation.len() + 1);
         if !system_prompt.is_empty() {
-            messages.push(Message {
-                role: "system".to_string(),
-                content: system_prompt,
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            });
+            messages.push(text_message("system", system_prompt));
         }
         messages.extend(conversation);
 
@@ -605,14 +629,17 @@ impl Guest for Component {
             // `progress` from here: by the time this code runs, the round's
             // text has already streamed, and a separator sent now would land
             // after it.
-            if !completion.content.is_empty() {
+            let round_text = text_of(&completion.parts);
+            let round_calls = calls_of(&completion.parts);
+
+            if !round_text.is_empty() {
                 if !reply.is_empty() {
                     reply.push_str("\n\n");
                 }
-                reply.push_str(&completion.content);
+                reply.push_str(&round_text);
             }
 
-            if completion.tool_calls.is_empty() {
+            if round_calls.is_empty() {
                 // The turn would end here. Anything the user has said since it
                 // began extends it instead of being answered separately --
                 // which is what makes a follow-up feel like part of the same
@@ -621,8 +648,7 @@ impl Guest for Component {
                 if !waiting.is_empty() {
                     messages.push(Message {
                         role: "assistant".to_string(),
-                        content: completion.content,
-                        tool_calls: Vec::new(),
+                        parts: completion.parts,
                         tool_call_id: None,
                     });
                     messages.extend(injected(&waiting));
@@ -641,17 +667,16 @@ impl Guest for Component {
                 host::log("warn", "reply was truncated; refusing its tool calls");
                 messages.push(Message {
                     role: "assistant".to_string(),
-                    content: completion.content,
-                    tool_calls: completion.tool_calls.clone(),
+                    parts: completion.parts.clone(),
                     tool_call_id: None,
                 });
-                for call in &completion.tool_calls {
+                for call in &round_calls {
                     messages.push(Message {
                         role: "tool".to_string(),
-                        content:
+                        parts: vec![ContentPart::Text(
                             r#"{"error":"not run: the message was cut off at the token limit and these arguments may be incomplete"}"#
                                 .to_string(),
-                        tool_calls: Vec::new(),
+                        )],
                         tool_call_id: Some(call.id.clone()),
                     });
                 }
@@ -661,13 +686,13 @@ impl Guest for Component {
 
             host::log(
                 "info",
-                &format!("running {} tool call(s)", completion.tool_calls.len()),
+                &format!("running {} tool call(s)", round_calls.len()),
             );
 
             // Announced before running, so the browser shows what is happening
             // while it happens rather than explaining it afterwards.
-            let mut echoed = Vec::with_capacity(completion.tool_calls.len());
-            for call in &completion.tool_calls {
+            let mut echoed = Vec::with_capacity(round_calls.len());
+            for call in &round_calls {
                 let (action, without_action) = split_action(&call.arguments);
                 host::tool_started(&ToolActivity {
                     id: call.id.clone(),
@@ -687,13 +712,25 @@ impl Guest for Component {
             // cannot see. It goes back without the label: that was written
             // for the user, and replaying it would pay for those tokens on
             // every subsequent turn.
+            let mut echoed = echoed.into_iter();
             messages.push(Message {
                 role: "assistant".to_string(),
-                content: completion.content,
-                tool_calls: echoed,
+                parts: completion
+                    .parts
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text(t) => ContentPart::Text(t.clone()),
+                        // Replaced in place, so a call keeps its position
+                        // among the text rather than being moved to the end.
+                        ContentPart::Call(_) => match echoed.next() {
+                            Some(c) => ContentPart::Call(c),
+                            None => ContentPart::Text(String::new()),
+                        },
+                    })
+                    .collect(),
                 tool_call_id: None,
             });
-            for call in &completion.tool_calls {
+            for call in &round_calls {
                 messages.push(run_tool(call));
             }
 

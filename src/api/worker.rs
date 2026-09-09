@@ -62,28 +62,62 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
     let mut projected = Vec::with_capacity(messages.len());
 
     for message in messages {
-        let calls = message
+        let calls: Vec<&serde_json::Value> = message
             .metadata
             .get("tool_calls")
             .and_then(|c| c.as_array())
-            .filter(|c| !c.is_empty());
+            .map(|c| c.iter().collect())
+            .unwrap_or_default();
 
-        if let Some(calls) = calls {
+        // The order the reply was produced in, where it was recorded. A
+        // message written before this was kept flattens to its text and then
+        // its calls, which is what it used to be replayed as.
+        let recorded = message.metadata.get("parts").and_then(|p| p.as_array());
+        let parts: Vec<serde_json::Value> = match recorded {
+            Some(parts) if !parts.is_empty() => parts.clone(),
+            _ => {
+                // Written before the order was kept. Those turns were
+                // replayed as the calls and then the text, which is what they
+                // were: the model called, was answered, and then spoke.
+                let mut fallback = Vec::new();
+                for call in &calls {
+                    fallback.push(serde_json::json!({"type": "call", "id": call["id"]}));
+                }
+                if !message.content.is_empty() {
+                    fallback.push(serde_json::json!({"type": "text", "text": message.content}));
+                }
+                fallback
+            }
+        };
+
+        if calls.is_empty() {
             projected.push(serde_json::json!({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": calls
-                    .iter()
-                    .map(|c| serde_json::json!({
-                        "id": c["id"],
-                        "name": c["name"],
-                        "arguments": c["arguments"].as_str().unwrap_or("{}"),
-                    }))
-                    .collect::<Vec<_>>(),
+                "role": message.role,
+                "parts": [{"type": "text", "text": message.content}],
             }));
+            continue;
+        }
 
-            for call in calls {
-                projected.push(serde_json::json!({
+        // A turn goes back as it happened, and a result has to reach the model
+        // between the call that asked and the words written after it. So text
+        // that follows a call closes the message: what came before is what the
+        // model had said when it called, and what comes after is what it said
+        // once answered. A reply that called and then spoke -- the ordinary
+        // shape -- splits exactly where it always did.
+        let mut open: Vec<serde_json::Value> = Vec::new();
+        let mut awaiting: Vec<&serde_json::Value> = Vec::new();
+
+        let mut flush = |open: &mut Vec<serde_json::Value>,
+                         awaiting: &mut Vec<&serde_json::Value>,
+                         out: &mut Vec<serde_json::Value>| {
+            if !open.is_empty() {
+                out.push(serde_json::json!({
+                    "role": "assistant",
+                    "parts": std::mem::take(open),
+                }));
+            }
+            for call in awaiting.drain(..) {
+                out.push(serde_json::json!({
                     "role": "tool",
                     "tool_call_id": call["id"],
                     // Every call must be answered. A turn that died between
@@ -91,21 +125,46 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
                     // request carrying an unanswered call is rejected outright
                     // -- so the gap is filled rather than left to break the
                     // next turn as well.
-                    "content": call["result"]
-                        .as_str()
-                        .unwrap_or("{\"error\":\"no result was recorded\"}"),
+                    "parts": [{
+                        "type": "text",
+                        "text": call["result"]
+                            .as_str()
+                            .unwrap_or("{\"error\":\"no result was recorded\"}"),
+                    }],
                 }));
             }
-        }
+        };
 
-        // An assistant message that only called tools has nothing else to say,
-        // and an empty one costs tokens to communicate that.
-        if !message.content.is_empty() || calls.is_none() {
-            projected.push(serde_json::json!({
-                "role": message.role,
-                "content": message.content,
-            }));
+        for part in &parts {
+            match part["type"].as_str() {
+                Some("text") => {
+                    let text = part["text"].as_str().unwrap_or("");
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if !awaiting.is_empty() {
+                        flush(&mut open, &mut awaiting, &mut projected);
+                    }
+                    open.push(serde_json::json!({"type": "text", "text": text}));
+                }
+                Some("call") => {
+                    let Some(call) = calls.iter().find(|c| c["id"] == part["id"]) else {
+                        continue;
+                    };
+                    open.push(serde_json::json!({
+                        "type": "call",
+                        "call": {
+                            "id": call["id"],
+                            "name": call["name"],
+                            "arguments": call["arguments"].as_str().unwrap_or("{}"),
+                        },
+                    }));
+                    awaiting.push(call);
+                }
+                _ => {}
+            }
         }
+        flush(&mut open, &mut awaiting, &mut projected);
     }
 
     projected
@@ -129,6 +188,14 @@ pub(super) struct TurnOutcome {
     content: String,
     /// Tool calls the agent made, in order, each with the model's own label.
     tools: Vec<serde_json::Value>,
+    /// The reply in the order it arrived: prose and the calls that sat between
+    /// it.
+    ///
+    /// Text is held here; a call is named by id and its detail read from
+    /// `tools`, so nothing about a call is written down twice. Assembled from
+    /// the event stream, which is already in order -- the arrangement was
+    /// never unknown, only discarded.
+    parts: Vec<serde_json::Value>,
     /// Summed across every round of the turn, counted by the runtime host.
     usage: Usage,
     /// The endpoint that served it, for attributing spend.
@@ -198,6 +265,8 @@ impl Worker {
         let mut stream = stream;
         let mut buffer = String::new();
         let mut tools: Vec<serde_json::Value> = Vec::new();
+        // Built as the events arrive, which is the order they happened in.
+        let mut parts: Vec<serde_json::Value> = Vec::new();
         // The session's account label, for the ledger. Read once, on the
         // first call that needs it, so a turn that makes no model call reads
         // nothing.
@@ -217,6 +286,14 @@ impl Worker {
 
                 match serde_json::from_str::<ExecuteEvent>(&line) {
                     Ok(ExecuteEvent::Delta { idx, text }) => {
+                        match parts.last_mut() {
+                            Some(p) if p["type"] == "text" => {
+                                let joined =
+                                    format!("{}{}", p["text"].as_str().unwrap_or(""), text);
+                                p["text"] = serde_json::json!(joined);
+                            }
+                            _ => parts.push(serde_json::json!({"type": "text", "text": text})),
+                        }
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -249,6 +326,7 @@ impl Worker {
                         // record it -- the event feed is prunable, the
                         // transcript is not.
                         tools.push(call.clone());
+                        parts.push(serde_json::json!({"type": "call", "id": id}));
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -379,6 +457,7 @@ impl Worker {
                         return Ok(TurnOutcome {
                             content,
                             tools,
+                            parts,
                             usage: Usage {
                                 // Recorded as signed, since a provider that
                                 // reports nothing should read as absent rather
@@ -742,7 +821,7 @@ impl Worker {
         let metadata = if reply.tools.is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::json!({ "tool_calls": reply.tools })
+            serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
 
         let finished = self
@@ -847,8 +926,11 @@ mod projection_tests {
         for message in projected {
             match message["role"].as_str() {
                 Some("assistant") => {
-                    for call in message["tool_calls"].as_array().unwrap_or(&Vec::new()) {
-                        awaiting.push(call["id"].as_str().expect("call id").to_string());
+                    for part in message["parts"].as_array().unwrap_or(&Vec::new()) {
+                        if part["type"] == "call" {
+                            let id = part["call"]["id"].as_str().expect("call id");
+                            awaiting.push(id.to_string());
+                        }
                     }
                 }
                 Some("tool") => {
@@ -883,8 +965,8 @@ mod projection_tests {
             message("assistant", "hi", serde_json::json!({})),
         ]);
         assert_eq!(projected.len(), 2);
-        assert_eq!(projected[0]["content"], "hello");
-        assert_eq!(projected[1]["content"], "hi");
+        assert_eq!(projected[0]["parts"][0]["text"], "hello");
+        assert_eq!(projected[1]["parts"][0]["text"], "hi");
     }
 
     #[test]
@@ -899,10 +981,10 @@ mod projection_tests {
         ]);
 
         assert_eq!(projected.len(), 4, "{projected:#?}");
-        assert_eq!(projected[1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(projected[1]["parts"][0]["call"]["id"], "call_1");
         assert_eq!(projected[2]["role"], "tool");
-        assert_eq!(projected[2]["content"], "{\"weekday\":\"Friday\"}");
-        assert_eq!(projected[3]["content"], "It is Friday.");
+        assert_eq!(projected[2]["parts"][0]["text"], "{\"weekday\":\"Friday\"}");
+        assert_eq!(projected[3]["parts"][0]["text"], "It is Friday.");
         assert_well_formed(&projected);
     }
 
@@ -931,7 +1013,12 @@ mod projection_tests {
             serde_json::json!({ "tool_calls": [call("call_1", None)] }),
         )]);
         assert_well_formed(&projected);
-        assert!(projected[1]["content"].as_str().expect("content").contains("error"));
+        assert!(
+            projected[1]["parts"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("error")
+        );
     }
 
     #[test]
@@ -944,6 +1031,36 @@ mod projection_tests {
         assert_eq!(projected.len(), 2, "an empty reply was sent: {projected:#?}");
     }
 
+    /// A turn that spoke, looked something up, then spoke again.
+    ///
+    /// The old projection could not say this: it replayed every call before
+    /// every word, so the model was shown itself acting before it had spoken.
+    /// The reply splits where the result has to land, and nowhere else.
+    #[test]
+    fn text_before_a_call_is_replayed_before_it() {
+        let projected = project(&[message(
+            "assistant",
+            "Let me check. It is Friday.",
+            serde_json::json!({
+                "tool_calls": [call("call_1", Some("{\"weekday\":\"Friday\"}"))],
+                "parts": [
+                    {"type": "text", "text": "Let me check."},
+                    {"type": "call", "id": "call_1"},
+                    {"type": "text", "text": "It is Friday."}
+                ]
+            }),
+        )]);
+
+        assert_eq!(projected.len(), 3, "{projected:#?}");
+        // What it had said when it called, and the call, in one message.
+        assert_eq!(projected[0]["parts"][0]["text"], "Let me check.");
+        assert_eq!(projected[0]["parts"][1]["call"]["id"], "call_1");
+        // Then the answer, then what it said once answered.
+        assert_eq!(projected[1]["role"], "tool");
+        assert_eq!(projected[2]["parts"][0]["text"], "It is Friday.");
+        assert_well_formed(&projected);
+    }
+
     #[test]
     fn several_calls_in_one_turn_all_get_answers() {
         let projected = project(&[message(
@@ -954,6 +1071,12 @@ mod projection_tests {
             }),
         )]);
         assert_well_formed(&projected);
-        assert_eq!(projected[0]["tool_calls"].as_array().expect("calls").len(), 2);
+        let calls = projected[0]["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .filter(|p| p["type"] == "call")
+            .count();
+        assert_eq!(calls, 2);
     }
 }
