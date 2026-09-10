@@ -144,6 +144,12 @@ pub async fn upload(
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
     store.write(&key, 0, &body).await.map_err(storage_failed)?;
 
+    // A document is bytes until something reads it. Queued rather than done
+    // here: a scanned file can take minutes, and the upload has already
+    // succeeded -- the words arriving later is a file not ready yet, where a
+    // request held open for them is a failure the uploader cannot act on.
+    super::extract::enqueue(&state.pool, claims.workspace_id, &key, &scoped).await;
+
     tracing::info!(
         actor = %claims.subject,
         session_id = %session_id,

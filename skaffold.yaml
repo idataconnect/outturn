@@ -46,3 +46,13 @@ portForward:
     resourceName: postgres
     port: 5432
     localPort: 15432
+
+profiles:
+  # Document extraction. `skaffold dev -p tika` brings up Apache Tika beside
+  # the rest and points the API at it; without it nothing is extracted and no
+  # part of the core images changes.
+  - name: tika
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/local-tika

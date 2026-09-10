@@ -605,6 +605,37 @@ impl outturn::agent::host::Host for AgentHost {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         let (storage, resolved) = self.object_at(&path)?;
+
+        // A document is handed over as the words in it, not as the bytes a
+        // model can do nothing with. The guest is never told this happened --
+        // it asked for `session/report.pdf` and gets prose -- for the same
+        // reason settings are resolved above it: what it needs is the content,
+        // and where the content came from is the host's business.
+        if crate::api::extract::is_extractable(&resolved) {
+            let text = crate::api::extract::text_key(&resolved);
+            match storage.read(&text, offset, len).await {
+                // Extracted, and there was nothing in it. Said outright: an
+                // empty read is indistinguishable from an empty document, and
+                // a model told a report is blank will report that it is.
+                Ok(bytes) if bytes.is_empty() && offset == 0 => {
+                    return Err(format!(
+                        "no text could be read from {path}; it may be a scan or an image"
+                    ));
+                }
+                Ok(bytes) => return Ok(bytes),
+                Err(crate::runtime::storage::StorageError::NotFound) => {
+                    // Said plainly rather than answered with the raw bytes or
+                    // with nothing. An empty read is indistinguishable from an
+                    // empty document, and a model told a report is blank will
+                    // confidently report that it is.
+                    return Err(format!(
+                        "{path} is still being read; ask again shortly"
+                    ));
+                }
+                Err(e) => return Err(self.storage_failed("read", e)),
+            }
+        }
+
         storage
             .read(&resolved, offset, len)
             .await

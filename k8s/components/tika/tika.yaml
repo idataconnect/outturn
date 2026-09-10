@@ -1,0 +1,62 @@
+# Apache Tika, as a service that turns documents into text.
+#
+# Optional on purpose. It is a large Java image and most deployments never
+# upload a PDF, so it is a component rather than part of the base -- nothing
+# here is in the core images, and an installation that does not want it pays
+# nothing for it.
+#
+# It holds nothing. No database, no credentials, no bucket. It is handed bytes
+# over HTTP and answers with text, which is the whole of its contract: a
+# document parser is a large surface accepting whatever anyone chose to upload,
+# and the tier that does that should be the tier with nothing worth reaching.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tika
+spec:
+  selector:
+    app: tika
+  ports:
+    - name: http
+      port: 9998
+      targetPort: 9998
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tika
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tika
+  template:
+    metadata:
+      labels:
+        app: tika
+    spec:
+      containers:
+        - name: tika
+          image: apache/tika:latest-full
+          ports:
+            - containerPort: 9998
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /tika
+              port: 9998
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 35002
+            capabilities:
+              drop: ["ALL"]

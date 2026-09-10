@@ -126,6 +126,8 @@ async fn main() {
     // One LISTEN connection fans out to every parked long poll.
     let bus = EventBus::spawn(pool.clone());
 
+    let storage_for_extraction = storage.clone();
+
     let state = Arc::new(ApiState::new(
         workspaces,
         users,
@@ -160,6 +162,12 @@ async fn main() {
     // nothing joins those but a lease. When a runtime dies mid-turn the job is
     // returned to the queue by this rather than by the pod that vanished.
     Arc::clone(&worker).spawn_reaper(health.shutdown_signal());
+
+    // Documents become readable in the background, where they are configured
+    // to. Absent OUTTURN_TIKA_URL this logs once and does nothing further.
+    if let Some(store) = storage_for_extraction.clone() {
+        outturn::api::extract::spawn(pool.clone(), store, health.shutdown_signal());
+    }
     state.set_worker(worker);
 
     let app = Router::new()

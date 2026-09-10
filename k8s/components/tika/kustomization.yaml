@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - tika.yaml
+
+# Where the API sends documents. Unset means no extraction is attempted at
+# all, so the component and the configuration arrive together or not at all.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-api
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OUTTURN_TIKA_URL
+          value: "http://tika:9998"
