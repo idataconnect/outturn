@@ -1282,3 +1282,37 @@ mod compiled_cache_tests {
         assert_eq!(c.entries.lock().expect("lock").len(), 1);
     }
 }
+
+#[cfg(test)]
+mod artifact_guard {
+    /// The committed component must have been built against the current
+    /// interface.
+    ///
+    /// `assets/agent_default.wasm` and `agents/default/src/bindings.rs` are both
+    /// generated and both committed, and neither regenerates on its own. Change
+    /// `wit/agent.wit` without rebuilding and the guest crate still compiles --
+    /// against its stale bindings -- while every turn fails at runtime with
+    /// "component imports instance `outturn:agent/host`, but a matching
+    /// implementation was not found in the linker". That is a long way to travel
+    /// for a mismatch a file comparison can catch.
+    ///
+    /// The interface is copied beside the component when it is built, so this
+    /// compares the two and a failure can be read as a diff.
+    #[test]
+    fn the_committed_component_was_built_against_this_interface() {
+        const BUILT_AGAINST: &str = include_str!("../../assets/agent_default.wit");
+        const CURRENT: &str = include_str!("../../wit/agent.wit");
+
+        assert_eq!(
+            CURRENT, BUILT_AGAINST,
+            "wit/agent.wit has changed since assets/agent_default.wasm was built.\n\
+             Rebuild the guest and copy both artifacts:\n\
+             \x20 (cd agents/default && cargo component build --release)\n\
+             \x20 cp agents/default/target/wasm32-wasip1/release/outturn_agent_default.wasm \
+             assets/agent_default.wasm\n\
+             \x20 cp wit/agent.wit assets/agent_default.wit\n\
+             `cargo component build` regenerates src/bindings.rs on the way, so it \
+             covers both."
+        );
+    }
+}

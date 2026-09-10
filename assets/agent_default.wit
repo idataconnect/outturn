@@ -1,0 +1,334 @@
+package outturn:agent@0.1.0;
+
+/// What the host provides to a guest.
+interface host {
+    /// A request from the model to run a tool.
+    record tool-call {
+        /// The model's id for this call. A result must quote it back, so the
+        /// model can match answers to questions when it asks several at once.
+        id: string,
+        name: string,
+        /// Arguments as a JSON object, exactly as the model produced them.
+        /// Unparsed on purpose: a model may emit invalid JSON, and the guest
+        /// is better placed than the host to decide what to do about it.
+        arguments: string,
+    }
+
+    /// A tool offered to the model.
+    record tool-definition {
+        name: string,
+        description: string,
+        /// JSON Schema for the arguments object.
+        parameters: string,
+    }
+
+    /// One piece of a reply, in the order the model produced it.
+    ///
+    /// A reply is a sequence, not a body of text with some calls attached to
+    /// it. A model asked to say what it is about to do, do it, then report
+    /// what it found produces text, a call, and more text, in that order --
+    /// and the order is the whole of what it means. Flattening it into "all
+    /// the text" and "all the calls" cannot be undone, so it is never done:
+    /// what the provider sent is what a transcript shows and what a later
+    /// turn replays.
+    variant content-part {
+        /// Prose, as the user reads it.
+        text(string),
+        /// A tool the model asked for.
+        call(tool-call),
+    }
+
+    /// A message in the conversation.
+    record message {
+        role: string,
+        /// The message in order. A user's is one text part; an assistant's is
+        /// however many pieces it produced.
+        parts: list<content-part>,
+        /// On a tool message, which call this answers.
+        tool-call-id: option<string>,
+    }
+
+    /// A model call the guest wants made.
+    record completion-request {
+        messages: list<message>,
+        /// Tools the model may call. Empty offers none.
+        tools: list<tool-definition>,
+        /// Omitted means the agent's configured default.
+        model: option<string>,
+        temperature: option<f32>,
+        max-tokens: option<u32>,
+    }
+
+    /// What a model call cost, in the units it is billed in.
+    ///
+    /// Split because the parts carry different prices and none of them can be
+    /// derived from the text: a cached prompt is cheaper than a fresh one, and
+    /// thinking is billed as output while being reported separately. A count
+    /// taken locally could never tell these apart.
+    record usage {
+        /// Input billed at full rate. Excludes anything served from cache,
+        /// which providers vary about including in their own totals.
+        prompt-tokens: u32,
+        /// All output, including any thinking.
+        completion-tokens: u32,
+        /// Input served from cache, billed lower.
+        cache-read-tokens: u32,
+        /// Input written to cache, which some providers charge a premium for.
+        cache-write-tokens: u32,
+        /// The part of the output that was thinking.
+        reasoning-tokens: u32,
+    }
+
+    record completion {
+        /// What the model produced, in order.
+        ///
+        /// A call part means the turn is unfinished: run the tools, append
+        /// the results, and call again.
+        parts: list<content-part>,
+        finish-reason: option<string>,
+        usage: option<usage>,
+    }
+
+    /// A tool call about to run, for the user to watch.
+    record tool-activity {
+        /// The model's id for the call this describes.
+        id: string,
+        name: string,
+        /// What the agent is doing, in its own words, for the user to read
+        /// while it happens -- "Checking today's date", not an argument for
+        /// why the call was warranted.
+        ///
+        /// Never sent back to the model: it is the model's account of itself,
+        /// and feeding it back costs tokens on every later turn while telling
+        /// the model only what it already decided.
+        action: string,
+        /// The arguments the model asked with, minus the action.
+        ///
+        /// Kept so a later turn can be shown the call it made. A stored
+        /// assistant message carrying tool calls is malformed without them,
+        /// and both protocols reject it.
+        arguments: string,
+    }
+
+    /// One stored object, as the guest sees it.
+    record object-info {
+        /// Relative to the agent's own space. Never the real key: where an
+        /// object lives is the host's business, and a guest that learned the
+        /// layout could describe it to someone.
+        path: string,
+        size: u64,
+    }
+
+    /// Reads part of an object.
+    ///
+    /// Ranged rather than whole-file, because a guest reading a large object
+    /// pulls it into linear memory and a sandbox has less of that than the
+    /// store has objects. Paths are relative and rooted: a guest is never told
+    /// which workspace it belongs to, so it cannot name another one, and anything
+    /// that tries to climb out is refused rather than quietly corrected.
+    read-object: func(path: string, offset: u64, len: u32) -> result<list<u8>, string>;
+
+    /// How large an object is, without reading it.
+    ///
+    /// Needed before a ranged read can be sensible: a caller that does not
+    /// know the size cannot ask for the end, and cannot tell whether what it
+    /// got back was everything.
+    stat-object: func(path: string) -> result<object-info, string>;
+
+    /// Writes an object, replacing anything already there.
+    write-object: func(path: string, data: list<u8>) -> result<u64, string>;
+
+    /// A request an agent wants made on its behalf.
+    record http-request {
+        /// GET, POST, PUT, PATCH, DELETE or HEAD.
+        method: string,
+        url: string,
+        /// Headers the agent sets. The ones carrying credentials are refused
+        /// here and attached by the host instead, so a component cannot read a
+        /// workspace's key and cannot aim one somewhere it was not meant for.
+        headers: list<tuple<string, string>>,
+        body: option<string>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: string,
+        /// Whether the body was cut short. Said plainly rather than left for
+        /// the agent to infer from a body that stops mid-sentence.
+        truncated: bool,
+    }
+
+    /// Makes a request to a host the workspace has allowed.
+    ///
+    /// Every part of the decision is the host's: which hosts are reachable,
+    /// which are refused for being inside the network this runs in, what
+    /// credential goes with which host, and how much of a response may come
+    /// back. A guest that could influence any of those could use a workspace's
+    /// credentials against somewhere the workspace never named.
+    ///
+    /// Redirects are not followed. A redirect names a new host, and following
+    /// one would mean a request that was checked ends up somewhere that was
+    /// not. The response comes back as it is, and an agent that wants the new
+    /// location asks for it.
+    fetch: func(request: http-request) -> result<http-response, string>;
+
+    /// Lists objects beneath a prefix.
+    list-objects: func(prefix: string) -> result<list<object-info>, string>;
+
+    /// What a tool produced.
+    record tool-outcome {
+        /// The call this answers.
+        id: string,
+        /// The whole result, for the browser only.
+        ///
+        /// Never sent to a model. This is what lets a tool hand back a file
+        /// or a table without paying for it in every later prompt: the model
+        /// is told enough to reason, and the reader gets the rest.
+        details: string,
+        /// What the model was actually given, after truncation.
+        ///
+        /// Reported so it can be stored and replayed on later turns exactly as
+        /// the model first saw it. Cutting a result down happens once, when the
+        /// tool runs; what is kept is what was cut down to, and a model that
+        /// wants more asks for more through the ranged read rather than being
+        /// handed a larger version of an answer it already has.
+        content: string,
+        /// Whether the tool failed. Reported either way -- a model that is
+        /// told nothing went wrong will act as though nothing did.
+        is-error: bool,
+    }
+
+    /// Announces a tool call once it has finished.
+    ///
+    /// Separate from the message the model receives, because these are two
+    /// audiences with different needs: the model gets what it must reason
+    /// over, the person watching gets what they might want to look at.
+    tool-finished: func(outcome: tool-outcome);
+
+    /// Announces a tool call before it runs.
+    ///
+    /// Separate from `progress` because this is structured: the browser draws
+    /// it as an action with a reason attached, not as prose in the reply. It
+    /// is also recorded with the message, so reopening the session shows what
+    /// the agent did rather than only what it concluded.
+    tool-started: func(activity: tool-activity);
+
+    /// Something the user said while this turn was already running.
+    record arrival {
+        content: string,
+        /// "steer" to redirect the work now, "follow-up" to extend the turn
+        /// once it would otherwise have ended.
+        delivery: string,
+    }
+
+    /// What the user has said since this turn began.
+    ///
+    /// Handed over once. The host gives each message to exactly one caller, so
+    /// a guest that asks twice does not inject the same instruction twice, and
+    /// the turn queued for that message knows not to answer it again.
+    ///
+    /// A guest that never calls this simply does not steer; the message is
+    /// answered by its own turn afterwards, which is the behaviour before any
+    /// of this existed.
+    pending-input: func() -> list<arrival>;
+
+    /// Bounds the host places on this turn.
+    ///
+    /// Read by a guest so it can wind down gracefully -- deliver what it has,
+    /// stop reaching for tools -- rather than being cut off mid-loop. They are
+    /// also enforced by the host, because a guest is not trusted to respect
+    /// them: components are deployed by workspaces, and a limit that lives only
+    /// in the guest is a suggestion.
+    record limits {
+        /// How many times the model may be called in one turn. Zero means
+        /// unbounded, for work that legitimately runs long.
+        max-tool-rounds: u32,
+    }
+
+    /// What this turn is allowed to do.
+    current-limits: func() -> limits;
+
+    /// The wall clock of whoever is being talked to.
+    ///
+    /// Carries the day name and zone abbreviation rather than only a
+    /// timestamp. Deriving a weekday from a date is calendar arithmetic, and a
+    /// model asked to do it will sometimes get it wrong -- gemma4 read a
+    /// correct 2026-09-02 and answered Tuesday. Anything the host can compute
+    /// exactly is the host's job.
+    record clock {
+        /// The current time in `timezone`, as RFC 3339 to the second.
+        /// Fractional seconds are omitted: nine digits of nanoseconds are
+        /// noise in a prompt and invite the model to repeat them.
+        now: string,
+        /// Day name, e.g. "Wednesday".
+        weekday: string,
+        /// IANA name, e.g. "America/Los_Angeles". Empty when the caller's zone
+        /// is unknown, in which case the clock reads UTC.
+        timezone: string,
+        /// Short zone name a person expects quoted back, e.g. "PDT".
+        abbreviation: string,
+    }
+
+    /// Calls a model.
+    ///
+    /// The credential is attached host-side, so the guest names a request and
+    /// receives a reply without ever handling the token that authorises it.
+    /// The host consumes the provider's stream and returns the whole reply:
+    /// the guest stays synchronous, and cancellation is the host dropping the
+    /// stream rather than something the guest must handle.
+    ///
+    /// Every call streams its content to the user as it arrives, including a
+    /// call that turns out to want tools. The host cannot know a tool call is
+    /// coming until the stream is over and cannot retract what it has already
+    /// shown, so the rule is the other way around: whatever streamed is part
+    /// of the message. A guest that runs several rounds must therefore return
+    /// the content of all of them, or the browser will hold text the stored
+    /// transcript does not.
+    ///
+    /// When a round produces text after an earlier round already has, the
+    /// host streams a blank line ("\n\n") before the new round's first token.
+    /// A guest must join round contents with the same blank line when it
+    /// assembles the reply, and must not emit the separator itself through
+    /// `progress` -- it cannot know a round has text until the call returns,
+    /// by which time the text has already been shown.
+    chat: func(request: completion-request) -> result<completion, string>;
+
+    /// The current time, in the timezone of the user this turn belongs to.
+    ///
+    /// A host import rather than something the guest reads for itself: the
+    /// zone belongs to the user, not the machine, and the sandbox has neither
+    /// a clock nor a locale of its own.
+    ///
+    /// Kept out of the system prompt deliberately. A date in the prompt sits
+    /// in the cacheable prefix, so it either invalidates that cache on every
+    /// turn or goes stale; asked for on demand, it costs nothing until it is
+    /// wanted.
+    current-time: func() -> clock;
+
+    /// Emits progress for the user to see before the turn finishes.
+    ///
+    /// Distinct from the reply itself: a guest may narrate what it is doing
+    /// without that narration becoming part of the conversation.
+    progress: func(text: string);
+
+    /// Writes a line to the host's log, tagged with this session.
+    log: func(level: string, message: string);
+}
+
+/// What a guest must provide.
+interface agent {
+    use host.{message};
+
+    /// Runs one turn.
+    ///
+    /// Receives the conversation so far and returns the assistant's reply.
+    /// Returning an error fails the turn; the host records it and tells the
+    /// browser, rather than leaving the caller waiting.
+    run: func(conversation: list<message>, system-prompt: string) -> result<string, string>;
+}
+
+world agent-world {
+    import host;
+    export agent;
+}

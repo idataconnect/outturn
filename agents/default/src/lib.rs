@@ -583,10 +583,20 @@ impl Guest for Component {
         // The system prompt leads the conversation rather than being stored
         // with it, so editing an agent takes effect on its next turn instead
         // of only on new sessions.
+        // One line, and deliberately only one: it is paid for on every round of
+        // every turn forever. The model is otherwise never told what ends a
+        // turn -- it writes "I am about to look that up" as a preamble, we read
+        // the missing tool call as "finished", and the user is left holding a
+        // promise nobody kept.
+        const TURN_RULE: &str = "A reply that contains no tool calls ends the turn.";
+
         let mut messages = Vec::with_capacity(conversation.len() + 1);
-        if !system_prompt.is_empty() {
-            messages.push(text_message("system", system_prompt));
-        }
+        let system = if system_prompt.is_empty() {
+            TURN_RULE.to_string()
+        } else {
+            format!("{system_prompt}\n\n{TURN_RULE}")
+        };
+        messages.push(text_message("system", system));
         messages.extend(conversation);
 
         if messages.iter().all(|m| m.role != "user") {
