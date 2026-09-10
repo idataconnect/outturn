@@ -644,10 +644,26 @@ impl outturn::agent::host::Host for AgentHost {
 
     async fn stat_object(&mut self, path: String) -> Result<ObjectInfo, String> {
         let (storage, resolved) = self.object_at(&path)?;
-        let found = storage
-            .stat(&resolved)
-            .await
-            .map_err(|e| self.storage_failed("stat", e))?;
+
+        // Size means "how much you get if you read this", because that is what
+        // it is used for: deciding whether to page through something. A
+        // document read as text is the text's length, not the document's --
+        // reporting the bytes of a PDF whose words are a tenth of that would
+        // have a model page through a file it could have read whole.
+        let stat_at = if crate::api::extract::is_extractable(&resolved) {
+            crate::api::extract::text_key(&resolved)
+        } else {
+            resolved
+        };
+
+        let found = storage.stat(&stat_at).await.map_err(|e| {
+            if matches!(e, crate::runtime::storage::StorageError::NotFound)
+                && stat_at.starts_with("extracted/")
+            {
+                return format!("{path} is still being read; ask again shortly");
+            }
+            self.storage_failed("stat", e)
+        })?;
         Ok(ObjectInfo {
             // Handed back as the guest named it, not as it is stored.
             path,
@@ -686,10 +702,29 @@ impl outturn::agent::host::Host for AgentHost {
                 .list(&resolved)
                 .await
                 .map_err(|e| self.storage_failed("list", e))?;
+
+            // The text of any documents under here, listed once rather than
+            // stat'd one by one, so a listing costs two calls however many
+            // files it holds.
+            let text: std::collections::HashMap<String, u64> = storage
+                .list(&crate::api::extract::text_key(&resolved))
+                .await
+                .map(|f| {
+                    f.into_iter()
+                        .filter(|t| !t.is_dir)
+                        .filter_map(|t| {
+                            let key = t.path.strip_prefix("extracted/")?.to_string();
+                            Some((key, t.size))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
                 Some(ObjectInfo {
                     path: scope::strip_root(&self.space, &f.path)?,
-                    size: f.size,
+                    // Same rule as stat: what a read would hand over.
+                    size: text.get(&f.path).copied().unwrap_or(f.size),
                 })
             }));
         }
