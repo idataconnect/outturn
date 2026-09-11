@@ -127,13 +127,13 @@ fn tools() -> Vec<ToolDefinition> {
     },
     ToolDefinition {
         name: CREATE_ARCHIVE.to_string(),
-        description: "Put everything under a folder into one zip archive. \
-                      Files go in as stored -- a PDF as the PDF, not as its \
-                      text -- with names relative to the folder. The originals \
-                      are left where they are; delete them yourself if the \
-                      archive is meant to replace them."
+        description: "Put everything under a folder -- or one named file -- \
+                      into one zip archive. Files go in as stored -- a PDF as \
+                      the PDF, not as its text -- with names relative to the \
+                      folder. The originals are left where they are; delete \
+                      them yourself if the archive is meant to replace them."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped folder to archive, e.g. workspace/invoices/2025/"},"path":{"type":"string","description":"Scoped path for the archive, e.g. workspace/archive/invoices-2025.zip"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Archiving 2025's invoices."}},"required":["prefix","path","action"]}"#
+        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped folder to archive, e.g. workspace/invoices/2025/, or one file, e.g. session/main.pdf"},"path":{"type":"string","description":"Scoped path for the archive, e.g. workspace/archive/invoices-2025.zip"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Archiving 2025's invoices."}},"required":["prefix","path","action"]}"#
             .to_string(),
     },
     ToolDefinition {

@@ -221,18 +221,54 @@ pub fn expand(archive: &str, destination: &str) -> Result<Expanded, String> {
     })
 }
 
+/// What a requested prefix turns out to name: the folder that entry names are
+/// taken relative to, and the paths going in.
+///
+/// Split out from `create` because it is the part that was getting the answer
+/// wrong, and the part that can be checked without a host.
+pub fn resolve_inputs(asked: &str, listed: &[String], under: &[String]) -> (String, Vec<String>) {
+    // A listing of the prefix that holds the prefix itself means the prefix is
+    // one file: archive just that, named as it is named inside its folder. An
+    // exact match and not a prefix match, or "session/main" would claim
+    // "session/main.pdf" and archive it under a name nobody asked for.
+    match listed.iter().find(|p| *p == asked) {
+        Some(file) => (
+            asked.rsplit_once('/').map_or(String::new(), |(dir, _)| format!("{dir}/")),
+            vec![file.clone()],
+        ),
+        None => (format!("{asked}/"), under.to_vec()),
+    }
+}
+
 /// Archives everything under a prefix into one stored object, through the host.
+///
+/// A single file is named as readily as a folder, by a model and by a person,
+/// so one is archived under its own name rather than refused for not being a
+/// folder.
 pub fn create(prefix: &str, archive: &str) -> Result<(usize, u64), String> {
-    let prefix = if prefix.ends_with('/') { prefix.to_string() } else { format!("{prefix}/") };
-    let found = host::list_objects(&prefix)?;
+    let asked = prefix.trim_end_matches('/');
+    let listed: Vec<String> =
+        host::list_objects(asked)?.into_iter().map(|f| f.path).collect();
+    // Only asked for when the prefix was not itself a file, so the common case
+    // of a folder costs the one listing it always did.
+    let under: Vec<String> = if listed.iter().any(|p| p == asked) {
+        Vec::new()
+    } else {
+        host::list_objects(&format!("{asked}/"))?.into_iter().map(|f| f.path).collect()
+    };
+    let (prefix, found) = resolve_inputs(asked, &listed, &under);
+
     let mut entries = Vec::with_capacity(found.len());
-    for f in &found {
+    for path in &found {
         // Not the archive itself, should it be written under its own inputs.
-        if f.path == archive {
+        if path == archive {
             continue;
         }
-        let name = f.path.strip_prefix(&prefix).unwrap_or(&f.path).to_string();
-        entries.push((name, read_all_bytes(&f.path)?));
+        let name = path.strip_prefix(&prefix).unwrap_or(path).to_string();
+        entries.push((name, read_all_bytes(path)?));
+    }
+    if entries.is_empty() {
+        return Err(format!("nothing is stored under {asked}; nothing to archive"));
     }
     let count = entries.len();
     let bytes = create_into(entries)?;
@@ -301,6 +337,38 @@ mod tests {
         assert_eq!(got, vec!["fine.txt"]);
         assert_eq!(out.skipped.len(), 1, "{:?}", out.skipped);
         assert!(out.skipped[0].contains("escape"), "{:?}", out.skipped);
+    }
+
+    /// A prefix naming one file archives that file, under its bare name --
+    /// the case that reported "nothing to archive" and did nothing.
+    #[test]
+    fn a_prefix_naming_one_file_archives_that_file() {
+        let listed = vec!["session/main.pdf".to_string()];
+        let (prefix, found) = resolve_inputs("session/main.pdf", &listed, &[]);
+        assert_eq!(prefix, "session/");
+        assert_eq!(found, vec!["session/main.pdf"]);
+        assert_eq!(found[0].strip_prefix(&prefix), Some("main.pdf"));
+    }
+
+    /// A folder still archives everything under it, relative to the folder.
+    #[test]
+    fn a_prefix_naming_a_folder_archives_what_is_under_it() {
+        let under = vec!["session/docs/a.txt".to_string(), "session/docs/b/c.txt".to_string()];
+        let (prefix, found) = resolve_inputs("session/docs", &[], &under);
+        assert_eq!(prefix, "session/docs/");
+        assert_eq!(found, under);
+        assert_eq!(found[1].strip_prefix(&prefix), Some("b/c.txt"));
+    }
+
+    /// A partial name is not a file: it is a folder prefix, matched exactly or
+    /// not at all, or "session/main" would archive "session/main.pdf" as a
+    /// file the caller never named.
+    #[test]
+    fn a_partial_name_is_not_taken_for_the_file_it_prefixes() {
+        let listed = vec!["session/main.pdf".to_string()];
+        let (prefix, found) = resolve_inputs("session/main", &listed, &[]);
+        assert_eq!(prefix, "session/main/");
+        assert!(found.is_empty());
     }
 
     /// The declared size is not trusted: an entry is read through a cap.
