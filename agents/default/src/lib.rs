@@ -26,6 +26,7 @@ struct Component;
 const CURRENT_TIME: &str = "get_current_time";
 const READ_OBJECT: &str = "read_object";
 const WRITE_OBJECT: &str = "write_object";
+const DELETE_OBJECT: &str = "delete_object";
 const LIST_OBJECTS: &str = "list_objects";
 
 /// The model's name for the outbound request tool.
@@ -85,6 +86,19 @@ fn tools() -> Vec<ToolDefinition> {
                       the error will say so and where to write instead."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/summary.md"},"content":{"type":"string","description":"The complete new contents."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","content","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: DELETE_OBJECT.to_string(),
+        description: "Delete a stored file. It goes for good: there is nothing to \
+                      undo it with, so only delete what was asked for, and one \
+                      file at a time rather than a folder at a guess. Scopes work \
+                      as they do for writing -- a scope this agent may only read \
+                      is one it may not delete from, and the error will say so. \
+                      A path that names nothing is an error, not a quiet success: \
+                      never tell someone a file is gone unless this said it went."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path of the file to delete, e.g. session/draft.md"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Deleting the draft."}},"required":["path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -462,6 +476,14 @@ fn write_object(args: &serde_json::Value) -> String {
     }
 }
 
+fn delete_object(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    match host::delete_object(path) {
+        Ok(()) => serde_json::json!({ "path": path, "deleted": true }).to_string(),
+        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    }
+}
+
 fn list_objects(args: &serde_json::Value) -> String {
     match host::list_objects(arg(args, "prefix")) {
         Ok(found) => serde_json::json!({
@@ -577,6 +599,7 @@ fn run_tool(call: &ToolCall) -> Message {
     let content = match call.name.as_str() {
         READ_OBJECT => read_object(&args),
         WRITE_OBJECT => write_object(&args),
+        DELETE_OBJECT => delete_object(&args),
         LIST_OBJECTS => list_objects(&args),
         FETCH => fetch_url(&args),
         EXPAND_ARCHIVE => expand_archive(&args),

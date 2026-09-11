@@ -147,6 +147,19 @@ interface host {
     /// Writes an object, replacing anything already there.
     write-object: func(path: string, data: list<u8>) -> result<u64, string>;
 
+    /// Removes an object.
+    ///
+    /// Here because without it a guest asked to delete something reaches for
+    /// the nearest thing it has -- writing nothing over it -- and leaves an
+    /// empty object behind that still lists, while telling the user the file
+    /// is gone. Same paths and same refusals as a write: removing is writing,
+    /// and a scope a guest may only read is a scope it may not empty.
+    ///
+    /// Naming an object that is not there is an error rather than a quiet
+    /// success, because a guest that mistyped a path should learn so rather
+    /// than report a deletion it did not perform.
+    delete-object: func(path: string) -> result<_, string>;
+
     /// A request an agent wants made on its behalf.
     record http-request {
         /// GET, POST, PUT, PATCH, DELETE or HEAD.

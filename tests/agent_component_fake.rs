@@ -881,6 +881,124 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     assert!(result.contains("session/"), "the refusal should say where to write instead: {result}");
 }
 
+/// Deleting removes the object, rather than leaving an empty one behind.
+///
+/// The guest has no filesystem, so before `delete_object` existed a model
+/// asked to delete reached for the nearest thing it had -- writing nothing
+/// over the file -- and then reported a deletion that had not happened, while
+/// the panel went on listing a zero-byte file. Nothing listed is the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_removes_the_object_rather_than_emptying_it() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "delete_object".into(),
+        arguments: r#"{"path":"session/recipe.pdf","action":"Deleting the file"}"#.into(),
+        reply: "Deleted.".into(),
+    })
+    .await;
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let key = scope::resolve(&space, "session/recipe.pdf").unwrap();
+    store.write(&key, 0, b"%PDF-1.4 banana bread").await.expect("seed");
+
+    runner
+        .run(&component(), user("Please delete that file now."), String::new(), options)
+        .await
+        .expect("run");
+
+    assert!(
+        store.stat(&key).await.is_err(),
+        "the object is still there after a delete"
+    );
+    let listed = store.list(&scope::root_for(&space, scope::Scope::Session)).await.expect("list");
+    assert!(
+        listed.is_empty(),
+        "a deleted file must not go on listing, at any size: {listed:?}"
+    );
+}
+
+/// Deleting from a scope this agent may only read is refused.
+///
+/// Emptying a file is a way of changing it, so the scope that governs writing
+/// governs this too. A read-only workspace that an agent could delete from
+/// would be read-only in name only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_outside_the_allowed_scopes_is_refused() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "delete_object".into(),
+        arguments: r#"{"path":"workspace/pricing.csv","action":"Deleting the price list"}"#.into(),
+        reply: "Refused.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.write_scopes = vec!["session".into(), "agent".into()];
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let key = scope::resolve(&space, "workspace/pricing.csv").unwrap();
+    store.write(&key, 0, b"not cheap").await.expect("seed");
+
+    runner()
+        .run(&component(), user("Delete the price list."), String::new(), options)
+        .await
+        .expect("run");
+
+    assert!(store.stat(&key).await.is_ok(), "the refused delete went through anyway");
+}
+
+/// Deleting nothing is an error, not a quiet success.
+///
+/// The failure this guards is a model telling someone their file is gone
+/// because a tool answered "fine" to a path it never found.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_a_path_that_names_nothing_says_so() {
+    use outturn::runtime::storage::MemoryStorage;
+
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "delete_object".into(),
+        arguments: r#"{"path":"session/never-existed.md","action":"Deleting the draft"}"#.into(),
+        reply: "It was not there.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(Arc::new(MemoryStorage::new()));
+
+    runner()
+        .run(&component(), user("Delete the draft."), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(
+        result.contains("error") && result.contains("session/never-existed.md"),
+        "the model must be told the path was not there: {result}"
+    );
+}
+
 /// A file too large to show comes back as both ends, not just the start.
 ///
 /// Head-only truncation loses exactly the part that matters in a log: the

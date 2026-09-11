@@ -777,6 +777,24 @@ impl outturn::agent::host::Host for AgentHost {
         Ok(written)
     }
 
+    async fn delete_object(&mut self, path: String) -> Result<(), String> {
+        // Emptying a scope is writing to it, so it asks the same permission.
+        self.may_write(&path)?;
+        let (storage, resolved) = self.object_at(&path)?;
+        storage.delete(&resolved).await.map_err(|e| match e {
+            // Named, because "not found" alone leaves a model guessing which
+            // of the paths it just listed it got wrong.
+            crate::runtime::storage::StorageError::NotFound => {
+                format!("there is no file at {path}")
+            }
+            other => self.storage_failed("delete", other),
+        })?;
+        // Or the words of a deleted document stay readable to anyone who
+        // names it, which is the deletion not having happened.
+        crate::api::extract::invalidate(storage.as_ref(), &resolved).await;
+        Ok(())
+    }
+
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
         use crate::runtime::storage::scope::{self, Scope};
         let Some(storage) = self.storage.clone() else {
