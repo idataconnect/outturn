@@ -179,6 +179,14 @@ impl StorageBackend for S3Storage {
             .await
             .map_err(classify)?;
 
+        // The same check the whole-object path makes. Without it a missing key
+        // comes back as a successful read whose body is the XML error, and the
+        // first reader to hit a key that might not exist was handed
+        // "<Error><Code>NoSuchKey</Code>" as the contents of a document.
+        if response.status_code() == 404 {
+            return Err(StorageError::NotFound);
+        }
+
         Ok(response.to_vec())
     }
 

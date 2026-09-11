@@ -498,6 +498,98 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Reads part of an object exactly as it is stored.
+            ///
+            /// `read-object` hands over what a reader wants -- for a document, the
+            /// words in it rather than the bytes of it. This is the other question:
+            /// the object itself, for when the bytes are the point. Posting a PDF to
+            /// an API, or putting it in an archive, wants the PDF and not a summary
+            /// of it. Same paths, same refusals, same ranges.
+            pub fn read_bytes(
+                path: &str,
+                offset: u64,
+                len: u32,
+            ) -> Result<_rt::Vec<u8>, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "read-bytes"]
+                        fn wit_import2(_: *mut u8, _: usize, _: i64, _: i32, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(
+                        _: *mut u8,
+                        _: usize,
+                        _: i64,
+                        _: i32,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import2(
+                            ptr0.cast_mut(),
+                            len0,
+                            _rt::as_i64(&offset),
+                            _rt::as_i32(&len),
+                            ptr1,
+                        )
+                    };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result10 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len6 = l5;
+                                _rt::Vec::from_raw_parts(l4.cast(), len6, len6)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l7 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l8 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len9 = l8;
+                                let bytes9 = _rt::Vec::from_raw_parts(
+                                    l7.cast(),
+                                    len9,
+                                    len9,
+                                );
+                                _rt::string_lift(bytes9)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result10
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// How large an object is, without reading it.
             ///
             /// Needed before a ranged read can be sensible: a caller that does not
@@ -2283,9 +2375,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1519] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xed\x0a\x01A\x02\x01\
-A\x05\x01BJ\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1534] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfc\x0a\x01A\x02\x01\
+A\x05\x01BK\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -2302,21 +2394,21 @@ methods\x03urls\x07headers\x1a\x04body\x07\x04\0\x0chttp-request\x03\0\x1b\x01r\
 me\x03\0\x1f\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0!\x01r\x01\x0f\
 max-tool-roundsy\x04\0\x06limits\x03\0#\x01r\x04\x03nows\x07weekdays\x08timezone\
 s\x0cabbreviations\x04\0\x05clock\x03\0%\x01p}\x01j\x01'\x01s\x01@\x03\x04paths\x06\
-offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x01j\x01\x18\x01s\x01@\x01\x04paths\
-\0*\x04\0\x0bstat-object\x01+\x01j\x01w\x01s\x01@\x02\x04paths\x04data'\0,\x04\0\
-\x0cwrite-object\x01-\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\0.\x04\0\x05fetc\
-h\x01/\x01p\x18\x01j\x010\x01s\x01@\x01\x06prefixs\01\x04\0\x0clist-objects\x012\
-\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x013\x01@\x01\x08activity\x16\
-\x01\0\x04\0\x0ctool-started\x014\x01p\"\x01@\0\05\x04\0\x0dpending-input\x016\x01\
-@\0\0$\x04\0\x0ecurrent-limits\x017\x01j\x01\x14\x01s\x01@\x01\x07request\x0f\08\
-\x04\0\x04chat\x019\x01@\0\0&\x04\0\x0ccurrent-time\x01:\x01@\x01\x04texts\x01\0\
-\x04\0\x08progress\x01;\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01<\x03\
-\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\
-\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversati\
-on\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent\
-@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0ba\
-gent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070\
-.227.1\x10wit-bindgen-rust\x060.41.0";
+offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x04\0\x0aread-bytes\x01)\x01j\x01\x18\
+\x01s\x01@\x01\x04paths\0*\x04\0\x0bstat-object\x01+\x01j\x01w\x01s\x01@\x02\x04\
+paths\x04data'\0,\x04\0\x0cwrite-object\x01-\x01j\x01\x1e\x01s\x01@\x01\x07reque\
+st\x1c\0.\x04\0\x05fetch\x01/\x01p\x18\x01j\x010\x01s\x01@\x01\x06prefixs\01\x04\
+\0\x0clist-objects\x012\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x01\
+3\x01@\x01\x08activity\x16\x01\0\x04\0\x0ctool-started\x014\x01p\"\x01@\0\05\x04\
+\0\x0dpending-input\x016\x01@\0\0$\x04\0\x0ecurrent-limits\x017\x01j\x01\x14\x01\
+s\x01@\x01\x07request\x0f\08\x04\0\x04chat\x019\x01@\0\0&\x04\0\x0ccurrent-time\x01\
+:\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01;\x01@\x02\x05levels\x07messages\x01\
+\0\x04\0\x03log\x01<\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07mess\
+age\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01\
+s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\
+\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\
+\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

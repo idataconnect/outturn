@@ -70,6 +70,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_tool: None,
                 on_tool_result: None,
                 on_usage: None,
+        on_write: None,
                 storage: None,
                 workspace_id,
                 agent_id: Uuid::now_v7(),

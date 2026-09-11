@@ -71,6 +71,9 @@ pub struct CallUsage {
 /// Reports each model call's cost as it completes.
 pub type UsageSink = Arc<dyn Fn(&CallUsage) + Send + Sync>;
 
+/// Reports an object the guest wrote, as `(scoped path, resolved key)`.
+pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// How long a request an agent made may take.
 ///
 /// Far shorter than a model call, because this is a request to somebody else's
@@ -137,6 +140,7 @@ pub struct AgentHost {
     on_tool: Option<ToolSink>,
     on_tool_result: Option<ToolResultSink>,
     on_usage: Option<UsageSink>,
+    on_write: Option<WriteSink>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
     /// Model calls made so far this turn, counted host-side so a guest that
@@ -642,6 +646,22 @@ impl outturn::agent::host::Host for AgentHost {
             .map_err(|e| self.storage_failed("read", e))
     }
 
+    async fn read_bytes(
+        &mut self,
+        path: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Vec<u8>, String> {
+        // The object as stored: no extraction, no redirect. What read_object
+        // does for a document is a convenience for reading; this is for the
+        // callers that need the thing itself.
+        let (storage, resolved) = self.object_at(&path)?;
+        storage
+            .read(&resolved, offset, len)
+            .await
+            .map_err(|e| self.storage_failed("read", e))
+    }
+
     async fn stat_object(&mut self, path: String) -> Result<ObjectInfo, String> {
         let (storage, resolved) = self.object_at(&path)?;
 
@@ -674,10 +694,15 @@ impl outturn::agent::host::Host for AgentHost {
     async fn write_object(&mut self, path: String, data: Vec<u8>) -> Result<u64, String> {
         self.may_write(&path)?;
         let (storage, resolved) = self.object_at(&path)?;
-        storage
+        let written = storage
             .write(&resolved, 0, &data)
             .await
-            .map_err(|e| self.storage_failed("write", e))
+            .map_err(|e| self.storage_failed("write", e))?;
+        // Said after the bytes are there, so whatever acts on it finds them.
+        if let Some(sink) = &self.on_write {
+            sink(&path, &resolved);
+        }
+        Ok(written)
     }
 
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
@@ -1100,6 +1125,7 @@ pub struct RunOptions {
     pub on_tool: Option<ToolSink>,
     pub on_tool_result: Option<ToolResultSink>,
     pub on_usage: Option<UsageSink>,
+    pub on_write: Option<WriteSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -1193,6 +1219,7 @@ impl AgentRunner {
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
             on_usage: options.on_usage,
+            on_write: options.on_write,
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.

@@ -12,6 +12,8 @@
 #[allow(warnings)]
 mod bindings;
 
+mod archive;
+
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
     ContentPart,
@@ -28,6 +30,8 @@ const LIST_OBJECTS: &str = "list_objects";
 
 /// The model's name for the outbound request tool.
 const FETCH: &str = "fetch_url";
+const EXPAND_ARCHIVE: &str = "expand_archive";
+const CREATE_ARCHIVE: &str = "create_archive";
 
 /// How much of a file a single read puts in front of the model.
 ///
@@ -90,6 +94,32 @@ fn tools() -> Vec<ToolDefinition> {
                       to narrow it."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped prefix, e.g. session/ or workspace/reports/. Omit for everything."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking through the stored files."}},"required":["action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: EXPAND_ARCHIVE.to_string(),
+        description: "Unpack a zip archive into a folder of files. Nothing is \
+                      unpacked until you ask: an archive stays one file until \
+                      something in it is needed. Entries land under the \
+                      destination and are then ordinary files -- documents \
+                      among them become readable the way any upload does. \
+                      Expanding into session/ needs no permission; workspace/ \
+                      needs the right to write there. Entries that would \
+                      escape the destination are skipped and named in the \
+                      result rather than failing it."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path of the archive, e.g. session/invoices.zip"},"destination":{"type":"string","description":"Scoped folder to unpack into. Omit for a folder beside the archive named after it."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Unpacking last year's invoices."}},"required":["path","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: CREATE_ARCHIVE.to_string(),
+        description: "Put everything under a folder into one zip archive. \
+                      Files go in as stored -- a PDF as the PDF, not as its \
+                      text -- with names relative to the folder. The originals \
+                      are left where they are; delete them yourself if the \
+                      archive is meant to replace them."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped folder to archive, e.g. workspace/invoices/2025/"},"path":{"type":"string","description":"Scoped path for the archive, e.g. workspace/archive/invoices-2025.zip"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Archiving 2025's invoices."}},"required":["prefix","path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -445,6 +475,41 @@ fn list_objects(args: &serde_json::Value) -> String {
     }
 }
 
+fn expand_archive(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    let destination = match arg(args, "destination") {
+        "" => path
+            .strip_suffix(".zip")
+            .or_else(|| path.strip_suffix(".ZIP"))
+            .unwrap_or(path)
+            .to_string(),
+        d => d.to_string(),
+    };
+    match archive::expand(path, &destination) {
+        Ok(done) => serde_json::json!({
+            "archive": path,
+            "destination": destination,
+            "written": done.written.len(),
+            "bytes": done.bytes,
+            "files": done.written,
+            "skipped": done.skipped,
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({ "archive": path, "error": e }).to_string(),
+    }
+}
+
+fn create_archive(args: &serde_json::Value) -> String {
+    let prefix = arg(args, "prefix");
+    let path = arg(args, "path");
+    match archive::create(prefix, path) {
+        Ok((entries, bytes)) => {
+            serde_json::json!({ "archive": path, "entries": entries, "bytes": bytes }).to_string()
+        }
+        Err(e) => serde_json::json!({ "archive": path, "error": e }).to_string(),
+    }
+}
+
 /// Asks the host to make a request.
 ///
 /// Everything that decides whether this is allowed happens on the other side
@@ -514,6 +579,8 @@ fn run_tool(call: &ToolCall) -> Message {
         WRITE_OBJECT => write_object(&args),
         LIST_OBJECTS => list_objects(&args),
         FETCH => fetch_url(&args),
+        EXPAND_ARCHIVE => expand_archive(&args),
+        CREATE_ARCHIVE => create_archive(&args),
         CURRENT_TIME => {
             let clock = host::current_time();
             // The weekday is given rather than left to be worked out: a model

@@ -373,6 +373,14 @@ impl Worker {
                         )
                         .await?;
                     }
+                    Ok(ExecuteEvent::Wrote { path, key }) => {
+                        // Same call the upload handler makes. A document is a
+                        // document whether a person dragged it in or an agent
+                        // unpacked it from an archive, and only this tier can
+                        // queue the job that reads it.
+                        super::extract::enqueue(&self.pool, payload.workspace_id, &key, &path)
+                            .await;
+                    }
                     Ok(ExecuteEvent::Usage {
                         round,
                         endpoint,

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::component::{
     AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
-    ToolSink, UsageSink,
+    ToolSink, UsageSink, WriteSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -119,6 +119,11 @@ pub struct ConversationToolCall {
 pub enum ExecuteEvent {
     /// A fragment of the reply, in order.
     Delta { idx: i64, text: String },
+    /// The guest wrote an object. Reported so the tier with the database can
+    /// treat it exactly as it treats an upload -- a document landing is a
+    /// document to extract, whoever put it there. The runtime cannot enqueue
+    /// that itself: it holds no database, on purpose.
+    Wrote { path: String, key: String },
     /// The guest started a tool, with the model's own label for what it is
     /// doing.
     Tool {
@@ -190,7 +195,7 @@ pub enum ExecuteEvent {
 /// blocked, so they cannot wait for a slow reader.
 pub fn sinks_for(
     tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>,
-) -> (ProgressSink, ToolSink, ToolResultSink, UsageSink) {
+) -> (ProgressSink, ToolSink, ToolResultSink, UsageSink, WriteSink) {
     let progress: ProgressSink = {
         let tx = tx.clone();
         let index = std::sync::atomic::AtomicI64::new(0);
@@ -227,6 +232,16 @@ pub fn sinks_for(
         })
     };
 
+    let on_write: WriteSink = {
+        let tx = tx.clone();
+        Arc::new(move |path: &str, key: &str| {
+            let _ = tx.send(ExecuteEvent::Wrote {
+                path: path.to_string(),
+                key: key.to_string(),
+            });
+        })
+    };
+
     let on_usage: UsageSink = {
         let tx = tx.clone();
         Arc::new(move |call: &CallUsage| {
@@ -246,6 +261,6 @@ pub fn sinks_for(
         })
     };
 
-    (progress, on_tool, on_tool_result, on_usage)
+    (progress, on_tool, on_tool_result, on_usage, on_write)
 }
 

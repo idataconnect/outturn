@@ -10,6 +10,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 serde_json = "1.0.151"
+# Pure Rust end to end -- deflate through miniz_oxide -- so it compiles to wasm
+# and inflates inside the sandbox, where a zip bomb blows up the guest and not
+# the platform. No time crate: entry timestamps are not worth a dependency.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # Matched to what cargo-component 0.21 generates.
 wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 
