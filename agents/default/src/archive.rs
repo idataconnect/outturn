@@ -98,7 +98,16 @@ where
                 out.written.len()
             ));
         }
-        write(&name, &data)?;
+        // A refusal with nothing yet landed is the whole expansion being
+        // refused -- no permission to write here -- and is said so at once.
+        // One after others have landed is that one entry, skipped and named.
+        if let Err(e) = write(&name, &data) {
+            if out.written.is_empty() {
+                return Err(e);
+            }
+            out.skipped.push(format!("{name}: {e}"));
+            continue;
+        }
         out.written.push(name);
     }
     Ok(out)

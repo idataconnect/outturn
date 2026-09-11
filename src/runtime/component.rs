@@ -23,6 +23,48 @@ pub use outturn::agent::host::{
     ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
+/// What a byte string is, when it is plainly not text -- or None when it may be.
+///
+/// Magic numbers first, because a name helps: told it holds a zip, a model
+/// reaches for `expand_archive`; told "binary", it can only apologise. Then a
+/// coarse test for the rest: a NUL, or a window that is mostly control
+/// characters, is not something anyone wanted to read.
+pub(crate) fn describe_binary(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        return Some("a zip archive; use expand_archive to unpack it");
+    }
+    if bytes.starts_with(b"%PDF") {
+        return Some("a PDF, and document extraction is not configured here, so its text cannot be read");
+    }
+    if bytes.starts_with(b"\x89PNG") {
+        return Some("a PNG image");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("a JPEG image");
+    }
+    if bytes.starts_with(b"GIF8") {
+        return Some("a GIF image");
+    }
+    if bytes.starts_with(b"\x1f\x8b") {
+        return Some("gzip-compressed data");
+    }
+    let window = &bytes[..bytes.len().min(8192)];
+    if window.contains(&0) {
+        return Some("binary data");
+    }
+    let control = window
+        .iter()
+        .filter(|b| **b < 0x20 && !matches!(**b, b'\t' | b'\n' | b'\r'))
+        .count();
+    if control * 10 > window.len() {
+        return Some("binary data");
+    }
+    None
+}
+
 /// The OpenAI-shaped projection of an ordered message: the text joined, the
 /// calls listed after it.
 ///
@@ -615,35 +657,54 @@ impl outturn::agent::host::Host for AgentHost {
         // it asked for `session/report.pdf` and gets prose -- for the same
         // reason settings are resolved above it: what it needs is the content,
         // and where the content came from is the host's business.
-        if crate::api::extract::is_extractable(&resolved) {
+        //
+        // Only where something is reading documents at all. Without it a PDF
+        // is bytes like any other, and is said to be, rather than "not yet"
+        // for a job nothing will ever run.
+        if crate::api::extract::tika_url().is_some()
+            && crate::api::extract::is_extractable(&resolved)
+        {
+            use crate::runtime::storage::StorageError;
             let text = crate::api::extract::text_key(&resolved);
-            match storage.read(&text, offset, len).await {
+            return match storage.read(&text, offset, len).await {
                 // Extracted, and there was nothing in it. Said outright: an
                 // empty read is indistinguishable from an empty document, and
                 // a model told a report is blank will report that it is.
-                Ok(bytes) if bytes.is_empty() && offset == 0 => {
-                    return Err(format!(
-                        "no text could be read from {path}; it may be a scan or an image"
-                    ));
+                Ok(bytes) if bytes.is_empty() && offset == 0 => Err(format!(
+                    "no text could be read from {path}; it may be a scan or an image"
+                )),
+                Ok(bytes) => Ok(bytes),
+                Err(StorageError::NotFound) => {
+                    // "Never" and "not yet" are different answers, and only
+                    // one of them should have a reader come back later.
+                    let failed = crate::api::extract::failed_key(&resolved);
+                    match storage.read(&failed, 0, 4096).await {
+                        Ok(why) => Err(format!(
+                            "{path} could not be read: {}",
+                            String::from_utf8_lossy(&why).trim()
+                        )),
+                        Err(_) => Err(format!("{path} is still being read; ask again shortly")),
+                    }
                 }
-                Ok(bytes) => return Ok(bytes),
-                Err(crate::runtime::storage::StorageError::NotFound) => {
-                    // Said plainly rather than answered with the raw bytes or
-                    // with nothing. An empty read is indistinguishable from an
-                    // empty document, and a model told a report is blank will
-                    // confidently report that it is.
-                    return Err(format!(
-                        "{path} is still being read; ask again shortly"
-                    ));
-                }
-                Err(e) => return Err(self.storage_failed("read", e)),
-            }
+                Err(e) => Err(self.storage_failed("read", e)),
+            };
         }
 
-        storage
+        let bytes = storage
             .read(&resolved, offset, len)
             .await
-            .map_err(|e| self.storage_failed("read", e))
+            .map_err(|e| self.storage_failed("read", e))?;
+
+        // Bytes that are not text are named rather than handed over. A model
+        // given the first kilobyte of a PNG spends the tokens working out that
+        // it is a PNG; told so, it can say so, or reach for the tool that
+        // deals with it.
+        if offset == 0 {
+            if let Some(what) = describe_binary(&bytes) {
+                return Err(format!("{path} is not text: it is {what}"));
+            }
+        }
+        Ok(bytes)
     }
 
     async fn read_bytes(
@@ -670,20 +731,28 @@ impl outturn::agent::host::Host for AgentHost {
         // document read as text is the text's length, not the document's --
         // reporting the bytes of a PDF whose words are a tenth of that would
         // have a model page through a file it could have read whole.
-        let stat_at = if crate::api::extract::is_extractable(&resolved) {
+        let extracting = crate::api::extract::tika_url().is_some()
+            && crate::api::extract::is_extractable(&resolved);
+        let stat_at = if extracting {
             crate::api::extract::text_key(&resolved)
         } else {
-            resolved
+            resolved.clone()
         };
 
-        let found = storage.stat(&stat_at).await.map_err(|e| {
-            if matches!(e, crate::runtime::storage::StorageError::NotFound)
-                && stat_at.starts_with("extracted/")
-            {
-                return format!("{path} is still being read; ask again shortly");
+        let found = match storage.stat(&stat_at).await {
+            Ok(f) => f,
+            Err(crate::runtime::storage::StorageError::NotFound) if extracting => {
+                let failed = crate::api::extract::failed_key(&resolved);
+                return Err(match storage.read(&failed, 0, 4096).await {
+                    Ok(why) => format!(
+                        "{path} could not be read: {}",
+                        String::from_utf8_lossy(&why).trim()
+                    ),
+                    Err(_) => format!("{path} is still being read; ask again shortly"),
+                });
             }
-            self.storage_failed("stat", e)
-        })?;
+            Err(e) => return Err(self.storage_failed("stat", e)),
+        };
         Ok(ObjectInfo {
             // Handed back as the guest named it, not as it is stored.
             path,
@@ -698,6 +767,9 @@ impl outturn::agent::host::Host for AgentHost {
             .write(&resolved, 0, &data)
             .await
             .map_err(|e| self.storage_failed("write", e))?;
+        // Whatever was read out of the previous version is wrong now, and the
+        // job that reads this one has not run yet.
+        crate::api::extract::invalidate(storage.as_ref(), &resolved).await;
         // Said after the bytes are there, so whatever acts on it finds them.
         if let Some(sink) = &self.on_write {
             sink(&path, &resolved);
@@ -731,7 +803,10 @@ impl outturn::agent::host::Host for AgentHost {
             // The text of any documents under here, listed once rather than
             // stat'd one by one, so a listing costs two calls however many
             // files it holds.
-            let text: std::collections::HashMap<String, u64> = storage
+            let text: std::collections::HashMap<String, u64> = if crate::api::extract::tika_url().is_none() {
+                Default::default()
+            } else {
+                storage
                 .list(&crate::api::extract::text_key(&resolved))
                 .await
                 .map(|f| {
@@ -743,7 +818,13 @@ impl outturn::agent::host::Host for AgentHost {
                         })
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    // Sizes fall back to the documents' own, which is wrong in
+                    // the safe direction -- but not silently.
+                    tracing::warn!(error = %e, "could not list extracted text; sizes are of the originals");
+                    Default::default()
+                })
+            };
 
             out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
                 Some(ObjectInfo {
@@ -1373,6 +1454,34 @@ mod compiled_cache_tests {
             assert_eq!(c.get(&key(1)), Some(11));
         }
         assert_eq!(c.entries.lock().expect("lock").len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod binary_guard {
+    use super::describe_binary;
+
+    #[test]
+    fn text_is_not_described() {
+        assert_eq!(describe_binary(b"invoice 7 paid in full"), None);
+        assert_eq!(describe_binary("caf\u{e9} \u{1f600}\n".as_bytes()), None, "utf-8 is text");
+        assert_eq!(describe_binary(b"a,b\r\n1,2\r\n"), None);
+        assert_eq!(describe_binary(b""), None);
+    }
+
+    #[test]
+    fn known_formats_are_named() {
+        assert!(describe_binary(b"PK\x03\x04rest").unwrap().contains("expand_archive"));
+        assert!(describe_binary(b"%PDF-1.4").unwrap().contains("not configured"));
+        assert_eq!(describe_binary(b"\x89PNG\r\n"), Some("a PNG image"));
+        assert_eq!(describe_binary(b"\xff\xd8\xff\xe0"), Some("a JPEG image"));
+    }
+
+    #[test]
+    fn a_nul_or_mostly_control_bytes_is_binary() {
+        assert_eq!(describe_binary(b"abc\x00def"), Some("binary data"));
+        let noisy: Vec<u8> = (0..100u8).map(|i| if i % 2 == 0 { 0x01 } else { b'a' }).collect();
+        assert_eq!(describe_binary(&noisy), Some("binary data"));
     }
 }
 
