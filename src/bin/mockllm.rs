@@ -1,11 +1,20 @@
 //! A model that never was, for load tests that should cost nothing.
 //!
-//! Speaks the OpenAI chat-completions protocol, so the gateway dials it the way
-//! it dials any provider -- through a real socket, with real streaming, real
+//! Speaks all three protocols the gateway speaks -- OpenAI chat-completions,
+//! Anthropic messages and Gemini generateContent -- so the gateway dials it the
+//! way it dials any provider: through a real socket, with real streaming, real
 //! connection reuse and a real read timeout. That is the point of it being a
 //! service rather than a branch inside the gateway: a load test against an
 //! in-process shortcut measures the shortcut, and the parts most likely to
 //! break under load are exactly the ones a shortcut skips.
+//!
+//! The three differ in where a stream says what it cost, which is the whole
+//! reason they are all here rather than only the one. OpenAI says it once, in
+//! a chunk *after* the one carrying `finish_reason`; Anthropic says the input
+//! side up front and the output side as it goes; Gemini repeats a running
+//! total on nearly every chunk. A turn cut short therefore leaves three quite
+//! different amounts of truth behind, and code that recovers what it can has
+//! to be tried against all three or it is only tried against the easy one.
 //!
 //! It answers three questions a real provider cannot answer cheaply:
 //!
@@ -42,6 +51,16 @@ use tokio::sync::Mutex;
 /// somebody who does not know this service exists.
 const MOCK_HEADER: axum::http::HeaderName =
     axum::http::HeaderName::from_static("x-outturn-mock");
+
+/// What that header says. One string, because all three protocols say it.
+const MOCK_NOTE: &str = "outturn-mockllm: generated, not inferred";
+
+/// The arguments every mock tool call carries.
+///
+/// Valid JSON, and the same across protocols, so a test that cuts a stream
+/// partway can tell truncated arguments from arguments that were always this
+/// shape -- the difference between a bug and a fixture.
+const TOOL_ARGUMENTS: &str = r#"{"action":"pretending to work"}"#;
 
 /// Words the filler is built from.
 ///
@@ -99,6 +118,15 @@ struct Metrics {
     /// Requests that reused nothing at all, which for a continuing
     /// conversation is the interesting failure.
     cold_prompts: AtomicU64,
+    /// Streams the client stopped reading before they ended.
+    ///
+    /// The whole of testing a stop button is whether the provider found out.
+    /// A cancel that only hides the tail in a browser leaves this at zero
+    /// while everything on screen looks right.
+    abandoned: AtomicU64,
+    /// Tokens already sent when a stream was abandoned, summed. What a turn
+    /// cut short actually cost, against which recovered usage is checked.
+    abandoned_tokens: AtomicU64,
 }
 
 struct AppState {
@@ -204,24 +232,89 @@ fn every(share: f64, counter: &AtomicU64) -> bool {
     n % period == 0
 }
 
-async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatRequest>) -> Response {
+/// Notices a stream that was dropped before it finished.
+///
+/// A stream ends one of two ways: its generator runs to completion, or the
+/// client goes away and the body is dropped where it was suspended. Only the
+/// second leaves a `Drop` to run with `done` still false, which is what makes
+/// this the one place the difference is observable -- and the difference is
+/// exactly what a stop button has to be judged on.
+struct StreamGuard {
+    metrics: Arc<AppState>,
+    sent: usize,
+    done: bool,
+}
+
+impl StreamGuard {
+    fn new(state: &Arc<AppState>) -> Self {
+        Self { metrics: Arc::clone(state), sent: 0, done: false }
+    }
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        self.metrics.metrics.abandoned.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .metrics
+            .abandoned_tokens
+            .fetch_add(self.sent as u64, Ordering::Relaxed);
+    }
+}
+
+/// What a request is answered with, before any protocol has been chosen.
+///
+/// The three encoders below differ only in how they spell this out. Deciding
+/// it once means a reply is the same reply whichever wire format asked for it,
+/// which is what makes a number measured through one protocol comparable with
+/// the same number measured through another.
+struct Turn {
+    /// Prompt tokens actually evaluated: the whole prompt less what a prefix
+    /// match served from cache.
+    prompt_tokens: usize,
+    /// Of the prompt, how much came from cache. Reported differently by each
+    /// protocol -- inside the prompt total or beside it -- which is exactly
+    /// the kind of thing that goes unnoticed until a bill disagrees.
+    cached_tokens: usize,
+    completion_tokens: usize,
+    /// Present when this turn answers with a tool call rather than prose.
+    tool: Option<String>,
+    /// The prose, when there is any.
+    text: String,
+}
+
+impl Turn {
+    /// The reply, one word per streamed chunk. Empty for a tool call.
+    fn words(&self) -> Vec<String> {
+        if self.tool.is_some() {
+            return Vec::new();
+        }
+        self.text
+            .split(' ')
+            .enumerate()
+            .map(|(i, w)| if i == 0 { w.to_string() } else { format!(" {w}") })
+            .collect()
+    }
+}
+
+/// Decides what to answer, and records what it cost. Protocol-neutral.
+///
+/// Returns `None` when this request is one of the share configured to fail or
+/// hang, having already done the failing or the hanging.
+async fn plan(
+    state: &AppState,
+    messages: &[Message],
+    // The tool this turn would call, if the request offered any and the shape
+    // of the conversation makes calling one sensible. Named by the caller,
+    // which knows how its own protocol spells a tool definition.
+    offered_tool: Option<String>,
+) -> Option<Turn> {
     let m = &state.metrics;
     m.requests.fetch_add(1, Ordering::Relaxed);
 
-    if every(state.config.drop_rate, &state.counter) {
-        m.dropped.fetch_add(1, Ordering::Relaxed);
-        return (StatusCode::SERVICE_UNAVAILABLE, "mock: refusing this one").into_response();
-    }
-
-    if every(state.config.hang_rate, &state.counter) {
-        m.hung.fetch_add(1, Ordering::Relaxed);
-        // Long enough to outlast any sensible read timeout, and bounded so a
-        // load test does not accumulate stuck tasks forever.
-        tokio::time::sleep(Duration::from_secs(600)).await;
-        return (StatusCode::GATEWAY_TIMEOUT, "mock: never mind").into_response();
-    }
-
-    let lines = prompt_lines(&req.messages);
+    let lines = prompt_lines(messages);
     let prompt_tokens: usize = lines.iter().map(|l| tokens_of(l)).sum();
 
     let cached = {
@@ -234,62 +327,109 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
 
     // A continuing conversation that reused nothing is what this exists to
     // notice. A first turn legitimately reuses nothing, and is not counted.
-    if cached == 0 && req.messages.len() > 2 {
+    if cached == 0 && messages.len() > 2 {
         m.cold_prompts.fetch_add(1, Ordering::Relaxed);
     }
 
-    let wants_tool = state.config.tool_calls
-        && req.tools.as_ref().is_some_and(|t| !t.is_empty())
-        // Only when the last message is from the user: answering a tool result
-        // with another tool call is how a loop that never ends begins.
-        && req.messages.last().is_some_and(|m| m.role == "user");
-
+    let tool = offered_tool.filter(|_| state.config.tool_calls);
+    let wants_tool = tool.is_some();
     if wants_tool {
         m.tool_calls.fetch_add(1, Ordering::Relaxed);
     }
 
-    let body_tokens = if wants_tool { 12 } else { state.config.reply_tokens };
+    let completion_tokens = if wants_tool { 12 } else { state.config.reply_tokens };
     m.prompt_tokens.fetch_add(prompt_tokens as u64, Ordering::Relaxed);
     m.cached_tokens.fetch_add(cached as u64, Ordering::Relaxed);
-    m.completion_tokens.fetch_add(body_tokens as u64, Ordering::Relaxed);
-
-    let usage = serde_json::json!({
-        // Reported the way llama.cpp does: what was actually evaluated, with
-        // what came from cache accounted separately. A caller that adds the
-        // two gets the size of the prompt.
-        "prompt_tokens": prompt_tokens.saturating_sub(cached),
-        "completion_tokens": body_tokens,
-        "total_tokens": prompt_tokens.saturating_sub(cached) + body_tokens,
-        "prompt_tokens_details": { "cached_tokens": cached },
-    });
+    m.completion_tokens.fetch_add(completion_tokens as u64, Ordering::Relaxed);
 
     tokio::time::sleep(state.config.ttft).await;
 
+    Some(Turn {
+        prompt_tokens: prompt_tokens.saturating_sub(cached),
+        cached_tokens: cached,
+        completion_tokens,
+        tool,
+        // A tool call answers with no prose, so the filler is not generated.
+        text: if wants_tool { String::new() } else { filler(completion_tokens) },
+    })
+}
+
+/// The failure injections, which happen before anything is planned.
+///
+/// Separated because all three protocols share them: a breaker that only
+/// trips for one wire format has not been tested.
+async fn refuse_or_hang(state: &AppState) -> Option<Response> {
+    let m = &state.metrics;
+    if every(state.config.drop_rate, &state.counter) {
+        m.requests.fetch_add(1, Ordering::Relaxed);
+        m.dropped.fetch_add(1, Ordering::Relaxed);
+        return Some((StatusCode::SERVICE_UNAVAILABLE, "mock: refusing this one").into_response());
+    }
+    if every(state.config.hang_rate, &state.counter) {
+        m.requests.fetch_add(1, Ordering::Relaxed);
+        m.hung.fetch_add(1, Ordering::Relaxed);
+        // Long enough to outlast any sensible read timeout, and bounded so a
+        // load test does not accumulate stuck tasks forever.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        return Some((StatusCode::GATEWAY_TIMEOUT, "mock: never mind").into_response());
+    }
+    None
+}
+
+/// The OpenAI chat-completions protocol.
+///
+/// Usage arrives once, in a chunk *after* the one carrying `finish_reason` --
+/// which is the protocol's own shape, not a quirk of this fixture, and the
+/// reason a reader that stops at `finish_reason` records nothing for every
+/// stream rather than only for interrupted ones.
+async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatRequest>) -> Response {
+    if let Some(refusal) = refuse_or_hang(&state).await {
+        return refusal;
+    }
+
+    // Answering a tool result with another tool call is how a loop that never
+    // ends begins, so only a turn whose last word came from the user calls one.
+    let offered = req
+        .tools
+        .as_ref()
+        .is_some_and(|t| !t.is_empty())
+        .then(|| tool_name(&req))
+        .filter(|_| req.messages.last().is_some_and(|m| m.role == "user"));
+
+    let Some(turn) = plan(&state, &req.messages, offered).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "mock: nothing to say").into_response();
+    };
+
+    // This protocol folds cached tokens into the prompt total, so they are put
+    // back before reporting. Anthropic does the opposite; see its encoder.
+    let usage = serde_json::json!({
+        "prompt_tokens": turn.prompt_tokens + turn.cached_tokens,
+        "completion_tokens": turn.completion_tokens,
+        "total_tokens": turn.prompt_tokens + turn.cached_tokens + turn.completion_tokens,
+        "prompt_tokens_details": { "cached_tokens": turn.cached_tokens },
+    });
+
     if !req.stream {
-        let message = if wants_tool {
-            serde_json::json!({
+        let message = match &turn.tool {
+            Some(name) => serde_json::json!({
                 "role": "assistant",
                 "content": null,
                 "tool_calls": [{
                     "id": "mock_call",
                     "type": "function",
-                    "function": {
-                        "name": tool_name(&req),
-                        "arguments": r#"{"action":"pretending to work"}"#,
-                    }
+                    "function": { "name": name, "arguments": TOOL_ARGUMENTS },
                 }]
-            })
-        } else {
-            serde_json::json!({ "role": "assistant", "content": filler(body_tokens) })
+            }),
+            None => serde_json::json!({ "role": "assistant", "content": turn.text }),
         };
-        return ([(MOCK_HEADER, "outturn-mockllm: generated, not inferred")], Json(serde_json::json!({
+        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
             "id": "mock",
             "object": "chat.completion",
             "model": req.model,
             "choices": [{
                 "index": 0,
                 "message": message,
-                "finish_reason": if wants_tool { "tool_calls" } else { "stop" },
+                "finish_reason": if turn.tool.is_some() { "tool_calls" } else { "stop" },
             }],
             "usage": usage,
         })))
@@ -297,33 +437,36 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
     }
 
     let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
-    let name = tool_name(&req);
+    let guard_state = Arc::clone(&state);
     let stream = async_stream::stream! {
-        if wants_tool {
+        let mut guard = StreamGuard::new(&guard_state);
+        if let Some(name) = &turn.tool {
             yield Ok::<_, std::io::Error>(sse(&serde_json::json!({
                 "choices": [{"index": 0, "delta": {"tool_calls": [{
                     "index": 0, "id": "mock_call", "type": "function",
-                    "function": {"name": name, "arguments": r#"{"action":"pretending to work"}"#}
+                    "function": {"name": name, "arguments": TOOL_ARGUMENTS}
                 }]}}]
             })));
             yield Ok(sse(&serde_json::json!({
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
             })));
         } else {
-            for (i, word) in filler(body_tokens).split(' ').enumerate() {
+            for word in turn.words() {
                 tokio::time::sleep(per_token).await;
-                let text = if i == 0 { word.to_string() } else { format!(" {word}") };
+                guard.sent += 1;
                 yield Ok(sse(&serde_json::json!({
-                    "choices": [{"index": 0, "delta": {"content": text}}]
+                    "choices": [{"index": 0, "delta": {"content": word}}]
                 })));
             }
             yield Ok(sse(&serde_json::json!({
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
             })));
         }
-        // Usage last, as a provider does when asked for it.
+        // After `finish_reason`, not on it. A stream cut before this point
+        // carries no usage at all, which is the case worth being able to test.
         yield Ok(sse(&serde_json::json!({ "choices": [], "usage": usage })));
         yield Ok(axum::body::Bytes::from_static(b"data: [DONE]\n\n"));
+        guard.done = true;
     };
 
     (
@@ -334,7 +477,412 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
             // came from. A component that fabricates model output should be
             // identifiable after the fact rather than only by knowing which
             // service answered.
-            (MOCK_HEADER, "outturn-mockllm: generated, not inferred"),
+            (MOCK_HEADER, MOCK_NOTE),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+/// A request in Anthropic's `/v1/messages` shape.
+///
+/// Its messages carry content as either a string or a sequence of blocks, and
+/// a turn that has used tools is always the second. Both are flattened to the
+/// one line-per-message form the cache accounting works in.
+#[derive(Debug, Deserialize)]
+struct AnthropicRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    system: Option<serde_json::Value>,
+    messages: Vec<serde_json::Value>,
+    #[serde(default)]
+    tools: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    stream: bool,
+}
+
+impl AnthropicRequest {
+    /// The messages, in the shared shape. Content blocks are joined rather
+    /// than dropped: a prompt whose tool results vanish measures a cache hit
+    /// that the real prompt would not get.
+    fn flattened(&self) -> Vec<Message> {
+        let mut out = Vec::new();
+        if let Some(system) = &self.system {
+            out.push(Message {
+                role: "system".into(),
+                content: Some(text_of_content(system)),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        for m in &self.messages {
+            out.push(Message {
+                role: m["role"].as_str().unwrap_or("user").to_string(),
+                content: Some(text_of_content(&m["content"])),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        out
+    }
+}
+
+/// Anthropic content, as one string: a bare string, or every block's text.
+fn text_of_content(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .map(|b| match b["type"].as_str() {
+                Some("text") => b["text"].as_str().unwrap_or_default().to_string(),
+                // A tool result's content is part of the prompt whether or not
+                // it is prose, and its size is what the cache accounting needs.
+                _ => b["content"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| b.to_string()),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        other => other.to_string(),
+    }
+}
+
+/// One Anthropic stream event, in its own framing.
+///
+/// Anthropic names the event twice -- once in an `event:` line and again in
+/// the payload's `type` -- and a reader may use either. Both are sent, because
+/// a fixture that sends only the one its own reader happens to use is a
+/// fixture that cannot catch the reader being wrong.
+fn anthropic_event(kind: &str, value: serde_json::Value) -> axum::body::Bytes {
+    let mut payload = value;
+    payload["type"] = serde_json::json!(kind);
+    axum::body::Bytes::from(format!("event: {kind}\ndata: {payload}\n\n"))
+}
+
+/// The Anthropic messages protocol.
+///
+/// Usage is spread across the stream rather than gathered at its end:
+/// `message_start` carries the input side, `message_delta` the output side as
+/// it grows. A turn cut short therefore still leaves real numbers behind,
+/// which is what makes this protocol the forgiving one to stop.
+async fn anthropic_messages(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AnthropicRequest>,
+) -> Response {
+    if let Some(refusal) = refuse_or_hang(&state).await {
+        return refusal;
+    }
+
+    let messages = req.flattened();
+    let offered = req
+        .tools
+        .as_ref()
+        .is_some_and(|t| !t.is_empty())
+        .then(|| {
+            req.tools
+                .as_ref()
+                .and_then(|t| t.first())
+                .and_then(|t| t["name"].as_str())
+                .unwrap_or("get_current_time")
+                .to_string()
+        })
+        .filter(|_| req.messages.last().is_some_and(|m| m["role"] == "user"));
+
+    let Some(turn) = plan(&state, &messages, offered).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "mock: nothing to say").into_response();
+    };
+
+    // Anthropic reports cache tokens *beside* the input total rather than
+    // inside it, the opposite of the OpenAI protocol. A reader that adds
+    // where it should have subtracted gets a plausible number, which is the
+    // worst kind of wrong, so both directions exist here to be tested.
+    let input_tokens = turn.prompt_tokens;
+    let cache_read = turn.cached_tokens;
+    let stop_reason = if turn.tool.is_some() { "tool_use" } else { "end_turn" };
+
+    if !req.stream {
+        let content = match &turn.tool {
+            Some(name) => serde_json::json!([{
+                "type": "tool_use",
+                "id": "mock_call",
+                "name": name,
+                "input": serde_json::from_str::<serde_json::Value>(TOOL_ARGUMENTS).unwrap_or_default(),
+            }]),
+            None => serde_json::json!([{ "type": "text", "text": turn.text }]),
+        };
+        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
+            "id": "msg_mock",
+            "type": "message",
+            "role": "assistant",
+            "model": req.model,
+            "content": content,
+            "stop_reason": stop_reason,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": turn.completion_tokens,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": 0,
+            },
+        })))
+        .into_response();
+    }
+
+    let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
+    let guard_state = Arc::clone(&state);
+    let stream = async_stream::stream! {
+        let mut guard = StreamGuard::new(&guard_state);
+        // The output side is a placeholder here -- a real one reports 1, not
+        // 0, and a reader that treats any non-zero value as the final answer
+        // bills one token for every stream that stops before `message_delta`.
+        yield Ok::<_, std::io::Error>(anthropic_event("message_start", serde_json::json!({
+            "message": {
+                "id": "msg_mock",
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": [],
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": 0,
+                },
+            }
+        })));
+
+        let mut produced = 0usize;
+        match &turn.tool {
+            Some(name) => {
+                yield Ok(anthropic_event("content_block_start", serde_json::json!({
+                    "index": 0,
+                    "content_block": { "type": "tool_use", "id": "mock_call", "name": name, "input": {} }
+                })));
+                // Split so a stream cut partway leaves invalid JSON behind,
+                // which is what a real one does and what a reader has to cope
+                // with rather than assume away.
+                let (head, tail) = TOOL_ARGUMENTS.split_at(TOOL_ARGUMENTS.len() / 2);
+                for fragment in [head, tail] {
+                    tokio::time::sleep(per_token).await;
+                    yield Ok(anthropic_event("content_block_delta", serde_json::json!({
+                        "index": 0,
+                        "delta": { "type": "input_json_delta", "partial_json": fragment }
+                    })));
+                }
+                produced = turn.completion_tokens;
+                yield Ok(anthropic_event("content_block_stop", serde_json::json!({ "index": 0 })));
+            }
+            None => {
+                yield Ok(anthropic_event("content_block_start", serde_json::json!({
+                    "index": 0,
+                    "content_block": { "type": "text", "text": "" }
+                })));
+                for word in turn.words() {
+                    tokio::time::sleep(per_token).await;
+                    produced += 1;
+                    guard.sent += 1;
+                    yield Ok(anthropic_event("content_block_delta", serde_json::json!({
+                        "index": 0,
+                        "delta": { "type": "text_delta", "text": word }
+                    })));
+                }
+                yield Ok(anthropic_event("content_block_stop", serde_json::json!({ "index": 0 })));
+            }
+        }
+
+        // Usage at the event's top level, while `stop_reason` sits under
+        // `delta`. The split is the protocol's, and a reader that looks for
+        // usage under `delta` finds nothing and reports nothing.
+        yield Ok(anthropic_event("message_delta", serde_json::json!({
+            "delta": { "stop_reason": stop_reason, "stop_sequence": null },
+            "usage": { "output_tokens": produced.max(1) },
+        })));
+        yield Ok(anthropic_event("message_stop", serde_json::json!({})));
+        guard.done = true;
+    };
+
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+            (MOCK_HEADER, MOCK_NOTE),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+/// A request in Gemini's `generateContent` shape.
+#[derive(Debug, Deserialize)]
+struct GeminiRequest {
+    #[serde(default)]
+    contents: Vec<serde_json::Value>,
+    #[serde(rename = "systemInstruction", default)]
+    system_instruction: Option<serde_json::Value>,
+    #[serde(default)]
+    tools: Option<Vec<serde_json::Value>>,
+}
+
+impl GeminiRequest {
+    fn flattened(&self) -> Vec<Message> {
+        let mut out = Vec::new();
+        if let Some(system) = &self.system_instruction {
+            out.push(Message {
+                role: "system".into(),
+                content: Some(gemini_parts_text(&system["parts"])),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        for c in &self.contents {
+            out.push(Message {
+                // Gemini says "model" where the others say "assistant".
+                role: match c["role"].as_str() {
+                    Some("model") => "assistant".into(),
+                    other => other.unwrap_or("user").to_string(),
+                },
+                content: Some(gemini_parts_text(&c["parts"])),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        out
+    }
+
+    /// The first declared function, if any were declared.
+    fn first_tool(&self) -> Option<String> {
+        self.tools
+            .as_ref()?
+            .iter()
+            .find_map(|t| t["functionDeclarations"][0]["name"].as_str())
+            .map(str::to_string)
+    }
+}
+
+fn gemini_parts_text(parts: &serde_json::Value) -> String {
+    parts
+        .as_array()
+        .map(|ps| {
+            ps.iter()
+                .map(|p| match p["text"].as_str() {
+                    Some(t) => t.to_string(),
+                    None => p.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
+/// Gemini's usage object, which counts differently again.
+///
+/// `cachedContentTokenCount` is *included* in `promptTokenCount`, where
+/// Anthropic reports its cache tokens beside the input total. Same idea,
+/// opposite arithmetic; a translation that adds where it should subtract
+/// inflates every cached conversation.
+fn gemini_usage(turn: &Turn, produced: usize) -> serde_json::Value {
+    let prompt = turn.prompt_tokens + turn.cached_tokens;
+    serde_json::json!({
+        "promptTokenCount": prompt,
+        "candidatesTokenCount": produced,
+        "cachedContentTokenCount": turn.cached_tokens,
+        "totalTokenCount": prompt + produced,
+    })
+}
+
+/// The Gemini generateContent protocol.
+///
+/// Usage rides nearly every chunk as a running total, so an interrupted stream
+/// leaves the most behind of the three. Streaming responses are a JSON array
+/// of objects rather than SSE when asked for without `alt=sse`; this serves
+/// the SSE form, which is what a streaming client asks for.
+async fn gemini_generate(
+    State(state): State<Arc<AppState>>,
+    // Gemini puts the method on the model segment after a colon, as in
+    // `gemini-2.0-flash:streamGenerateContent`, so the two arrive together.
+    axum::extract::Path(model_and_method): axum::extract::Path<String>,
+    Json(req): Json<GeminiRequest>,
+) -> Response {
+    let method = model_and_method.rsplit(':').next().unwrap_or_default().to_string();
+    if let Some(refusal) = refuse_or_hang(&state).await {
+        return refusal;
+    }
+
+    let messages = req.flattened();
+    let offered = req
+        .first_tool()
+        .filter(|_| req.contents.last().is_some_and(|c| c["role"] != "model"));
+
+    let Some(turn) = plan(&state, &messages, offered).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "mock: nothing to say").into_response();
+    };
+
+    let part = match &turn.tool {
+        Some(name) => serde_json::json!({
+            "functionCall": {
+                "name": name,
+                "args": serde_json::from_str::<serde_json::Value>(TOOL_ARGUMENTS).unwrap_or_default(),
+            }
+        }),
+        None => serde_json::json!({ "text": turn.text }),
+    };
+    // Gemini reports STOP for a function call as well as for prose: the call
+    // is the reply, not an interruption of one.
+    let finish = "STOP";
+
+    if !method.starts_with("streamGenerateContent") {
+        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [part] },
+                "finishReason": finish,
+                "index": 0,
+            }],
+            "usageMetadata": gemini_usage(&turn, turn.completion_tokens),
+        })))
+        .into_response();
+    }
+
+    let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
+    let guard_state = Arc::clone(&state);
+    let stream = async_stream::stream! {
+        let mut guard = StreamGuard::new(&guard_state);
+        let line = |v: serde_json::Value| axum::body::Bytes::from(format!("data: {v}\n\n"));
+        match &turn.tool {
+            Some(_) => {
+                yield Ok::<_, std::io::Error>(line(serde_json::json!({
+                    "candidates": [{
+                        "content": { "role": "model", "parts": [part] },
+                        "finishReason": finish,
+                        "index": 0,
+                    }],
+                    "usageMetadata": gemini_usage(&turn, turn.completion_tokens),
+                })));
+            }
+            None => {
+                let words = turn.words();
+                let last = words.len().saturating_sub(1);
+                for (i, word) in words.into_iter().enumerate() {
+                    tokio::time::sleep(per_token).await;
+                    guard.sent += 1;
+                    // The running total on every chunk: what makes a stopped
+                    // Gemini turn still able to say what it cost.
+                    yield Ok(line(serde_json::json!({
+                        "candidates": [{
+                            "content": { "role": "model", "parts": [{ "text": word }] },
+                            "index": 0,
+                            "finishReason": if i == last { Some(finish) } else { None },
+                        }],
+                        "usageMetadata": gemini_usage(&turn, i + 1),
+                    })));
+                }
+            }
+        }
+    };
+
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+            (MOCK_HEADER, MOCK_NOTE),
         ],
         Body::from_stream(stream),
     )
@@ -383,6 +931,9 @@ struct Report {
     completion_tokens: u64,
     /// Continuing conversations that reused nothing.
     cold_prompts: u64,
+    /// Streams the client stopped reading, and what had been sent by then.
+    abandoned: u64,
+    abandoned_tokens: u64,
     /// Cached over total prompt tokens. The number this service exists for.
     cache_hit_rate: f64,
 }
@@ -400,6 +951,8 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Json<Report> {
         cached_tokens: cached,
         completion_tokens: m.completion_tokens.load(Ordering::Relaxed),
         cold_prompts: m.cold_prompts.load(Ordering::Relaxed),
+        abandoned: m.abandoned.load(Ordering::Relaxed),
+        abandoned_tokens: m.abandoned_tokens.load(Ordering::Relaxed),
         cache_hit_rate: if prompt == 0 { 0.0 } else { cached as f64 / prompt as f64 },
     })
 }
@@ -409,6 +962,7 @@ async fn reset(State(state): State<Arc<AppState>>) -> StatusCode {
     for c in [
         &m.requests, &m.dropped, &m.hung, &m.tool_calls, &m.prompt_tokens,
         &m.cached_tokens, &m.completion_tokens, &m.cold_prompts,
+        &m.abandoned, &m.abandoned_tokens,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -438,6 +992,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
+        // Anthropic and Gemini at the paths their own clients use, so a route
+        // is configured here exactly as it would be against the real thing.
+        .route("/v1/messages", post(anthropic_messages))
+        .route("/v1beta/models/{model}", post(gemini_generate))
         .route("/metrics", get(metrics))
         .route("/reset", post(reset))
         .route("/healthz", get(|| async { "ok" }))
@@ -571,6 +1129,270 @@ mod tests {
             );
         }
         assert_eq!(json["choices"][0]["delta"]["content"], "the");
+    }
+
+    /// The three protocols say what a turn cost in three different places,
+    /// and a reader that handles one is not thereby a reader that handles the
+    /// others. These pin down where each one puts it.
+    #[test]
+    fn anthropic_reports_usage_at_the_event_top_level() {
+        let bytes = anthropic_event(
+            "message_delta",
+            serde_json::json!({
+                "delta": { "stop_reason": "end_turn" },
+                "usage": { "output_tokens": 7 },
+            }),
+        );
+        let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
+        let json: serde_json::Value = text
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .and_then(|t| serde_json::from_str(t).ok())
+            .expect("a data: line of json");
+
+        assert_eq!(json["usage"]["output_tokens"], 7, "usage belongs at the top level");
+        assert!(
+            json["delta"]["usage"].is_null(),
+            "usage under delta is where a reader looks and finds nothing"
+        );
+        assert_eq!(json["delta"]["stop_reason"], "end_turn", "but stop_reason is under delta");
+        assert!(text.starts_with("event: message_delta\n"), "the event is named twice");
+    }
+
+    /// The two protocols count cache tokens in opposite directions, which is
+    /// the arithmetic most likely to be got wrong in a way that still looks
+    /// plausible.
+    #[test]
+    fn cached_tokens_sit_inside_one_prompt_total_and_beside_the_other() {
+        let turn = Turn {
+            prompt_tokens: 80,
+            cached_tokens: 20,
+            completion_tokens: 5,
+            tool: None,
+            text: String::new(),
+        };
+
+        // Gemini: cached is part of the prompt count, so the two must not be
+        // added or the prompt is counted twice.
+        let gemini = gemini_usage(&turn, 5);
+        assert_eq!(gemini["promptTokenCount"], 100);
+        assert_eq!(gemini["cachedContentTokenCount"], 20);
+        assert_eq!(
+            gemini["promptTokenCount"].as_u64().unwrap()
+                - gemini["cachedContentTokenCount"].as_u64().unwrap(),
+            80,
+            "subtracting is what recovers what was actually evaluated"
+        );
+
+        // Anthropic: cached sits beside the input count, so the two are added
+        // to get the size of the prompt.
+        let input = turn.prompt_tokens;
+        let cache_read = turn.cached_tokens;
+        assert_eq!(input + cache_read, 100, "adding is what recovers the whole prompt");
+    }
+
+    /// Everything above is a unit on a shape. This serves the three protocols
+    /// over a real socket and reads them back the way the gateway will, so
+    /// what is asserted is what a client actually receives.
+    async fn serve() -> (String, Arc<AppState>) {
+        let state = Arc::new(AppState {
+            config: Config {
+                ttft: Duration::ZERO,
+                tokens_per_sec: 100_000.0,
+                reply_tokens: 8,
+                drop_rate: 0.0,
+                hang_rate: 0.0,
+                tool_calls: true,
+            },
+            metrics: Metrics::default(),
+            seen: Mutex::new(HashMap::new()),
+            counter: AtomicU64::new(0),
+        });
+        let app = Router::new()
+            .route("/v1/chat/completions", post(completions))
+            .route("/v1/messages", post(anthropic_messages))
+            .route("/v1beta/models/{model}", post(gemini_generate))
+            .with_state(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        (format!("http://{addr}"), state)
+    }
+
+    /// Every `data:` payload of a streamed response, in order.
+    fn payloads(body: &str) -> Vec<serde_json::Value> {
+        body.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter(|t| *t != "[DONE]")
+            .filter_map(|t| serde_json::from_str(t).ok())
+            .collect()
+    }
+
+    /// The OpenAI protocol puts usage after `finish_reason`, so a reader that
+    /// stops at the finish records nothing -- for every stream, not only an
+    /// interrupted one.
+    #[tokio::test]
+    async fn openai_sends_usage_after_the_finish_reason() {
+        let (base, _state) = serve().await;
+        let body = reqwest::Client::new()
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": "mock",
+                "stream": true,
+                "messages": [{"role": "user", "content": "hello"}],
+            }))
+            .send()
+            .await
+            .expect("send")
+            .text()
+            .await
+            .expect("body");
+
+        let chunks = payloads(&body);
+        let finish = chunks
+            .iter()
+            .position(|c| c["choices"][0]["finish_reason"].is_string())
+            .expect("a chunk carrying finish_reason");
+        let usage = chunks
+            .iter()
+            .position(|c| c.get("usage").is_some_and(|u| !u.is_null()))
+            .expect("a chunk carrying usage");
+
+        assert!(
+            usage > finish,
+            "usage arrived at or before the finish, so this fixture cannot \
+             show the case where stopping at the finish loses it"
+        );
+        assert!(
+            chunks[usage]["choices"].as_array().is_some_and(|c| c.is_empty()),
+            "the usage chunk carries no choices"
+        );
+    }
+
+    /// Anthropic says the input side before any text and the output side as it
+    /// goes, which is what leaves real numbers behind when a turn is stopped.
+    #[tokio::test]
+    async fn anthropic_reports_input_up_front_and_output_as_it_goes() {
+        let (base, _state) = serve().await;
+        let body = reqwest::Client::new()
+            .post(format!("{base}/v1/messages"))
+            .json(&serde_json::json!({
+                "model": "mock",
+                "stream": true,
+                "messages": [{"role": "user", "content": "hello"}],
+            }))
+            .send()
+            .await
+            .expect("send")
+            .text()
+            .await
+            .expect("body");
+
+        let events = payloads(&body);
+        let start = events.iter().find(|e| e["type"] == "message_start").expect("message_start");
+        assert!(
+            start["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0) > 0,
+            "the input side is known before a single token of output"
+        );
+        assert_eq!(
+            start["message"]["usage"]["output_tokens"], 1,
+            "a placeholder, and truthy: a reader taking any non-zero value as \
+             final bills one token for every stream stopped before the delta"
+        );
+
+        let delta = events.iter().find(|e| e["type"] == "message_delta").expect("message_delta");
+        assert!(
+            delta["usage"]["output_tokens"].as_u64().unwrap_or(0) > 1,
+            "the real output count arrives at the top level of message_delta"
+        );
+        assert!(delta["delta"]["usage"].is_null(), "and not underneath delta");
+    }
+
+    /// Gemini repeats a running total, so an interrupted stream has usage on
+    /// whatever chunk it got to.
+    #[tokio::test]
+    async fn gemini_repeats_a_running_total_on_every_chunk() {
+        let (base, _state) = serve().await;
+        let body = reqwest::Client::new()
+            .post(format!("{base}/v1beta/models/mock:streamGenerateContent"))
+            .json(&serde_json::json!({
+                "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+            }))
+            .send()
+            .await
+            .expect("send")
+            .text()
+            .await
+            .expect("body");
+
+        let chunks = payloads(&body);
+        assert!(chunks.len() > 1, "a stream of one chunk proves nothing about repetition");
+        assert!(
+            chunks.iter().all(|c| c["usageMetadata"]["totalTokenCount"].as_u64().is_some()),
+            "every chunk carries the running total, which is what survives a stop"
+        );
+
+        let counts: Vec<u64> = chunks
+            .iter()
+            .filter_map(|c| c["usageMetadata"]["candidatesTokenCount"].as_u64())
+            .collect();
+        assert!(
+            counts.windows(2).all(|w| w[1] >= w[0]),
+            "the running total only grows: {counts:?}"
+        );
+    }
+
+    /// The whole of testing a stop button: did the provider find out?
+    ///
+    /// Both halves matter. A stream read to its end must *not* be recorded as
+    /// abandoned, or the count means nothing; one dropped partway must be.
+    #[tokio::test]
+    async fn a_stream_dropped_partway_is_recorded_as_abandoned() {
+        use futures::StreamExt;
+
+        let (base, state) = serve().await;
+        let ask = |base: String| async move {
+            reqwest::Client::new()
+                .post(format!("{base}/v1/chat/completions"))
+                .json(&serde_json::json!({
+                    "model": "mock",
+                    "stream": true,
+                    "messages": [{"role": "user", "content": "hello"}],
+                }))
+                .send()
+                .await
+                .expect("send")
+        };
+
+        // Read to the end: the server should see a stream that finished.
+        let whole = ask(base.clone()).await.text().await.expect("body");
+        assert!(whole.contains("[DONE]"), "the first stream should run to its end");
+        assert_eq!(
+            state.metrics.abandoned.load(Ordering::Relaxed),
+            0,
+            "a stream read to its end was counted as abandoned, so the count \
+             cannot tell a stop from an ordinary finish"
+        );
+
+        // Take one chunk and drop the rest, which is what a cancel does.
+        let mut body = ask(base).await.bytes_stream();
+        let _first = body.next().await;
+        drop(body);
+
+        // The drop travels over a socket, so it is not instant.
+        for _ in 0..200 {
+            if state.metrics.abandoned.load(Ordering::Relaxed) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(
+            state.metrics.abandoned.load(Ordering::Relaxed),
+            1,
+            "the provider never learned the client had gone, so a stop built \
+             on this would stop nothing upstream"
+        );
     }
 
     #[test]
