@@ -118,21 +118,22 @@ impl S3Storage {
     /// missing sweep is a growing bill rather than a broken agent.
     pub async fn ensure_session_lifecycle(&self, days: u32) -> Result<(), StorageError> {
         use s3::serde_types::{BucketLifecycleConfiguration, Expiration, LifecycleFilter, LifecycleRule};
-        let rule = LifecycleRule {
-            id: Some("sweep-session-files".into()),
+        let sweep = |id: &str, prefix: String| LifecycleRule {
+            id: Some(id.into()),
             status: "Enabled".into(),
-            filter: Some(LifecycleFilter {
-                prefix: Some(super::scope::Scope::Session.bucket_prefix().to_string()),
-                ..Default::default()
-            }),
-            expiration: Some(Expiration {
-                days: Some(days),
-                ..Default::default()
-            }),
+            filter: Some(LifecycleFilter { prefix: Some(prefix), ..Default::default() }),
+            expiration: Some(Expiration { days: Some(days), ..Default::default() }),
             ..Default::default()
         };
+        let session = super::scope::Scope::Session.bucket_prefix().to_string();
+        let rules = vec![
+            sweep("sweep-session-files", session.clone()),
+            // The text read out of session documents lives under its own
+            // prefix and would otherwise outlive what it was read from.
+            sweep("sweep-session-text", crate::api::extract::text_key(&session)),
+        ];
         self.bucket
-            .put_bucket_lifecycle(BucketLifecycleConfiguration::new(vec![rule]))
+            .put_bucket_lifecycle(BucketLifecycleConfiguration::new(rules))
             .await
             .map(|_| ())
             .map_err(classify)
@@ -158,35 +159,23 @@ impl StorageBackend for S3Storage {
         let key = self.key(path);
 
         if offset == 0 && len == u32::MAX {
-            let response = self
-                .bucket
-                .get_object(&key)
-                .await
-                .map_err(classify)?;
-
-            if response.status_code() == 404 {
-                return Err(StorageError::NotFound);
-            }
-
+            // A missing key is an error from the client now (fail-on-err), and
+            // `classify` turns it into NotFound; nothing reaches here but 2xx.
+            let response = self.bucket.get_object(&key).await.map_err(classify)?;
             return Ok(response.to_vec());
         }
 
         let end = offset.saturating_add(len as u64).saturating_sub(1);
 
-        let response = self
-            .bucket
-            .get_object_range(&key, offset, Some(end))
-            .await
-            .map_err(classify)?;
-
-        // The same check the whole-object path makes. Without it a missing key
-        // comes back as a successful read whose body is the XML error, and the
-        // first reader to hit a key that might not exist was handed
-        // "<Error><Code>NoSuchKey</Code>" as the contents of a document.
-        if response.status_code() == 404 {
-            return Err(StorageError::NotFound);
-        }
-
+        let response = match self.bucket.get_object_range(&key, offset, Some(end)).await {
+            Ok(r) => r,
+            // Past the end is empty, not a failure. A caller reading in
+            // windows asks for one more window than there is, and must be
+            // told "nothing" rather than refused -- or handed the XML that
+            // says so as if it were the file.
+            Err(S3Error::HttpFailWithBody(416, _)) => return Ok(Vec::new()),
+            Err(e) => return Err(classify(e)),
+        };
         Ok(response.to_vec())
     }
 
@@ -199,9 +188,15 @@ impl StorageBackend for S3Storage {
         let key = self.key(path);
 
         if offset != 0 {
+            // Only absence means "start from nothing". Any other refusal is
+            // one that would have the bytes below overwrite an object this
+            // caller was not allowed to read.
             let existing = match self.bucket.get_object(&key).await {
                 Ok(resp) => resp.to_vec(),
-                Err(_) => vec![],
+                Err(e) => match classify(e) {
+                    StorageError::NotFound => vec![],
+                    other => return Err(other),
+                },
             };
             let start = offset as usize;
             let needed = start + data.len();

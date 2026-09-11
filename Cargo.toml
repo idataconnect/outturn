@@ -46,7 +46,11 @@ sha2 = "0.10"
 hex = "0.4"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
-rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls"] }
+# fail-on-err is in the crate's default set and default-features = false had
+# quietly dropped it, so every non-2xx answer came back as Ok: a rejected PUT
+# reported success, a 403 body was returned as a file's contents, and the
+# classifier below it never saw an error at all.
+rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
 chrono-tz = { version = "0.10.4", default-features = false }
 
 [dev-dependencies]
