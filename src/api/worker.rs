@@ -377,9 +377,17 @@ impl Worker {
                         // Same call the upload handler makes. A document is a
                         // document whether a person dragged it in or an agent
                         // unpacked it from an archive, and only this tier can
-                        // queue the job that reads it.
-                        super::extract::enqueue(&self.pool, payload.workspace_id, &key, &path)
-                            .await;
+                        // queue the job that reads it. The key is the
+                        // runtime's word for where it wrote; a runtime that
+                        // lied would be asking this tier to read outside the
+                        // workspace, so the word is checked.
+                        if !super::extract::belongs_to(&key, payload.workspace_id) {
+                            tracing::warn!(key = %key, workspace_id = %payload.workspace_id,
+                                "runtime reported a write outside the workspace; ignoring");
+                        } else {
+                            super::extract::enqueue(&self.pool, payload.workspace_id, &key, &path)
+                                .await;
+                        }
                     }
                     Ok(ExecuteEvent::Usage {
                         round,

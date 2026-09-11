@@ -33,6 +33,42 @@ pub fn text_key(object_key: &str) -> String {
     format!("extracted/{object_key}")
 }
 
+/// Where a permanent failure is written down, beside where the text would be.
+///
+/// "Not yet" and "never" have to be different answers. Without this a reader
+/// is told to ask again shortly for a document that was tried three times and
+/// given up on -- and will be told so forever.
+pub fn failed_key(object_key: &str) -> String {
+    format!("{}.failed", text_key(object_key))
+}
+
+/// Forgets whatever was read out of an object, because the object changed.
+///
+/// Called on every write and delete. Otherwise a re-uploaded report serves the
+/// old one's text until the new job runs, and a deleted one keeps its words
+/// readable by anyone who names it. Absence is not an error here.
+pub async fn invalidate(storage: &dyn crate::runtime::storage::StorageBackend, key: &str) {
+    for stale in [text_key(key), failed_key(key)] {
+        if let Err(e) = storage.delete(&stale).await {
+            if !matches!(e, crate::runtime::storage::StorageError::NotFound) {
+                tracing::warn!(key = %stale, error = %e, "could not remove stale extraction");
+            }
+        }
+    }
+}
+
+/// Whether a key sits inside this workspace's part of the bucket.
+///
+/// The runtime resolves keys before it reports them, so an honest runtime
+/// never sends one that is not. This is for the other kind.
+pub fn belongs_to(key: &str, workspace_id: Uuid) -> bool {
+    use crate::runtime::storage::scope::Scope;
+    Scope::ALL.iter().any(|s| {
+        let root = format!("{}{workspace_id}/", s.bucket_prefix());
+        key.starts_with(&root)
+    })
+}
+
 /// Whether this is worth handing to Tika.
 ///
 /// By extension rather than by sniffing the bytes: the name is what the person
@@ -138,8 +174,20 @@ pub fn spawn(
                             Err(e) => {
                                 // Retried with the queue's own backoff: Tika
                                 // restarting is the ordinary case, and the
-                                // bytes are still there to try again.
+                                // bytes are still there to try again. On the
+                                // last attempt the failure is written where
+                                // the text would have gone, so a reader is
+                                // told "never" rather than "not yet".
                                 tracing::warn!(job_id = %job.id, error = %e, "extraction failed");
+                                if job.attempts >= job.max_attempts {
+                                    if let Ok(payload) =
+                                        serde_json::from_value::<ExtractPayload>(job.payload.clone())
+                                    {
+                                        let _ = storage
+                                            .write(&failed_key(&payload.key), 0, e.as_bytes())
+                                            .await;
+                                    }
+                                }
                                 jobs::fail(
                                     &pool,
                                     job.id,

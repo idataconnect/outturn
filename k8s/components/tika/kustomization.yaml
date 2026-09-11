@@ -4,12 +4,24 @@ kind: Component
 resources:
   - tika.yaml
 
-# Where the API sends documents. Unset means no extraction is attempted at
-# all, so the component and the configuration arrive together or not at all.
+# Where the API sends documents, and -- on the runtime -- the fact that it
+# does. Unset means no extraction is attempted at all, so the component and
+# the configuration arrive together or not at all. The runtime never calls
+# Tika; it needs to know extraction exists, so a document reads as "not yet"
+# rather than as bytes, and only where "not yet" will ever become "here".
 patches:
   - target:
       kind: Deployment
       name: outturn-api
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OUTTURN_TIKA_URL
+          value: "http://tika:9998"
+  - target:
+      kind: Deployment
+      name: outturn-runtime
     patch: |
       - op: add
         path: /spec/template/spec/containers/0/env/-

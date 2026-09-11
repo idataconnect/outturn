@@ -143,6 +143,8 @@ pub async fn upload(
     let scoped = format!("{}/{path}", s.as_str());
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
     store.write(&key, 0, &body).await.map_err(storage_failed)?;
+    // Whatever was read out of the previous version is wrong now.
+    super::extract::invalidate(store.as_ref(), &key).await;
 
     // A document is bytes until something reads it. Queued rather than done
     // here: a scanned file can take minutes, and the upload has already
@@ -207,6 +209,8 @@ pub async fn delete(
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
     store.delete(&key).await.map_err(storage_failed)?;
+    // And its text, or a deleted report stays readable to anyone who names it.
+    super::extract::invalidate(store.as_ref(), &key).await;
     tracing::info!(actor = %claims.subject, session_id = %session_id, path = %path, "file deleted");
     Ok(StatusCode::NO_CONTENT)
 }
