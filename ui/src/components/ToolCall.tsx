@@ -60,7 +60,7 @@ export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
       className={`mb-2 rounded-md border px-3 py-2 text-xs ${
         isError
           ? 'border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
-          : 'border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-950'
+          : 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-800'
       }`}
     >
       <div className="flex items-start gap-2">

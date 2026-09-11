@@ -49,7 +49,7 @@ export default function ThemeToggle() {
           onClick={() => setTheme(value)}
           className={`flex-1 flex items-center justify-center py-1.5 rounded transition-colors ${
             theme === value
-              ? 'bg-white dark:bg-surface-950 text-surface-900 dark:text-surface-100 shadow-sm'
+              ? 'bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100 shadow-sm'
               : 'text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100'
           }`}
         >

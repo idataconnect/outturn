@@ -9,7 +9,7 @@ import type { WorkspaceRole } from './Roles'
 type AuthorityInfo = { name: string; description: string }
 
 const field =
-  'w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100'
+  'w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100'
 const label = 'block text-sm text-surface-700 dark:text-surface-300 mb-1'
 
 /** Groups `agents:create` under "agents", for a checklist a person can scan. */

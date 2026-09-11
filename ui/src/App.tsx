@@ -225,7 +225,7 @@ function Shell() {
   const visible = navItems.filter((item) => !item.authority || authorities.includes(item.authority))
 
   return (
-    <div className="flex h-screen bg-surface-100 dark:bg-surface-950">
+    <div className="flex h-screen bg-surface-100 dark:bg-surface-900">
       <nav className="w-56 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex flex-col">
         <div className="flex items-center gap-2 p-4 border-b border-surface-200 dark:border-surface-800">
           <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
@@ -254,7 +254,7 @@ function Shell() {
           <AccountMenu />
         </div>
       </nav>
-      <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-900">
+      <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-875">
         {/* Keyed by workspace so a switch remounts every page. State loaded
             under the previous workspace -- lists, editors, an open thread --
             is gone rather than shown until something happens to refetch it. */}

@@ -59,7 +59,7 @@ function useWorkspaceRoles(): WorkspaceRoleOption[] {
 }
 
 const field =
-  'w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100'
+  'w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100'
 const label = 'block text-sm text-surface-700 dark:text-surface-300 mb-1'
 const primary =
   'flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50'
@@ -467,7 +467,7 @@ function RoleSelect({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={roles.length === 0}
-      className="px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 disabled:opacity-50"
+      className="px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 disabled:opacity-50"
     >
       {roles.length === 0 && <option value="">Loading roles…</option>}
       {roles.map((r) => (

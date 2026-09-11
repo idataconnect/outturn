@@ -168,7 +168,7 @@ export default function FilesPanel({
                 aria-expanded={menuOpen}
                 aria-label={`Upload destination: ${active?.label}`}
                 title={`${active?.label} — ${active?.hint}`}
-                className="flex items-center justify-center gap-0.5 w-10 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50"
+                className="flex items-center justify-center gap-0.5 w-10 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50"
               >
                 <ActiveIcon size={14} aria-hidden />
                 <ChevronDown size={12} aria-hidden />

@@ -60,7 +60,7 @@ const components = unstable_memoizeMarkdownComponents({
 
   pre: (props) => (
     <pre
-      className="mb-2 overflow-x-auto rounded-md bg-surface-100 dark:bg-surface-950 group-[.user]:bg-black/25 p-3 text-xs"
+      className="mb-2 overflow-x-auto rounded-md bg-surface-100 dark:bg-surface-800 group-[.user]:bg-black/25 p-3 text-xs"
       {...props}
     />
   ),

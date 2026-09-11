@@ -326,7 +326,7 @@ export default function SkillEditor() {
                     slug: creating && !slugEdited ? slugify(e.target.value) : f.slug,
                   }))
                 }
-                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm text-surface-900 dark:text-surface-100 disabled:opacity-60"
+                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-900 dark:text-surface-100 disabled:opacity-60"
               />
             </label>
             <label className="block">
@@ -338,7 +338,7 @@ export default function SkillEditor() {
                   setSlugEdited(true)
                   setForm((f) => ({ ...f, slug: e.target.value }))
                 }}
-                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
+                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
               />
             </label>
           </div>
@@ -352,7 +352,7 @@ export default function SkillEditor() {
               disabled={!editable}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="What this is for, for whoever picks it later."
-              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm text-surface-900 dark:text-surface-100 disabled:opacity-60"
+              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
           </label>
 
@@ -365,7 +365,7 @@ export default function SkillEditor() {
               disabled={!editable}
               onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
               rows={16}
-              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
+              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
           </label>
 
@@ -379,7 +379,7 @@ export default function SkillEditor() {
               onChange={(e) => setForm((f) => ({ ...f, hosts: e.target.value }))}
               rows={3}
               placeholder="api.open-meteo.com"
-              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
+              className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
             <span className="mt-1 block text-xs text-surface-600 dark:text-surface-400">
               One per line. Naming a host asks for it; somebody who can change this
@@ -413,7 +413,7 @@ export default function SkillEditor() {
                 value={form.note}
                 onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
                 placeholder="Kept with the version, for whoever reads the history."
-                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm text-surface-900 dark:text-surface-100"
+                className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-900 dark:text-surface-100"
               />
             </label>
           )}

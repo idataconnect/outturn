@@ -155,7 +155,7 @@ export default function Thread({ disabled }: { disabled?: boolean }) {
           autoFocus
           disabled={disabled}
           placeholder={disabled ? 'Start a session first' : 'Message the agent…'}
-          className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
+          className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
         <ComposerPrimitive.Send
           disabled={disabled}

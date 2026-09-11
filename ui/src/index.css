@@ -39,6 +39,12 @@
   --color-surface-600: oklch(0.442 0.006 90);
   --color-surface-700: oklch(0.372 0.006 90);
   --color-surface-800: oklch(0.269 0.005 90);
+  /*
+   * A half-step between 900 and 800, for the page a conversation sits on. The
+   * chrome around it stays at 900, so the two read apart without the content
+   * area lifting far enough to become the brightest thing on the screen.
+   */
+  --color-surface-875: oklch(0.230 0.005 90);
   --color-surface-900: oklch(0.216 0.005 90);
   --color-surface-950: oklch(0.155 0.004 90);
 }

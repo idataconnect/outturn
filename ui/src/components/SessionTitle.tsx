@@ -55,7 +55,7 @@ export default function SessionTitle({
           if (e.key === 'Escape') setEditing(false)
         }}
         aria-label="Session name"
-        className="flex-1 min-w-0 px-2 py-0.5 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-950 text-sm text-surface-900 dark:text-surface-100 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+        className="flex-1 min-w-0 px-2 py-0.5 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-900 dark:text-surface-100 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
       />
     )
   }
