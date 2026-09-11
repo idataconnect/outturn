@@ -121,6 +121,9 @@ async fn main() {
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
     let minter = TokenMinter::from_env().expect("token minter");
+    // A second one for the namer, which mints its own gateway tokens the
+    // way a turn's are minted.
+    let namer_minter = Arc::new(TokenMinter::from_env().expect("token minter"));
     let runtime_key = outturn::auth::RuntimeKey::from_env().expect("runtime key");
 
     // One LISTEN connection fans out to every parked long poll.
@@ -168,6 +171,10 @@ async fn main() {
     if let Some(store) = storage_for_extraction.clone() {
         outturn::api::extract::spawn(pool.clone(), store, health.shutdown_signal());
     }
+    // Unnamed conversations are given a title after their first turn, by a
+    // model reached through the gateway. Absent OUTTURN_GATEWAY_URL this
+    // logs once and sessions stay "New Session" until somebody names them.
+    outturn::api::naming::spawn(pool.clone(), chat.clone(), namer_minter, health.shutdown_signal());
     state.set_worker(worker);
 
     let app = Router::new()

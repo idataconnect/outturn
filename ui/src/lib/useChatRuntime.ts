@@ -186,7 +186,14 @@ const byId = (a: Message, b: Message) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 /** Where the next delta belongs, per message id. */
 type DeltaProgress = Map<string, number>
 
-export function useChatRuntime(sessionId: string | null) {
+/**
+ * `onRenamed` is told the session's new title whenever the feed says it
+ * changed -- the namer working after a turn, or somebody else's rename --
+ * so the sidebar and header follow without a reload.
+ */
+export function useChatRuntime(sessionId: string | null, onRenamed?: (title: string) => void) {
+  const renamed = useRef(onRenamed)
+  renamed.current = onRenamed
   const [messages, setMessages] = useState<Message[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -394,6 +401,10 @@ export function useChatRuntime(sessionId: string | null) {
           }
 
           for (const event of result.events) {
+            if (event.kind === 'session.renamed') {
+              renamed.current?.(event.payload.title)
+              continue
+            }
             if (event.kind !== 'chat.done') continue
             const { message_id } = event.payload as { message_id: string }
             // The job behind the prompt this reply answers is finished; the

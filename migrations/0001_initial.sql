@@ -961,7 +961,7 @@ insert into role_template_authorities (template_name, authority) values
     ('admin', 'users:delete'), ('admin', 'roles:assign'), ('admin', 'roles:manage'),
     ('admin', 'agents:create'), ('admin', 'agents:read'), ('admin', 'agents:update'),
     ('admin', 'agents:delete'), ('admin', 'sessions:create'), ('admin', 'sessions:read'),
-    ('admin', 'sessions:delete'), ('admin', 'settings:read'), ('admin', 'settings:update'),
+    ('admin', 'sessions:update'), ('admin', 'sessions:delete'), ('admin', 'settings:read'), ('admin', 'settings:update'),
     ('admin', 'storage:workspace:read'), ('admin', 'storage:workspace:write'),
     ('admin', 'storage:agent:read'), ('admin', 'storage:agent:write'),
     ('admin', 'skills:read'), ('admin', 'skills:write'),
@@ -969,6 +969,7 @@ insert into role_template_authorities (template_name, authority) values
 
     ('operator', 'agents:create'), ('operator', 'agents:read'), ('operator', 'agents:update'),
     ('operator', 'sessions:create'), ('operator', 'sessions:read'),
+    ('operator', 'sessions:update'),
     ('operator', 'storage:workspace:read'), ('operator', 'storage:agent:read'),
     ('operator', 'storage:agent:write'),
     ('operator', 'skills:read'), ('operator', 'skills:write'),

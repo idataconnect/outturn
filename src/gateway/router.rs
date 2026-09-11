@@ -155,7 +155,7 @@ impl GatewayState {
 /// A header rather than a body field: the request body is serialised straight
 /// through to the provider, so anything added there leaks upstream. Routing is
 /// also not something a model should be told about.
-const TRAFFIC_HEADER: &str = "x-outturn-traffic";
+pub const TRAFFIC_HEADER: &str = "x-outturn-traffic";
 
 /// The reply the caller is writing, so a message taken mid-turn can name what
 /// absorbed it.

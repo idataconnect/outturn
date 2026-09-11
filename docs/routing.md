@@ -32,8 +32,12 @@ workspace's customers never learn which model served them unless the workspace i
 the one holding the key.
 
 `assistant` is the generic class: realtime chat and scheduled work of the same
-character. More classes come as they are needed -- `customer-service`,
-`summarise`, `compaction` -- and each is a row set, not code.
+character. `session-name` is the second: the one request made after a
+conversation's first turn to give it a title, sent by the API tier under its
+own class so an operator can point it at a small model with a row. More come
+as they are needed -- `customer-service`, `summarise`, `compaction` -- and
+each is a row set, not code. Absent a row for a class, the gateway's static
+providers serve it, so a class costs nothing to introduce.
 
 A class may carry a **default priority** for jobs that arrive without one. It
 is a fallback, not a derivation: priority is a property of the trigger (is

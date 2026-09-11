@@ -63,6 +63,32 @@ pub async fn get_messages(
     Ok(Json(state.chat.messages(id).await?))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RenameSession {
+    pub title: String,
+}
+
+/// Names a session, or takes the name away.
+///
+/// A name a person gives stands: the namer only ever writes to a session
+/// that has none. Clearing it is allowed and means "unnamed", which puts the
+/// session back where it started, and on the namer's list for the next turn.
+pub async fn rename_session(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<RenameSession>,
+) -> Result<Json<AgentSession>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SessionsUpdate).await?;
+    let title = input.title.trim();
+    if title.chars().count() > super::naming::MAX_TITLE_CHARS {
+        return Err((StatusCode::BAD_REQUEST, "title is too long".into()));
+    }
+    let session = state.chat.rename_session(claims.workspace_id, id, title).await?;
+    super::naming::announce(&state.pool, &session).await;
+    Ok(Json(session))
+}
+
 pub async fn delete_session(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

@@ -41,6 +41,11 @@ patches:
             value: "outturn-dev"
           - name: OUTTURN_DEV_SEED
             value: "1"
+          # Where the namer sends its one request per new conversation. The
+          # API otherwise never talks to the gateway; turns do, from the
+          # runtime.
+          - name: OUTTURN_GATEWAY_URL
+            value: "http://outturn-gateway:8081"
           # gemma4 rather than llama3.1: the agent offers tools on every
           # turn, and llama3.1's template stops streaming when tools are
           # present -- a reply collapses from ~26 chunks to 3. gemma4 streams

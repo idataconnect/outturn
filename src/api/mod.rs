@@ -7,6 +7,7 @@ pub mod settings;
 mod agents;
 mod sessions;
 pub mod extract;
+pub mod naming;
 mod skills;
 mod events;
 mod files;

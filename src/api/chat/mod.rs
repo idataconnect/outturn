@@ -165,6 +165,17 @@ pub trait ChatStore: Send + Sync {
 
     async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError>;
 
+    /// Gives a session its name.
+    ///
+    /// Empty means unnamed, which is what a session starts as and what the
+    /// namer looks for; a person clearing the field hands it back to them.
+    async fn rename_session(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        title: &str,
+    ) -> Result<AgentSession, ChatError>;
+
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError>;
 
     /// Replaces a message's content, for a reply that was created empty and

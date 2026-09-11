@@ -3,4 +3,4 @@ pub mod llm;
 pub mod routing;
 mod router;
 
-pub use router::{GatewayState, routes};
+pub use router::{GatewayState, TRAFFIC_HEADER, routes};

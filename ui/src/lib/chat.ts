@@ -98,6 +98,8 @@ export type ChatEvent =
     }
   /** A reply is starting over: the pod running it was lost. */
   | { id: string; kind: 'chat.retry'; payload: { message_id: string; replies_to: string } }
+  /** The session was named, by a person or by the namer after its first turn. */
+  | { id: string; kind: 'session.renamed'; payload: { title: string } }
 
 type PollResponse = {
   events: ChatEvent[]
@@ -112,6 +114,18 @@ export const createSession = (agentId: string, title = '') =>
     method: 'POST',
     body: JSON.stringify({ agent_id: agentId, title }),
   })
+
+/** Empty means unnamed: the namer fills it in after the first turn. */
+export const renameSession = (sessionId: string, title: string) =>
+  api<AgentSession>(`/v1/agent-sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+
+/** What an unnamed session is called wherever a name is shown. */
+export const UNNAMED_SESSION = 'New Session'
+export const sessionName = (session: { title: string } | undefined) =>
+  session?.title || UNNAMED_SESSION
 
 export const loadHistory = (sessionId: string) =>
   api<History>(`/v1/agent-sessions/${sessionId}/messages`)

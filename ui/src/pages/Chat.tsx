@@ -10,9 +10,12 @@ import {
   createSession,
   listAgents,
   listSessions,
+  renameSession,
+  sessionName,
   type Agent,
   type AgentSession,
 } from '../lib/chat'
+import SessionTitle from '../components/SessionTitle'
 import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
 
@@ -27,7 +30,12 @@ export default function Chat() {
   const [error, setError] = useState<string | null>(null)
 
   const active = sessionId ?? null
-  const { runtime, error: chatError } = useChatRuntime(active)
+  // A title arriving over the feed -- the namer's, after the first turn, or
+  // a rename from another tab -- lands in the list the sidebar draws from.
+  const { runtime, error: chatError } = useChatRuntime(active, (title) => {
+    if (!active) return
+    setSessions((prev) => prev.map((s) => (s.id === active ? { ...s, title } : s)))
+  })
 
   // Agents and sessions are workspace-scoped, so switching workspace reloads both.
   // Selecting a session does not: that only changes which one is shown.
@@ -38,6 +46,9 @@ export default function Chat() {
   const canCreateAgents =
     state.status === 'authenticated' &&
     state.session.authorities.includes('agents:create')
+  const canRename =
+    state.status === 'authenticated' &&
+    state.session.authorities.includes('sessions:update')
   const [loaded, setLoaded] = useState(false)
   // Below `lg` the sessions list and files panel are too wide to sit beside
   // the thread at once, so they become off-canvas drawers instead.
@@ -104,10 +115,18 @@ export default function Chat() {
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
   const shown = error ?? chatError
 
-  const activeTitle = active
-    ? (sessions.find((s) => s.id === active)?.title ||
-        agentName(sessions.find((s) => s.id === active)?.agent_id ?? ''))
-    : 'Sessions'
+  const current = sessions.find((s) => s.id === active)
+  const activeTitle = active ? sessionName(current) : 'Sessions'
+
+  async function rename(id: string, title: string) {
+    try {
+      const updated = await renameSession(id, title)
+      setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)))
+      setError(null)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to rename session')
+    }
+  }
 
   return (
     <div className="flex h-full relative">
@@ -165,15 +184,19 @@ export default function Chat() {
               key={session.id}
               to={`/sessions/${session.id}`}
               onClick={() => setSessionsOpen(false)}
+              title={`${sessionName(session)} — ${agentName(session.agent_id)}`}
               className={({ isActive }) =>
-                `block w-full px-2 py-1.5 rounded-md text-sm text-left truncate ${
+                `block w-full px-2 py-1.5 rounded-md text-sm text-left ${
                   isActive
                     ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
                     : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
                 }`
               }
             >
-              {session.title || agentName(session.agent_id)}
+              <span className="block truncate">{sessionName(session)}</span>
+              <span className="block truncate text-xs text-surface-400 dark:text-surface-500">
+                {agentName(session.agent_id)}
+              </span>
             </NavLink>
           ))}
         </div>
@@ -197,9 +220,11 @@ export default function Chat() {
           >
             <Menu size={18} aria-hidden />
           </button>
-          <p className="flex-1 min-w-0 truncate text-sm font-medium text-surface-800 dark:text-surface-200">
-            {activeTitle}
-          </p>
+          <SessionTitle
+            title={activeTitle}
+            canRename={canRename && !!current}
+            onRename={(t) => current && void rename(current.id, t)}
+          />
           {active && (
             <button
               type="button"
@@ -211,6 +236,18 @@ export default function Chat() {
             </button>
           )}
         </div>
+        {current && (
+          <div className="hidden lg:flex items-center gap-2 px-4 py-2 border-b border-surface-200 dark:border-surface-800">
+            <SessionTitle
+              title={activeTitle}
+              canRename={canRename}
+              onRename={(t) => void rename(current.id, t)}
+            />
+            <span className="shrink-0 text-xs text-surface-400 dark:text-surface-500">
+              {agentName(current.agent_id)}
+            </span>
+          </div>
+        )}
         {shown && (
           <p
             className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"

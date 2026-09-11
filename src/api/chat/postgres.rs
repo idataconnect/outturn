@@ -119,6 +119,28 @@ impl ChatStore for PostgresChatStore {
         Ok(read_session(&row))
     }
 
+    async fn rename_session(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        title: &str,
+    ) -> Result<AgentSession, ChatError> {
+        let row = sqlx::query(
+            "update agent_sessions set title = $3, updated_at = now() \
+             where workspace_id = $1 and id = $2 \
+             returning id, workspace_id, agent_id, title, account",
+        )
+        .bind(workspace_id)
+        .bind(session_id)
+        .bind(title.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .ok_or(ChatError::NotFound)?;
+
+        Ok(read_session(&row))
+    }
+
     async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError> {
         let result =
             sqlx::query("delete from agent_sessions where workspace_id = $1 and id = $2")

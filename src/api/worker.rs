@@ -866,6 +866,13 @@ impl Worker {
         // lapsed meanwhile and the turn is running elsewhere, this returns
         // NotFound and the other pod's result stands.
         jobs::complete(&self.pool, job_id, lease_token).await?;
+
+        // A conversation that has had a turn and still has no name gets one
+        // asked for. After the job is closed, so a namer that cannot be
+        // queued costs nothing but its absence.
+        if let Ok(session) = self.chat.get_session(payload.workspace_id, payload.session_id).await {
+            super::naming::enqueue_if_unnamed(&self.pool, &session).await;
+        }
         Ok(())
     }
 
