@@ -71,11 +71,15 @@ pub fn catalogue() -> Vec<Setting> {
             key: "reasoning_effort",
             label: "Thinking before answering",
             description: "How much the model deliberates where the provider supports \
-                          it. Better on hard questions and slower to reply; on a local \
-                          model, a few dozen characters of answer has been measured \
-                          costing three hundred tokens of thought first.",
+                          it. Better on hard questions and slower to reply. \"none\" is \
+                          cheapest but not safe on every model: gemma4 with thinking \
+                          off answers a tool result with nothing at all, so the turn \
+                          ends on the tool and the reader is told nothing.",
             kind: Kind::Choice { options: &["none", "low", "medium", "high"] },
-            default: serde_json::json!("none"),
+            // Low rather than none. Measured on gemma4 after a file listing:
+            // none gives an empty reply (1 completion token); low gives the
+            // one-line summary for 60. The silence is what the reader sees.
+            default: serde_json::json!("low"),
             owner: Owner::WorkspaceOverridable,
         },
         Setting {
