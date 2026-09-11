@@ -36,7 +36,12 @@ export type MessageStatus =
   | { kind: 'absorbed' }
   | { kind: 'failed'; message: string }
 
-type Annotated = Message & { status?: MessageStatus | null }
+type Annotated = Message & {
+  status?: MessageStatus | null
+  /** On a reply: its turn is still running, so a call without a result is
+   *  one still being run, not one whose turn died before it answered. */
+  live?: boolean
+}
 
 /**
  * Works out each user message's status from the transcript around it.
@@ -76,6 +81,7 @@ function annotate(
   const replyInProgress = inProgress.size > 0
 
   return messages.map((m) => {
+    if (m.role === 'assistant') return { ...m, live: inProgress.has(m.id) }
     if (m.role !== 'user') return m
 
     if (m.absorbed_by) {
@@ -137,7 +143,7 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
  * was kept is read the way it used to be replayed -- its calls, then its
  * words -- which is what those turns were.
  */
-function parts(message: Message): ThreadMessageLike['content'] {
+function parts(message: Annotated): ThreadMessageLike['content'] {
   const calls = message.metadata.tool_calls ?? []
   const drawn = (call: ToolCallRecord) => ({
     type: 'tool-call' as const,
@@ -151,6 +157,10 @@ function parts(message: Message): ThreadMessageLike['content'] {
       action: call.action,
       details: call.details ?? '',
       isError: call.is_error ?? false,
+      // Announced but not yet answered, on a turn still running. A call
+      // with no result on a finished turn is not pending; it is a turn that
+      // ended before the tool did, and spinning for ever would say otherwise.
+      pending: call.details === undefined && message.live === true,
     },
     argsText: JSON.stringify({ action: call.action }),
   })

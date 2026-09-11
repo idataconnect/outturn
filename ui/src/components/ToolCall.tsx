@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { TriangleAlert, Wrench } from 'lucide-react'
+import { Check, LoaderCircle, TriangleAlert } from 'lucide-react'
 
 /**
  * A tool the agent ran, shown above the reply it fed.
@@ -43,9 +43,16 @@ function errorMessage(details: string): string {
   return details
 }
 
+/**
+ * Three states, told apart at a glance: a spinner while the tool is running,
+ * a tick once it has answered, a warning if what came back was an error.
+ * The action reads in the present tense either way -- "Fetching..." -- so
+ * the icon is what says whether that is happening or has happened.
+ */
 export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
   const action = typeof args?.action === 'string' ? args.action : ''
   const isError = args?.isError === true
+  const pending = args?.pending === true && !isError
   const details = typeof args?.details === 'string' ? args.details : ''
 
   return (
@@ -62,17 +69,32 @@ export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
             className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-400"
             aria-hidden
           />
+        ) : pending ? (
+          <LoaderCircle
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-brand-600 dark:text-brand-400"
+            aria-label="Running"
+            role="img"
+          />
         ) : (
-          <Wrench
-            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-600 dark:text-brand-400"
-            aria-hidden
+          <Check
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400"
+            aria-label="Done"
+            role="img"
           />
         )}
 
         <div className="min-w-0 flex-1">
           {action ? (
             <>
-              <p className="text-surface-700 dark:text-surface-200">{action}</p>
+              <p
+                className={
+                  pending
+                    ? 'text-surface-500 dark:text-surface-400'
+                    : 'text-surface-700 dark:text-surface-200'
+                }
+              >
+                {action}
+              </p>
               <span className="font-mono text-[11px] text-surface-500 dark:text-surface-500">
                 {toolName}
               </span>
