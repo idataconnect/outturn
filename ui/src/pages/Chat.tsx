@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Menu, Paperclip, Plus, X } from 'lucide-react'
@@ -28,6 +28,12 @@ export default function Chat() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [error, setError] = useState<string | null>(null)
+  // A URL naming a session this workspace cannot see. Kept apart from
+  // `error` because it is about the address, not the page: it goes away the
+  // moment a session that exists is shown, where a failed request would not.
+  const [missing, setMissing] = useState<string | null>(null)
+  /** Where a bad URL was redirected to, so the notice outlives that landing. */
+  const landed = useRef<string | null>(null)
 
   const active = sessionId ?? null
   // A title arriving over the feed -- the namer's, after the first turn, or
@@ -86,6 +92,7 @@ export default function Chat() {
     // immediately redirects here again.
     if (!sessionId) {
       if (sessions.length > 0) {
+        landed.current = sessions[0].id
         void navigate(`/sessions/${sessions[0].id}`, { replace: true })
       }
       return
@@ -95,9 +102,13 @@ export default function Chat() {
     // behind by a workspace switch -- would otherwise leave a blank pane with no
     // explanation.
     if (!sessions.some((session) => session.id === sessionId)) {
-      setError('That session is not available in this workspace.')
+      setMissing('That session is not available in this workspace.')
       void navigate('/sessions', { replace: true })
+      return
     }
+    // The notice explains the landing it caused; it should not still be
+    // there once a session the reader chose is on screen.
+    if (sessionId !== landed.current) setMissing(null)
   }, [loaded, sessionId, sessions, navigate])
 
   async function start(agentId: string) {
@@ -113,7 +124,7 @@ export default function Chat() {
   }
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
-  const shown = error ?? chatError
+  const shown = error ?? chatError ?? missing
 
   const current = sessions.find((s) => s.id === active)
   const activeTitle = active ? sessionName(current) : 'Sessions'
