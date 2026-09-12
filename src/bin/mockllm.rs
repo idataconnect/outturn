@@ -1002,8 +1002,11 @@ async fn main() {
         .route("/readyz", get(|| async { "ok" }))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8083").await.expect("bind");
-    tracing::info!("listening on 0.0.0.0:8083");
+    // Fixed in the cluster, where the service's address is what finds it, but
+    // chosen by the caller under test so two tests can run at once.
+    let port: u16 = std::env::var("MOCK_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8083);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
+    tracing::info!(port, "listening");
     axum::serve(listener, app).await.expect("serve");
 }
 

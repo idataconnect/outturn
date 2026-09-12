@@ -95,3 +95,78 @@ impl std::fmt::Display for ProviderError {
         }
     }
 }
+
+/// Splits a byte stream of Server-Sent Events into their JSON payloads.
+///
+/// Bytes arrive without regard for line boundaries, so a partial line is
+/// carried over rather than parsed: splitting on whatever a packet happened to
+/// contain would corrupt any payload spanning two reads.
+///
+/// Yields values rather than a decoded type because the providers disagree
+/// about what a payload is. One sends fragments of a single shape and stops at
+/// a sentinel; another sends a sequence of differently-typed events and stops
+/// by ending. What they share is exactly this framing, and no more.
+pub fn sse_payloads<S>(stream: S) -> impl futures::Stream<Item = Result<serde_json::Value, ProviderError>>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, ProviderError>>,
+{
+    use futures::StreamExt;
+
+    futures::stream::unfold(
+        (Box::pin(stream), String::new(), false),
+        |(mut stream, mut buffer, mut done)| async move {
+            loop {
+                if done {
+                    return None;
+                }
+
+                // Emit anything already buffered before reading more.
+                while let Some(index) = buffer.find('\n') {
+                    let line = buffer[..index].trim().to_string();
+                    buffer.drain(..=index);
+
+                    // `event:` lines name what follows, which the payload's
+                    // own `type` also says. Skipped rather than read, so a
+                    // provider that sends one and a provider that does not are
+                    // handled by the same code.
+                    let Some(payload) = line.strip_prefix("data:") else {
+                        continue;
+                    };
+                    let payload = payload.trim();
+
+                    // The OpenAI protocol's sentinel. Anthropic never sends
+                    // it and ends by ending, which `None` below handles.
+                    if payload == "[DONE]" {
+                        return None;
+                    }
+                    if payload.is_empty() {
+                        continue;
+                    }
+
+                    match serde_json::from_str::<serde_json::Value>(payload) {
+                        Ok(value) => return Some((Ok(value), (stream, buffer, done))),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "malformed stream payload");
+                            continue;
+                        }
+                    }
+                }
+
+                match stream.next().await {
+                    Some(Ok(bytes)) => match std::str::from_utf8(&bytes) {
+                        Ok(text) => buffer.push_str(text),
+                        Err(e) => {
+                            return Some((
+                                Err(ProviderError::Upstream(e.to_string())),
+                                (stream, buffer, true),
+                            ));
+                        }
+                    },
+                    Some(Err(e)) => return Some((Err(e), (stream, buffer, true))),
+                    // Ended without a sentinel; nothing further to emit.
+                    None => done = true,
+                }
+            }
+        },
+    )
+}

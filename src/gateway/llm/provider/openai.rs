@@ -127,63 +127,23 @@ impl LlmProvider for OpenAiProvider {
 
 /// Turns a byte stream of Server-Sent Events into decoded chunks.
 ///
-/// Bytes arrive without regard for line boundaries, so a partial line is
-/// carried over rather than parsed: splitting on whatever a packet happened to
-/// contain would corrupt any chunk spanning two reads.
+/// The framing is shared with every other provider that speaks SSE; only the
+/// shape behind it is this protocol's own.
 fn unwrap_sse<S>(stream: S) -> impl Stream<Item = Result<StreamChunk, ProviderError>>
 where
     S: Stream<Item = Result<bytes::Bytes, ProviderError>>,
 {
-    let buffer = String::new();
-    futures::stream::unfold(
-        (Box::pin(stream), buffer, false),
-        |(mut stream, mut buffer, mut done)| async move {
-            loop {
-                if done {
-                    return None;
+    super::sse_payloads(stream).filter_map(|payload| {
+        let decoded = match payload {
+            Ok(value) => match serde_json::from_value::<StreamChunk>(value) {
+                Ok(chunk) => Some(Ok(chunk)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "malformed stream chunk");
+                    None
                 }
-
-                // Emit anything already buffered before reading more.
-                while let Some(index) = buffer.find('\n') {
-                    let line = buffer[..index].trim().to_string();
-                    buffer.drain(..=index);
-
-                    let Some(payload) = line.strip_prefix("data:") else {
-                        continue;
-                    };
-                    let payload = payload.trim();
-
-                    if payload == "[DONE]" {
-                        return None;
-                    }
-                    if payload.is_empty() {
-                        continue;
-                    }
-
-                    match serde_json::from_str::<StreamChunk>(payload) {
-                        Ok(chunk) => return Some((Ok(chunk), (stream, buffer, done))),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "malformed stream chunk");
-                            continue;
-                        }
-                    }
-                }
-
-                match stream.next().await {
-                    Some(Ok(bytes)) => match std::str::from_utf8(&bytes) {
-                        Ok(text) => buffer.push_str(text),
-                        Err(e) => {
-                            return Some((
-                                Err(ProviderError::Upstream(e.to_string())),
-                                (stream, buffer, true),
-                            ));
-                        }
-                    },
-                    Some(Err(e)) => return Some((Err(e), (stream, buffer, true))),
-                    // Stream ended without [DONE]; emit nothing further.
-                    None => done = true,
-                }
-            }
-        },
-    )
+            },
+            Err(e) => Some(Err(e)),
+        };
+        std::future::ready(decoded)
+    })
 }
