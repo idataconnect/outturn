@@ -879,12 +879,48 @@ mod stream_tests {
 
 // Gemini -----------------------------------------------------------------
 
+
+/// The major version of a Gemini model, where its name states one.
+///
+/// Parsed rather than matched on a substring: "gemini-3" appearing anywhere in
+/// a name is not the same question as the model being version 3 or newer, and
+/// a tuned model called `my-gemini-30-thing` would answer the substring test
+/// wrongly in both directions.
+pub fn gemini_major_version(model: &str) -> Option<u32> {
+    let rest = model.strip_prefix("gemini-")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// Whether this model wants call ids on its function calls and responses.
+///
+/// Gemini 3 and newer match a response to its call by id and return one of
+/// their own. Older models refuse the field outright, so it cannot simply be
+/// sent to everybody and left to be ignored.
+pub fn gemini_wants_call_ids(model: &str) -> bool {
+    gemini_major_version(model).is_some_and(|v| v >= 3)
+}
+
 /// Convert an OpenAI-format request into Gemini's `generateContent` shape.
 ///
 /// Gemini differs in three ways that matter: the system prompt is its own
 /// field rather than a message, the assistant is called "model", and a tool
 /// result is a message part rather than a message role.
 pub fn openai_to_gemini(req: &ChatCompletionRequest) -> Result<serde_json::Value, TranslateError> {
+    openai_to_gemini_for(req, &req.model)
+}
+
+/// As above, for a named target model.
+///
+/// The model decides two things that cannot be got right without knowing it:
+/// whether call ids are wanted, and whether a stored signature may be
+/// replayed. A signature is a token one model issued about its own reasoning,
+/// so replaying it to a different one is at best meaningless.
+pub fn openai_to_gemini_for(
+    req: &ChatCompletionRequest,
+    target_model: &str,
+) -> Result<serde_json::Value, TranslateError> {
+    let wants_ids = gemini_wants_call_ids(target_model);
     let mut contents: Vec<serde_json::Value> = Vec::new();
     let mut system: Option<String> = None;
 
@@ -911,16 +947,18 @@ pub fn openai_to_gemini(req: &ChatCompletionRequest) -> Result<serde_json::Value
                 });
             }
             Role::Tool => {
-                // A result belongs to the call that asked for it, which Gemini
-                // identifies by function name rather than by an id.
+                let mut response = serde_json::json!({
+                    "name": message.name.clone().unwrap_or_default(),
+                    "response": { "content": text },
+                });
+                // Newer models match a response to its call by id; older ones
+                // refuse the field, so it is sent only where it is wanted.
+                if wants_ids && let Some(id) = &message.tool_call_id {
+                    response["id"] = serde_json::json!(id);
+                }
                 contents.push(serde_json::json!({
                     "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": message.name.clone().unwrap_or_default(),
-                            "response": { "content": text },
-                        }
-                    }]
+                    "parts": [{ "functionResponse": response }],
                 }));
             }
             Role::User => {
@@ -935,18 +973,30 @@ pub fn openai_to_gemini(req: &ChatCompletionRequest) -> Result<serde_json::Value
                     parts.push(serde_json::json!({ "text": text }));
                 }
                 for call in message.tool_calls.iter().flatten() {
-                    parts.push(serde_json::json!({
-                        "functionCall": {
-                            "name": call.function.name,
-                            // Arguments travel as a string in the OpenAI shape
-                            // and as an object here. A string that will not
-                            // parse becomes an empty object rather than
-                            // failing the turn: the model wrote it, and the
-                            // turn is already answering for that.
-                            "args": serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                                .unwrap_or_else(|_| serde_json::json!({})),
-                        }
-                    }));
+                    let mut function_call = serde_json::json!({
+                        "name": call.function.name,
+                        // Arguments travel as a string in the OpenAI shape
+                        // and as an object here. A string that will not
+                        // parse becomes an empty object rather than
+                        // failing the turn: the model wrote it, and the
+                        // turn is already answering for that.
+                        "args": serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                    });
+                    if wants_ids && !call.id.is_empty() {
+                        function_call["id"] = serde_json::json!(call.id);
+                    }
+
+                    let mut part = serde_json::json!({ "functionCall": function_call });
+                    // Back onto the call it came with, and onto no other. A
+                    // parallel batch is signed once, on its first call; the
+                    // siblings are unsigned and must stay so, because every
+                    // replayed copy is billed as the previous turn's reasoning
+                    // again and nothing says so at the time.
+                    if let Some(signature) = &call.provider_signature {
+                        part["thoughtSignature"] = serde_json::json!(signature);
+                    }
+                    parts.push(part);
                 }
                 contents.push(serde_json::json!({ "role": "model", "parts": parts }));
             }
@@ -1064,6 +1114,14 @@ pub struct GeminiStream {
     /// Whether any function call has been forwarded, which decides what a
     /// finish reason of STOP means.
     called_a_tool: bool,
+    /// A signature that arrived on a text part rather than on a call.
+    ///
+    /// For prose, Gemini signs the block at its end, on a part carrying no
+    /// text at all -- measured: seven chunks, the first six with words and no
+    /// signature, the seventh with 3496 characters of signature and an empty
+    /// string. A reader that forwards only parts with something in them
+    /// discards it, and the next round is refused for want of it.
+    text_signature: Option<String>,
     /// Which price tier served the call. Gemini names it in `usageMetadata`
     /// rather than beside the model, and it multiplies every token on the
     /// call, so it travels with the usage rather than being left behind in
@@ -1085,6 +1143,15 @@ impl GeminiStream {
         self.usage.as_ref()
     }
 
+    /// The signature covering this reply's text, if it was signed.
+    ///
+    /// Separate from the one on a tool call because they sign different parts
+    /// and must go back on the parts they came from. Merging them would send
+    /// one signature twice, which is billed twice.
+    pub fn text_signature(&self) -> Option<&str> {
+        self.text_signature.as_deref()
+    }
+
     pub fn event(&mut self, event: &serde_json::Value) -> Option<StreamChunk> {
         // Taken before anything else: a chunk carrying only usage is still
         // worth reading, and on this protocol most of them carry it.
@@ -1102,6 +1169,16 @@ impl GeminiStream {
         for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
             if let Some(text) = part["text"].as_str() {
                 content.get_or_insert_with(String::new).push_str(text);
+                // Kept whenever it is offered and never unset by a later part
+                // that has none: the signature is the block's, not the
+                // chunk's, and only one chunk of the block carries it.
+                if let Some(signature) = part["thoughtSignature"].as_str() {
+                    self.text_signature = Some(signature.to_string());
+                }
+            } else if let Some(signature) = part["thoughtSignature"].as_str() {
+                // A part with a signature and nothing else. It is the whole
+                // reason this branch exists.
+                self.text_signature = Some(signature.to_string());
             }
             if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
                 let slot = self.next_tool_slot;
@@ -1464,6 +1541,142 @@ mod gemini_tests {
         );
         assert_eq!(calls[0].id.as_deref(), Some("call_1"), "the provider's own id, not one we invented");
         assert_eq!(calls[2].id.as_deref(), Some("call_3"));
+    }
+
+    /// Prose is signed at the end of the block, on a part carrying no text.
+    ///
+    /// Measured against `gemini-3.7-flash`: a 120-word answer arrived in seven
+    /// chunks, the first six with words and no signature and the seventh with
+    /// an empty string and 3496 characters of signature. A reader that
+    /// forwards only parts with something in them -- which is the obvious way
+    /// to write it -- throws that away, and the next round is refused for
+    /// want of it.
+    #[test]
+    fn a_text_block_is_signed_at_its_end_by_a_part_with_no_text() {
+        let mut s = GeminiStream::new("gemini-3.7-flash".into());
+
+        for word in ["San Francisco's fog ", "forms when warm air ", "meets cold water."] {
+            let chunk = s.event(&serde_json::json!({
+                "candidates": [{ "content": { "parts": [{ "text": word }] }, "index": 0 }],
+            }));
+            assert!(chunk.is_some(), "a part with words in it is forwarded");
+        }
+        assert!(s.text_signature().is_none(), "nothing has signed anything yet");
+
+        // The last chunk: a signature, and no text at all.
+        s.event(&serde_json::json!({
+            "candidates": [{
+                "content": { "parts": [{ "text": "", "thoughtSignature": "c2lnbmVkLXRleHQ=" }] },
+                "finishReason": "STOP",
+                "index": 0,
+            }],
+        }));
+
+        assert_eq!(
+            s.text_signature(),
+            Some("c2lnbmVkLXRleHQ="),
+            "the signature rode a part with an empty string in it, and keeping \
+             only parts that say something loses it"
+        );
+    }
+
+    /// A signature offered once is not unset by the parts that follow it.
+    #[test]
+    fn a_later_unsigned_part_does_not_clear_a_signature_already_given() {
+        let mut s = GeminiStream::new("gemini-3.7-flash".into());
+        s.event(&serde_json::json!({
+            "candidates": [{
+                "content": { "parts": [{ "text": "first", "thoughtSignature": "c2ln" }] },
+                "index": 0,
+            }],
+        }));
+        assert_eq!(s.text_signature(), Some("c2ln"));
+
+        s.event(&serde_json::json!({
+            "candidates": [{ "content": { "parts": [{ "text": " second" }] }, "index": 0 }],
+        }));
+        assert_eq!(
+            s.text_signature(),
+            Some("c2ln"),
+            "last-write-wins over every part clears it with the next one that \
+             has none, and the next round is then refused"
+        );
+    }
+
+    /// Version is parsed, not matched as a substring: "gemini-3" occurring
+    /// somewhere in a name is a different question from the model being
+    /// version three or newer.
+    #[test]
+    fn a_models_version_is_read_from_its_name() {
+        assert_eq!(gemini_major_version("gemini-3.7-flash"), Some(3));
+        assert_eq!(gemini_major_version("gemini-2.5-flash"), Some(2));
+        assert_eq!(gemini_major_version("gemini-10-flash"), Some(10), "two digits, not one");
+        assert_eq!(gemini_major_version("gemma-4-31b-it"), None, "a different family");
+
+        assert!(gemini_wants_call_ids("gemini-3.7-flash"));
+        assert!(gemini_wants_call_ids("gemini-4-flash"), "newer than three is also newer");
+        assert!(!gemini_wants_call_ids("gemini-2.5-flash"));
+        assert!(
+            !gemini_wants_call_ids("my-gemini-30-tune"),
+            "a substring test would have said yes to this and to gemini-4 no"
+        );
+    }
+
+    /// Older models refuse a call id outright, and newer ones match responses
+    /// by it, so the field cannot simply be sent to everybody.
+    #[test]
+    fn call_ids_are_sent_only_to_the_models_that_want_them() {
+        let call = ToolCall {
+            id: "call_538131".into(),
+            tool_type: "function".into(),
+            function: FunctionCall { name: "get_weather".into(), arguments: r#"{"city":"SF"}"#.into() },
+            provider_signature: Some("c2ln".into()),
+        };
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(String::new()),
+                name: None,
+                tool_calls: Some(vec![call]),
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::Text("62F and foggy".into()),
+                name: Some("get_weather".into()),
+                tool_calls: None,
+                tool_call_id: Some("call_538131".into()),
+            },
+        ];
+        let request = ChatCompletionRequest {
+            model: String::new(),
+            messages,
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            reasoning_effort: None,
+            stream: false,
+            stream_options: None,
+        };
+
+        let newer = openai_to_gemini_for(&request, "gemini-3.7-flash").expect("translate");
+        assert_eq!(newer["contents"][0]["parts"][0]["functionCall"]["id"], "call_538131");
+        assert_eq!(newer["contents"][1]["parts"][0]["functionResponse"]["id"], "call_538131");
+        assert_eq!(
+            newer["contents"][0]["parts"][0]["thoughtSignature"], "c2ln",
+            "the signature goes back on the call it came with, or the round is refused"
+        );
+
+        let older = openai_to_gemini_for(&request, "gemini-2.5-flash").expect("translate");
+        assert!(
+            older["contents"][0]["parts"][0]["functionCall"]["id"].is_null(),
+            "an older model refuses the field with a 400"
+        );
+        assert!(older["contents"][1]["parts"][0]["functionResponse"]["id"].is_null());
+        assert_eq!(
+            older["contents"][0]["parts"][0]["thoughtSignature"], "c2ln",
+            "it still signs, and still demands the signature back"
+        );
     }
 
     /// A system message is its own field here, and repeated ones are joined

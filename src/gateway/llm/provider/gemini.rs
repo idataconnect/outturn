@@ -64,12 +64,13 @@ impl LlmProvider for GeminiProvider {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, ProviderError> {
-        let body = translate::openai_to_gemini(request)
+        let model = self.model_for(request).to_string();
+        let body = translate::openai_to_gemini_for(request, &model)
             .map_err(|e| ProviderError::Translation(e.to_string()))?;
 
         let response = self
             .client
-            .post(self.url(self.model_for(request), "generateContent"))
+            .post(self.url(&model, "generateContent"))
             .header("x-goog-api-key", &self.api_key)
             .json(&body)
             .send()
@@ -92,9 +93,9 @@ impl LlmProvider for GeminiProvider {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
-        let body = translate::openai_to_gemini(request)
-            .map_err(|e| ProviderError::Translation(e.to_string()))?;
         let model = self.model_for(request).to_string();
+        let body = translate::openai_to_gemini_for(request, &model)
+            .map_err(|e| ProviderError::Translation(e.to_string()))?;
 
         let response = self
             .client
