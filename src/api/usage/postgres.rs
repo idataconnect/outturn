@@ -41,6 +41,7 @@ fn read_entry(row: &sqlx::postgres::PgRow) -> UsageEntry {
         cache_read_tokens: row.get("cache_read_tokens"),
         cache_write_tokens: row.get("cache_write_tokens"),
         reasoning_tokens: row.get("reasoning_tokens"),
+        usage_source: row.get("usage_source"),
         provider_usage: row.get("provider_usage"),
         service_tier: row.get("service_tier"),
     }
@@ -54,9 +55,9 @@ impl UsageStore for PostgresUsageStore {
                  (workspace_id, id, agent_id, session_id, user_id, account, reply_id, job_id, \
                   round, traffic_type, endpoint, model, credential_owner, fallback, \
                   prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, \
-                  reasoning_tokens, provider_usage, service_tier) \
+                  reasoning_tokens, usage_source, provider_usage, service_tier) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
-                     $15, $16, $17, $18, $19, $20, $21)",
+                     $15, $16, $17, $18, $19, $20, $21, $22)",
         )
         .bind(e.workspace_id)
         .bind(Uuid::now_v7())
@@ -77,6 +78,7 @@ impl UsageStore for PostgresUsageStore {
         .bind(e.cache_read_tokens)
         .bind(e.cache_write_tokens)
         .bind(e.reasoning_tokens)
+        .bind(e.usage_source.as_str())
         .bind(e.provider_usage)
         .bind(e.service_tier)
         .execute(&self.pool)

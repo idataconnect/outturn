@@ -20,6 +20,21 @@ use super::chat::{ChatStore, Usage};
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";
 
+/// Where a call's token counts came from, judged by what the provider sent.
+///
+/// A provider that returned a usage object is the authority on what its own
+/// call cost. One that returned nothing leaves zeros behind, and those zeros
+/// must not be recorded as though somebody had measured them: a turn that cost
+/// nothing and a turn nobody counted look identical afterwards, and only this
+/// tells them apart. Nothing can recover it later, so it is decided here, once,
+/// on the only evidence there is.
+fn source_of(provider_usage: &Option<serde_json::Value>) -> super::usage::UsageSource {
+    match provider_usage {
+        Some(usage) if !usage.is_null() => super::usage::UsageSource::Reported,
+        _ => super::usage::UsageSource::Unknown,
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatTurnPayload {
     pub workspace_id: Uuid,
@@ -107,7 +122,7 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
         let mut open: Vec<serde_json::Value> = Vec::new();
         let mut awaiting: Vec<&serde_json::Value> = Vec::new();
 
-        let mut flush = |open: &mut Vec<serde_json::Value>,
+        let flush = |open: &mut Vec<serde_json::Value>,
                          awaiting: &mut Vec<&serde_json::Value>,
                          out: &mut Vec<serde_json::Value>| {
             if !open.is_empty() {
@@ -446,6 +461,7 @@ impl Worker {
                                 cache_read_tokens: cache_read_tokens as i32,
                                 cache_write_tokens: cache_write_tokens as i32,
                                 reasoning_tokens: reasoning_tokens as i32,
+                                usage_source: source_of(&provider_usage),
                                 provider_usage,
                                 service_tier,
                             })
@@ -1101,5 +1117,39 @@ mod projection_tests {
             .filter(|p| p["type"] == "call")
             .count();
         assert_eq!(calls, 2);
+    }
+}
+
+#[cfg(test)]
+mod usage_source_tests {
+    use super::*;
+    use crate::api::usage::UsageSource;
+
+    /// A provider that said what its call cost is the authority on it.
+    #[test]
+    fn a_reported_usage_object_is_recorded_as_reported() {
+        let usage = Some(serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20 }));
+        assert_eq!(source_of(&usage), UsageSource::Reported);
+    }
+
+    /// A provider that said nothing leaves zeros, and zeros that claim to have
+    /// been measured are the bug this column exists to prevent: a turn nobody
+    /// counted then reads exactly like a turn that was free, and no later
+    /// inspection can tell them apart.
+    #[test]
+    fn a_round_the_provider_never_costed_is_not_recorded_as_measured() {
+        for absent in [None, Some(serde_json::Value::Null)] {
+            assert_eq!(
+                source_of(&absent),
+                UsageSource::Unknown,
+                "zeros with no provider figure behind them must say so, or a \
+                 bill cannot be argued from this ledger"
+            );
+            assert_ne!(
+                source_of(&absent),
+                UsageSource::Reported,
+                "recording an unmeasured round as reported is the silent error"
+            );
+        }
     }
 }

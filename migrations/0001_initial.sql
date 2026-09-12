@@ -678,6 +678,26 @@ create table usage_ledger (
     cache_write_tokens int         not null default 0,
     reasoning_tokens   int         not null default 0,
 
+    -- Where the numbers in those five columns came from.
+    --
+    -- A provider that reports nothing is not a turn that cost nothing, and
+    -- until this column existed the two were written identically: zeros, with
+    -- no way to tell a free round from an unmeasured one. That difference is
+    -- the whole of answering "your accounting does not match our bill", and it
+    -- cannot be recovered afterwards from rows that did not record it.
+    --
+    -- 'reported'         the provider said so, and the turn ran to its end.
+    -- 'reported_partial' the provider said so, but the turn was cut short, so
+    --                    the count covers only what had been generated. Real
+    --                    numbers for an incomplete answer.
+    -- 'estimated'        nothing was reported and the tokens were counted
+    --                    here. Honest arithmetic, not a provider's figure.
+    -- 'unknown'          nothing was reported and nothing could be counted.
+    --                    Zeros that mean "not measured", said out loud.
+    usage_source       text        not null default 'reported'
+                       check (usage_source in
+                           ('reported', 'reported_partial', 'estimated', 'unknown')),
+
     -- The provider's usage object, verbatim, beside the normalised columns.
     --
     -- The five token columns are what every provider agrees on and every rate
