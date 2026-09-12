@@ -73,6 +73,11 @@ export default function FilesPanel({
   const [menuOpen, setMenuOpen] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  // Dragging over a child fires `dragleave` on the parent, so counting
+  // enter against leave is what keeps the overlay from flickering as the
+  // pointer crosses the file list.
+  const depth = useRef(0)
+  const [dropping, setDropping] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -111,6 +116,34 @@ export default function FilesPanel({
     }
   }
 
+  // A drop puts files exactly where the Upload button would have: the scope
+  // the select is showing. Nothing is offered to drop onto when this person
+  // may write to no scope at all.
+  function onDragOver(e: React.DragEvent) {
+    if (writable.length === 0 || !e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  function onDragEnter(e: React.DragEvent) {
+    if (writable.length === 0 || !e.dataTransfer.types.includes('Files')) return
+    depth.current += 1
+    setDropping(true)
+  }
+
+  function onDragLeave() {
+    depth.current = Math.max(0, depth.current - 1)
+    if (depth.current === 0) setDropping(false)
+  }
+
+  function onDrop(e: React.DragEvent) {
+    if (writable.length === 0) return
+    e.preventDefault()
+    depth.current = 0
+    setDropping(false)
+    void onPick(e.dataTransfer.files)
+  }
+
   async function onDelete(file: StoredFile) {
     if (!window.confirm(`Delete ${file.path}?`)) return
     try {
@@ -136,7 +169,21 @@ export default function FilesPanel({
   const ActiveIcon = active?.icon ?? Clock
 
   return (
-    <aside className="w-72 h-full border-l border-surface-200 dark:border-surface-800 flex flex-col">
+    <aside
+      className="relative w-72 h-full border-l border-surface-200 dark:border-surface-800 flex flex-col"
+      onDragOver={onDragOver}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dropping && (
+        <div className="absolute inset-2 z-20 pointer-events-none flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-brand-500 bg-white/90 dark:bg-surface-900/90">
+          <Upload size={20} className="text-brand-600 dark:text-brand-400" aria-hidden />
+          <p className="px-4 text-center text-sm text-surface-700 dark:text-surface-300">
+            Drop to upload to {active?.label.toLowerCase()}
+          </p>
+        </div>
+      )}
       {onClose && (
         <div className="lg:hidden flex items-center justify-between px-3 py-2 border-b border-surface-200 dark:border-surface-800">
           <p className="text-xs font-medium text-surface-600 dark:text-surface-400">Files</p>
