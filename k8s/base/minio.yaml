@@ -31,6 +31,12 @@ spec:
       containers:
         - name: minio
           image: minio/minio:latest
+          # A `:latest` tag defaults to pulling on every start, and an
+          # anonymous pull of a popular image is rate limited -- so a cluster
+          # that has the image already sits in ImagePullBackOff waiting for
+          # permission to fetch what is on its own disk. Kept for whatever is
+          # local; a newer one arrives by pulling it deliberately.
+          imagePullPolicy: IfNotPresent
           args: ["server", "/data", "--console-address", ":9001"]
           ports:
             - containerPort: 9000
