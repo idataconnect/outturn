@@ -55,7 +55,11 @@ export default function Chat() {
   const canRename =
     state.status === 'authenticated' &&
     state.session.authorities.includes('sessions:update')
-  const [loaded, setLoaded] = useState(false)
+  // Which workspace the lists on screen describe, or null before the first
+  // load finishes. Held as the workspace rather than a bare flag so that
+  // "loaded" can be derived during render: a switch makes it stale the moment
+  // it happens, with no effect needed to reset it first.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
   // Below `lg` the sessions list and files panel are too wide to sit beside
   // the thread at once, so they become off-canvas drawers instead.
   const [sessionsOpen, setSessionsOpen] = useState(false)
@@ -63,7 +67,6 @@ export default function Chat() {
 
   useEffect(() => {
     let cancelled = false
-    setLoaded(false)
     void (async () => {
       try {
         const [a, s] = await Promise.all([listAgents(), listSessions()])
@@ -75,13 +78,17 @@ export default function Chat() {
         if (cancelled) return
         setError(e instanceof ApiError ? e.message : 'failed to load')
       } finally {
-        if (!cancelled) setLoaded(true)
+        if (!cancelled) setLoadedFor(workspaceId)
       }
     })()
     return () => {
       cancelled = true
     }
   }, [workspaceId])
+
+  // Stale the instant the workspace changes, so the reconciliation below waits
+  // for the new lists rather than judging the URL against the old ones.
+  const loaded = loadedFor !== null && loadedFor === workspaceId
 
   // Reconcile the URL against what this workspace can actually see, once loaded.
   useEffect(() => {

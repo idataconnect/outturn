@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -203,8 +203,14 @@ type DeltaProgress = Map<string, number>
  * so the sidebar and header follow without a reload.
  */
 export function useChatRuntime(sessionId: string | null, onRenamed?: (title: string) => void) {
+  // Kept in a ref so the feed's effects can reach the latest callback without
+  // listing it as a dependency and tearing the stream down on every render.
+  // Written in a layout effect rather than during render: a render may be
+  // discarded, and a discarded render must not leave a ref behind it.
   const renamed = useRef(onRenamed)
-  renamed.current = onRenamed
+  useLayoutEffect(() => {
+    renamed.current = onRenamed
+  })
   const [messages, setMessages] = useState<Message[]>([])
   const [isRunning, setIsRunning] = useState(false)
   /** A stop has been asked for and the turn has not ended yet.
