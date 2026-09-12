@@ -226,3 +226,64 @@ async fn enqueue_turn(
 
     tx.commit().await.map_err(|e| e.to_string())
 }
+
+/// Asks the turn a session has in flight to stop.
+///
+/// Answers what it did rather than only that it succeeded, because the three
+/// cases feel different to whoever pressed the button: a turn that had not
+/// started is over immediately, one already running takes until its next round
+/// boundary, and one that had finished on its own was never stopped at all.
+///
+/// Idempotent. Pressing stop twice is what a person does when the first press
+/// appears not to have worked, and the second must not be an error.
+pub async fn cancel_turn(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // The same authority as sending: whoever may start a turn in this session
+    // may stop one. A separate permission would mean a person who can spend
+    // the allowance cannot stop spending it.
+    let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
+
+    // Proves the session belongs to this workspace before anything is looked
+    // up by it, so a job id cannot be reached through somebody else's session.
+    let _ = state.chat.get_session(claims.workspace_id, id).await?;
+
+    let Some(job_id) = jobs::live_turn_for_session(&state.pool, claims.workspace_id, id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    else {
+        // Nothing in flight. Not an error: the turn finished while the button
+        // was being pressed, which is a race a person cannot avoid and should
+        // not be scolded for.
+        return Ok(Json(serde_json::json!({ "stopped": false, "state": "nothing_running" })));
+    };
+
+    let outcome = jobs::request_cancel(&state.pool, job_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (stopped, described) = match outcome {
+        jobs::Cancelled::BeforeItRan => (true, "cancelled"),
+        jobs::Cancelled::WhileRunning => (true, "stopping"),
+        jobs::Cancelled::AlreadyOver => (false, "nothing_running"),
+    };
+
+    // Told to everyone watching, not just whoever asked. A second reader with
+    // the conversation open should see it stop too, and the button is not the
+    // only thing that has to agree about what happened.
+    if stopped {
+        events::append(
+            &state.pool,
+            claims.workspace_id,
+            Some(id),
+            "chat.cancelling",
+            serde_json::json!({ "job_id": job_id, "state": described }),
+        )
+        .await
+        .ok();
+    }
+
+    Ok(Json(serde_json::json!({ "stopped": stopped, "state": described })))
+}

@@ -296,6 +296,121 @@ pub async fn is_running(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
     Ok(state.as_deref() == Some("running"))
 }
 
+/// The turn a session currently has in flight, if any.
+///
+/// Found by the session rather than by the job id because that is what a
+/// reader has: somebody pressing stop knows which conversation they are
+/// watching, not which row in a queue is answering it.
+///
+/// Only pending and running qualify. A finished turn is not stoppable, and
+/// picking the newest keeps a session that has queued several from stopping
+/// an older one by accident.
+pub async fn live_turn_for_session(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    session_id: Uuid,
+) -> Result<Option<Uuid>, JobError> {
+    sqlx::query_scalar(
+        "select id from jobs \
+          where kind = 'chat.turn' \
+            and workspace_id = $1 \
+            and (payload->>'session_id')::uuid = $2 \
+            and state in ('pending', 'running') \
+          order by id desc limit 1",
+    )
+    .bind(workspace_id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)
+}
+
+/// What asking for a job to stop achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancelled {
+    /// It had not started. Nothing is running, so it is finished here and now.
+    BeforeItRan,
+    /// It is running. The request is recorded and whoever is running it will
+    /// find out at its next round boundary.
+    WhileRunning,
+    /// It had already finished, one way or another. Nothing to stop, and
+    /// nothing about that is an error.
+    AlreadyOver,
+}
+
+/// Asks for a job to stop.
+///
+/// A pending job is cancelled outright: no runtime has it, so there is nobody
+/// to tell and nothing in flight to unwind. A running one gets the request
+/// recorded against it instead -- the work is happening in another process,
+/// possibly on another machine, and the only honest thing this can do is
+/// write down that somebody asked.
+///
+/// Recorded rather than signalled because a signal needs a listener that
+/// exists right now. A row survives the pod running the turn being lost, so a
+/// runtime that takes the turn over afterwards learns about the cancel the
+/// same way the first one would have.
+pub async fn request_cancel(pool: &PgPool, id: Uuid) -> Result<Cancelled, JobError> {
+    let state: Option<String> = sqlx::query_scalar(
+        "update jobs \
+            set cancel_requested_at = coalesce(cancel_requested_at, now()), \
+                state = case when state = 'pending' then 'cancelled' else state end, \
+                leased_until = case when state = 'pending' then null else leased_until end, \
+                updated_at = now() \
+          where id = $1 and state in ('pending', 'running') \
+      returning state",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+
+    Ok(match state.as_deref() {
+        Some("cancelled") => Cancelled::BeforeItRan,
+        Some("running") => Cancelled::WhileRunning,
+        // Nothing matched the update, so it had already finished -- or never
+        // existed, which from here is the same absence of work to stop.
+        _ => Cancelled::AlreadyOver,
+    })
+}
+
+/// Whether somebody has asked for this job to stop.
+///
+/// Asked at a round boundary by whoever is running the turn. Cheap on purpose:
+/// it is one indexed lookup per round, not per token, and a round is the only
+/// place stopping is safe anyway.
+pub async fn cancel_requested(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
+    let asked: Option<bool> =
+        sqlx::query_scalar("select cancel_requested_at is not null from jobs where id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal)?;
+    Ok(asked == Some(true))
+}
+
+/// Marks a running job stopped, at the request of whoever asked.
+///
+/// Terminal, and deliberately not `fail`: a failure is retried while attempts
+/// remain, and retrying a turn somebody stopped would be precisely the
+/// opposite of what they asked for.
+pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
+    let result = sqlx::query(
+        "update jobs set state = 'cancelled', leased_until = null, updated_at = now() \
+         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
+    )
+    .bind(id)
+    .bind(token)
+    .execute(pool)
+    .await
+    .map_err(internal)?;
+
+    if result.rows_affected() == 0 {
+        return Err(JobError::NotFound);
+    }
+    Ok(())
+}
+
 /// Whether `token` is the lease currently held on a running job.
 ///
 /// The ticket a runtime presents when it reports or hands back a turn. A job

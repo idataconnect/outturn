@@ -425,8 +425,25 @@ create table jobs (
     workspace_id  uuid        not null references workspaces (id) on delete cascade,
     kind          text        not null,
     payload       jsonb       not null default '{}'::jsonb,
+    -- 'cancelled' is terminal and is not 'failed'. A failure is retried, and
+    -- retrying a turn somebody stopped would be the opposite of what they
+    -- asked for -- so the two cannot share a state however similar they look
+    -- from the queue's side.
     state         text        not null default 'pending'
-                  check (state in ('pending', 'running', 'succeeded', 'failed')),
+                  check (state in ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+
+    -- When somebody asked for this to stop.
+    --
+    -- Separate from `state` because a request is not an outcome: a turn is
+    -- still running when the request arrives, and whoever is running it finds
+    -- out at its next round boundary rather than the instant the row changes.
+    -- Between those two moments the turn is cancelling and not yet cancelled,
+    -- and collapsing that into one column loses the ability to say so.
+    --
+    -- Durable rather than a signal, so a runtime that takes the turn over
+    -- after a pod is lost learns about the cancel the same way the first one
+    -- would have.
+    cancel_requested_at timestamptz,
     attempts      int         not null default 0,
     max_attempts  int         not null default 3,
     -- What is waiting on this, and therefore what it costs to be late.

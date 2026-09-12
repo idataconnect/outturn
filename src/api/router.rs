@@ -929,6 +929,13 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/agent-sessions/{id}/messages",
             get(super::sessions::get_messages).post(super::sessions::send_message),
         )
+        // Stopping a turn, rather than a resource of its own: what is being
+        // acted on is the conversation, and which job is answering it is the
+        // platform's business rather than the caller's.
+        .route(
+            "/v1/agent-sessions/{id}/cancel",
+            post(super::sessions::cancel_turn),
+        )
         .route(
             "/v1/agents/{id}",
             get(super::agents::get_agent)

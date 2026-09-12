@@ -192,6 +192,14 @@ pub struct AgentHost {
     /// gateway on the responses it was already sending. Drained when the guest
     /// asks, so each message is injected once.
     arrivals: Vec<Arrival>,
+    /// Whether somebody has asked this turn to stop, as reported by the
+    /// gateway on the same responses.
+    ///
+    /// It arrives this way for the same reason steering does: the runtime
+    /// holds no database and no credentials, so anything it needs to learn
+    /// mid-turn rides the one connection it already has open. Sticky once set
+    /// -- a cancel is not withdrawn by the next round failing to mention it.
+    cancelled: bool,
     /// The reply this turn is writing. Sent to the gateway so it can record
     /// which reply absorbed a message it handed over.
     reply_id: uuid::Uuid,
@@ -492,6 +500,10 @@ impl outturn::agent::host::Host for AgentHost {
         // chooses, which is the only point where injecting a message does not
         // corrupt a round already in flight.
         self.arrivals.extend(arrivals);
+        // Once asked, always asked. A later round that says nothing about it
+        // is not a withdrawal, and the guest may not look until the round
+        // after the one that carried the news.
+        self.cancelled |= served.cancelled;
 
         // Summed across rounds: a turn's cost is every call it made, not the
         // last one. A provider that reports nothing simply adds nothing.
@@ -868,6 +880,7 @@ impl outturn::agent::host::Host for AgentHost {
     async fn current_limits(&mut self) -> Limits {
         Limits {
             max_tool_rounds: self.max_tool_rounds,
+            cancelled: self.cancelled,
         }
     }
 
@@ -966,6 +979,7 @@ async fn stream_completion(
             .map(str::to_string)
     };
     let mut served = Served {
+        cancelled: false,
         endpoint: header("x-outturn-provider"),
         paid_by: header("x-outturn-paid-by"),
         model: None,
@@ -1029,12 +1043,20 @@ async fn stream_completion(
             // carrying anything the user said while this call was in flight.
             // It rides the response rather than needing a channel of its own,
             // because the runtime holds no credentials and no database.
-            if let Some(pending) = chunk["outturn"]["pending"].as_array() {
-                for message in pending {
-                    arrivals.push(Arrival {
-                        content: message["content"].as_str().unwrap_or_default().to_string(),
-                        delivery: message["delivery"].as_str().unwrap_or("steer").to_string(),
-                    });
+            if let Some(outturn) = chunk.get("outturn").filter(|o| !o.is_null()) {
+                if let Some(pending) = outturn["pending"].as_array() {
+                    for message in pending {
+                        arrivals.push(Arrival {
+                            content: message["content"].as_str().unwrap_or_default().to_string(),
+                            delivery: message["delivery"].as_str().unwrap_or("steer").to_string(),
+                        });
+                    }
+                }
+                // Sticky: a cancel is not withdrawn by a later round that does
+                // not mention it, and the guest may not ask until the round
+                // after the one that carried it.
+                if outturn["cancelled"].as_bool() == Some(true) {
+                    served.cancelled = true;
                 }
                 continue;
             }
@@ -1111,6 +1133,10 @@ async fn stream_completion(
 
 /// Who answered a call, as far as the gateway said.
 struct Served {
+    /// Whether the gateway said somebody has asked this turn to stop. It
+    /// reports it on the response it was already sending, the same way it
+    /// reports a steer.
+    cancelled: bool,
     endpoint: Option<String>,
     model: Option<String>,
     paid_by: Option<String>,
@@ -1308,6 +1334,7 @@ impl AgentRunner {
         // No preopened directories, no environment, no network: everything the
         // guest can reach is an explicit import.
         let host = AgentHost {
+            cancelled: false,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             gateway_url: options.gateway_url,

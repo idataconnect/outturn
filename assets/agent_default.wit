@@ -266,6 +266,18 @@ interface host {
         /// How many times the model may be called in one turn. Zero means
         /// unbounded, for work that legitimately runs long.
         max-tool-rounds: u32,
+        /// Whether somebody has asked this turn to stop.
+        ///
+        /// Read at a round boundary, which is the only place stopping is safe:
+        /// a tool that has started has either had its effect or not, and
+        /// abandoning one partway leaves nobody able to say which. So a guest
+        /// that sees this finishes what it is holding, says what it has, and
+        /// returns -- rather than being killed where it stands.
+        ///
+        /// The host stops the turn regardless once its own patience runs out.
+        /// This exists so the ordinary case is a clean ending with the partial
+        /// answer kept, instead of a turn that vanishes mid-sentence.
+        cancelled: bool,
     }
 
     /// What this turn is allowed to do.

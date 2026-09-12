@@ -708,6 +708,17 @@ impl Guest for Component {
 
         let mut round: u32 = 0;
         loop {
+            // Asked again every round rather than once at the start, because
+            // the thing worth knowing arrives mid-turn: somebody presses stop
+            // while the model is already writing.
+            if host::current_limits().cancelled {
+                // What has been written is kept. The words already streamed
+                // are on the reader's screen, and a stop that erased them
+                // would be a worse answer to "stop" than leaving them there.
+                host::log("info", "the turn was asked to stop; ending here");
+                return Ok(reply);
+            }
+
             // On the last permitted round tools are withheld, so the model
             // must answer in prose rather than asking for something it cannot
             // be given -- otherwise the turn ends with nothing to show. Zero

@@ -360,6 +360,18 @@ pub mod outturn {
                 /// How many times the model may be called in one turn. Zero means
                 /// unbounded, for work that legitimately runs long.
                 pub max_tool_rounds: u32,
+                /// Whether somebody has asked this turn to stop.
+                ///
+                /// Read at a round boundary, which is the only place stopping is safe:
+                /// a tool that has started has either had its effect or not, and
+                /// abandoning one partway leaves nobody able to say which. So a guest
+                /// that sees this finishes what it is holding, says what it has, and
+                /// returns -- rather than being killed where it stands.
+                ///
+                /// The host stops the turn regardless once its own patience runs out.
+                /// This exists so the ordinary case is a clean ending with the partial
+                /// answer kept, instead of a turn that vanishes mid-sentence.
+                pub cancelled: bool,
             }
             impl ::core::fmt::Debug for Limits {
                 fn fmt(
@@ -368,6 +380,7 @@ pub mod outturn {
                 ) -> ::core::fmt::Result {
                     f.debug_struct("Limits")
                         .field("max-tool-rounds", &self.max_tool_rounds)
+                        .field("cancelled", &self.cancelled)
                         .finish()
                 }
             }
@@ -1362,20 +1375,28 @@ pub mod outturn {
             /// What this turn is allowed to do.
             pub fn current_limits() -> Limits {
                 unsafe {
+                    #[repr(align(4))]
+                    struct RetArea([::core::mem::MaybeUninit<u8>; 8]);
+                    let mut ret_area = RetArea([::core::mem::MaybeUninit::uninit(); 8]);
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
                     #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
                     unsafe extern "C" {
                         #[link_name = "current-limits"]
-                        fn wit_import0() -> i32;
+                        fn wit_import1(_: *mut u8);
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    unsafe extern "C" fn wit_import0() -> i32 {
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
                         unreachable!()
                     }
-                    let ret = unsafe { wit_import0() };
-                    Limits {
-                        max_tool_rounds: ret as u32,
-                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = *ptr0.add(0).cast::<i32>();
+                    let l3 = i32::from(*ptr0.add(4).cast::<u8>());
+                    let result4 = Limits {
+                        max_tool_rounds: l2 as u32,
+                        cancelled: _rt::bool_lift(l3 as u8),
+                    };
+                    result4
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -2444,8 +2465,8 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1568] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x9e\x0b\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1579] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa9\x0b\x01A\x02\x01\
 A\x05\x01BN\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
@@ -2460,25 +2481,25 @@ parts\x06\x0dfinish-reason\x07\x05usage\x12\x04\0\x0acompletion\x03\0\x13\x01r\x
 methods\x03urls\x07headers\x1a\x04body\x07\x04\0\x0chttp-request\x03\0\x1b\x01r\x04\
 \x06status{\x07headers\x1a\x04bodys\x09truncated\x7f\x04\0\x0dhttp-response\x03\0\
 \x1d\x01r\x04\x02ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctool-outco\
-me\x03\0\x1f\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0!\x01r\x01\x0f\
-max-tool-roundsy\x04\0\x06limits\x03\0#\x01r\x04\x03nows\x07weekdays\x08timezone\
-s\x0cabbreviations\x04\0\x05clock\x03\0%\x01p}\x01j\x01'\x01s\x01@\x03\x04paths\x06\
-offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x04\0\x0aread-bytes\x01)\x01j\x01\x18\
-\x01s\x01@\x01\x04paths\0*\x04\0\x0bstat-object\x01+\x01j\x01w\x01s\x01@\x02\x04\
-paths\x04data'\0,\x04\0\x0cwrite-object\x01-\x01j\0\x01s\x01@\x01\x04paths\0.\x04\
-\0\x0ddelete-object\x01/\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\00\x04\0\x05f\
-etch\x011\x01p\x18\x01j\x012\x01s\x01@\x01\x06prefixs\03\x04\0\x0clist-objects\x01\
-4\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x015\x01@\x01\x08activity\
-\x16\x01\0\x04\0\x0ctool-started\x016\x01p\"\x01@\0\07\x04\0\x0dpending-input\x01\
-8\x01@\0\0$\x04\0\x0ecurrent-limits\x019\x01j\x01\x14\x01s\x01@\x01\x07request\x0f\
-\0:\x04\0\x04chat\x01;\x01@\0\0&\x04\0\x0ccurrent-time\x01<\x01@\x01\x04texts\x01\
-\0\x04\0\x08progress\x01=\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01>\
-\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\
-\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconver\
-sation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/a\
-gent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0b\
-agent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
-0.227.1\x10wit-bindgen-rust\x060.41.0";
+me\x03\0\x1f\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0!\x01r\x02\x0f\
+max-tool-roundsy\x09cancelled\x7f\x04\0\x06limits\x03\0#\x01r\x04\x03nows\x07wee\
+kdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0%\x01p}\x01j\x01'\x01s\x01\
+@\x03\x04paths\x06offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x04\0\x0aread-byt\
+es\x01)\x01j\x01\x18\x01s\x01@\x01\x04paths\0*\x04\0\x0bstat-object\x01+\x01j\x01\
+w\x01s\x01@\x02\x04paths\x04data'\0,\x04\0\x0cwrite-object\x01-\x01j\0\x01s\x01@\
+\x01\x04paths\0.\x04\0\x0ddelete-object\x01/\x01j\x01\x1e\x01s\x01@\x01\x07reque\
+st\x1c\00\x04\0\x05fetch\x011\x01p\x18\x01j\x012\x01s\x01@\x01\x06prefixs\03\x04\
+\0\x0clist-objects\x014\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x01\
+5\x01@\x01\x08activity\x16\x01\0\x04\0\x0ctool-started\x016\x01p\"\x01@\0\07\x04\
+\0\x0dpending-input\x018\x01@\0\0$\x04\0\x0ecurrent-limits\x019\x01j\x01\x14\x01\
+s\x01@\x01\x07request\x0f\0:\x04\0\x04chat\x01;\x01@\0\0&\x04\0\x0ccurrent-time\x01\
+<\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01=\x01@\x02\x05levels\x07messages\x01\
+\0\x04\0\x03log\x01>\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07mess\
+age\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01\
+s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\
+\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\
+\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
