@@ -117,6 +117,19 @@ pub async fn list(
             .list(&scope::root_for(&space, s))
             .await
             .map_err(storage_failed)?;
+
+        // A document stored before extraction was configured has no text and
+        // nothing scheduled to give it any, so a reader is told to come back
+        // shortly for work that will never run. Noticed here because this is
+        // what walks every object anyway, and asking is cheap beside the
+        // listing that just happened.
+        let keys: Vec<String> = found
+            .iter()
+            .filter(|f| !f.is_dir)
+            .map(|f| f.path.clone())
+            .collect();
+        super::extract::backfill(&state.pool, store.as_ref(), claims.workspace_id, keys).await;
+
         out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
             Some(StoredFile {
                 path: scope::strip_root(&space, &f.path)?,

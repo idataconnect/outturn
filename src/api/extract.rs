@@ -133,6 +133,50 @@ where
     }
 }
 
+/// Queues anything extractable that has no text and no job waiting for it.
+///
+/// Extraction is scheduled when an object is written, so a file stored before
+/// extraction was configured has none -- and never will, because nothing looks
+/// again. A reader then asks for its text, finds none, and is told to come
+/// back shortly for a job that does not exist. The invitation is never
+/// withdrawn and the answer never changes.
+///
+/// So the gap is closed where it is noticed rather than left for somebody to
+/// discover: a listing already walks every object, and an object that is
+/// extractable, has no text beside it and no failure recorded against it is
+/// one nothing has ever read. Queueing it makes "ask again shortly" true.
+///
+/// Quiet and best-effort. Serialised on the key like every other enqueue, so
+/// asking twice before the first finishes does not read the same file twice.
+pub async fn backfill(
+    pool: &sqlx::PgPool,
+    storage: &dyn crate::runtime::storage::StorageBackend,
+    workspace_id: Uuid,
+    keys: impl IntoIterator<Item = String>,
+) {
+    if tika_url().is_none() {
+        return;
+    }
+    for key in keys {
+        if !is_extractable(&key) || !belongs_to(&key, workspace_id) {
+            continue;
+        }
+        // Text already read, or a failure already recorded: either way this
+        // object has had its turn and asking again would only repeat it.
+        if storage.stat(&text_key(&key)).await.is_ok()
+            || storage.stat(&failed_key(&key)).await.is_ok()
+        {
+            continue;
+        }
+        // Only the name is recovered, not the scoped path: the work is done
+        // against the key, and the path is read for its extension and written
+        // into a log line. A caller here has the key and nothing else, and
+        // inventing a scoped path to look tidier in a log would be inventing.
+        let name = key.rsplit('/').next().unwrap_or(&key).to_string();
+        enqueue(pool, workspace_id, &key, &name).await;
+    }
+}
+
 /// Claims extraction work and does it, until shutdown.
 ///
 /// Runs in the API tier because that is where the bucket and the database

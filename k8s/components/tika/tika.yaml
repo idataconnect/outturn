@@ -38,6 +38,10 @@ spec:
       containers:
         - name: tika
           image: apache/tika:latest-full
+          # As with minio: a `latest` tag pulls on every start, and an
+          # anonymous pull is rate limited, so a node holding the image sits
+          # in ImagePullBackOff waiting for permission to fetch what it has.
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9998
           resources:
