@@ -346,11 +346,17 @@ impl ChatStore for PostgresChatStore {
         // session for good the first time a tool failed and the model went
         // quiet: the reply was empty, the job had succeeded, and every later
         // message was refused.
+        //
+        // Every state that means "this turn was accounted for" belongs in the
+        // list below, not only the ones that mean it went well. A turn stopped
+        // before its first token leaves exactly the shape this looks for -- an
+        // empty reply, no running job -- and reading that as abandonment
+        // wedges the session in the same way, by a different route.
         let abandoned: Option<Uuid> = sqlx::query_scalar(
             "select m.id from agent_messages m \
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
-                   and j.state in ('pending', 'running', 'succeeded') \
+                   and j.state in ('pending', 'running', 'succeeded', 'cancelled') \
              where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
                and coalesce(jsonb_array_length(m.metadata->'tool_calls'), 0) = 0 \
                and j.id is null \

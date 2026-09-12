@@ -507,6 +507,19 @@ create index jobs_chat_turn_message_idx
     on jobs (((payload->>'message_id')::uuid))
     where kind = 'chat.turn';
 
+-- Stopping a turn is a lookup by the conversation it belongs to, because that
+-- is what whoever pressed the button has -- they know which conversation they
+-- are watching, not which row in a queue is answering it.
+--
+-- Partial on the live states as well as the kind: the rows of interest are the
+-- handful in flight right now, not the accumulated history of everything ever
+-- queued, and a stream asks this several times a second for as long as it
+-- runs. Unindexed it is a sequential scan of the busiest table in the system,
+-- growing with every turn the platform has ever served.
+create index jobs_chat_turn_session_idx
+    on jobs (((payload->>'session_id')::uuid), id)
+    where kind = 'chat.turn' and state in ('pending', 'running');
+
 -- What an autoscaler should read: work that could start now, not work that is
 -- waiting. A serial key admits one running job at a time, so a session with a
 -- hundred queued turns is one unit of work rather than a hundred -- counting

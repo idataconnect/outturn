@@ -1825,3 +1825,219 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
 
     finish!(db);
 }
+
+/// A turn somebody stopped must never come back.
+///
+/// Retrying is the ordinary answer to a failure, and a cancelled turn fails
+/// more often than most: cutting its stream is what stopping it means, and a
+/// cut stream is an error to everything downstream. Without this the stop puts
+/// the turn straight back on the queue to be stopped again, spending its
+/// attempts and its allowance on work nobody wants.
+#[tokio::test]
+async fn a_cancelled_turn_is_not_retried_when_it_fails() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let session_id = Uuid::now_v7();
+    let job_id = jobs::enqueue(
+        pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": session_id }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+        .await
+        .expect("claim");
+    let lease = claimed.first().expect("a job to claim").job.lease_token;
+
+    // Stopped while running, then failing -- which is what a cut stream looks
+    // like to the tier recording the result.
+    jobs::request_cancel(pool, job_id).await.expect("cancel");
+    jobs::fail(pool, job_id, "stream ended", Duration::ZERO, lease)
+        .await
+        .expect("fail");
+
+    let state: String = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await
+        .expect("state");
+    assert_eq!(
+        state, "cancelled",
+        "a stopped turn was handed back to the queue, so stopping it starts it again"
+    );
+
+    assert!(
+        jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+            .await
+            .expect("claim")
+            .is_empty(),
+        "a cancelled turn was claimable, so the work somebody stopped runs anyway"
+    );
+}
+
+/// The same, for the pod being lost rather than the turn failing.
+#[tokio::test]
+async fn a_cancelled_turn_is_not_revived_by_the_reaper() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let job_id = jobs::enqueue(
+        pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": Uuid::now_v7() }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    // Claimed with a lease that has already lapsed, as a lost pod leaves it.
+    jobs::claim(pool, &["chat.turn"], 1, Duration::ZERO).await.expect("claim");
+    jobs::request_cancel(pool, job_id).await.expect("cancel");
+
+    jobs::reap_abandoned(pool).await.expect("reap");
+
+    let state: String = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await
+        .expect("state");
+    assert_eq!(
+        state, "cancelled",
+        "losing the pod running a cancelled turn undid the stop"
+    );
+}
+
+/// Stop means the turn on screen, which is the running one.
+///
+/// A session can hold both: a follow-up sent while a turn streams is queued
+/// behind it, and job ids being time-ordered makes the queued one the newer.
+/// Taking the newest stops the turn nobody is watching, answers "stopped",
+/// and discards the follow-up's turn as well.
+#[tokio::test]
+async fn stopping_a_session_finds_the_turn_that_is_running() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let session_id = Uuid::now_v7();
+    let payload = serde_json::json!({ "session_id": session_id });
+
+    let running = jobs::enqueue(
+        pool, workspace_id, "chat.turn", payload.clone(), None, None, jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue the first");
+    jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+        .await
+        .expect("claim");
+
+    // Queued behind it, and therefore newer.
+    let queued = jobs::enqueue(
+        pool, workspace_id, "chat.turn", payload, None, None, jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue the second");
+    assert!(queued > running, "the queued turn should sort after the running one");
+
+    let found = jobs::live_turn_for_session(pool, workspace_id, session_id)
+        .await
+        .expect("look up")
+        .expect("a live turn");
+    assert_eq!(
+        found, running,
+        "stop resolved the queued turn, so the turn being watched would have \
+         kept generating while its follow-up was thrown away"
+    );
+}
+
+/// With nothing running, the oldest queued turn is the one that answers.
+#[tokio::test]
+async fn with_nothing_running_the_oldest_queued_turn_is_found() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let session_id = Uuid::now_v7();
+    let payload = serde_json::json!({ "session_id": session_id });
+    let first = jobs::enqueue(
+        pool, workspace_id, "chat.turn", payload.clone(), None, None, jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    jobs::enqueue(
+        pool, workspace_id, "chat.turn", payload, None, None, jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    let found = jobs::live_turn_for_session(pool, workspace_id, session_id)
+        .await
+        .expect("look up")
+        .expect("a live turn");
+    assert_eq!(found, first, "the turn at the front of the queue is the one being waited on");
+}
+
+/// A pending turn is over at once; a running one is asked and keeps running.
+#[tokio::test]
+async fn cancelling_says_what_it_actually_did() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let pending = jobs::enqueue(
+        pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": Uuid::now_v7() }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    assert_eq!(
+        jobs::request_cancel(pool, pending).await.expect("cancel"),
+        jobs::Cancelled::BeforeItRan,
+        "nothing had it, so there was nobody to tell and nothing to unwind"
+    );
+    // Idempotent: pressing stop twice is what somebody does when the first
+    // press seems not to have worked.
+    assert_eq!(
+        jobs::request_cancel(pool, pending).await.expect("again"),
+        jobs::Cancelled::AlreadyOver,
+    );
+
+    let running = jobs::enqueue(
+        pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": Uuid::now_v7() }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+        .await
+        .expect("claim");
+
+    assert_eq!(
+        jobs::request_cancel(pool, running).await.expect("cancel"),
+        jobs::Cancelled::WhileRunning,
+        "it is still running, and saying otherwise lies to whoever is watching"
+    );
+    assert!(
+        jobs::cancel_requested(pool, running).await.expect("asked"),
+        "the request must outlive the call that made it, or the pod running \
+         the turn never finds out"
+    );
+}

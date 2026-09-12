@@ -240,8 +240,17 @@ pub async fn fail(
     token: Option<Uuid>,
 ) -> Result<(), JobError> {
     let result = sqlx::query(
+        // A turn somebody asked to stop is never handed back to the queue,
+        // whatever went wrong with it. Retrying is the ordinary answer to a
+        // failure and the precise opposite of what was asked for here -- and
+        // a cut stream makes failure the *likely* outcome, so without this a
+        // stop puts the turn straight back on the queue to be stopped again,
+        // burning its attempts and its allowance on work nobody wants.
         "update jobs set \
-             state = case when attempts >= max_attempts then 'failed' else 'pending' end, \
+             state = case \
+                 when cancel_requested_at is not null then 'cancelled' \
+                 when attempts >= max_attempts then 'failed' \
+                 else 'pending' end, \
              last_error = $2, \
              leased_until = null, \
              run_after = now() + make_interval(secs => $3), \
@@ -311,12 +320,23 @@ pub async fn live_turn_for_session(
     session_id: Uuid,
 ) -> Result<Option<Uuid>, JobError> {
     sqlx::query_scalar(
+        // Running first, and only then the oldest queued one.
+        //
+        // A session can hold both: a follow-up sent while a turn streams is
+        // queued behind it, and job ids being time-ordered means the queued
+        // one is the *newer*. Taking the newest would therefore stop the turn
+        // nobody is watching while the one on screen kept generating -- and
+        // would throw away the follow-up's turn as a bonus.
+        //
+        // What somebody pressing stop means is the turn they can see, which is
+        // the one that is running.
         "select id from jobs \
           where kind = 'chat.turn' \
             and workspace_id = $1 \
             and (payload->>'session_id')::uuid = $2 \
             and state in ('pending', 'running') \
-          order by id desc limit 1",
+          order by case state when 'running' then 0 else 1 end, id \
+          limit 1",
     )
     .bind(workspace_id)
     .bind(session_id)
@@ -501,8 +521,15 @@ pub async fn release(
 /// caller has to.
 pub async fn reap_abandoned(pool: &PgPool) -> Result<(u64, Vec<Job>), JobError> {
     let rows = sqlx::query(
+        // As in `fail`: a turn somebody asked to stop is not given back to the
+        // queue. Losing the pod running a cancelled turn is the one case where
+        // the stop would otherwise be undone by machinery that never heard
+        // about it.
         "update jobs set \
-             state = case when attempts >= max_attempts then 'failed' else 'pending' end, \
+             state = case \
+                 when cancel_requested_at is not null then 'cancelled' \
+                 when attempts >= max_attempts then 'failed' \
+                 else 'pending' end, \
              last_error = coalesce(last_error, 'lease expired'), \
              leased_until = null, \
              updated_at = now() \

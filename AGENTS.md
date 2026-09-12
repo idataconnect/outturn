@@ -199,12 +199,36 @@ says what exists.
 
 What happens to a write nobody saw the answer to is designed but unbuilt, in
 [docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
-rather than two, and the third one, sent-but-never-observed, is why there is
-still no stop button.
+rather than two, and the third one, sent-but-never-observed, is what a stop
+button has to avoid creating.
+
+There is a stop button now, and it avoids it by never stopping inside a round.
+`POST /v1/agent-sessions/{id}/cancel` records the request on the job row; the
+gateway sees it within `CANCEL_POLL` and cuts the provider stream, which closes
+the upstream connection and is the only thing a provider understands as "never
+mind"; the guest hears about it through `limits.cancelled` and returns at its
+next round boundary, keeping whatever it had written.
+
+A round cut partway is therefore untrusted in full: its tool calls may carry
+arguments truncated mid-JSON, and running one is precisely the outcome that
+document is about. They are refused the same way a reply cut off at the token
+limit has always been refused — see the truncation guard in
+`agents/default/src/lib.rs`.
 
 ## Invariants worth knowing before you change things
 
 These are load-bearing. Each has already caused a visible bug.
+
+**A job state is enumerated in more places than the schema.** `cancelled` was
+added to the check constraint and the two SQL lists that decide whether a turn
+is retried, and both of the others were missed on the first pass: the guard
+that decides whether an empty reply was abandoned, which wedged a session
+permanently the moment a turn was stopped before its first token, and the
+union the browser switches on, which showed nothing at all. A cancelled turn is
+*accounted for*, so it belongs in every list meaning "this turn finished" — and
+it is terminal and never retried, so it must not appear in any list meaning
+"give this back to the queue". Grep for the state strings, not just the
+constraint.
 
 **Streamed deltas concatenate to stored content.** What the browser renders
 during a turn must be exactly what the transcript holds afterwards, or the

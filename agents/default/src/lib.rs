@@ -769,25 +769,39 @@ impl Guest for Component {
                 return Ok(reply);
             }
 
-            // A "length" finish means the output was cut off at the token
-            // limit, so every tool call in this message may carry arguments
-            // truncated mid-JSON. Some will still parse -- into something the
-            // model never meant -- so none of them are run. The model is told
-            // instead, and can ask again more briefly.
-            if completion.finish_reason.as_deref() == Some("length") {
-                host::log("warn", "reply was truncated; refusing its tool calls");
+            // A reply that stopped before it said it had finished may carry
+            // tool calls whose arguments were cut mid-JSON. Some will still
+            // parse -- into something the model never meant -- so none of them
+            // are run. The model is told instead, and can ask again.
+            //
+            // Two ways to arrive here. "length" is the token limit, which the
+            // provider names. No finish reason at all is a stream that ended
+            // without one, which is what a cancelled turn looks like from
+            // inside: the gateway cut the connection partway through a round.
+            //
+            // The second matters more than the first. The round boundary below
+            // is where a turn stops safely, and reaching it having already run
+            // a tool with half-written arguments is precisely the harm that
+            // boundary exists to prevent -- a file written, a request sent,
+            // nobody able to say with what.
+            let truncated = completion.finish_reason.as_deref() == Some("length")
+                || (completion.finish_reason.is_none() && !round_calls.is_empty());
+            if truncated {
+                host::log("warn", "reply was cut short; refusing its tool calls");
                 messages.push(Message {
                     role: "assistant".to_string(),
                     parts: completion.parts.clone(),
                     tool_call_id: None,
                 });
+                let why = if completion.finish_reason.is_none() {
+                    r#"{"error":"not run: the reply was cut short and these arguments may be incomplete"}"#
+                } else {
+                    r#"{"error":"not run: the message was cut off at the token limit and these arguments may be incomplete"}"#
+                };
                 for call in &round_calls {
                     messages.push(Message {
                         role: "tool".to_string(),
-                        parts: vec![ContentPart::Text(
-                            r#"{"error":"not run: the message was cut off at the token limit and these arguments may be incomplete"}"#
-                                .to_string(),
-                        )],
+                        parts: vec![ContentPart::Text(why.to_string())],
                         tool_call_id: Some(call.id.clone()),
                     });
                 }

@@ -47,6 +47,32 @@ impl GatewayState {
         self
     }
 
+    /// Whether this session's turn has been asked to stop.
+    ///
+    /// Answered here because the gateway is the tier holding a database
+    /// connection: the runtime has none, and this is the one place already
+    /// talking to both it and the provider. One indexed lookup per round,
+    /// which is the same cadence steering is already taken at.
+    ///
+    /// A store that is not configured answers "no", which is what the gateway
+    /// does about everything it cannot look up: the turn proceeds rather than
+    /// being stopped by an outage in the thing that would have stopped it.
+    async fn cancel_requested(&self, workspace_id: uuid::Uuid, session_id: uuid::Uuid) -> bool {
+        let Some(pool) = &self.health else {
+            return false;
+        };
+        match crate::jobs::live_turn_for_session(pool, workspace_id, session_id).await {
+            Ok(Some(job_id)) => crate::jobs::cancel_requested(pool, job_id)
+                .await
+                .unwrap_or(false),
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not check whether a turn was cancelled");
+                false
+            }
+        }
+    }
+
     /// Anything the user has said since this turn began.
     ///
     /// Empty without a database or without a reply to attribute it to, which
@@ -250,6 +276,14 @@ async fn chat_completions(
     Err((StatusCode::BAD_GATEWAY, msg))
 }
 
+/// How often a running stream asks whether it has been told to stop.
+///
+/// A token arrives every few milliseconds and a query per token would cost
+/// more than the generation does. This is the delay somebody sees between
+/// pressing stop and the words ceasing, traded against a database round trip
+/// on every chunk of every stream.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Streams a completion as newline-delimited JSON.
 ///
 /// NDJSON rather than Server-Sent Events: the caller is the runtime, not a
@@ -307,15 +341,80 @@ async fn chat_completions_stream(
                     Err(e) => Err(std::io::Error::other(e.to_string())),
                 });
 
+                // Stops relaying the moment somebody asks, and -- because
+                // ending the stream drops the provider's response body --
+                // closes the connection it was arriving on. That is the only
+                // stop a provider understands: there is no call to make that
+                // means "never mind", so hanging up is the request.
+                //
+                // Best-effort by nature. A provider may finish generating and
+                // bill for it regardless, and nothing here can find out.
+                //
+                // Checked on a tick rather than per chunk: a token arrives
+                // every few milliseconds and a database round trip each time
+                // would cost more than the generation. Between ticks the
+                // stream keeps flowing, which is the latency this trades for.
+                // Per request, not shared: two sessions streaming at once must
+                // not be able to stop one another.
+                let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let watcher = Arc::clone(&flag);
+                let stopper = Arc::clone(&state);
+                let workspace_id = claims.workspace_id;
+                let session_id = claims.subject;
+
+                // One task asking, on a tick, for as long as the stream runs.
+                // It ends when the stream is dropped, because the flag it
+                // writes to is the only thing keeping it alive.
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(CANCEL_POLL).await;
+                        if Arc::strong_count(&watcher) == 1 {
+                            // Nothing is reading it any more: the stream has
+                            // ended, one way or another.
+                            return;
+                        }
+                        if stopper.cancel_requested(workspace_id, session_id).await {
+                            watcher.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                });
+
+                let cutter = Arc::clone(&flag);
+                let body = body.take_while(move |_| {
+                    std::future::ready(!cutter.load(std::sync::atomic::Ordering::Relaxed))
+                });
+
                 // Appended after the provider's chunks, in the same framing.
                 // A caller that does not know this line exists ignores it, so
                 // an older runtime keeps working -- it simply does not steer.
-                let trailer = futures::stream::iter(if pending.is_empty() {
-                    Vec::new()
-                } else {
-                    let line = serde_json::json!({ "outturn": { "pending": pending } });
-                    vec![Ok(axum::body::Bytes::from(format!("{line}\n")))]
-                });
+                //
+                // The cancel rides here rather than in a channel of its own
+                // for the same reason: cutting the stream stops the words, but
+                // only this tells the turn *why* they stopped, which is the
+                // difference between ending deliberately and looking like a
+                // provider that hung up.
+                let announce = Arc::clone(&flag);
+                let trailer = futures::stream::once(async move {
+                    let mut outturn = serde_json::Map::new();
+                    if !pending.is_empty() {
+                        outturn.insert("pending".into(), serde_json::json!(pending));
+                    }
+                    if announce.load(std::sync::atomic::Ordering::Relaxed) {
+                        outturn.insert("cancelled".into(), serde_json::json!(true));
+                    }
+                    // Nothing to say is not worth a line: an empty envelope
+                    // still costs a reader a parse. Decided on the map rather
+                    // than on the length of what it serialises to, so that
+                    // whether a cancel reaches the turn does not depend on how
+                    // many spaces a serialiser happens to emit.
+                    if outturn.is_empty() {
+                        return None;
+                    }
+                    let line = serde_json::json!({ "outturn": outturn });
+                    Some(Ok(axum::body::Bytes::from(format!("{line}\n"))))
+                })
+                .filter_map(std::future::ready);
                 let body = body.chain(trailer);
 
                 // Named so spend attaches to the endpoint that billed for

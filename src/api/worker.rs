@@ -881,7 +881,18 @@ impl Worker {
         // With the token this tier read when the report began. If the lease
         // lapsed meanwhile and the turn is running elsewhere, this returns
         // NotFound and the other pod's result stands.
-        jobs::complete(&self.pool, job_id, lease_token).await?;
+        //
+        // A turn somebody stopped ends as `cancelled` rather than `succeeded`:
+        // it did produce a reply, and that reply was kept, but recording it as
+        // an ordinary success loses the only evidence that the answer is short
+        // because it was interrupted rather than because that was the answer.
+        match jobs::cancel_requested(&self.pool, job_id).await {
+            Ok(true) => jobs::mark_cancelled(&self.pool, job_id, lease_token).await?,
+            // A failure to ask is not a reason to leave the job running: the
+            // work is done either way, and the worse of the two records is the
+            // one that says nothing finished.
+            _ => jobs::complete(&self.pool, job_id, lease_token).await?,
+        }
 
         // A conversation that has had a turn and still has no name gets one
         // asked for. After the job is closed, so a namer that cannot be
