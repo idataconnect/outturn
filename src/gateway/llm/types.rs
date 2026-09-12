@@ -93,6 +93,19 @@ pub struct ToolCall {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionCall,
+    /// An opaque token a provider hands back with a tool call and demands to
+    /// see again when the call's result is replayed.
+    ///
+    /// Gemini's `thoughtSignature` is the one that exists today, and it is not
+    /// advisory: a later round that omits it is refused outright, not merely
+    /// answered worse. So it has to survive a round trip through the canonical
+    /// shape, which means living on the call it belongs to rather than in a
+    /// provider's own corner of the response.
+    ///
+    /// Absent for providers that do not use one, and skipped when absent, so
+    /// nothing else changes shape on account of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -246,6 +259,12 @@ pub struct Delta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallDelta {
     pub index: u32,
+    /// The provider artifact this call arrived with, if any. See
+    /// [`ToolCall::provider_signature`] -- it reaches a streaming reply the
+    /// same way and matters the same amount, so it cannot only exist on the
+    /// assembled form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

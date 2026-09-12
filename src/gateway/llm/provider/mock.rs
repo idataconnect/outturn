@@ -59,6 +59,7 @@ impl LlmProvider for MockProvider {
                             content: MessageContent::Text(String::new()),
                             name: None,
                             tool_calls: Some(vec![ToolCall {
+                                provider_signature: None,
                                 id: format!("call_{}", Uuid::now_v7()),
                                 tool_type: "function".to_string(),
                                 function: FunctionCall {

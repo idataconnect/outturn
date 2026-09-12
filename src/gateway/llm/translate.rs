@@ -156,6 +156,7 @@ pub fn anthropic_to_openai(
                 Some("tool_use") => {
                     parts.push(Part::ToolCall {
                         call: ToolCall {
+                            provider_signature: None,
                             id: block["id"].as_str().unwrap_or("").to_string(),
                             tool_type: "function".to_string(),
                             function: FunctionCall {
@@ -527,6 +528,7 @@ impl AnthropicStream {
                                 content: None,
                                 tool_calls: Some(vec![ToolCallDelta {
                                     index: slot,
+                                    provider_signature: None,
                                     id: Some(block["id"].as_str().unwrap_or_default().to_string()),
                                     tool_type: Some("function".to_string()),
                                     function: Some(FunctionCallDelta {
@@ -581,6 +583,7 @@ impl AnthropicStream {
                                 content: None,
                                 tool_calls: Some(vec![ToolCallDelta {
                                     index: slot,
+                                    provider_signature: None,
                                     id: None,
                                     tool_type: None,
                                     function: Some(FunctionCallDelta {
@@ -1106,10 +1109,22 @@ impl GeminiStream {
                 self.called_a_tool = true;
                 tool_calls.push(ToolCallDelta {
                     index: slot,
-                    // Gemini names no id, and a tool result is matched back by
-                    // function name. One is invented so the shape downstream
-                    // reads is the shape it expects.
-                    id: Some(format!("gemini_call_{slot}")),
+                    // From the part this call arrived on, and never from any
+                    // other: Gemini signs the first call of a parallel batch
+                    // and bills the previous turn's reasoning again for every
+                    // copy replayed, without saying so.
+                    provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
+                    // Gemini 3 and newer name their own call ids, and a
+                    // function response is matched back by id on those models.
+                    // Kept rather than replaced: an invented id matches
+                    // nothing. Older models send none, so one is made up for
+                    // them, which is harmless where nothing compares it.
+                    id: Some(
+                        call["id"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("gemini_call_{slot}")),
+                    ),
                     tool_type: Some("function".to_string()),
                     function: Some(FunctionCallDelta {
                         name: Some(call["name"].as_str().unwrap_or_default().to_string()),
@@ -1169,12 +1184,20 @@ pub fn gemini_to_openai(resp: &serde_json::Value) -> Result<ChatCompletionRespon
         }
         if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
             let tool_call = ToolCall {
-                id: format!("gemini_call_{}", tool_calls.len()),
+                // Gemini names its own call ids now. Kept rather than
+                // replaced: a function response is matched back by id, and an
+                // invented one matches nothing.
+                id: call["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("gemini_call_{}", tool_calls.len())),
                 tool_type: "function".to_string(),
                 function: FunctionCall {
                     name: call["name"].as_str().unwrap_or_default().to_string(),
                     arguments: call["args"].to_string(),
                 },
+                // Rides the same part as the call, and is required back.
+                provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
             };
             parts.push(Part::ToolCall { call: tool_call.clone() });
             tool_calls.push(tool_call);
@@ -1394,6 +1417,55 @@ mod gemini_tests {
         assert_eq!(chunk.service_tier.as_deref(), Some("standard"));
     }
 
+    /// Gemini signs the *first* function call of a parallel batch and leaves
+    /// its siblings unsigned. Measured, not assumed: three calls in one round
+    /// came back with a 356-character signature on the first and none on the
+    /// other two.
+    ///
+    /// The temptation is to treat a signature as belonging to the turn and
+    /// attach it to every call on replay. Doing that is accepted -- HTTP 200,
+    /// no warning -- and bills the previous turn's reasoning once per copy.
+    /// The same request replayed as received cost 200 prompt tokens; with the
+    /// signature copied onto all three calls it cost 272. Nothing says so at
+    /// the time, and the overcharge compounds as the history grows, so the
+    /// rule is that a signature belongs to the part it arrived on and is
+    /// never moved or duplicated.
+    #[test]
+    fn a_signature_belongs_to_one_call_and_is_never_copied_to_its_siblings() {
+        let mut s = GeminiStream::new("gemini-3.7-flash".into());
+        let chunk = s
+            .event(&serde_json::json!({
+                "candidates": [{
+                    "content": { "parts": [
+                        {
+                            "functionCall": { "name": "get_weather", "args": { "city": "San Francisco" }, "id": "call_1" },
+                            "thoughtSignature": "c2lnbmF0dXJl"
+                        },
+                        { "functionCall": { "name": "get_weather", "args": { "city": "London" }, "id": "call_2" } },
+                        { "functionCall": { "name": "get_weather", "args": { "city": "Tokyo" }, "id": "call_3" } }
+                    ] },
+                    "index": 0,
+                }],
+            }))
+            .expect("three calls in one chunk");
+
+        let calls = chunk.choices[0].delta.tool_calls.as_ref().expect("calls");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            calls[0].provider_signature.as_deref(),
+            Some("c2lnbmF0dXJl"),
+            "the signed call keeps its signature"
+        );
+        assert!(
+            calls[1].provider_signature.is_none() && calls[2].provider_signature.is_none(),
+            "an unsigned sibling must stay unsigned: copying the first call's \
+             signature onto it is accepted by the API and silently bills the \
+             previous turn's reasoning again for every copy"
+        );
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"), "the provider's own id, not one we invented");
+        assert_eq!(calls[2].id.as_deref(), Some("call_3"));
+    }
+
     /// A system message is its own field here, and repeated ones are joined
     /// rather than the last one quietly winning.
     #[test]
@@ -1451,6 +1523,7 @@ mod gemini_tests {
                 content: MessageContent::Text(String::new()),
                 name: None,
                 tool_calls: Some(vec![ToolCall {
+                    provider_signature: None,
                     id: "c1".into(),
                     tool_type: "function".into(),
                     function: FunctionCall {
