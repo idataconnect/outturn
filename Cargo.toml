@@ -75,6 +75,24 @@ integration-tests = ["slow-tests"]
 # check someone runs twenty times an hour while changing one function.
 slow-tests = []
 
+# Tests that call a real provider, on a real key, and spend real money.
+#
+# Deliberately implied by nothing. `integration-tests` means "I have services
+# running"; this means "I am willing to be billed", and they are not the same
+# sentence. Somebody who clones this, sets the keys the documentation tells
+# them to set, and runs the suite a dozen times while finding their way around
+# should not discover afterwards that we spent their money for them. A key in
+# the environment is a key, not permission.
+#
+# So the flag is the consent, and it has to be typed every time:
+#
+#     cargo test --features live-providers
+#
+# Within the suite a missing key fails rather than skips. Asking for these
+# tests and being told they passed without any of them having run is the one
+# outcome worse than not running them.
+live-providers = []
+
 # The mock provider. A binary rather than a test fixture because a load test
 # has to go through the gateway's real HTTP client, streaming and timeouts --
 # an in-process stand-in measures the stand-in.
@@ -99,3 +117,9 @@ required-features = ["integration-tests"]
 [[test]]
 name = "agent_component_fake"
 required-features = ["slow-tests"]
+
+# The only suite that spends money. See `live-providers` above for why it is
+# reachable by no other flag.
+[[test]]
+name = "provider_live"
+required-features = ["live-providers"]

@@ -126,6 +126,26 @@ what they cost rather than what they need. The component suite needs no
 services at all but instantiates a sandbox per case and saturates the machine,
 which is a poor trade against a check run twenty times an hour.
 
+A third, `live-providers`, is implied by neither and never should be. It runs
+`tests/provider_live.rs`, which calls real providers on real keys and spends
+real money:
+
+```bash
+GEMINI_API_KEY=... cargo test --features live-providers gemini_
+```
+
+**A key in the environment is not permission to spend it.** Somebody who
+clones this, sets the keys the documentation tells them to set, and runs the
+suite while finding their way around must not discover afterwards that we
+billed them for it. The flag is the consent, and it has to be typed. Anything
+that reaches a paid endpoint belongs behind it -- and nothing else may imply
+it, including whatever gets run before a push.
+
+Within that suite a missing key fails rather than skips, because a test runner
+gives a skipped case no louder a voice than a passing one, and "all passed"
+when nothing ran is worse than a red line. Run one provider at a time by
+filtering on the name.
+
 Do not assert elapsed time in the slow suites. Sixteen sandboxes compete for
 whatever cores are left, and a turn there finishes when the suite does rather
 than when its own deadline fires -- a test that measured this failed about half

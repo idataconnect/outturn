@@ -1809,6 +1809,14 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     assert_eq!(first["session_id"], session_id);
     assert_eq!(first["credential_owner"], "operator");
     assert_eq!(first["prompt_tokens"], 10);
+    // This round carried no usage object, so its numbers came from nowhere a
+    // bill can be argued from. The row says so rather than presenting them as
+    // measured.
+    assert_eq!(
+        first["usage_source"], "unknown",
+        "a round with no provider usage was recorded as though somebody had \
+         counted it: {body}"
+    );
     let next = page["next"].as_str().expect("cursor");
 
     let (status, body) = h
