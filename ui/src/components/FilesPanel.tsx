@@ -282,7 +282,16 @@ export default function FilesPanel({
         </p>
       )}
 
-      <ul className="flex-1 overflow-auto p-2 space-y-1">
+      <div className="relative flex-1 min-h-0">
+        {/* A watermark, behind the list rather than inside it: the list
+            scrolls and this should not go with it. Decorative, so it is
+            hidden from assistive technology and never takes a pointer. */}
+        <FileText
+          className="absolute inset-0 m-auto w-32 h-32 text-surface-200/60 dark:text-surface-700/40 pointer-events-none"
+          strokeWidth={1}
+          aria-hidden
+        />
+        <ul className="relative h-full overflow-auto p-2 space-y-1">
         {files.length === 0 && (
           <li className="px-2 py-1.5 text-xs text-surface-500 dark:text-surface-400">
             No files yet.
@@ -320,7 +329,8 @@ export default function FilesPanel({
             )}
           </li>
         ))}
-      </ul>
+        </ul>
+      </div>
     </aside>
   )
 }
