@@ -880,6 +880,60 @@ mod stream_tests {
 // Gemini -----------------------------------------------------------------
 
 
+/// How much of a flattened tool exchange is put in front of a model.
+///
+/// The same budget the agent's own truncator works to, so a result small
+/// enough to show once stays small enough when replayed in a different shape.
+pub const MAX_FLATTENED_BYTES: usize = 50 * 1024;
+
+/// Renders a tool call and its result as prose.
+///
+/// Used when a stored call cannot be replayed as a call: a signature belongs
+/// to the model that issued it, so a conversation that changed models has tool
+/// calls a newer Gemini will refuse and an older one never signed.
+///
+/// The alternatives are worse. Dropping the signature is refused outright.
+/// Google publishes a sentinel that turns the refusal off, but it asks the
+/// provider to skip a check on data known to be invalid and costs reasoning
+/// quality in a way nothing reports. A rendering keeps every byte of what
+/// happened and moves it somewhere no validation applies, and what the model
+/// receives is exactly what can be read here.
+///
+/// Head and tail rather than head alone, on the same reasoning as the agent's
+/// truncator: a result's beginning says what it is and its end is often the
+/// answer, while the middle of an over-long one rarely decides anything.
+pub fn flatten_tool_exchange(name: &str, arguments: &str, result: &str) -> String {
+    let head = if arguments.is_empty() {
+        format!("[tool] {name}")
+    } else {
+        format!("[tool] {name}({arguments})")
+    };
+    let budget = MAX_FLATTENED_BYTES.saturating_sub(head.len() + 64);
+
+    if result.len() <= budget {
+        return format!("{head} -> {result}");
+    }
+
+    // Cut on character boundaries, or slicing panics on a multi-byte character
+    // that happens to straddle the cut.
+    let mut cut = (budget * 7 / 10).min(result.len());
+    while cut > 0 && !result.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut tail_at = result.len().saturating_sub(budget.saturating_sub(cut));
+    while tail_at < result.len() && !result.is_char_boundary(tail_at) {
+        tail_at += 1;
+    }
+
+    format!(
+        "{head} -> {}\n[... {} of {} bytes elided ...]\n{}",
+        &result[..cut],
+        tail_at - cut,
+        result.len(),
+        &result[tail_at..],
+    )
+}
+
 /// The major version of a Gemini model, where its name states one.
 ///
 /// Parsed rather than matched on a substring: "gemini-3" appearing anywhere in
@@ -923,6 +977,10 @@ pub fn openai_to_gemini_for(
     let wants_ids = gemini_wants_call_ids(target_model);
     let mut contents: Vec<serde_json::Value> = Vec::new();
     let mut system: Option<String> = None;
+    // Calls rendered as prose rather than replayed. Their results are rendered
+    // to match: a `functionResponse` answering a call the model was never
+    // shown is an answer to nothing.
+    let mut rendered_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for message in &req.messages {
         let text = match &message.content {
@@ -947,6 +1005,23 @@ pub fn openai_to_gemini_for(
                 });
             }
             Role::Tool => {
+                // Its call was rendered, so this is rendered to match.
+                if message
+                    .tool_call_id
+                    .as_ref()
+                    .is_some_and(|id| rendered_calls.contains(id))
+                {
+                    contents.push(serde_json::json!({
+                        "role": "user",
+                        "parts": [{ "text": flatten_tool_exchange(
+                            message.name.as_deref().unwrap_or("tool"),
+                            "",
+                            &text,
+                        ) }],
+                    }));
+                    continue;
+                }
+
                 let mut response = serde_json::json!({
                     "name": message.name.clone().unwrap_or_default(),
                     "response": { "content": text },
@@ -968,6 +1043,31 @@ pub fn openai_to_gemini_for(
                 }));
             }
             Role::Assistant => {
+                // A batch is signed on its first call only, so the question is
+                // whether the turn carries a signature at all, not whether
+                // every call does. A turn with none came from a model that is
+                // no longer answering, and replaying its calls is refused.
+                let calls: Vec<&ToolCall> = message.tool_calls.iter().flatten().collect();
+                if !calls.is_empty() && !calls.iter().any(|c| c.provider_signature.is_some()) {
+                    let mut rendered = text.clone();
+                    for call in &calls {
+                        rendered_calls.insert(call.id.clone());
+                        if !rendered.is_empty() {
+                            rendered.push('\n');
+                        }
+                        rendered.push_str(&flatten_tool_exchange(
+                            &call.function.name,
+                            &call.function.arguments,
+                            "(result follows)",
+                        ));
+                    }
+                    contents.push(serde_json::json!({
+                        "role": "model",
+                        "parts": [{ "text": rendered }],
+                    }));
+                    continue;
+                }
+
                 let mut parts: Vec<serde_json::Value> = Vec::new();
                 if !text.is_empty() {
                     parts.push(serde_json::json!({ "text": text }));
@@ -1679,6 +1779,88 @@ mod gemini_tests {
         );
     }
 
+    /// A conversation that changed models has tool calls whose signatures
+    /// belong to a model no longer answering. Replaying them natively is
+    /// refused, so the exchange is rendered as prose: every byte of what
+    /// happened, moved somewhere no validation applies.
+    #[test]
+    fn an_unsigned_tool_turn_is_rendered_rather_than_replayed() {
+        let request = ChatCompletionRequest {
+            model: String::new(),
+            messages: vec![
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Text(String::new()),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        provider_signature: None,
+                        id: "c1".into(),
+                        tool_type: "function".into(),
+                        function: FunctionCall {
+                            name: "get_weather".into(),
+                            arguments: r#"{"city":"SF"}"#.into(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: MessageContent::Text("62F and foggy".into()),
+                    name: Some("get_weather".into()),
+                    tool_calls: None,
+                    tool_call_id: Some("c1".into()),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            reasoning_effort: None,
+            stream: false,
+            stream_options: None,
+        };
+
+        let json = openai_to_gemini_for(&request, "gemini-3.7-flash")
+            .expect("translate")
+            .to_string();
+
+        assert!(
+            !json.contains("functionCall"),
+            "an unsigned call replayed as a call is refused with a 400"
+        );
+        assert!(
+            !json.contains("functionResponse"),
+            "and a response to a call the model was never shown answers nothing"
+        );
+        assert!(json.contains("get_weather"), "what was asked for is still said");
+        assert!(json.contains("62F and foggy"), "and so is what came back");
+        assert!(
+            !json.contains("skip_thought_signature_validator"),
+            "no sentinel: asking a provider to skip a check on data known to be \
+             invalid costs reasoning quality and nothing reports it"
+        );
+    }
+
+    /// An over-long result keeps both ends, on the same reasoning as the
+    /// agent's truncator: the start says what a thing is and the end is often
+    /// the answer, while the middle rarely decides anything.
+    #[test]
+    fn an_over_long_result_keeps_both_ends() {
+        let result = format!("BEGINNING{}END", "x".repeat(MAX_FLATTENED_BYTES * 2));
+        let rendered = flatten_tool_exchange("q", "{}", &result);
+
+        assert!(rendered.len() < MAX_FLATTENED_BYTES + 256, "the budget is a budget");
+        assert!(rendered.contains("BEGINNING"), "the start says what it is");
+        assert!(rendered.contains("END"), "the end is often the answer");
+        assert!(rendered.contains("elided"), "and the cut is admitted, with its size");
+    }
+
+    /// Cutting through a multi-byte character would panic.
+    #[test]
+    fn a_cut_lands_on_a_character_boundary() {
+        let rendered = flatten_tool_exchange("q", "{}", &"e\u{301}".repeat(MAX_FLATTENED_BYTES));
+        assert!(rendered.contains("elided"));
+    }
+
     /// A system message is its own field here, and repeated ones are joined
     /// rather than the last one quietly winning.
     #[test]
@@ -1736,7 +1918,9 @@ mod gemini_tests {
                 content: MessageContent::Text(String::new()),
                 name: None,
                 tool_calls: Some(vec![ToolCall {
-                    provider_signature: None,
+                    // Signed, because that is the case where a call replays as
+                    // a call; an unsigned one is rendered as prose instead.
+                    provider_signature: Some("c2ln".into()),
                     id: "c1".into(),
                     tool_type: "function".into(),
                     function: FunctionCall {
