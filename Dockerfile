@@ -4,11 +4,19 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 # Cargo validates every [[test]] path when parsing the manifest, even for a
-# binary-only build. Empty stand-ins satisfy that without copying the real
-# tests, which would invalidate this layer whenever a test changed.
+# binary-only build and even for targets behind a feature nobody asked for.
+# Empty stand-ins satisfy that without copying the real tests, which would
+# invalidate this layer whenever a test changed.
+#
+# Read out of the manifest rather than listed here. A hand-kept list is a list
+# that goes stale: adding a [[test]] and forgetting this line breaks every
+# image build with an error about a missing file that is deliberately missing,
+# a long way from the change that caused it.
 RUN mkdir -p tests && \
-    touch tests/api.rs tests/queue_and_events.rs \
-          tests/agent_component.rs tests/agent_component_fake.rs
+    awk '/^\[\[test\]\]/ { want = 1; next } \
+         /^\[/ { want = 0 } \
+         want && /^name = / { gsub(/^name = "|"$/, ""); print }' Cargo.toml \
+    | while read -r name; do touch "tests/$name.rs"; done
 # Embedded by sqlx::migrate! at compile time.
 COPY migrations/ migrations/
 # Read by wasmtime's bindgen! macro at compile time.
