@@ -268,6 +268,16 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
       // events belongs to the stream it came from.
       setRetrying(new Set())
       setFailures(new Map())
+      // Whether a turn is in flight is a fact about the transcript rather
+      // than about this tab having sent something. A conversation opened
+      // while it is being answered -- a reload mid-reply, a second window --
+      // must find it running, or the composer offers no way to stop what is
+      // plainly still going.
+      setIsRunning(
+        history.messages.some(
+          (m) => m.job_state === 'pending' || m.job_state === 'running',
+        ),
+      )
       return history.cursor
     }
 
@@ -276,7 +286,6 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
       try {
         cursor = await reload()
         if (stopped) return
-        setIsRunning(false)
         setStopping(false)
       } catch {
         if (!stopped) setMessages([])
