@@ -16,7 +16,9 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::llm::provider::{LlmProvider, anthropic::AnthropicProvider, openai::OpenAiProvider};
+use super::llm::provider::{
+    LlmProvider, anthropic::AnthropicProvider, gemini::GeminiProvider, openai::OpenAiProvider,
+};
 
 /// The class of work a request belongs to, when the caller does not say.
 pub const DEFAULT_TRAFFIC_TYPE: &str = "assistant";
@@ -118,6 +120,23 @@ impl ProviderCache {
                     return None;
                 };
                 Arc::new(AnthropicProvider::new(route.base_url.clone(), key))
+            }
+            "gemini" => {
+                // Like Anthropic, there is no unauthenticated mode, so a route
+                // without a resolvable credential is a misconfiguration.
+                let Some(key) = credential else {
+                    tracing::warn!(
+                        base_url = %route.base_url,
+                        credential_ref = ?route.credential_ref,
+                        "gemini route has no resolvable credential, skipping"
+                    );
+                    return None;
+                };
+                Arc::new(GeminiProvider::new(
+                    route.base_url.clone(),
+                    key,
+                    route.model.clone(),
+                ))
             }
             other => {
                 tracing::warn!(provider = other, "unknown provider in route, skipping");

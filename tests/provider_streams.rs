@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use outturn::gateway::llm::provider::LlmProvider;
 use outturn::gateway::llm::provider::anthropic::AnthropicProvider;
+use outturn::gateway::llm::provider::gemini::GeminiProvider;
 use outturn::gateway::llm::types::{ChatCompletionRequest, Message, MessageContent, Role};
 
 /// The mock, running for as long as the test needs it.
@@ -185,4 +186,106 @@ async fn anthropic_streams_a_tool_call_in_fragments() {
         serde_json::from_str::<serde_json::Value>(&arguments).is_ok(),
         "the fragments did not reassemble into valid json: {arguments:?}"
     );
+}
+
+/// Gemini repeats a running total, so a turn interrupted anywhere still knows
+/// most of what it cost -- there is no single final event holding the only
+/// copy, which is what makes this the opposite case to the OpenAI protocol.
+#[tokio::test]
+async fn gemini_streams_text_and_carries_usage_on_the_way() {
+    use futures::StreamExt;
+
+    let mock = start_mock().await;
+    let provider = GeminiProvider::new(mock.base_url.clone(), "test-key".into(), "mock".into());
+
+    let mut stream = provider
+        .chat_completion_stream(&ask("hello"))
+        .await
+        .expect("the mock should accept a streaming request");
+
+    let mut text = String::new();
+    let mut chunks_with_usage = 0usize;
+    let mut chunks = 0usize;
+    let mut last_prompt_tokens = 0;
+    let mut last_cached = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.expect("no chunk should be an error");
+        chunks += 1;
+        if let Some(content) = &chunk.choices[0].delta.content {
+            text.push_str(content);
+        }
+        if let Some(usage) = chunk.usage {
+            chunks_with_usage += 1;
+            last_prompt_tokens = usage.prompt_tokens;
+            last_cached = usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens).unwrap_or(0);
+        }
+    }
+
+    assert!(chunks > 2, "a reply that arrived in one chunk did not stream");
+    assert!(!text.is_empty(), "the reply had no text in it");
+    assert!(
+        chunks_with_usage > 1,
+        "usage rode only one chunk, so a stream cut anywhere else would carry \
+         none -- which is the case this protocol is supposed to avoid"
+    );
+    assert!(
+        last_prompt_tokens + last_cached > 0,
+        "the prompt was never counted, neither evaluated nor cached"
+    );
+}
+
+/// The three protocols are asked the same question and must answer with the
+/// same shape, since everything downstream reads only that shape.
+#[tokio::test]
+async fn every_provider_answers_in_the_same_shape() {
+    use futures::StreamExt;
+
+    let mock = start_mock().await;
+    let providers: Vec<(&str, Box<dyn LlmProvider>)> = vec![
+        (
+            "anthropic",
+            Box::new(AnthropicProvider::new(mock.base_url.clone(), "k".into())),
+        ),
+        (
+            "gemini",
+            Box::new(GeminiProvider::new(mock.base_url.clone(), "k".into(), "mock".into())),
+        ),
+    ];
+
+    for (name, provider) in providers {
+        let mut stream = provider
+            .chat_completion_stream(&ask("hello"))
+            .await
+            .unwrap_or_else(|e| panic!("{name} should stream: {e:?}"));
+
+        let mut text = String::new();
+        let mut usage = None;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap_or_else(|e| panic!("{name} chunk: {e:?}"));
+            assert_eq!(chunk.object, "chat.completion.chunk", "{name} envelope");
+            assert_eq!(chunk.choices.len(), 1, "{name} should answer once");
+            if let Some(content) = &chunk.choices[0].delta.content {
+                text.push_str(content);
+            }
+            if let Some(u) = chunk.usage {
+                usage = Some(u);
+            }
+        }
+
+        assert!(!text.is_empty(), "{name} produced no text");
+        let usage = usage.unwrap_or_else(|| panic!("{name} never reported usage"));
+        // Evaluated or served from cache, but accounted for either way: these
+        // two ask the same question, so whichever runs second is a cache hit
+        // and legitimately evaluates nothing.
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens)
+            .unwrap_or(0);
+        assert!(
+            usage.prompt_tokens + cached > 0,
+            "{name} accounted for none of the prompt, neither evaluated nor cached"
+        );
+        assert!(usage.completion_tokens > 0, "{name} reported no completion tokens");
+    }
 }

@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod gemini;
 pub mod mock;
 pub mod openai;
 
@@ -17,6 +18,7 @@ use super::types::{
 pub enum Provider {
     OpenAi,
     Anthropic,
+    Gemini,
     Mock,
 }
 

@@ -4,3 +4,11 @@ ui/dist/
 
 # Built agent components; the artifact is committed under tests/fixtures.
 agents/*/target/
+
+# Real provider credentials, for testing against the real thing. Named rather
+# than globbed so a new one has to be added deliberately: a pattern that
+# happens to match is a pattern somebody will rely on and be wrong about.
+.gemini-api-key
+.anthropic-api-key
+.openai-api-key
+*.api-key

@@ -371,7 +371,7 @@ create table traffic_routes (
     workspace_id   uuid        references workspaces (id) on delete cascade,
     traffic_type   text        not null,
     priority       int         not null,
-    provider       text        not null check (provider in ('openai', 'anthropic')),
+    provider       text        not null check (provider in ('openai', 'anthropic', 'gemini')),
     base_url       text        not null,
     model          text        not null,
     credential_ref text,

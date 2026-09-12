@@ -873,3 +873,608 @@ mod stream_tests {
         }
     }
 }
+
+// Gemini -----------------------------------------------------------------
+
+/// Convert an OpenAI-format request into Gemini's `generateContent` shape.
+///
+/// Gemini differs in three ways that matter: the system prompt is its own
+/// field rather than a message, the assistant is called "model", and a tool
+/// result is a message part rather than a message role.
+pub fn openai_to_gemini(req: &ChatCompletionRequest) -> Result<serde_json::Value, TranslateError> {
+    let mut contents: Vec<serde_json::Value> = Vec::new();
+    let mut system: Option<String> = None;
+
+    for message in &req.messages {
+        let text = match &message.content {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+
+        match message.role {
+            Role::System => {
+                // Repeated system messages are joined rather than the last one
+                // winning: dropping one silently changes what was asked.
+                system = Some(match system {
+                    Some(existing) => format!("{existing}\n{text}"),
+                    None => text,
+                });
+            }
+            Role::Tool => {
+                // A result belongs to the call that asked for it, which Gemini
+                // identifies by function name rather than by an id.
+                contents.push(serde_json::json!({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": message.name.clone().unwrap_or_default(),
+                            "response": { "content": text },
+                        }
+                    }]
+                }));
+            }
+            Role::User => {
+                contents.push(serde_json::json!({
+                    "role": "user",
+                    "parts": [{ "text": text }],
+                }));
+            }
+            Role::Assistant => {
+                let mut parts: Vec<serde_json::Value> = Vec::new();
+                if !text.is_empty() {
+                    parts.push(serde_json::json!({ "text": text }));
+                }
+                for call in message.tool_calls.iter().flatten() {
+                    parts.push(serde_json::json!({
+                        "functionCall": {
+                            "name": call.function.name,
+                            // Arguments travel as a string in the OpenAI shape
+                            // and as an object here. A string that will not
+                            // parse becomes an empty object rather than
+                            // failing the turn: the model wrote it, and the
+                            // turn is already answering for that.
+                            "args": serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                                .unwrap_or_else(|_| serde_json::json!({})),
+                        }
+                    }));
+                }
+                contents.push(serde_json::json!({ "role": "model", "parts": parts }));
+            }
+        }
+    }
+
+    let mut body = serde_json::json!({ "contents": contents });
+    if let Some(system) = system {
+        body["systemInstruction"] = serde_json::json!({ "parts": [{ "text": system }] });
+    }
+    if let Some(tools) = &req.tools {
+        let declarations: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "parameters": t.function.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!([{ "functionDeclarations": declarations }]);
+    }
+    let mut generation = serde_json::Map::new();
+    if let Some(temperature) = req.temperature {
+        generation.insert("temperature".into(), serde_json::json!(temperature));
+    }
+    if let Some(max) = req.max_tokens {
+        generation.insert("maxOutputTokens".into(), serde_json::json!(max));
+    }
+    if !generation.is_empty() {
+        body["generationConfig"] = serde_json::Value::Object(generation);
+    }
+
+    Ok(body)
+}
+
+/// Gemini's usage object, in the canonical shape.
+///
+/// `cachedContentTokenCount` is *included* in `promptTokenCount`, where
+/// Anthropic reports its cache tokens beside the input count. So it is taken
+/// out here where Anthropic's is added, and getting the direction wrong
+/// produces a plausible number rather than an obviously broken one.
+///
+/// `thoughtsTokenCount` is billed at output rates but is not part of
+/// `candidatesTokenCount`, so it is carried separately rather than folded in.
+pub fn gemini_usage(usage: &serde_json::Value) -> Option<Usage> {
+    let object = usage.as_object()?;
+    let read = |name: &str| usage[name].as_u64().unwrap_or(0) as u32;
+
+    let prompt = read("promptTokenCount");
+    let cached = read("cachedContentTokenCount");
+    let candidates = read("candidatesTokenCount");
+    let thoughts = read("thoughtsTokenCount");
+
+    Some(Usage {
+        // What was actually evaluated: the prompt less whatever the cache
+        // served. Subtracted, because Gemini counts them inside the total.
+        prompt_tokens: prompt.saturating_sub(cached),
+        completion_tokens: candidates,
+        total_tokens: read("totalTokenCount").max(prompt + candidates + thoughts),
+        prompt_tokens_details: Some(PromptTokensDetails {
+            cached_tokens: cached,
+            // Gemini charges for creating a cache through a separate call, not
+            // as part of a completion, so nothing here is a cache write.
+            cache_creation_tokens: 0,
+            extra: Default::default(),
+        }),
+        completion_tokens_details: (thoughts > 0).then(|| CompletionTokensDetails {
+            reasoning_tokens: thoughts,
+            extra: Default::default(),
+        }),
+        // The original beside the translation, because the mapping above
+        // cannot carry every dimension and a bill may later need one it lost.
+        extra: [(
+            "gemini".to_string(),
+            serde_json::Value::Object(object.clone()),
+        )]
+        .into_iter()
+        .collect(),
+    })
+}
+
+/// Gemini's finish reasons, in the OpenAI protocol's vocabulary.
+pub fn gemini_finish_reason(reason: &str, called_a_tool: bool) -> String {
+    match reason {
+        // Gemini says STOP for a function call as much as for prose; the
+        // distinction the other protocols draw has to be recovered from what
+        // the reply actually contained.
+        "STOP" if called_a_tool => "tool_calls".to_string(),
+        "STOP" => "stop".to_string(),
+        "MAX_TOKENS" => "length".to_string(),
+        "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST" => {
+            "content_filter".to_string()
+        }
+        _ => "stop".to_string(),
+    }
+}
+
+/// Turns Gemini's stream into OpenAI-shaped chunks.
+///
+/// Simpler than Anthropic's, because Gemini repeats whole candidates rather
+/// than deltas of an open block: each chunk carries the parts produced since
+/// the last one, and usage arrives as a running total on nearly every chunk.
+/// That last property is why an interrupted Gemini turn still knows most of
+/// what it cost -- there is no final event holding the only copy.
+#[derive(Debug, Default)]
+pub struct GeminiStream {
+    id: String,
+    model: String,
+    /// Numbered in the order they appear, since Gemini does not index them.
+    next_tool_slot: u32,
+    /// The last usage seen, which is cumulative rather than incremental.
+    usage: Option<Usage>,
+    /// Whether any function call has been forwarded, which decides what a
+    /// finish reason of STOP means.
+    called_a_tool: bool,
+    /// Which price tier served the call. Gemini names it in `usageMetadata`
+    /// rather than beside the model, and it multiplies every token on the
+    /// call, so it travels with the usage rather than being left behind in
+    /// the provider's own object.
+    service_tier: Option<String>,
+}
+
+impl GeminiStream {
+    pub fn new(model: String) -> Self {
+        Self {
+            id: "gemini".to_string(),
+            model,
+            ..Default::default()
+        }
+    }
+
+    /// What the call has cost so far, for a turn that ends early.
+    pub fn usage(&self) -> Option<&Usage> {
+        self.usage.as_ref()
+    }
+
+    pub fn event(&mut self, event: &serde_json::Value) -> Option<StreamChunk> {
+        // Taken before anything else: a chunk carrying only usage is still
+        // worth reading, and on this protocol most of them carry it.
+        if let Some(usage) = gemini_usage(&event["usageMetadata"]) {
+            self.usage = Some(usage);
+        }
+        if let Some(tier) = event["usageMetadata"]["serviceTier"].as_str() {
+            self.service_tier = Some(tier.to_string());
+        }
+
+        let candidate = &event["candidates"][0];
+        let mut content: Option<String> = None;
+        let mut tool_calls: Vec<ToolCallDelta> = Vec::new();
+
+        for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
+            if let Some(text) = part["text"].as_str() {
+                content.get_or_insert_with(String::new).push_str(text);
+            }
+            if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
+                let slot = self.next_tool_slot;
+                self.next_tool_slot += 1;
+                self.called_a_tool = true;
+                tool_calls.push(ToolCallDelta {
+                    index: slot,
+                    // Gemini names no id, and a tool result is matched back by
+                    // function name. One is invented so the shape downstream
+                    // reads is the shape it expects.
+                    id: Some(format!("gemini_call_{slot}")),
+                    tool_type: Some("function".to_string()),
+                    function: Some(FunctionCallDelta {
+                        name: Some(call["name"].as_str().unwrap_or_default().to_string()),
+                        // Whole, not in fragments: this protocol sends a
+                        // finished object rather than partial JSON.
+                        arguments: Some(call["args"].to_string()),
+                    }),
+                });
+            }
+        }
+
+        let finish = candidate["finishReason"]
+            .as_str()
+            .map(|r| gemini_finish_reason(r, self.called_a_tool));
+
+        // Nothing to say and nothing to end: usage was the whole of it, and
+        // that has been kept.
+        if content.is_none() && tool_calls.is_empty() && finish.is_none() {
+            return None;
+        }
+
+        Some(StreamChunk {
+            id: self.id.clone(),
+            object: "chat.completion.chunk".to_string(),
+            created: 0,
+            model: self.model.clone(),
+            choices: vec![StreamChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content,
+                    tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+                },
+                finish_reason: finish,
+            }],
+            usage: self.usage.clone(),
+            service_tier: self.service_tier.clone(),
+        })
+    }
+}
+
+/// Convert a whole Gemini response into the canonical shape.
+pub fn gemini_to_openai(resp: &serde_json::Value) -> Result<ChatCompletionResponse, TranslateError> {
+    let candidate = &resp["candidates"][0];
+
+    let mut text = String::new();
+    let mut parts: Vec<Part> = Vec::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+    for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
+        if let Some(t) = part["text"].as_str() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(t);
+            parts.push(Part::Text { text: t.to_string() });
+        }
+        if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
+            let tool_call = ToolCall {
+                id: format!("gemini_call_{}", tool_calls.len()),
+                tool_type: "function".to_string(),
+                function: FunctionCall {
+                    name: call["name"].as_str().unwrap_or_default().to_string(),
+                    arguments: call["args"].to_string(),
+                },
+            };
+            parts.push(Part::ToolCall { call: tool_call.clone() });
+            tool_calls.push(tool_call);
+        }
+    }
+
+    let finish_reason = candidate["finishReason"]
+        .as_str()
+        .map(|r| gemini_finish_reason(r, !tool_calls.is_empty()));
+
+    Ok(ChatCompletionResponse {
+        id: "gemini".to_string(),
+        object: "chat.completion".to_string(),
+        created: 0,
+        model: resp["modelVersion"].as_str().unwrap_or_default().to_string(),
+        choices: vec![Choice {
+            index: 0,
+            message: Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(text),
+                name: None,
+                tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+                tool_call_id: None,
+            },
+            finish_reason,
+            parts,
+        }],
+        usage: gemini_usage(&resp["usageMetadata"]),
+    })
+}
+
+#[cfg(test)]
+mod gemini_tests {
+    use super::*;
+
+    /// Gemini counts cached tokens *inside* the prompt total, so recovering
+    /// what was actually evaluated means subtracting. Anthropic reports them
+    /// beside its input count, where the same arithmetic would be adding.
+    /// Both directions are plausible; only one is right per provider.
+    #[test]
+    fn cached_tokens_come_out_of_the_prompt_total() {
+        let usage = gemini_usage(&serde_json::json!({
+            "promptTokenCount": 1000,
+            "cachedContentTokenCount": 800,
+            "candidatesTokenCount": 50,
+            "totalTokenCount": 1050,
+        }))
+        .expect("usage");
+
+        assert_eq!(
+            usage.prompt_tokens, 200,
+            "the cache served 800 of the 1000, so 200 were evaluated; adding \
+             would have claimed 1800 and billed a cached conversation twice"
+        );
+        let details = usage.prompt_tokens_details.expect("cache detail");
+        assert_eq!(details.cached_tokens, 800);
+        assert_eq!(
+            details.cache_creation_tokens, 0,
+            "a completion never writes a Gemini cache; that is a separate call"
+        );
+    }
+
+    /// Thinking tokens are billed at output rates but are not part of
+    /// `candidatesTokenCount`, so folding them in would double-count and
+    /// leaving them out entirely would lose them.
+    #[test]
+    fn thinking_tokens_are_carried_separately_from_the_answer() {
+        let usage = gemini_usage(&serde_json::json!({
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 20,
+            "thoughtsTokenCount": 300,
+            "totalTokenCount": 420,
+        }))
+        .expect("usage");
+
+        assert_eq!(usage.completion_tokens, 20, "the answer is the answer");
+        assert_eq!(
+            usage.completion_tokens_details.expect("reasoning detail").reasoning_tokens,
+            300,
+            "thinking is counted, and counted apart"
+        );
+        assert_eq!(usage.total_tokens, 420);
+    }
+
+    /// The provider's own object is kept whole beside the translation, since
+    /// the mapping cannot carry every dimension and a disputed bill is argued
+    /// from what arrived rather than from what was made of it.
+    #[test]
+    fn the_providers_own_usage_is_kept_verbatim() {
+        let usage = gemini_usage(&serde_json::json!({
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "somethingNewGoogleAdded": 7,
+        }))
+        .expect("usage");
+
+        let raw = &usage.extra["gemini"];
+        assert_eq!(raw["somethingNewGoogleAdded"], 7, "a dimension we do not model survived");
+    }
+
+    /// Gemini says STOP for a function call as much as for prose, so what the
+    /// reply contained is the only way to tell the two apart.
+    #[test]
+    fn a_function_call_finishing_is_not_an_ordinary_stop() {
+        assert_eq!(gemini_finish_reason("STOP", false), "stop");
+        assert_eq!(gemini_finish_reason("STOP", true), "tool_calls");
+        assert_eq!(gemini_finish_reason("MAX_TOKENS", false), "length");
+        assert_eq!(gemini_finish_reason("SAFETY", false), "content_filter");
+        assert_eq!(gemini_finish_reason("SOMETHING_NEW", false), "stop");
+    }
+
+    /// A running total on every chunk is what leaves an interrupted Gemini
+    /// turn still able to say what it cost.
+    #[test]
+    fn a_stream_cut_partway_keeps_the_last_total_it_saw() {
+        let mut s = GeminiStream::new("gemini-test".into());
+        s.event(&serde_json::json!({
+            "candidates": [{ "content": { "parts": [{ "text": "one " }] }, "index": 0 }],
+            "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 1, "totalTokenCount": 101 },
+        }));
+        s.event(&serde_json::json!({
+            "candidates": [{ "content": { "parts": [{ "text": "two" }] }, "index": 0 }],
+            "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 2, "totalTokenCount": 102 },
+        }));
+        // and then the stream is cut: no finishReason, no final event.
+
+        let usage = s.usage().expect("a cut stream still knows what it saw");
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 2, "the running total as of the cut");
+    }
+
+    /// Gemini sends finished argument objects rather than partial JSON, so a
+    /// call arrives whole or not at all.
+    #[test]
+    fn a_function_call_arrives_with_its_arguments_whole() {
+        let mut s = GeminiStream::new("gemini-test".into());
+        let chunk = s
+            .event(&serde_json::json!({
+                "candidates": [{
+                    "content": { "parts": [{
+                        "functionCall": { "name": "lookup", "args": { "city": "San Francisco" } }
+                    }] },
+                    "finishReason": "STOP",
+                    "index": 0,
+                }],
+            }))
+            .expect("a function call becomes a chunk");
+
+        let call = &chunk.choices[0].delta.tool_calls.as_ref().expect("calls")[0];
+        assert_eq!(call.function.as_ref().unwrap().name.as_deref(), Some("lookup"));
+        let arguments = call.function.as_ref().unwrap().arguments.as_deref().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(arguments).expect("valid json")["city"],
+            "San Francisco"
+        );
+        assert_eq!(
+            chunk.choices[0].finish_reason.as_deref(),
+            Some("tool_calls"),
+            "STOP with a call in it is a tool call, not a plain stop"
+        );
+    }
+
+    /// Taken verbatim from a real `gemini-2.5-flash` stream, because a fixture
+    /// written from the documentation agrees with the documentation and a
+    /// fixture written from the wire agrees with the thing being billed.
+    ///
+    /// Two facts here were not obvious and are worth keeping honest: thinking
+    /// tokens are real and are *not* inside `candidatesTokenCount` (16 + 50 +
+    /// 28 = 94, the total Google reports), and a service tier arrives in the
+    /// usage object rather than beside the model.
+    #[test]
+    fn a_real_gemini_usage_object_adds_up() {
+        let real = serde_json::json!({
+            "promptTokenCount": 16,
+            "candidatesTokenCount": 50,
+            "totalTokenCount": 94,
+            "promptTokensDetails": [{ "modality": "TEXT", "tokenCount": 16 }],
+            "thoughtsTokenCount": 28,
+            "serviceTier": "standard"
+        });
+
+        let usage = gemini_usage(&real).expect("usage");
+        assert_eq!(usage.prompt_tokens, 16);
+        assert_eq!(usage.completion_tokens, 50, "the answer, without the thinking");
+        assert_eq!(
+            usage.completion_tokens_details.expect("reasoning").reasoning_tokens,
+            28,
+            "thinking is billed at output rates and is counted apart"
+        );
+        assert_eq!(
+            usage.total_tokens, 94,
+            "16 + 50 + 28: folding thinking into the answer would have \
+             double-counted, leaving it out would have lost it"
+        );
+        assert_eq!(
+            usage.extra["gemini"]["serviceTier"], "standard",
+            "the tier multiplies every token on the call"
+        );
+    }
+
+    /// The tier reaches the chunk rather than only the provider's own object,
+    /// because everything downstream reads the canonical shape.
+    #[test]
+    fn the_service_tier_travels_with_the_chunk() {
+        let mut s = GeminiStream::new("gemini-2.5-flash".into());
+        let chunk = s
+            .event(&serde_json::json!({
+                "candidates": [{ "content": { "parts": [{ "text": "hi" }] }, "index": 0 }],
+                "usageMetadata": {
+                    "promptTokenCount": 16,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 17,
+                    "serviceTier": "standard"
+                },
+            }))
+            .expect("a chunk");
+        assert_eq!(chunk.service_tier.as_deref(), Some("standard"));
+    }
+
+    /// A system message is its own field here, and repeated ones are joined
+    /// rather than the last one quietly winning.
+    #[test]
+    fn system_messages_become_one_instruction() {
+        let request = ChatCompletionRequest {
+            model: "gemini-test".into(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: MessageContent::Text("be brief".into()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::System,
+                    content: MessageContent::Text("be kind".into()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("hello".into()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            reasoning_effort: None,
+            stream: false,
+            stream_options: None,
+        };
+
+        let body = openai_to_gemini(&request).expect("translate");
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"], "be brief\nbe kind",
+            "a dropped system message silently changes what was asked"
+        );
+        assert_eq!(body["contents"].as_array().expect("contents").len(), 1);
+        assert_eq!(body["contents"][0]["role"], "user");
+    }
+
+    /// The assistant is called "model" here, and a turn that used tools has
+    /// to be replayable or the next round loses its own history.
+    #[test]
+    fn an_assistant_turn_with_a_tool_call_replays_as_a_model_turn() {
+        let request = ChatCompletionRequest {
+            model: "gemini-test".into(),
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(String::new()),
+                name: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "c1".into(),
+                    tool_type: "function".into(),
+                    function: FunctionCall {
+                        name: "lookup".into(),
+                        arguments: r#"{"city":"SF"}"#.into(),
+                    },
+                }]),
+                tool_call_id: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            reasoning_effort: None,
+            stream: false,
+            stream_options: None,
+        };
+
+        let body = openai_to_gemini(&request).expect("translate");
+        assert_eq!(body["contents"][0]["role"], "model", "not 'assistant' here");
+        let call = &body["contents"][0]["parts"][0]["functionCall"];
+        assert_eq!(call["name"], "lookup");
+        assert_eq!(
+            call["args"]["city"], "SF",
+            "arguments are an object here and a string in the other protocol"
+        );
+    }
+}
