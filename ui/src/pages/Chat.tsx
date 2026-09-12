@@ -38,7 +38,7 @@ export default function Chat() {
   const active = sessionId ?? null
   // A title arriving over the feed -- the namer's, after the first turn, or
   // a rename from another tab -- lands in the list the sidebar draws from.
-  const { runtime, error: chatError } = useChatRuntime(active, (title) => {
+  const { runtime, error: chatError, stopping } = useChatRuntime(active, (title) => {
     if (!active) return
     setSessions((prev) => prev.map((s) => (s.id === active ? { ...s, title } : s)))
   })
@@ -269,7 +269,7 @@ export default function Chat() {
         )}
         <div className="flex-1 min-h-0">
           <AssistantRuntimeProvider runtime={runtime}>
-            <Thread disabled={!active} />
+            <Thread disabled={!active} stopping={stopping} />
           </AssistantRuntimeProvider>
         </div>
       </div>

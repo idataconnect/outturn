@@ -163,6 +163,26 @@ export const sendMessage = (sessionId: string, content: string, delivery?: Deliv
     body: JSON.stringify({ content, timezone: timezone(), delivery }),
   })
 
+/** What asking a turn to stop achieved. */
+export type Cancelled = {
+  /** False when there was nothing in flight to stop. */
+  stopped: boolean
+  /** 'cancelled' if it had not started, 'stopping' if it was running, or
+   *  'nothing_running' if it had already finished on its own. */
+  state: 'cancelled' | 'stopping' | 'nothing_running'
+}
+
+/**
+ * Asks the turn this session has in flight to stop.
+ *
+ * Answers what it did rather than only that it worked, because the cases feel
+ * different: a turn that had not started is over at once, a running one takes
+ * until its next round boundary, and one that finished while the button was
+ * being pressed was never stopped at all.
+ */
+export const cancelTurn = (sessionId: string) =>
+  api<Cancelled>(`/v1/agent-sessions/${sessionId}/cancel`, { method: 'POST' })
+
 /**
  * One long-poll round trip.
  *

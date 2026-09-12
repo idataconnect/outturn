@@ -6,6 +6,7 @@ import {
 } from '@assistant-ui/react'
 
 import {
+  cancelTurn,
   loadHistory,
   pollEvents,
   sendMessage,
@@ -206,6 +207,13 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
   renamed.current = onRenamed
   const [messages, setMessages] = useState<Message[]>([])
   const [isRunning, setIsRunning] = useState(false)
+  /** A stop has been asked for and the turn has not ended yet.
+   *
+   *  Separate from `isRunning` because the gap between them is real: the turn
+   *  stops at its next round boundary, so it is still running, and saying
+   *  otherwise would leave the composer offering to stop something already
+   *  stopping. */
+  const [stopping, setStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
@@ -269,6 +277,7 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
         cursor = await reload()
         if (stopped) return
         setIsRunning(false)
+        setStopping(false)
       } catch {
         if (!stopped) setMessages([])
         return
@@ -427,6 +436,7 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
               )
             })
             setIsRunning(false)
+            setStopping(false)
           }
 
           const failed = result.events.find((e) => e.kind === 'chat.error')
@@ -437,6 +447,7 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
             }
             setError(message)
             setIsRunning(false)
+            setStopping(false)
             if (message_id) {
               setFailures((prev) => new Map(prev).set(message_id, message))
               // A failed turn's empty reply is discarded server-side, and the
@@ -532,6 +543,35 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
     [messages, retrying, failures],
   )
 
+  /**
+   * Asks the turn to stop.
+   *
+   * The composer only offers a stop button when this exists, so its absence is
+   * what made a turn unstoppable rather than any missing button.
+   *
+   * Nothing is hidden here. The words already on screen stay, because the
+   * server keeps them too -- the agent returns what it had written and that is
+   * the reply. Hiding them locally would mean the transcript changed under the
+   * reader the moment it reloaded, which is the one thing this app has always
+   * been careful not to do.
+   *
+   * There is a lag, and it is honest: the turn stops at its next round
+   * boundary, so a little more text can arrive after the press. Pretending
+   * otherwise would mean discarding words the transcript is about to keep.
+   */
+  const cancel = useCallback(async () => {
+    if (!sessionId) return
+    setStopping(true)
+    try {
+      await cancelTurn(sessionId)
+    } catch (e) {
+      // The turn may well have finished on its own between the press and the
+      // request, which is a race nobody can avoid and not worth an error.
+      setStopping(false)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [sessionId])
+
   const runtime = useExternalStoreRuntime({
     messages: annotated,
     isRunning,
@@ -539,8 +579,12 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
     // Never reached while `queue` is set -- the runtime routes every append
     // through the queue instead -- but required, and the same path anyway.
     onNew: submit,
+    onCancel: cancel,
     queue,
   })
 
-  return useMemo(() => ({ runtime, error, isRunning }), [runtime, error, isRunning])
+  return useMemo(
+    () => ({ runtime, error, isRunning, stopping }),
+    [runtime, error, isRunning, stopping],
+  )
 }

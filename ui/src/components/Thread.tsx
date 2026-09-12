@@ -1,5 +1,5 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleX, Hourglass, Loader, Merge, RotateCw, Send } from 'lucide-react'
+import { CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square } from 'lucide-react'
 
 import type React from 'react'
 
@@ -132,7 +132,14 @@ function AssistantMessage() {
   )
 }
 
-export default function Thread({ disabled }: { disabled?: boolean }) {
+export default function Thread({
+  disabled,
+  stopping,
+}: {
+  disabled?: boolean
+  /** A stop has been asked for and the turn has not ended yet. */
+  stopping?: boolean
+}) {
   return (
     <ThreadPrimitive.Root className="flex flex-col h-full">
       <ThreadPrimitive.Viewport className="flex-1 overflow-auto p-6 space-y-4">
@@ -157,12 +164,33 @@ export default function Thread({ disabled }: { disabled?: boolean }) {
           placeholder={disabled ? 'Start a session first' : 'Message the agent…'}
           className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
+        {/* One button, two jobs. While a turn is running the send button is
+            not merely unavailable -- there is something better to do with that
+            square of screen, and a person reaching for it mid-reply is usually
+            reaching to stop it. Both are rendered and assistant-ui shows
+            whichever the run state calls for. */}
         <ComposerPrimitive.Send
           disabled={disabled}
           className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
         >
           <Send size={16} />
         </ComposerPrimitive.Send>
+        <ComposerPrimitive.Cancel
+          aria-label={stopping ? 'Stopping' : 'Stop'}
+          disabled={stopping}
+          title={
+            stopping
+              ? 'Stopping at the end of the current step'
+              : 'Stop this reply'
+          }
+          className="flex items-center gap-2 px-4 py-2 rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-700 text-surface-700 dark:text-surface-100 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-600 disabled:opacity-60"
+        >
+          {/* The square is the universal "stop", and it keeps spinning while
+              the request is in flight: the turn ends at its next step, not the
+              instant the button is pressed, and a control that went still
+              immediately would promise something the system cannot do. */}
+          {stopping ? <Loader size={16} className="animate-spin" /> : <Square size={16} />}
+        </ComposerPrimitive.Cancel>
       </ComposerPrimitive.Root>
     </ThreadPrimitive.Root>
   )
