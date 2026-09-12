@@ -204,6 +204,7 @@ export default function FilesPanel({
               ref={input}
               type="file"
               multiple
+              data-testid="files-input"
               className="hidden"
               onChange={(e) => void onPick(e.target.files)}
             />
