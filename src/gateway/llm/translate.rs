@@ -934,6 +934,54 @@ pub fn flatten_tool_exchange(name: &str, arguments: &str, result: &str) -> Strin
     )
 }
 
+/// A tool's parameters, in the subset of JSON Schema Gemini accepts.
+///
+/// Gemini validates a function declaration against its own schema type rather
+/// than against JSON Schema, and refuses the whole request -- not the field --
+/// when it meets a keyword it does not model. `additionalProperties` is the
+/// one a tool hits first, declaring a map of strings the way every other
+/// provider expects; the request comes back 400 naming a path several levels
+/// deep, and the turn fails over to whatever is configured next.
+///
+/// Stripped rather than translated, because these say what a *caller* may
+/// send and the caller here is the model: a schema that forgets to forbid
+/// extra properties is looser than intended, where a schema Gemini refuses is
+/// a tool the model cannot use at all.
+fn gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
+    // Keywords Gemini's `Schema` has no field for. Composition keywords are
+    // included deliberately: a `oneOf` it cannot represent would otherwise
+    // take the whole declaration down with it.
+    const UNSUPPORTED: &[&str] = &[
+        "additionalProperties",
+        "$schema",
+        "$id",
+        "$ref",
+        "$defs",
+        "definitions",
+        "allOf",
+        "oneOf",
+        "not",
+        "patternProperties",
+        "const",
+        "examples",
+        "default",
+    ];
+
+    match schema {
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .filter(|(k, _)| !UNSUPPORTED.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), gemini_schema(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(gemini_schema).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// The major version of a Gemini model, where its name states one.
 ///
 /// Parsed rather than matched on a substring: "gemini-3" appearing anywhere in
@@ -1114,7 +1162,7 @@ pub fn openai_to_gemini_for(
                 serde_json::json!({
                     "name": t.function.name,
                     "description": t.function.description,
-                    "parameters": t.function.parameters,
+                    "parameters": t.function.parameters.as_ref().map(gemini_schema),
                 })
             })
             .collect();
@@ -1859,6 +1907,43 @@ mod gemini_tests {
     fn a_cut_lands_on_a_character_boundary() {
         let rendered = flatten_tool_exchange("q", "{}", &"e\u{301}".repeat(MAX_FLATTENED_BYTES));
         assert!(rendered.contains("elided"));
+    }
+
+    /// Gemini refuses a whole request when a tool's schema carries a keyword
+    /// it does not model, naming a path several levels deep and taking the
+    /// turn down with it. Measured against the real thing: a tool declaring
+    /// `additionalProperties` for a map of headers -- which is how every
+    /// other provider expects it -- came back 400 INVALID_ARGUMENT.
+    #[test]
+    fn a_tool_schema_is_reduced_to_what_gemini_will_accept() {
+        // The declaration that actually failed, as the agent writes it.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "description": "Absolute https URL." },
+                "headers": {
+                    "type": "object",
+                    "description": "Extra headers, as a flat object.",
+                    "additionalProperties": { "type": "string" }
+                }
+            },
+            "required": ["url"]
+        });
+
+        let reduced = gemini_schema(&schema);
+        assert!(
+            !reduced.to_string().contains("additionalProperties"),
+            "the keyword that returns a 400 survived: {reduced}"
+        );
+        // Everything the model needs to call the tool is still there.
+        assert_eq!(reduced["type"], "object");
+        assert_eq!(reduced["properties"]["url"]["type"], "string");
+        assert_eq!(
+            reduced["properties"]["headers"]["description"],
+            "Extra headers, as a flat object.",
+            "stripping went further than the keywords it was meant to remove"
+        );
+        assert_eq!(reduced["required"][0], "url");
     }
 
     /// A system message is its own field here, and repeated ones are joined

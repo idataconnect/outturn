@@ -79,6 +79,20 @@ patches:
             value: "postgres://outturn:outturn-dev@postgres:5432/outturn"
           - name: OUTTURN_TOKEN_PUBLIC_KEY
             value: "433388b76ceaa6de2db078d26935cbcff46207149af743d530a04a023ad13c54"
+          # Real provider keys, for trying a route against the thing itself.
+          # Optional: the secret need not exist, and without it the gateway
+          # skips any route naming a credential it cannot resolve, which
+          # leaves local development working exactly as it did.
+          #
+          # Created by hand rather than committed, because it is a real key:
+          #   kubectl create secret generic outturn-provider-keys \
+          #     --from-literal=GEMINI_API_KEY="$(cat .gemini-api-key)"
+          - name: GEMINI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-provider-keys
+                key: GEMINI_API_KEY
+                optional: true
   - target:
       kind: Deployment
       name: outturn-runtime
