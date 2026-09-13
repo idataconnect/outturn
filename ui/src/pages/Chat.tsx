@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Menu, Paperclip, Plus, X } from 'lucide-react'
+import { Menu, PanelLeftClose, Paperclip, Plus, X } from 'lucide-react'
 
 import Thread from '../components/Thread'
 import FilesPanel from '../components/FilesPanel'
+import SidePane, { type PaneTab } from '../components/SidePane'
 import { ApiError } from '../lib/api'
 import {
   createSession,
@@ -18,6 +19,8 @@ import {
 import SessionTitle from '../components/SessionTitle'
 import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
+import { readFlag, storeFlag } from '../lib/layout'
+import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 
 export default function Chat() {
   const state = useSession()
@@ -60,10 +63,19 @@ export default function Chat() {
   // "loaded" can be derived during render: a switch makes it stale the moment
   // it happens, with no effect needed to reset it first.
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
-  // Below `lg` the sessions list and files panel are too wide to sit beside
-  // the thread at once, so they become off-canvas drawers instead.
-  const [sessionsOpen, setSessionsOpen] = useState(false)
-  const [filesOpen, setFilesOpen] = useState(false)
+  // The sessions list can be put away at any width, not only when the window
+  // forces it: on a wide screen it is 256px that a reader deep in one
+  // conversation may would rather give to the thread. The width only picks the
+  // default, and only a phone defaults to closed.
+  const breakpoint = useBreakpoint()
+  const [sessionsOpen, setSessionsOpen] = useState(() =>
+    readFlag('chat.sessions', currentBreakpoint() !== 'phone'),
+  )
+
+  function toggleSessions(next: boolean) {
+    setSessionsOpen(next)
+    storeFlag('chat.sessions', next)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -124,7 +136,7 @@ export default function Chat() {
       setSessions((prev) => [session, ...prev])
       void navigate(`/sessions/${session.id}`)
       setError(null)
-      setSessionsOpen(false)
+      toggleSessions(false)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to start session')
     }
@@ -132,6 +144,24 @@ export default function Chat() {
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
   const shown = error ?? chatError ?? missing
+
+  // `render` closes over the session id, so the tab list is rebuilt only when
+  // that changes; a new component identity on every render would remount the
+  // panel and throw away whatever it had loaded.
+  const paneTabs = useMemo<PaneTab[]>(
+    () =>
+      active
+        ? [
+            {
+              id: 'files',
+              label: 'Files',
+              icon: Paperclip,
+              render: () => <FilesPanel sessionId={active} />,
+            },
+          ]
+        : [],
+    [active],
+  )
 
   const current = sessions.find((s) => s.id === active)
   const activeTitle = active ? sessionName(current) : 'Sessions'
@@ -149,9 +179,9 @@ export default function Chat() {
   return (
     <div className="flex h-full relative">
       <aside
-        className={`${
-          sessionsOpen ? 'flex' : 'hidden'
-        } lg:flex flex-col fixed lg:static inset-y-0 left-0 z-30 w-64 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
+        className={`${sessionsOpen ? 'flex' : 'hidden'} flex-col ${
+          breakpoint === 'phone' ? 'fixed inset-y-0 left-0 shadow-xl' : 'static'
+        } z-30 w-64 shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
       >
         <div className="p-3 border-b border-surface-200 dark:border-surface-800 flex items-center justify-between gap-2">
           <p className="text-xs font-medium text-surface-600 dark:text-surface-400">
@@ -159,9 +189,9 @@ export default function Chat() {
           </p>
           <button
             type="button"
-            onClick={() => setSessionsOpen(false)}
+            onClick={() => toggleSessions(false)}
             aria-label="Close sessions"
-            className="lg:hidden p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+            className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
           >
             <X size={16} aria-hidden />
           </button>
@@ -220,52 +250,40 @@ export default function Chat() {
         </div>
       </aside>
 
-      {sessionsOpen && (
+      {sessionsOpen && breakpoint === 'phone' && (
         <div
-          className="fixed inset-0 z-20 bg-black/30 lg:hidden"
-          onClick={() => setSessionsOpen(false)}
+          className="fixed inset-0 z-20 bg-black/30"
+          onClick={() => toggleSessions(false)}
           aria-hidden
         />
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="lg:hidden flex items-center gap-2 p-2 border-b border-surface-200 dark:border-surface-800">
+        {/* One header at every width. The pair this replaces -- one below
+            `lg`, one above -- had drifted apart, which is why the sessions
+            toggle existed on a phone and nowhere else. */}
+        <div className="flex items-center gap-2 px-2 lg:px-4 py-2 border-b border-surface-200 dark:border-surface-800">
           <button
             type="button"
-            onClick={() => setSessionsOpen(true)}
-            aria-label="Open sessions"
+            onClick={() => toggleSessions(!sessionsOpen)}
+            aria-label={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
+            aria-expanded={sessionsOpen}
+            title={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
             className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
           >
-            <Menu size={18} aria-hidden />
+            {sessionsOpen ? <PanelLeftClose size={18} aria-hidden /> : <Menu size={18} aria-hidden />}
           </button>
           <SessionTitle
             title={activeTitle}
             canRename={canRename && !!current}
             onRename={(t) => current && void rename(current.id, t)}
           />
-          {active && (
-            <button
-              type="button"
-              onClick={() => setFilesOpen(true)}
-              aria-label="Open files"
-              className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
-            >
-              <Paperclip size={18} aria-hidden />
-            </button>
-          )}
-        </div>
-        {current && (
-          <div className="hidden lg:flex items-center gap-2 px-4 py-2 border-b border-surface-200 dark:border-surface-800">
-            <SessionTitle
-              title={activeTitle}
-              canRename={canRename}
-              onRename={(t) => void rename(current.id, t)}
-            />
-            <span className="shrink-0 text-xs text-surface-400 dark:text-surface-500">
+          {current && (
+            <span className="hidden sm:block shrink-0 text-xs text-surface-400 dark:text-surface-500">
               {agentName(current.agent_id)}
             </span>
-          </div>
-        )}
+          )}
+        </div>
         {shown && (
           <p
             className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
@@ -281,23 +299,7 @@ export default function Chat() {
         </div>
       </div>
 
-      {active && (
-        <div
-          className={`${
-            filesOpen ? 'block' : 'hidden'
-          } lg:block fixed lg:static inset-y-0 right-0 z-30 bg-white dark:bg-surface-900`}
-        >
-          <FilesPanel sessionId={active} onClose={() => setFilesOpen(false)} />
-        </div>
-      )}
-
-      {filesOpen && (
-        <div
-          className="fixed inset-0 z-20 bg-black/30 lg:hidden"
-          onClick={() => setFilesOpen(false)}
-          aria-hidden
-        />
-      )}
+      {active && <SidePane tabs={paneTabs} storageKey="chat.pane" />}
     </div>
   )
 }

@@ -19,7 +19,12 @@ function initials(name: string): string {
   return (words[0][0] + words[words.length - 1][0]).toUpperCase()
 }
 
-export default function AccountMenu() {
+export default function AccountMenu({
+  /** On a collapsed rail only the avatar fits; the name moves to a tooltip. */
+  collapsed = false,
+}: {
+  collapsed?: boolean
+} = {}) {
   const state = useSession()
   const { signOut, switchWorkspace } = useSessionActions()
   const [open, setOpen] = useState(false)
@@ -80,7 +85,11 @@ export default function AccountMenu() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="w-full flex items-center gap-2 p-2 rounded-md text-left hover:bg-surface-100 dark:hover:bg-surface-800"
+        title={collapsed ? `${name} -- ${current?.name ?? 'No workspace'}` : undefined}
+        aria-label={collapsed ? name : undefined}
+        className={`w-full flex items-center gap-2 p-2 rounded-md text-left hover:bg-surface-100 dark:hover:bg-surface-800 ${
+          collapsed ? 'justify-center' : ''
+        }`}
       >
         <span
           aria-hidden
@@ -88,19 +97,27 @@ export default function AccountMenu() {
         >
           {initials(name)}
         </span>
-        <span className="flex-1 min-w-0">
-          <span className="block text-sm text-surface-900 dark:text-surface-100 truncate">{name}</span>
-          <span className="block text-xs text-surface-600 dark:text-surface-400 truncate">
-            {current?.name ?? 'No workspace'}
-          </span>
-        </span>
-        <ChevronsUpDown size={14} className="shrink-0 text-surface-400" />
+        {!collapsed && (
+          <>
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm text-surface-900 dark:text-surface-100 truncate">
+                {name}
+              </span>
+              <span className="block text-xs text-surface-600 dark:text-surface-400 truncate">
+                {current?.name ?? 'No workspace'}
+              </span>
+            </span>
+            <ChevronsUpDown size={14} className="shrink-0 text-surface-400" />
+          </>
+        )}
       </button>
 
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full left-0 right-0 mb-1 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg overflow-hidden"
+          className={`absolute bottom-full mb-1 rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-lg overflow-hidden ${
+            collapsed ? 'left-0 w-56' : 'left-0 right-0'
+          }`}
         >
           {state.workspaces.length > 1 && (
             <div className="p-1 border-b border-surface-200 dark:border-surface-800">

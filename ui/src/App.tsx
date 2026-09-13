@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router'
 import {
   Bot,
   Building2,
@@ -9,11 +9,17 @@ import {
   BookText,
   Users as UsersIcon,
   KeyRound,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  X,
 } from 'lucide-react'
 
 import AccountMenu from './components/AccountMenu'
 import SettingsCascade from './components/SettingsCascade'
 import { ApiError, api } from './lib/api'
+import { readFlag, storeFlag } from './lib/layout'
+import { useBreakpoint } from './lib/useBreakpoint'
 import {
   SessionActionsContext,
   SessionContext,
@@ -224,12 +230,71 @@ function Shell() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const visible = navItems.filter((item) => !item.authority || authorities.includes(item.authority))
 
+  const breakpoint = useBreakpoint()
+  const phone = breakpoint === 'phone'
+  // Labelled by default where there is room, icons-only once someone asks for
+  // the space back. On a phone neither: it is a drawer, and opening it shows
+  // the labels because a drawer has the width to spare.
+  const [expanded, setExpanded] = useState(() => readFlag('nav.expanded', true))
+  const [drawer, setDrawer] = useState(false)
+
+  function toggle() {
+    if (phone) {
+      setDrawer((v) => !v)
+      return
+    }
+    setExpanded((v: boolean) => {
+      storeFlag('nav.expanded', !v)
+      return !v
+    })
+  }
+
+  // A drawer covers the page, so leaving the page should take it with you.
+  const location = useLocation()
+  useEffect(() => setDrawer(false), [location.pathname])
+
+  // Labels are shown in the drawer even though it is a phone: the drawer is
+  // wide, and an icon rail the reader deliberately opened should say what its
+  // icons mean.
+  const labelled = phone ? true : expanded
+  const railed = !phone && !expanded
+
   return (
     <div className="flex h-screen bg-surface-100 dark:bg-surface-900">
-      <nav className="w-56 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex flex-col">
-        <div className="flex items-center gap-2 p-4 border-b border-surface-200 dark:border-surface-800">
+      {phone && drawer && (
+        <div
+          className="fixed inset-0 z-30 bg-black/30"
+          onClick={() => setDrawer(false)}
+          aria-hidden
+        />
+      )}
+
+      <nav
+        className={`${phone ? (drawer ? 'fixed inset-y-0 left-0 z-40 w-56 shadow-xl flex' : 'hidden') : 'flex'} ${
+          railed ? 'w-14' : 'w-56'
+        } shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex-col transition-[width]`}
+      >
+        <div
+          className={`flex items-center gap-2 border-b border-surface-200 dark:border-surface-800 ${
+            railed ? 'justify-center p-3' : 'p-4'
+          }`}
+        >
           <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
-          <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-100">outturn</h1>
+          {labelled && (
+            <h1 className="flex-1 text-lg font-semibold text-surface-900 dark:text-surface-100">
+              outturn
+            </h1>
+          )}
+          {phone && (
+            <button
+              type="button"
+              onClick={() => setDrawer(false)}
+              aria-label="Close navigation"
+              className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+            >
+              <X size={16} aria-hidden />
+            </button>
+          )}
         </div>
         <div className="flex-1 p-2 space-y-1">
           {visible.map(({ to, icon: Icon, label }) => (
@@ -237,24 +302,66 @@ function Shell() {
               key={to}
               to={to}
               end={to === '/'}
+              // The name has to survive the label going away, or a rail of
+              // unexplained glyphs is all that is left.
+              title={label}
+              aria-label={label}
               className={({ isActive }) =>
-                `flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
+                `flex items-center gap-2 rounded-md text-sm transition-colors ${
+                  railed ? 'justify-center px-0 py-2' : 'px-3 py-2'
+                } ${
                   isActive
                     ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200 font-medium'
                     : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
                 }`
               }
             >
-              <Icon size={16} />
-              {label}
+              <Icon size={16} className="shrink-0" />
+              {labelled && label}
             </NavLink>
           ))}
         </div>
-        <div className="p-2 border-t border-surface-200 dark:border-surface-800">
-          <AccountMenu />
+        <div className="p-2 border-t border-surface-200 dark:border-surface-800 space-y-1">
+          {!phone && (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label={expanded ? 'Collapse navigation' : 'Expand navigation'}
+              title={expanded ? 'Collapse navigation' : 'Expand navigation'}
+              className={`w-full flex items-center gap-2 rounded-md py-2 text-sm text-surface-500 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50 ${
+                railed ? 'justify-center px-0' : 'px-3'
+              }`}
+            >
+              {expanded ? (
+                <PanelLeftClose size={16} className="shrink-0" />
+              ) : (
+                <PanelLeftOpen size={16} className="shrink-0" />
+              )}
+              {labelled && 'Collapse'}
+            </button>
+          )}
+          <AccountMenu collapsed={railed} />
         </div>
       </nav>
-      <main className="flex-1 overflow-auto bg-surface-50 dark:bg-surface-875">
+      <div className="flex-1 flex flex-col min-w-0">
+        {phone && (
+          <header className="flex items-center gap-2 px-2 py-2 border-b border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900">
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label="Open navigation"
+              aria-expanded={drawer}
+              className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+            >
+              <Menu size={18} aria-hidden />
+            </button>
+            <img src="/favicon.svg" alt="" className="w-5 h-5 shrink-0" />
+            <span className="text-sm font-semibold text-surface-900 dark:text-surface-100">
+              outturn
+            </span>
+          </header>
+        )}
+        <main className="flex-1 min-h-0 overflow-auto bg-surface-50 dark:bg-surface-875">
         {/* Keyed by workspace so a switch remounts every page. State loaded
             under the previous workspace -- lists, editors, an open thread --
             is gone rather than shown until something happens to refetch it. */}
@@ -386,7 +493,8 @@ function Shell() {
             }
           />
         </Routes>
-      </main>
+        </main>
+      </div>
     </div>
   )
 }
