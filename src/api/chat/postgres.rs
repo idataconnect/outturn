@@ -13,6 +13,108 @@ impl PostgresChatStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// One statement behind both the whole transcript and a page of it.
+    ///
+    /// `limit` absent means everything, which is what a turn is built from;
+    /// present means the newest `limit` messages older than `before`, which is
+    /// what a reader is served. A null limit is unlimited in postgres, so the
+    /// same statement serves both without a second spelling of it.
+    ///
+    /// The window is chosen first and everything else hangs off it. That is
+    /// the point of the shape rather than tidiness: the delta aggregation and
+    /// the per-message job lookup are the expensive parts, so scoping them to
+    /// the window is what makes a page cheaper than the transcript. Bounding
+    /// the returned rows alone would still scan every event the session ever
+    /// emitted, which is most of the cost.
+    ///
+    /// Deliberately a single statement: the cursor and the content it accounts
+    /// for must come from the same snapshot, or a client polling from the
+    /// cursor would either replay a delta already folded into the content or
+    /// skip one that was not. `has_more` rides along for the same reason --
+    /// answered separately it could disagree with the rows beside it.
+    ///
+    /// A reply that is still streaming has no stored content yet, so its text
+    /// is assembled from the deltas visible in this snapshot. That is what
+    /// makes reconnecting mid-turn resume rather than restart.
+    async fn read_history(
+        &self,
+        session_id: Uuid,
+        before: Option<Uuid>,
+        limit: Option<i64>,
+    ) -> Result<History, ChatError> {
+        let rows = sqlx::query(
+            "with bound as ( \
+                 select coalesce( \
+                     (select id from events where session_id = $1 order by id desc limit 1), \
+                     '00000000-0000-0000-0000-000000000000'::uuid \
+                 ) as cursor \
+             ), \
+             win as ( \
+                 select id from agent_messages \
+                 where session_id = $1 \
+                   and ($2::uuid is null or id < $2) \
+                 order by id desc \
+                 limit $3::bigint \
+             ), \
+             more as ( \
+                 select exists ( \
+                     select 1 from agent_messages \
+                     where session_id = $1 \
+                       and id < (select id from win order by id limit 1) \
+                 ) as has_more \
+             ), \
+             streamed as ( \
+                 select (e.payload->>'message_id')::uuid as message_id, \
+                        count(*)::int as delta_next, \
+                        string_agg(e.payload->>'text', '' order by e.id) as text \
+                 from events e, bound \
+                 where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
+                   and (e.payload->>'message_id')::uuid in ( \
+                       select m.id from agent_messages m \
+                       join win w on w.id = m.id \
+                       where m.role = 'assistant' and m.content = '') \
+                 group by 1 \
+             ) \
+             select m.id, m.session_id, m.role, m.metadata, \
+                    case when m.content = '' then coalesce(s.text, '') else m.content end \
+                        as content, \
+                    coalesce(s.delta_next, 0) as delta_next, \
+                    m.model, m.prompt_tokens, m.completion_tokens, \
+                    m.replies_to, m.absorbed_by, \
+                    case when m.role = 'user' then ( \
+                        select j.state from jobs j \
+                        where j.kind = 'chat.turn' \
+                          and (j.payload->>'message_id')::uuid = m.id \
+                        order by j.id desc limit 1) end as job_state, \
+                    bound.cursor, more.has_more \
+             from agent_messages m \
+             join win w on w.id = m.id \
+             cross join bound \
+             cross join more \
+             left join streamed s on s.message_id = m.id \
+             order by m.id",
+        )
+        .bind(session_id)
+        .bind(before)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // With no messages there is nothing a replay could corrupt, so a nil
+        // cursor is safe -- and avoids a second query racing a message that
+        // arrives between the two. Nothing read means nothing older either:
+        // `more` has no window to compare against.
+        let cursor = rows.first().map(|r| r.get("cursor")).unwrap_or_else(Uuid::nil);
+        let has_more = rows.first().map(|r| r.get("has_more")).unwrap_or(false);
+
+        Ok(History {
+            messages: rows.iter().map(read_message).collect(),
+            cursor,
+            has_more,
+        })
+    }
 }
 
 fn internal(e: sqlx::Error) -> ChatError {
@@ -167,56 +269,16 @@ impl ChatStore for PostgresChatStore {
     /// is assembled from the deltas visible in this snapshot. That is what
     /// makes reconnecting mid-turn resume rather than restart.
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError> {
-        let rows = sqlx::query(
-            "with bound as ( \
-                 select coalesce( \
-                     (select id from events where session_id = $1 order by id desc limit 1), \
-                     '00000000-0000-0000-0000-000000000000'::uuid \
-                 ) as cursor \
-             ), \
-             streamed as ( \
-                 select (e.payload->>'message_id')::uuid as message_id, \
-                        count(*)::int as delta_next, \
-                        string_agg(e.payload->>'text', '' order by e.id) as text \
-                 from events e, bound \
-                 where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
-                   and (e.payload->>'message_id')::uuid in ( \
-                       select id from agent_messages \
-                       where session_id = $1 and role = 'assistant' and content = '') \
-                 group by 1 \
-             ) \
-             select m.id, m.session_id, m.role, m.metadata, \
-                    case when m.content = '' then coalesce(s.text, '') else m.content end \
-                        as content, \
-                    coalesce(s.delta_next, 0) as delta_next, \
-                    m.model, m.prompt_tokens, m.completion_tokens, \
-                    m.replies_to, m.absorbed_by, \
-                    case when m.role = 'user' then ( \
-                        select j.state from jobs j \
-                        where j.kind = 'chat.turn' \
-                          and (j.payload->>'message_id')::uuid = m.id \
-                        order by j.id desc limit 1) end as job_state, \
-                    bound.cursor \
-             from agent_messages m \
-             cross join bound \
-             left join streamed s on s.message_id = m.id \
-             where m.session_id = $1 \
-             order by m.id",
-        )
-        .bind(session_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+        self.read_history(session_id, None, None).await
+    }
 
-        // With no messages there is nothing a replay could corrupt, so a nil
-        // cursor is safe -- and avoids a second query racing a message that
-        // arrives between the two.
-        let cursor = rows.first().map(|r| r.get("cursor")).unwrap_or_else(Uuid::nil);
-
-        Ok(History {
-            messages: rows.iter().map(read_message).collect(),
-            cursor,
-        })
+    async fn messages_page(
+        &self,
+        session_id: Uuid,
+        before: Option<Uuid>,
+        limit: i64,
+    ) -> Result<History, ChatError> {
+        self.read_history(session_id, before, Some(limit)).await
     }
 
     async fn set_message_content(

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use serde::Deserialize;
@@ -51,16 +51,44 @@ pub async fn create_session(
     Ok((StatusCode::CREATED, Json(session)))
 }
 
+/// How far back a single read will go.
+///
+/// A reader is served the newest `DEFAULT_MESSAGES` and asks for more by
+/// cursor. The ceiling is not politeness: the delta aggregation behind a page
+/// is per-message work, so an unbounded `limit` would hand a caller the
+/// unbounded query this endpoint exists to stop serving.
+const DEFAULT_MESSAGES: i64 = 50;
+const MAX_MESSAGES: i64 = 200;
+
+#[derive(Debug, Deserialize)]
+pub struct MessagesQuery {
+    /// Keyset cursor: the page holds the messages immediately older than this.
+    /// Absent means the newest page, which is where a conversation opens.
+    pub before: Option<Uuid>,
+    pub limit: Option<i64>,
+}
+
 pub async fn get_messages(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
+    Query(query): Query<MessagesQuery>,
 ) -> Result<Json<History>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     // Ownership is checked before reading messages, which are not themselves
-    // workspace-scoped.
+    // workspace-scoped. It also has to happen before the cursor is used: a
+    // cursor names a message, and reading one from another workspace's session
+    // must fail on the session rather than on the row it points at.
     state.chat.get_session(claims.workspace_id, id).await?;
-    Ok(Json(state.chat.messages(id).await?))
+
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_MESSAGES)
+        .clamp(1, MAX_MESSAGES);
+
+    Ok(Json(
+        state.chat.messages_page(id, query.before, limit).await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]

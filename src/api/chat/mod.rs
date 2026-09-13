@@ -61,6 +61,14 @@ pub struct Message {
 pub struct History {
     pub messages: Vec<Message>,
     pub cursor: Uuid,
+    /// Whether anything older than the first message here was left behind.
+    ///
+    /// Answered from the same statement as the rows, so it cannot disagree
+    /// with them: a caller told `false` will not find a "load earlier" button
+    /// that fetches nothing, and one told `true` is not guessing from a full
+    /// page that happened to land on the boundary.
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// How a message reaches a turn that is already running.
@@ -176,7 +184,25 @@ pub trait ChatStore: Send + Sync {
         title: &str,
     ) -> Result<AgentSession, ChatError>;
 
+    /// The whole transcript, oldest first.
+    ///
+    /// What a turn is built from: the model needs every message, so this has
+    /// no limit and is not what a reader should be served.
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError>;
+
+    /// A page of the transcript, oldest first, ending at the newest message.
+    ///
+    /// `before` is a keyset cursor: the page holds the `limit` messages
+    /// immediately older than it, and absent means "the newest `limit`". Ids
+    /// are UUIDv7, so this is also paging backwards through time, and the
+    /// column it seeks on is the one `agent_messages (session_id, id)` is
+    /// already ordered by.
+    async fn messages_page(
+        &self,
+        session_id: Uuid,
+        before: Option<Uuid>,
+        limit: i64,
+    ) -> Result<History, ChatError>;
 
     /// Replaces a message's content, for a reply that was created empty and
     /// streamed into.

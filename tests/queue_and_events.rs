@@ -679,6 +679,106 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     finish!(db);
 }
 
+/// A page holds the newest messages, and says whether anything is behind it.
+#[tokio::test]
+async fn transcript_page_takes_the_newest_and_reports_more() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    for n in 0..10 {
+        store
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .await
+            .expect("append");
+    }
+
+    let page = store.messages_page(session_id, None, 4).await.expect("page");
+    let contents: Vec<&str> = page.messages.iter().map(|m| m.content.as_str()).collect();
+    // Newest four, still oldest-first within the page: a reader appends this
+    // to the bottom of the thread, not in reverse.
+    assert_eq!(contents, ["m6", "m7", "m8", "m9"]);
+    assert!(page.has_more, "six older messages were left behind");
+}
+
+/// Walking the cursor backwards reaches the start exactly once, with no row
+/// repeated at a page boundary and none skipped.
+#[tokio::test]
+async fn transcript_pages_back_without_gaps_or_repeats() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    for n in 0..10 {
+        store
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .await
+            .expect("append");
+    }
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut before = None;
+    loop {
+        let page = store.messages_page(session_id, before, 3).await.expect("page");
+        let mut batch: Vec<String> =
+            page.messages.iter().map(|m| m.content.clone()).collect();
+        batch.extend(seen);
+        seen = batch;
+        if !page.has_more {
+            break;
+        }
+        before = page.messages.first().map(|m| m.id);
+        assert!(before.is_some(), "has_more with an empty page would not terminate");
+    }
+
+    assert_eq!(
+        seen,
+        ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"],
+        "the walk should rebuild the transcript exactly"
+    );
+}
+
+/// The last page says so, rather than leaving a reader to guess from a short
+/// one -- a page that happens to land on the boundary is full and final.
+#[tokio::test]
+async fn transcript_exact_page_knows_it_is_the_last() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    for n in 0..4 {
+        store
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .await
+            .expect("append");
+    }
+
+    // Exactly as many messages as the limit: full, and yet nothing behind it.
+    let page = store.messages_page(session_id, None, 4).await.expect("page");
+    assert_eq!(page.messages.len(), 4);
+    assert!(!page.has_more, "a full page on the boundary is still the last");
+}
+
+/// The whole-transcript read is what a turn is built from, and keeps its
+/// meaning now that a paged read sits beside it.
+#[tokio::test]
+async fn full_transcript_is_unpaged() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    for n in 0..7 {
+        store
+            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .await
+            .expect("append");
+    }
+
+    let all = store.messages(session_id).await.expect("history");
+    assert_eq!(all.messages.len(), 7);
+    assert!(!all.has_more, "nothing is held back from the whole transcript");
+}
+
 /// Messages read back in the order they were appended, ordered by their
 /// UUIDv7 keys rather than a separate sequence column.
 #[tokio::test]
