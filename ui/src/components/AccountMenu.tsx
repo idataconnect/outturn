@@ -93,7 +93,7 @@ export default function AccountMenu({
       >
         <span
           aria-hidden
-          className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-brand-600 to-orange-500 text-white text-xs font-medium flex items-center justify-center"
+          className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-brand-600 to-accent-500 text-white text-xs font-medium flex items-center justify-center"
         >
           {initials(name)}
         </span>

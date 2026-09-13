@@ -4,6 +4,8 @@ import { Building2, LogIn } from 'lucide-react'
 import ThemeToggle from '../components/ThemeToggle'
 import { ApiError, NetworkError, api } from '../lib/api'
 import { useSessionActions, type WorkspaceMembership } from '../lib/session'
+import Logo from '../components/Logo'
+import { productName } from '../lib/brand'
 
 type LoginResponse =
   | {
@@ -79,8 +81,10 @@ export default function Login() {
           </div>
         </div>
         <div className="flex flex-col items-center gap-3">
-          <img src="/favicon.svg" alt="" className="w-16 h-16" />
-          <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">outturn</h1>
+          <Logo className="w-16 h-16" />
+          <h1 className="text-2xl font-display font-semibold text-surface-900 dark:text-surface-100">
+            {productName}
+          </h1>
         </div>
 
         {choices ? (

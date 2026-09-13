@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* The deployment's tokens. Selected by VITE_THEME; see themes/README.md. */
+@import "virtual:theme.css";
 
 /*
  * Dark mode follows a `dark` class on <html> rather than the media query
@@ -6,48 +8,6 @@
  * setting is honoured by the app applying the class itself -- see lib/theme.ts.
  */
 @custom-variant dark (&:where(.dark, .dark *));
-
-@theme {
-  /*
-   * Brand, taken from the logo's gradient. Teal carries interactive elements;
-   * the orange is reserved for the mark itself, where it reads as an accent
-   * rather than competing with everything else on the page.
-   */
-  --color-brand-50: oklch(0.97 0.02 190);
-  --color-brand-100: oklch(0.94 0.04 190);
-  --color-brand-200: oklch(0.88 0.06 190);
-  --color-brand-300: oklch(0.79 0.08 190);
-  --color-brand-400: oklch(0.68 0.09 190);
-  --color-brand-500: oklch(0.58 0.09 190);
-  --color-brand-600: oklch(0.48 0.08 190);
-  --color-brand-700: oklch(0.42 0.07 190);
-  --color-brand-800: oklch(0.35 0.05 190);
-  --color-brand-900: oklch(0.29 0.04 190);
-  --color-brand-950: oklch(0.20 0.03 190);
-
-  /*
-   * A slightly warm neutral rather than a true grey. Large flat surfaces in a
-   * pure neutral read as cold and clinical; a trace of hue keeps them calm
-   * without becoming a colour in their own right.
-   */
-  --color-surface-50: oklch(0.985 0.002 90);
-  --color-surface-100: oklch(0.968 0.003 90);
-  --color-surface-200: oklch(0.925 0.004 90);
-  --color-surface-300: oklch(0.865 0.005 90);
-  --color-surface-400: oklch(0.705 0.006 90);
-  --color-surface-500: oklch(0.556 0.006 90);
-  --color-surface-600: oklch(0.442 0.006 90);
-  --color-surface-700: oklch(0.372 0.006 90);
-  --color-surface-800: oklch(0.269 0.005 90);
-  /*
-   * A half-step between 900 and 800, for the page a conversation sits on. The
-   * chrome around it stays at 900, so the two read apart without the content
-   * area lifting far enough to become the brightest thing on the screen.
-   */
-  --color-surface-875: oklch(0.230 0.005 90);
-  --color-surface-900: oklch(0.216 0.005 90);
-  --color-surface-950: oklch(0.155 0.004 90);
-}
 
 /*
  * Tells the browser which built-in colours to use for scrollbars, form

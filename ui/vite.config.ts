@@ -1,10 +1,25 @@
 /// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
+
+// Which brand's tokens get compiled in. A deployment sets VITE_THEME to a
+// file in src/themes/; the default is outturn's own look. Resolved at build
+// time rather than fetched, so there is no frame where the page is the wrong
+// colour, and no theme a deployment is not using shipped in its bundle.
+const theme = process.env.VITE_THEME ?? 'outturn'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // `index.css` imports this name; the alias decides what it means.
+      'virtual:theme.css': fileURLToPath(
+        new URL(`./src/themes/${theme}.css`, import.meta.url),
+      ),
+    },
+  },
   test: {
     // Components reach for the DOM, so the tests need one.
     environment: 'jsdom',

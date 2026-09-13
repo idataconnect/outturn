@@ -4,7 +4,11 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // `node` for the tests only: a couple of them read the theme files off
+    // disk to check one theme against another. Nothing under src/ that ships
+    // to a browser may import node builtins, and the bundler would fail it if
+    // it did.
+    "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

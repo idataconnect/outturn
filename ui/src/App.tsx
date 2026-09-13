@@ -15,6 +15,8 @@ import {
 } from 'lucide-react'
 
 import AccountMenu from './components/AccountMenu'
+import Logo from './components/Logo'
+import { productName } from './lib/brand'
 import SettingsCascade from './components/SettingsCascade'
 import { ApiError, api } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
@@ -288,22 +290,26 @@ function Shell() {
               Not on a phone: there the nav is a drawer, the mark would
               mean "close", and the X already says that more plainly. */}
           {phone ? (
-            <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+            <Logo />
           ) : (
             <button
               type="button"
               onClick={toggle}
-              aria-label={expanded ? 'outturn -- collapse navigation' : 'outturn -- expand navigation'}
+              aria-label={
+                expanded
+                  ? `${productName} -- collapse navigation`
+                  : `${productName} -- expand navigation`
+              }
               aria-expanded={expanded}
               title={expanded ? 'Collapse navigation' : 'Expand navigation'}
               className={iconButton}
             >
-              <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+              <Logo />
             </button>
           )}
           {labelled && (
-            <h1 className="flex-1 text-lg font-semibold text-surface-900 dark:text-surface-100">
-              outturn
+            <h1 className="flex-1 text-lg font-display font-semibold text-surface-900 dark:text-surface-100">
+              {productName}
             </h1>
           )}
           {!phone && expanded && (
@@ -370,9 +376,9 @@ function Shell() {
             >
               <Menu size={18} aria-hidden />
             </button>
-            <img src="/favicon.svg" alt="" className="w-5 h-5 shrink-0" />
-            <span className="text-sm font-semibold text-surface-900 dark:text-surface-100">
-              outturn
+            <Logo className="w-5 h-5 shrink-0" />
+            <span className="text-sm font-display font-semibold text-surface-900 dark:text-surface-100">
+              {productName}
             </span>
           </header>
         )}
@@ -527,7 +533,7 @@ function Loading({ reconnecting }: { reconnecting?: boolean }) {
     <div className="flex h-dvh flex-col items-center justify-center gap-3">
       {/* The same mark the shell uses, so the app looks like itself while
           it is still deciding what to show. */}
-      <img src="/favicon.svg" alt="" className="h-8 w-8 animate-pulse" />
+      <Logo className="h-8 w-8 animate-pulse" />
       {reconnecting && (
         <p className="text-sm text-surface-600 dark:text-surface-400">
           Reconnecting&hellip;

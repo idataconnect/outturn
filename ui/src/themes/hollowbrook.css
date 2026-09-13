@@ -1,0 +1,71 @@
+/*
+ * Hollowbrook House -- a bed and breakfast.
+ *
+ * Not a real customer. It exists so that "the tokens are complete" is
+ * something a person can check by looking, and so a change that quietly
+ * hardcodes outturn's teal somewhere has a second deployment to be caught in.
+ *
+ * Chosen to be as unlike outturn as a deployment plausibly gets: a warm
+ * terracotta where outturn is cool teal, sage where outturn is neutral, and a
+ * serif wordmark where outturn is sans. Anything that survives both looks is
+ * genuinely coming from a token.
+ *
+ * Loaded ahead of the default, so these definitions win.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap");
+
+@theme {
+  /*
+   * Terracotta. Hue 40 against outturn's 190 -- the other side of the wheel,
+   * so a component that hardcoded a teal shows up immediately.
+   *
+   * Lightness and chroma follow the default's ramp rather than being picked
+   * by eye: the same steps in the same places means contrast behaves the same
+   * way it was designed to, and only the hue is this brand's own.
+   */
+  --color-brand-50: oklch(0.97 0.02 40);
+  --color-brand-100: oklch(0.94 0.04 40);
+  --color-brand-200: oklch(0.88 0.07 40);
+  --color-brand-300: oklch(0.79 0.10 40);
+  --color-brand-400: oklch(0.68 0.13 40);
+  --color-brand-500: oklch(0.58 0.14 40);
+  --color-brand-600: oklch(0.50 0.13 38);
+  --color-brand-700: oklch(0.43 0.11 36);
+  --color-brand-800: oklch(0.36 0.09 34);
+  --color-brand-900: oklch(0.30 0.07 32);
+  --color-brand-950: oklch(0.21 0.05 32);
+
+  /*
+   * Warmer and greener than the default's near-neutral: hue 120 at a low
+   * chroma reads as sage on a large surface without becoming a colour. A
+   * guesthouse should feel like paper and plaster, not like a console.
+   */
+  --color-surface-50: oklch(0.985 0.006 100);
+  --color-surface-100: oklch(0.967 0.010 100);
+  --color-surface-200: oklch(0.923 0.014 105);
+  --color-surface-300: oklch(0.862 0.017 110);
+  --color-surface-400: oklch(0.700 0.018 115);
+  --color-surface-500: oklch(0.552 0.017 120);
+  --color-surface-600: oklch(0.438 0.015 120);
+  --color-surface-700: oklch(0.368 0.014 122);
+  --color-surface-800: oklch(0.266 0.012 124);
+  --color-surface-875: oklch(0.228 0.011 124);
+  --color-surface-900: oklch(0.214 0.010 126);
+  --color-surface-950: oklch(0.153 0.008 128);
+
+  /* Honey, against the terracotta: the second colour in the house's sign. */
+  --color-accent-400: oklch(0.82 0.13 85);
+  --color-accent-500: oklch(0.76 0.15 80);
+  --color-accent-600: oklch(0.68 0.14 75);
+
+  /*
+   * A serif for the name, sans for everything else. The wordmark is the one
+   * place a guesthouse should not look like software.
+   */
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  /* The body face stays the system stack: a guesthouse's personality belongs
+     in its name and its colour, not in every line of a settings form. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
