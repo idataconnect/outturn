@@ -37,3 +37,22 @@ Object.defineProperty(window, 'localStorage', {
   configurable: true,
   value: new MemoryStorage(),
 })
+
+// assistant-ui's viewport measures itself, and jsdom ships no ResizeObserver.
+// A stub that never fires is enough: the tests assert what is rendered, not
+// how it responds to being resized.
+if (!('ResizeObserver' in globalThis)) {
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    value: class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  })
+}
+
+// The viewport auto-scrolls to follow a reply; jsdom has no scrolling at all.
+if (!Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = function () {}
+}
