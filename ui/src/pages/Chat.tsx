@@ -21,6 +21,7 @@ import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
+import { iconButton, iconButtonLarge } from '../lib/buttons'
 
 export default function Chat() {
   const state = useSession()
@@ -191,7 +192,7 @@ export default function Chat() {
             type="button"
             onClick={() => toggleSessions(false)}
             aria-label="Close sessions"
-            className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+            className={iconButton}
           >
             <X size={16} aria-hidden />
           </button>
@@ -269,7 +270,7 @@ export default function Chat() {
             aria-label={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
             aria-expanded={sessionsOpen}
             title={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
-            className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+            className={iconButtonLarge}
           >
             {sessionsOpen ? <PanelLeftClose size={18} aria-hidden /> : <Menu size={18} aria-hidden />}
           </button>

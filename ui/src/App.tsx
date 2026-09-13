@@ -39,6 +39,7 @@ import RoleEditor from './pages/RoleEditor'
 import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
+import { iconButton, iconButtonLarge } from './lib/buttons'
 
 function Dashboard() {
   const state = useSession()
@@ -288,7 +289,7 @@ function Shell() {
               aria-label="Expand navigation"
               aria-expanded={false}
               title="Expand navigation"
-              className="p-1 rounded-md hover:bg-surface-100 dark:hover:bg-surface-800"
+              className={iconButton}
             >
               <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
             </button>
@@ -307,7 +308,7 @@ function Shell() {
               aria-label="Collapse navigation"
               aria-expanded
               title="Collapse navigation"
-              className="p-1 rounded-md text-surface-400 hover:text-surface-900 dark:hover:text-surface-100 hover:bg-surface-100 dark:hover:bg-surface-800"
+              className={iconButton}
             >
               <PanelLeftClose size={16} aria-hidden />
             </button>
@@ -317,7 +318,7 @@ function Shell() {
               type="button"
               onClick={() => setDrawer(false)}
               aria-label="Close navigation"
-              className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+              className={iconButton}
             >
               <X size={16} aria-hidden />
             </button>
@@ -360,7 +361,7 @@ function Shell() {
               onClick={toggle}
               aria-label="Open navigation"
               aria-expanded={drawer}
-              className="p-1.5 rounded-md text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800"
+              className={iconButtonLarge}
             >
               <Menu size={18} aria-hidden />
             </button>

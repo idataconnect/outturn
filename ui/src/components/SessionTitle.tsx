@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Pencil } from 'lucide-react'
 
 import { UNNAMED_SESSION } from '../lib/chat'
+import { iconButton } from '../lib/buttons'
 
 /**
  * A session's name, and the way to change it.
@@ -76,7 +77,7 @@ export default function SessionTitle({
           type="button"
           onClick={begin}
           aria-label="Rename session"
-          className="shrink-0 p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+          className={`shrink-0 ${iconButton}`}
         >
           <Pencil size={13} aria-hidden />
         </button>

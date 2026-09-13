@@ -4,6 +4,7 @@ import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquar
 import { ApiError } from '../lib/api'
 import { deleteFile, fileUrl, listFiles, uploadFile, type StoredFile } from '../lib/chat'
 import { useSession } from '../lib/session'
+import { iconButton, iconButtonDanger } from '../lib/buttons'
 
 type Scope = StoredFile['scope']
 
@@ -293,7 +294,7 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
               href={fileUrl(sessionId, f.path)}
               download
               aria-label={`Download ${f.path}`}
-              className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+              className={iconButton}
             >
               <Download size={14} aria-hidden />
             </a>
@@ -302,7 +303,7 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => void onDelete(f)}
                 aria-label={`Delete ${f.path}`}
-                className="p-1 rounded text-surface-400 hover:text-red-600 dark:hover:text-red-400"
+                className={iconButtonDanger}
               >
                 <Trash2 size={14} aria-hidden />
               </button>

@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 
 import { readFlag, readOneOf, storeFlag, storeOneOf } from '../lib/layout'
 import { useBreakpoint } from '../lib/useBreakpoint'
+import { iconButton } from '../lib/buttons'
 
 /**
  * One thing the pane can show. `render` is a component rather than an element
@@ -122,7 +123,7 @@ export default function SidePane({
                 type="button"
                 onClick={close}
                 aria-label={`Close ${current.label}`}
-                className="p-1 rounded text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
+                className={iconButton}
               >
                 <X size={16} aria-hidden />
               </button>
