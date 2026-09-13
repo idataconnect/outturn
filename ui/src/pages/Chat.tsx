@@ -137,7 +137,9 @@ export default function Chat() {
       setSessions((prev) => [session, ...prev])
       void navigate(`/sessions/${session.id}`)
       setError(null)
-      toggleSessions(false)
+      // Same as picking an existing one: only dismiss a list that was
+      // covering the conversation it just opened.
+      if (breakpoint === 'phone') toggleSessions(false)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to start session')
     }
@@ -232,7 +234,10 @@ export default function Chat() {
             <NavLink
               key={session.id}
               to={`/sessions/${session.id}`}
-              onClick={() => setSessionsOpen(false)}
+              // Picking a session dismisses the list only where the list was
+              // in the way. Inline it sits beside the thread, and closing it
+              // would take the sidebar away every time somebody used it.
+              onClick={() => breakpoint === 'phone' && toggleSessions(false)}
               title={`${sessionName(session)} — ${agentName(session.agent_id)}`}
               className={({ isActive }) =>
                 `block w-full px-2 py-1.5 rounded-md text-sm text-left ${
