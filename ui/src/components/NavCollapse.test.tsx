@@ -36,18 +36,35 @@ describe('nav collapse control', () => {
     setWidth(1440)
   })
 
-  it('collapses from the header and can be expanded again', async () => {
+  it('collapses from the chevron and can be expanded again', async () => {
     const user = userEvent.setup()
     render(<App />)
 
     const collapse = await screen.findByRole('button', { name: 'Collapse navigation' })
     await user.click(collapse)
 
-    // Railed: the collapse control is gone, but a way back must remain.
+    // Railed: the chevron is gone with the labels, but a way back must remain.
     expect(screen.queryByRole('button', { name: 'Collapse navigation' })).not.toBeInTheDocument()
-    const expand = screen.getByRole('button', { name: 'Expand navigation' })
-    await user.click(expand)
+    await user.click(screen.getByRole('button', { name: /expand navigation/i }))
 
     expect(await screen.findByRole('button', { name: 'Collapse navigation' })).toBeInTheDocument()
+  })
+
+  it('toggles both ways from the mark alone', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    // Expanded, the mark offers to collapse -- it is not an opener that
+    // cannot close.
+    const mark = await screen.findByRole('button', { name: /outturn -- collapse/i })
+    await user.click(mark)
+
+    const railed = screen.getByRole('button', { name: /outturn -- expand/i })
+    expect(railed).toHaveAttribute('aria-expanded', 'false')
+
+    await user.click(railed)
+    expect(
+      await screen.findByRole('button', { name: /outturn -- collapse/i }),
+    ).toHaveAttribute('aria-expanded', 'true')
   })
 })

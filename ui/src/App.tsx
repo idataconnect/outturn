@@ -279,22 +279,27 @@ function Shell() {
             railed ? 'justify-center p-3' : 'p-4'
           }`}
         >
-          {/* Railed, the header has room for one thing, so the mark is the
-              way back out -- the obvious place to click to get the nav
-              back, and it costs no row of its own. */}
-          {railed ? (
+          {/* The mark is the toggle, both ways. Railed it is the only way
+              back out, and it would be a strange control that could open
+              this column but not shut it again -- so it does both, and the
+              chevron beside it is a second route to the same thing rather
+              than the only one.
+
+              Not on a phone: there the nav is a drawer, the mark would
+              mean "close", and the X already says that more plainly. */}
+          {phone ? (
+            <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+          ) : (
             <button
               type="button"
               onClick={toggle}
-              aria-label="Expand navigation"
-              aria-expanded={false}
-              title="Expand navigation"
+              aria-label={expanded ? 'outturn -- collapse navigation' : 'outturn -- expand navigation'}
+              aria-expanded={expanded}
+              title={expanded ? 'Collapse navigation' : 'Expand navigation'}
               className={iconButton}
             >
               <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
             </button>
-          ) : (
-            <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
           )}
           {labelled && (
             <h1 className="flex-1 text-lg font-semibold text-surface-900 dark:text-surface-100">
