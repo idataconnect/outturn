@@ -11,7 +11,6 @@ import {
   KeyRound,
   Menu,
   PanelLeftClose,
-  PanelLeftOpen,
   X,
 } from 'lucide-react'
 
@@ -279,11 +278,39 @@ function Shell() {
             railed ? 'justify-center p-3' : 'p-4'
           }`}
         >
-          <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+          {/* Railed, the header has room for one thing, so the mark is the
+              way back out -- the obvious place to click to get the nav
+              back, and it costs no row of its own. */}
+          {railed ? (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label="Expand navigation"
+              aria-expanded={false}
+              title="Expand navigation"
+              className="p-1 rounded-md hover:bg-surface-100 dark:hover:bg-surface-800"
+            >
+              <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+            </button>
+          ) : (
+            <img src="/favicon.svg" alt="" className="w-6 h-6 shrink-0" />
+          )}
           {labelled && (
             <h1 className="flex-1 text-lg font-semibold text-surface-900 dark:text-surface-100">
               outturn
             </h1>
+          )}
+          {!phone && expanded && (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label="Collapse navigation"
+              aria-expanded
+              title="Collapse navigation"
+              className="p-1 rounded-md text-surface-400 hover:text-surface-900 dark:hover:text-surface-100 hover:bg-surface-100 dark:hover:bg-surface-800"
+            >
+              <PanelLeftClose size={16} aria-hidden />
+            </button>
           )}
           {phone && (
             <button
@@ -321,25 +348,7 @@ function Shell() {
             </NavLink>
           ))}
         </div>
-        <div className="p-2 border-t border-surface-200 dark:border-surface-800 space-y-1">
-          {!phone && (
-            <button
-              type="button"
-              onClick={toggle}
-              aria-label={expanded ? 'Collapse navigation' : 'Expand navigation'}
-              title={expanded ? 'Collapse navigation' : 'Expand navigation'}
-              className={`w-full flex items-center gap-2 rounded-md py-2 text-sm text-surface-500 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50 ${
-                railed ? 'justify-center px-0' : 'px-3'
-              }`}
-            >
-              {expanded ? (
-                <PanelLeftClose size={16} className="shrink-0" />
-              ) : (
-                <PanelLeftOpen size={16} className="shrink-0" />
-              )}
-              {labelled && 'Collapse'}
-            </button>
-          )}
+        <div className="p-2 border-t border-surface-200 dark:border-surface-800">
           <AccountMenu collapsed={railed} />
         </div>
       </nav>
