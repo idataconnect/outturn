@@ -28,6 +28,16 @@ impl PostgresChatStore {
     /// the returned rows alone would still scan every event the session ever
     /// emitted, which is most of the cost.
     ///
+    /// The deltas are bounded by the window's own id range rather than by a
+    /// partial index on `kind`. A delta is written after the message it
+    /// belongs to, and both are UUIDv7, so no delta for a message in the
+    /// window can sort below the window's oldest message -- which makes the
+    /// lower bound free of a scan and, unlike an index, free of a second copy
+    /// of the table. A partial index was measured and does not earn its keep:
+    /// deltas are ~84% of all events here, so indexing them indexes almost
+    /// everything, and the cost is the heap access an index path still pays.
+    /// Bounding by id took the same read from 2,000 buffers to 209.
+    ///
     /// Deliberately a single statement: the cursor and the content it accounts
     /// for must come from the same snapshot, or a client polling from the
     /// cursor would either replay a delta already folded into the content or
@@ -70,6 +80,7 @@ impl PostgresChatStore {
                         string_agg(e.payload->>'text', '' order by e.id) as text \
                  from events e, bound \
                  where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
+                   and e.id > (select id from win order by id limit 1) \
                    and (e.payload->>'message_id')::uuid in ( \
                        select m.id from agent_messages m \
                        join win w on w.id = m.id \

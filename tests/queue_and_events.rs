@@ -679,6 +679,84 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     finish!(db);
 }
 
+/// A page assembles a streaming reply's text just as the full transcript
+/// does, even with older messages ahead of it that the page excludes.
+///
+/// The deltas are bounded by the window's id range for speed, and this is
+/// what makes that sound: a delta is written after the message it belongs to
+/// and both are UUIDv7, so a reply in the page can have no delta below the
+/// page's floor. Get that wrong and a reconnecting reader loses the text of
+/// the reply it is watching arrive.
+#[tokio::test]
+async fn paged_read_still_assembles_a_streaming_reply() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    // History the page will exclude, so the window has a real floor.
+    for n in 0..6 {
+        store
+            .append_message(session_id, "user", &format!("old{n}"), None, Default::default(), Default::default(), None)
+            .await
+            .expect("append");
+    }
+
+    let reply = store
+        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .await
+        .expect("reply");
+
+    for (idx, text) in ["Still ", "arriving."].iter().enumerate() {
+        events::append(
+            pool,
+            workspace,
+            Some(session_id),
+            "chat.delta",
+            serde_json::json!({ "message_id": reply.id, "idx": idx, "text": text }),
+        )
+        .await
+        .expect("delta");
+    }
+
+    // Finish that reply and start a second one, so the first streaming reply
+    // sits in the middle of the window rather than at its edge. A bound taken
+    // from the wrong end would now clip its deltas instead of coincidentally
+    // keeping them.
+    store
+        .set_message_content(reply.id, "Still arriving.", None, None, Default::default(), serde_json::json!({}))
+        .await
+        .expect("finalise");
+
+    let second = store
+        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .await
+        .expect("second reply");
+    events::append(
+        pool,
+        workspace,
+        Some(session_id),
+        "chat.delta",
+        serde_json::json!({ "message_id": second.id, "idx": 0, "text": "And more." }),
+    )
+    .await
+    .expect("delta");
+
+    // A page small enough to leave the older messages behind.
+    let page = store.messages_page(session_id, None, 3).await.expect("page");
+    assert!(page.has_more, "the older messages are behind this page");
+
+    let streaming = page
+        .messages
+        .iter()
+        .find(|m| m.id == second.id)
+        .expect("the streaming reply is in the newest page");
+    assert_eq!(
+        streaming.content, "And more.",
+        "a page must assemble the reply's deltas, not drop them"
+    );
+    assert_eq!(streaming.delta_next, 1, "and account for what it folded in");
+}
+
 /// A page holds the newest messages, and says whether anything is behind it.
 #[tokio::test]
 async fn transcript_page_takes_the_newest_and_reports_more() {
