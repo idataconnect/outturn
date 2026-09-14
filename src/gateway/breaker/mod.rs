@@ -9,6 +9,18 @@
 //! though the circuit were closed. Refusing to call a model because the
 //! transcript store is unreachable would turn a database blip into a total
 //! loss of inference -- a worse outage than the one being guarded against.
+//!
+//! **It assumes tightly synchronised clocks.** Every timestamp here is
+//! wall-clock, because it is the only time two replicas can both name. Pods
+//! whose clocks differ by more than the backoff will disagree about when a
+//! probe is due; the cost is an early probe rather than a wrong answer, since
+//! the claim is a conditional UPDATE and only one replica wins it. Run NTP.
+//!
+//! What to open a circuit *about* is in `policy`, which is pure and knows
+//! nothing of this table -- see its docs for why a 500 from one caller is not
+//! the same evidence as a 500 from five.
+
+pub mod policy;
 
 use std::time::Duration;
 
