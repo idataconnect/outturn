@@ -56,6 +56,13 @@ pub enum Refused {
     Unresolvable(String),
     /// A header the host owns, or one that has no business crossing.
     Header(String),
+    /// The rule matched by `host` could not be shown to be one the API
+    /// committed to for this turn -- either it is not in the set the
+    /// commitment was built over, or the proof offered for it did not verify.
+    /// The runtime holds the rules but does not decide what a workspace
+    /// allowed, so this is what "I cannot tell" has to mean: refused, the
+    /// same as a host nobody named.
+    Unproven(String),
 }
 
 impl std::fmt::Display for Refused {
@@ -77,6 +84,11 @@ impl std::fmt::Display for Refused {
             ),
             Refused::Unresolvable(h) => write!(f, "{h} does not resolve"),
             Refused::Header(h) => write!(f, "the {h} header is set by the platform, not by you"),
+            Refused::Unproven(h) => write!(
+                f,
+                "{h} could not be shown to be one of this turn's allowed hosts; if it was \
+                 just added to settings, this turn was started before that took effect"
+            ),
         }
     }
 }
@@ -316,6 +328,40 @@ pub fn vet_addresses(host: &str, addrs: &[std::net::SocketAddr]) -> Result<(), R
     Ok(())
 }
 
+/// Shows that a matched rule is one the API committed to for this turn.
+///
+/// The runtime holds the rule list because it travels with the turn, not
+/// because the runtime is trusted to say what a workspace allowed -- that
+/// decision belongs to the tier that never runs workspace code. So a rule is
+/// not used on the strength of being found in `rules`; it has to be provable
+/// against the commitment the turn arrived with. `commit::prove` failing and
+/// `commit::verify` failing are both the same fact from here: this rule
+/// cannot be shown to be genuine, so the request does not go out. There is no
+/// third path that lets a fetch proceed without a proof that verified.
+pub fn vet_commitment(
+    workspace_id: uuid::Uuid,
+    rules: &[EgressRule],
+    commitment: &crate::egress::commit::Hash,
+    rule: &EgressRule,
+    host: &str,
+) -> Result<EgressRule, Refused> {
+    let proof = crate::egress::commit::prove(workspace_id, rules, rule)
+        .ok_or_else(|| Refused::Unproven(host.to_string()))?;
+    let vouched = crate::egress::commit::verify(workspace_id, commitment, &proof)
+        .map_err(|_| Refused::Unproven(host.to_string()))?;
+
+    // The rule that was vouched for, handed back rather than dropped. `verify`
+    // returns rules precisely so that checking one and then using another is
+    // not a thing a caller can do by accident, and answering `()` here would
+    // put that mistake back within reach of the next person to edit `fetch`.
+    // For a whole-set proof the vouched list is every rule, so the one to use
+    // is still the one that matched.
+    vouched
+        .into_iter()
+        .find(|r| r == rule)
+        .ok_or_else(|| Refused::Unproven(host.to_string()))
+}
+
 /// Resolves a host and vets the result, returning what may be connected to.
 ///
 /// The addresses come back so the caller can connect to exactly these. Between
@@ -350,6 +396,14 @@ mod tests {
             host: host.into(),
             header: None,
             credential_env: None,
+        }
+    }
+
+    fn with_credential(host: &str, header: &str, env: &str) -> EgressRule {
+        EgressRule {
+            host: host.into(),
+            header: Some(header.into()),
+            credential_env: Some(env.into()),
         }
     }
 
@@ -570,5 +624,85 @@ mod tests {
         }
         assert!(check_header("content-type").is_ok());
         assert!(check_header("x-request-id").is_ok());
+    }
+
+    #[test]
+    fn a_rule_the_api_actually_committed_to_is_provable() {
+        let ws = uuid::Uuid::now_v7();
+        let set = vec![rule("api.stripe.com"), rule("docs.example.com")];
+        let committed = crate::egress::commit::root(ws, &set);
+        assert!(vet_commitment(ws, &set, &committed, &set[0], "api.stripe.com").is_ok());
+    }
+
+    #[test]
+    fn a_rule_the_runtime_invented_is_refused_even_though_it_is_in_the_list_it_holds() {
+        // The list the runtime is carrying is not the thing being trusted --
+        // the commitment is. So a rule that is genuinely in `self.egress` but
+        // was never part of what the API hashed (a stale list, or one a
+        // compromised host process altered) must still be refused: holding
+        // the rule is not the same as being able to prove it.
+        let ws = uuid::Uuid::now_v7();
+        let committed_set = vec![rule("api.stripe.com")];
+        let committed = crate::egress::commit::root(ws, &committed_set);
+
+        let runtime_set = vec![rule("api.stripe.com"), rule("evil.example.com")];
+        let invented = rule("evil.example.com");
+        assert_eq!(
+            vet_commitment(ws, &runtime_set, &committed, &invented, "evil.example.com"),
+            Err(Refused::Unproven("evil.example.com".into()))
+        );
+    }
+
+    #[test]
+    fn an_absent_or_empty_commitment_refuses_rather_than_allows() {
+        // "Could not verify" has to mean refused, never allowed. An empty
+        // commitment is what a turn given no rules looks like, so a rule
+        // checked against it -- whether the commitment was stripped, defaulted,
+        // or simply never set -- must fail exactly the way a rule that was
+        // never allowed fails.
+        let ws = uuid::Uuid::now_v7();
+        let set = vec![rule("api.stripe.com")];
+        let empty = crate::egress::commit::empty_root();
+        assert_eq!(
+            vet_commitment(ws, &set, &empty, &set[0], "api.stripe.com"),
+            Err(Refused::Unproven("api.stripe.com".into()))
+        );
+    }
+
+    #[test]
+    fn a_rule_from_the_wrong_workspace_does_not_verify_here() {
+        // The commitment is per workspace, so a proof built correctly for one
+        // workspace must not verify against another's turn -- otherwise one
+        // workspace's rule list could be replayed to unlock hosts for a turn
+        // that belongs to somebody else's.
+        let mine = uuid::Uuid::now_v7();
+        let yours = uuid::Uuid::now_v7();
+        let set = vec![rule("api.stripe.com")];
+        let mine_committed = crate::egress::commit::root(mine, &set);
+
+        assert_eq!(
+            vet_commitment(yours, &set, &mine_committed, &set[0], "api.stripe.com"),
+            Err(Refused::Unproven("api.stripe.com".into()))
+        );
+    }
+
+    #[test]
+    fn a_credential_cannot_be_carried_across_by_forging_the_proof() {
+        // Proving is not just "this host is allowed" -- it is "this exact
+        // rule, credential and all, is the one the API vouched for". A rule
+        // whose header or credential_env has been edited after the match, even
+        // to a value some other genuine rule carries, must fail to verify.
+        let ws = uuid::Uuid::now_v7();
+        let set = vec![
+            with_credential("api.stripe.com", "authorization", "STRIPE_KEY"),
+            rule("docs.example.com"),
+        ];
+        let committed = crate::egress::commit::root(ws, &set);
+
+        let swapped = with_credential("docs.example.com", "authorization", "STRIPE_KEY");
+        assert_eq!(
+            vet_commitment(ws, &set, &committed, &swapped, "docs.example.com"),
+            Err(Refused::Unproven("docs.example.com".into()))
+        );
     }
 }

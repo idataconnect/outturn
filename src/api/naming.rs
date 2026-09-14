@@ -166,7 +166,11 @@ async fn run_one(
         return Ok(());
     }
 
-    let token = minter.mint_turn(session_id, job.workspace_id)?;
+    // This call names a session; it never runs workspace code and carries no
+    // egress rules, so the commitment it mints is the same empty one every
+    // workspace with no rules gets -- there is nothing here for the gateway
+    // to check against.
+    let token = minter.mint_turn(session_id, job.workspace_id, crate::egress::commit::empty_root())?;
     let request = ChatCompletionRequest {
         model: model.to_string(),
         messages: vec![

@@ -287,6 +287,34 @@ which is compared in constant time and means only "the runtime tier", and the
 API mints the gateway token each turn travels with. Giving the runtime the
 signing secret would let a compromised component's host mint `system_admin`.
 
+**A turn's egress rules are committed to, and the commitment is not yet
+checked by anyone but the runtime.** The API hashes the rule set it hands to a
+turn -- one hash whatever the list's length, `src/egress/commit.rs` -- mints it
+into the turn token, and sends it beside the rules. Before a fetch, the runtime
+proves the rule it matched belongs to that set, and a rule that was invented,
+edited, or kept from before somebody withdrew it hashes to something else and is
+refused. "Could not prove it" and "not allowed" are deliberately the same
+answer.
+
+Be clear about what that is worth today, because the shape invites overclaiming.
+The runtime receives the rules and the commitment in the same request body and
+never opens the signed token -- it holds no validator and passes the token
+through to the gateway. So it proves to itself, from data it was handed, and a
+compromised runtime would simply supply both halves or skip the call. What this
+catches is drift: rules that stopped matching what the API committed to. What it
+does not catch is the tier running workspace code lying about them.
+
+It becomes a boundary when something that is not the runtime does the
+verifying. The gateway holds the public key and can read the committed root out
+of the turn token, so a fetch checked there is checked against a root the
+runtime cannot choose. That is the same move as putting the outbound call behind
+the gateway so a credential need never enter the tier running workspace code,
+and `SessionClaims::egress_commitment()` is the accessor waiting for it --
+minted now so no turn token in flight predates the claim. Until then this is
+groundwork, and `src/egress/commit.rs` is the part that will not need revisiting:
+its empty set has a tag of its own, so a stripped claim can never read as "this
+workspace allows nothing".
+
 **A token is good for one audience.** Browser tokens carry `outturn:api`,
 turn tokens carry `outturn:gateway`, and each validator insists on its own.
 Before this, a turn token was a working API credential for its workspace and an

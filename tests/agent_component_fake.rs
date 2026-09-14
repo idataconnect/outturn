@@ -60,6 +60,10 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Nothing reachable unless a test says so, which is the default a
         // workspace gets.
         egress: Vec::new(),
+        // No rules, so the commitment is the one the API mints for a
+        // workspace that allows nothing -- not an absent claim, which
+        // the runtime refuses rather than reads as empty.
+        egress_commitment: outturn::egress::commit::empty_root(),
         fuel: 10_000_000_000,
     }
 }
@@ -1085,6 +1089,12 @@ async fn tool_result(arguments: &str, egress: Vec<outturn::runtime::egress::Egre
 
     let mut options = options(&gateway, None);
     options.on_tool_result = Some(on_tool_result);
+    // Set together, because that is the only way they are ever true of the
+    // same turn: the API commits to the rules it hands over, and a fixture
+    // that replaced one without the other would be testing a turn the API
+    // could not have minted.
+    options.egress_commitment =
+        outturn::egress::commit::root(options.workspace_id, &egress);
     options.egress = egress;
 
     runner()
@@ -1112,6 +1122,56 @@ async fn an_agent_reaches_nothing_it_was_not_allowed() {
     assert!(
         result.contains("not on this workspace's allowed list"),
         "an empty rule list let a request out: {result}"
+    );
+}
+
+/// A rule that does not match what the API committed to is refused.
+///
+/// Drives the whole path a real turn takes -- guest, host, allowlist,
+/// commitment -- rather than the check in isolation, so it fails if the call is
+/// ever dropped out of `fetch` while the helper it calls goes on passing its
+/// own tests. What it demonstrates is that rules and commitment must agree; it
+/// is not a test of a compromised runtime, which would supply both and is not
+/// something this tier can check about itself. See AGENTS.md on what the
+/// commitment is worth until something other than the runtime verifies it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rule_the_api_never_committed_to_does_not_let_a_request_out() {
+    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+        name: "fetch_url".into(),
+        arguments: r#"{"url":"https://example.com/data","action":"Looking something up"}"#.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push(outcome.details.clone());
+        })
+    };
+
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+    // A workspace that allows nothing, and a runtime holding a rule saying
+    // otherwise: the shape of a compromised runtime, or of one that kept a
+    // rule somebody has since withdrawn.
+    options.egress_commitment = outturn::egress::commit::root(options.workspace_id, &[]);
+    options.egress = vec![outturn::runtime::egress::EgressRule {
+        host: "example.com".into(),
+        header: None,
+        credential_env: None,
+    }];
+
+    runner()
+        .run(&component(), user("go and look"), String::new(), options)
+        .await
+        .expect("run");
+
+    let result = seen.lock().unwrap().first().cloned().unwrap_or_default();
+    assert!(
+        result.contains("could not be shown to be one of this turn's allowed hosts"),
+        "a rule the API never committed to let a request out: {result}"
     );
 }
 

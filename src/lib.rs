@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod db;
+pub mod egress;
 pub mod events;
 pub mod gateway;
 pub mod http_client;

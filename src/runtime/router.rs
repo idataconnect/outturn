@@ -80,6 +80,11 @@ pub struct ExecuteRequest {
     /// runtime holds no database; absent means the agent reaches nothing.
     #[serde(default)]
     pub egress: Vec<crate::runtime::egress::EgressRule>,
+    /// What the API committed to for `egress`, minted into the turn token
+    /// alongside it. Carried here too so whatever mints the token can read it
+    /// off the same request it is signing for, rather than recomputing it from
+    /// a rule list it might have obtained separately.
+    pub egress_commitment: crate::egress::commit::Hash,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

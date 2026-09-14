@@ -629,6 +629,11 @@ impl Worker {
         let egress = super::egress::rules_for(&self.pool, payload.workspace_id)
             .await
             .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
+        // Committed here, next to the rules it is over, so the token minted
+        // for this turn can carry a hash rather than the runtime's word for
+        // what it was given. The runtime executes workspace code and cannot be
+        // the tier that reports its own rules.
+        let egress_commitment = crate::egress::commit::root(payload.workspace_id, &egress);
 
         let placeholder = self
             .chat
@@ -726,6 +731,7 @@ impl Worker {
             max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
             reply_id: placeholder.message.id,
             egress,
+            egress_commitment,
         }))
     }
 

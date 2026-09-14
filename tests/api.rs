@@ -2032,7 +2032,10 @@ async fn only_the_runtime_key_takes_work() {
     let (status, body) = h.post("/v1/work", Some(wrong), "{}").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "a wrong key was accepted: {body}");
 
-    let turn = h.minter.mint_turn(Uuid::now_v7(), acme).expect("token");
+    let turn = h
+        .minter
+        .mint_turn(Uuid::now_v7(), acme, outturn::egress::commit::empty_root())
+        .expect("token");
     let (status, body) = h.post("/v1/work", Some(&turn), "{}").await;
     assert_eq!(
         status,

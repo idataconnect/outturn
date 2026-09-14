@@ -27,6 +27,8 @@ use pasetors::{Public, public};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::egress::commit;
+
 use super::rbac::Role;
 
 /// Tokens the API accepts: people signed in through a browser.
@@ -59,12 +61,45 @@ pub struct SessionClaims {
     /// resolves on every request. Never authorities: a role may bundle
     /// hundreds, and a token that carried them would grow with every one.
     pub roles: Vec<String>,
+    /// What the API committed to over this turn's egress rules, for the tokens
+    /// that authorise a turn. `None` on a browser session token, which never
+    /// carries a turn's rules and has no business making a statement about
+    /// them -- a claim meaning "allows nothing" on a token that could never
+    /// prove a rule anyway is a claim waiting to be read as an answer.
+    ///
+    /// `None` here means the claim was absent, never that the workspace allows
+    /// nothing: those are different answers and the empty set has a commitment
+    /// of its own to say so. Whoever needs one asks with `egress_commitment()`,
+    /// which refuses rather than defaults.
+    pub egress_commitment: Option<commit::Hash>,
+}
+
+impl SessionClaims {
+    /// The commitment this token vouches for, for a caller about to check a
+    /// rule against it.
+    ///
+    /// Refuses when the claim is absent rather than standing in the empty
+    /// commitment. A token predating this claim, or one a forger stripped it
+    /// from, must not be read as "this workspace allows nothing" -- that is
+    /// precisely the answer that makes a stripped token useful, and the tier
+    /// asking this question is the one deciding whether a request goes out.
+    ///
+    /// Nothing calls this yet. Today the runtime receives the commitment with
+    /// the turn and enforces there, so the claim rides along unread; it is
+    /// what a tier that only ever sees the token -- the gateway, if the
+    /// outbound call moves behind it to attach a credential the runtime must
+    /// not hold -- would ask. Minting it now costs a hash and means such a
+    /// tier can be added without every turn token in flight predating it.
+    pub fn egress_commitment(&self) -> Result<commit::Hash, AuthError> {
+        self.egress_commitment.ok_or(AuthError::Invalid)
+    }
 }
 
 /// The claim names as they appear in the payload.
 const SUBJECT: &str = "sub";
 const WORKSPACE: &str = "wid";
 const SCOPE: &str = "scp";
+const EGRESS: &str = "egr";
 /// Footer claim naming which public key signed the token, so verifiers can
 /// hold more than one during a rotation.
 const KEY_ID: &str = "kid";
@@ -122,6 +157,12 @@ impl TokenMinter {
     }
 
     /// Mints a browser session token for a signed-in user.
+    ///
+    /// Carries no egress commitment. A person acting in the API never holds a
+    /// turn's rules, so this token has nothing to vouch for -- and the empty
+    /// commitment would be the wrong thing to put here, being an answer
+    /// ("allows nothing") rather than the absence of one. Only `mint_turn`
+    /// makes that statement, because only a turn can be asked to prove a rule.
     pub fn mint_session(
         &self,
         user_id: Uuid,
@@ -133,6 +174,7 @@ impl TokenMinter {
             user_id,
             workspace_id,
             roles,
+            None,
             Duration::from_secs(SESSION_TOKEN_LIFETIME_SECS),
         )
     }
@@ -141,13 +183,23 @@ impl TokenMinter {
     ///
     /// Carries `Role::Turn`, which holds `GatewayInvoke` and nothing else, and
     /// the gateway audience, so even if it leaked to something that could
-    /// reach the API it would be refused there.
-    pub fn mint_turn(&self, chat_session_id: Uuid, workspace_id: Uuid) -> Result<String, AuthError> {
+    /// reach the API it would be refused there. `egress_commitment` is what
+    /// this tier computed over the rules handed to the same turn -- minted
+    /// alongside them rather than trusted from whoever asks, since the runtime
+    /// that will eventually present a rule for enforcement is the tier running
+    /// workspace code and cannot be the one vouching for what it was allowed.
+    pub fn mint_turn(
+        &self,
+        chat_session_id: Uuid,
+        workspace_id: Uuid,
+        egress_commitment: commit::Hash,
+    ) -> Result<String, AuthError> {
         self.mint_with_lifetime(
             AUDIENCE_GATEWAY,
             chat_session_id,
             workspace_id,
             &[Role::Turn.to_string()],
+            Some(egress_commitment),
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
         )
     }
@@ -158,6 +210,7 @@ impl TokenMinter {
         subject: Uuid,
         workspace_id: Uuid,
         roles: &[String],
+        egress_commitment: Option<commit::Hash>,
         lifetime: Duration,
     ) -> Result<String, AuthError> {
         use chrono::SecondsFormat;
@@ -186,6 +239,14 @@ impl TokenMinter {
 
         let scp_json = serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
         claims.add_additional(SCOPE, scp_json).map_err(internal)?;
+
+        // Added only where it means something. A token that cannot authorise a
+        // turn does not get to carry a statement about what a turn may reach.
+        if let Some(committed) = egress_commitment {
+            let egr_json =
+                serde_json::to_value(committed).map_err(|e| AuthError::Internal(e.to_string()))?;
+            claims.add_additional(EGRESS, egr_json).map_err(internal)?;
+        }
 
         // `kid` is a registered footer claim, so it goes in through the
         // paserk path rather than as an arbitrary key.
@@ -294,10 +355,24 @@ impl TokenValidator {
             return Err(AuthError::Invalid);
         }
 
+        // Absent is carried as absent rather than resolved here: a session
+        // token legitimately has no commitment, and only the caller knows
+        // whether it needed one. What must never happen is absence becoming
+        // the empty commitment, which reads as "this workspace allows
+        // nothing" -- so a malformed claim is refused outright, and a missing
+        // one stays None for `egress_commitment()` to refuse.
+        let egress_commitment: Option<commit::Hash> = match parsed.get(EGRESS) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                Some(serde_json::from_value(value.clone()).map_err(|_| AuthError::Invalid)?)
+            }
+        };
+
         Ok(SessionClaims {
             subject,
             workspace_id,
             roles,
+            egress_commitment,
         })
     }
 }
@@ -341,11 +416,17 @@ impl RuntimeKey {
     }
 
     /// What the runtime tier is, once its key has been accepted.
+    ///
+    /// Not a turn's claims and not signed for any workspace, so it commits to
+    /// no rule set at all. A turn's commitment travels on the turn token the
+    /// runtime presents alongside its key, never on its own identity: this
+    /// says which tier is calling, and nothing about what any turn may reach.
     pub fn claims() -> SessionClaims {
         SessionClaims {
             subject: Uuid::nil(),
             workspace_id: Uuid::nil(),
             roles: vec![Role::Runtime.to_string()],
+            egress_commitment: None,
         }
     }
 }
@@ -430,7 +511,9 @@ mod tests {
             "a browser token was accepted by the gateway"
         );
 
-        let turn = minter.mint_turn(Uuid::now_v7(), Uuid::now_v7()).expect("mint");
+        let turn = minter
+            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+            .expect("mint");
         assert!(gateway.validate(&turn).is_ok());
         assert!(
             api.validate(&turn).is_err(),
@@ -443,7 +526,11 @@ mod tests {
         let (minter, public) = pair();
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
         let claims = gateway
-            .validate(&minter.mint_turn(Uuid::now_v7(), Uuid::now_v7()).expect("mint"))
+            .validate(
+                &minter
+                    .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+                    .expect("mint"),
+            )
             .expect("valid");
         assert!(claims.has_platform_authority(super::super::rbac::Authority::GatewayInvoke));
         assert!(!claims.has_platform_authority(super::super::rbac::Authority::SessionsRead));
@@ -482,11 +569,118 @@ mod tests {
                 Uuid::now_v7(),
                 Uuid::now_v7(),
                 &["viewer".to_string()],
+                None,
                 Duration::from_secs(0),
             )
             .expect("mint");
         std::thread::sleep(Duration::from_millis(1100));
         assert!(matches!(api.validate(&token), Err(AuthError::Expired)));
+    }
+
+    #[test]
+    fn a_turn_token_carries_the_commitment_it_was_minted_with() {
+        let (minter, public) = pair();
+        let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
+        let committed = commit::root(
+            Uuid::now_v7(),
+            &[crate::runtime::egress::EgressRule {
+                host: "api.example.com".into(),
+                header: None,
+                credential_env: None,
+            }],
+        );
+
+        let turn = minter
+            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), committed)
+            .expect("mint");
+        let claims = gateway.validate(&turn).expect("valid");
+        assert_eq!(claims.egress_commitment().expect("committed"), committed);
+    }
+
+    #[test]
+    fn a_workspace_with_no_rules_still_gets_a_commitment() {
+        // The trap this whole claim exists to avoid: a turn for a workspace
+        // that allows nothing must carry a claim saying so explicitly, rather
+        // than simply lacking one. `empty_root` is what that claim says, and
+        // it round-trips like any other commitment.
+        let (minter, public) = pair();
+        let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
+
+        let turn = minter
+            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+            .expect("mint");
+        let claims = gateway.validate(&turn).expect("valid");
+        assert_eq!(
+            claims.egress_commitment().expect("committed"),
+            commit::empty_root()
+        );
+    }
+
+    #[test]
+    fn a_token_missing_the_egress_claim_is_refused_rather_than_read_as_empty() {
+        // A token minted before this claim existed, or one a forger stripped
+        // it from, must not verify. If it did, "no commitment" would be
+        // silently equivalent to "the empty commitment" -- exactly the answer
+        // that lets a stripped token be read as "this workspace allows
+        // nothing" instead of being refused outright.
+        let (minter, public) = pair();
+        let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
+
+        let internal = |e: PasetoError| e;
+        let now = chrono::Utc::now();
+        let exp = now + chrono::Duration::seconds(300);
+        let mut claims = Claims::new().expect("claims");
+        claims
+            .expiration(&exp.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+            .map_err(internal)
+            .expect("exp");
+        claims.audience(AUDIENCE_GATEWAY).expect("aud");
+        claims.subject(&Uuid::now_v7().to_string()).expect("sub");
+        claims
+            .add_additional(WORKSPACE, Uuid::now_v7().to_string())
+            .expect("wid");
+        claims
+            .add_additional(SCOPE, serde_json::json!([Role::Turn.to_string()]))
+            .expect("scp");
+        // EGRESS deliberately left unset.
+
+        let mut footer = Footer::new();
+        footer
+            .parse_string(&format!("{{\"{KEY_ID}\":{}}}", serde_json::json!(minter.kid)))
+            .expect("footer");
+        let token = public::sign(&minter.secret_key, &claims, Some(&footer), None).expect("sign");
+
+        // The token itself verifies -- it is properly signed -- but the claim
+        // it would need to vouch for a rule is not there, and asking for one
+        // refuses rather than handing back the empty commitment.
+        let claims = gateway.validate(&token).expect("signed");
+        assert_eq!(claims.egress_commitment, None);
+        assert!(matches!(
+            claims.egress_commitment(),
+            Err(AuthError::Invalid)
+        ));
+    }
+
+    #[test]
+    fn a_browser_token_commits_to_nothing_at_all() {
+        // A session token never carries a turn's rules, so it makes no
+        // statement about them. The empty commitment would be the wrong thing
+        // to put here: it is an answer ("this workspace allows nothing")
+        // rather than the absence of one, and nothing should be able to lift
+        // it off a browser token and treat it as a turn's.
+        let (minter, public) = pair();
+        let api = TokenValidator::new(&public, AUDIENCE_API).expect("validator");
+
+        let token = minter
+            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
+            .expect("mint");
+        let claims = api.validate(&token).expect("valid");
+
+        assert_eq!(claims.egress_commitment, None);
+        assert!(matches!(
+            claims.egress_commitment(),
+            Err(AuthError::Invalid)
+        ));
     }
 
     #[test]

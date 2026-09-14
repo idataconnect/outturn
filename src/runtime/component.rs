@@ -228,6 +228,13 @@ pub struct AgentHost {
     /// Hosts this workspace's agents may reach. Empty means none, which is what a
     /// workspace who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
+    /// What the API committed to for `egress` when it minted this turn.
+    ///
+    /// The runtime runs workspace code, so it cannot be trusted to have kept
+    /// `egress` honest -- it is carried here so every fetch can prove, rather
+    /// than assume, that the rule it is about to use is one the API actually
+    /// vouched for.
+    egress_commitment: crate::egress::commit::Hash,
     /// What the guest may grow to. Consulted by wasmtime on every memory or
     /// table growth; a request past it fails inside the guest rather than
     /// being granted and killing the pod.
@@ -538,6 +545,25 @@ impl outturn::agent::host::Host for AgentHost {
 
         let url = reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
         let (host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+
+        // The runtime runs workspace code, so `self.egress` is not something it
+        // may trust just because it is holding it -- it must show the rule it
+        // matched is one the API actually committed to for this turn. A rule
+        // the runtime invented, or a stale one from before an edit, hashes to
+        // something else and is refused here, before anything is resolved or
+        // sent. "Could not prove it" and "not allowed" must read the same way
+        // to the model: both are just a fact about the workspace's settings.
+        // The rule used from here on is the one handed back, not the one
+        // `check_url` matched: same rule today, and the only shape in which
+        // checking one and using another is not an edit away.
+        let rule = &egress::vet_commitment(
+            self.workspace_id,
+            &self.egress,
+            &self.egress_commitment,
+            rule,
+            &host,
+        )
+        .map_err(|e| e.to_string())?;
 
         // A credential travels only where it cannot be read on the way. The
         // rule names the host; the request names the scheme; and a workspace who
@@ -1269,6 +1295,11 @@ pub struct RunOptions {
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     /// Hosts this turn may reach, from the workspace's own rules.
     pub egress: Vec<crate::runtime::egress::EgressRule>,
+    /// What the API committed to for `egress`. Required, not defaulted: a
+    /// caller that forgot to pass one should fail to build a `RunOptions`
+    /// rather than have the runtime quietly reach for the empty commitment
+    /// and refuse every rule it was actually given.
+    pub egress_commitment: crate::egress::commit::Hash,
     /// Whose space that is. The guest is never told.
     pub workspace_id: uuid::Uuid,
     pub agent_id: uuid::Uuid,
@@ -1378,6 +1409,7 @@ impl AgentRunner {
                 .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
                 .collect(),
             egress: options.egress,
+            egress_commitment: options.egress_commitment,
             limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(GUEST_MEMORY_LIMIT)
                 // One instance and a handful of tables is what a component

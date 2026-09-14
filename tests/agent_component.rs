@@ -21,7 +21,11 @@ fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
         bytes[i] = u8::from_str_radix(&DEV_SECRET[i * 2..i * 2 + 2], 16).unwrap();
     }
     let minter = TokenMinter::new(&bytes).expect("minter");
-    minter.mint_turn(session_id, workspace_id).expect("mint")
+    // No egress rules are exercised by this suite, so the empty commitment is
+    // what a real turn for a workspace with none would carry too.
+    minter
+        .mint_turn(session_id, workspace_id, outturn::egress::commit::empty_root())
+        .expect("mint")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -83,6 +87,10 @@ async fn component_runs_a_turn_and_streams_progress() {
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 egress: Vec::new(),
+                // No rules, so the commitment is the one the API mints for a
+                // workspace that allows nothing -- not an absent claim, which
+                // the runtime refuses rather than reads as empty.
+                egress_commitment: outturn::egress::commit::empty_root(),
                 fuel: 10_000_000_000,
             },
         )

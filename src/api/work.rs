@@ -150,8 +150,12 @@ pub async fn take(
                     continue;
                 }
                 Ok(Some(request)) => {
-                    let gateway_token =
-                        match mint_for(&state, payload.session_id, payload.workspace_id) {
+                    let gateway_token = match mint_for(
+                        &state,
+                        payload.session_id,
+                        payload.workspace_id,
+                        request.egress_commitment,
+                    ) {
                             Ok(token) => token,
                             Err(e) => {
                                 // The placeholder is already written and
@@ -234,11 +238,18 @@ pub async fn take(
 ///
 /// Minted here rather than held by the runtime, so what a turn may reach is
 /// bounded by what this tier granted for that turn rather than by whatever the
-/// runtime happens to hold.
-pub fn mint_for(state: &ApiState, session_id: Uuid, workspace_id: Uuid) -> Result<String, ApiError> {
+/// runtime happens to hold. `egress_commitment` comes from the same
+/// `ExecuteRequest` this token is minted for, so the claim and the rules
+/// travelling beside it are always the API's word about the same turn.
+pub fn mint_for(
+    state: &ApiState,
+    session_id: Uuid,
+    workspace_id: Uuid,
+    egress_commitment: crate::egress::commit::Hash,
+) -> Result<String, ApiError> {
     state
         .minter
-        .mint_turn(session_id, workspace_id)
+        .mint_turn(session_id, workspace_id, egress_commitment)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 

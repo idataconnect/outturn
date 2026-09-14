@@ -239,6 +239,7 @@ impl Puller {
             },
             idle_timeout: self.idle_timeout,
             egress: request.egress,
+            egress_commitment: request.egress_commitment,
         };
 
         let runner = Arc::clone(&self.runner);
