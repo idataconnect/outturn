@@ -1,6 +1,7 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
 import { CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square } from 'lucide-react'
 
+import { useEffect, useRef } from 'react'
 import type React from 'react'
 
 import type { MessageStatus } from '../lib/useChatRuntime'
@@ -135,11 +136,27 @@ function AssistantMessage() {
 export default function Thread({
   disabled,
   stopping,
+  focusRequest = 0,
 }: {
   disabled?: boolean
   /** A stop has been asked for and the turn has not ended yet. */
   stopping?: boolean
+  /** Changed to put the cursor in the composer, e.g. for a session just chosen. */
+  focusRequest?: number
 }) {
+  // `autoFocus` only speaks for the first mount, and the thread outlives
+  // every change of session -- so a session chosen from the sidebar left
+  // the cursor on the link that chose it, and the first thing anyone did
+  // was click into the box. Held until the composer is enabled, because the
+  // first session of all enables it a render after the request is made.
+  const input = useRef<HTMLTextAreaElement>(null)
+  const focused = useRef(0)
+  useEffect(() => {
+    if (disabled || focusRequest === focused.current) return
+    focused.current = focusRequest
+    input.current?.focus()
+  }, [focusRequest, disabled])
+
   return (
     <ThreadPrimitive.Root className="flex flex-col h-full">
       <ThreadPrimitive.Viewport className="flex-1 overflow-auto p-6 space-y-4">
@@ -159,6 +176,7 @@ export default function Thread({
 
       <ComposerPrimitive.Root className="flex gap-2 p-4 border-t border-surface-200 dark:border-surface-800">
         <ComposerPrimitive.Input
+          ref={input}
           autoFocus
           disabled={disabled}
           placeholder={disabled ? 'Start a session first' : 'Message the agent…'}

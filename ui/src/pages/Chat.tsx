@@ -72,6 +72,9 @@ export default function Chat() {
   const [sessionsOpen, setSessionsOpen] = useState(() =>
     readFlag('chat.sessions', currentBreakpoint() !== 'phone'),
   )
+  // Bumped by choosing a session, new or existing: whoever just picked a
+  // conversation is about to type into it.
+  const [focusRequest, setFocusRequest] = useState(0)
 
   function toggleSessions(next: boolean) {
     setSessionsOpen(next)
@@ -136,6 +139,7 @@ export default function Chat() {
       const session = await createSession(agentId)
       setSessions((prev) => [session, ...prev])
       void navigate(`/sessions/${session.id}`)
+      setFocusRequest((n) => n + 1)
       setError(null)
       // Same as picking an existing one: only dismiss a list that was
       // covering the conversation it just opened.
@@ -237,7 +241,10 @@ export default function Chat() {
               // Picking a session dismisses the list only where the list was
               // in the way. Inline it sits beside the thread, and closing it
               // would take the sidebar away every time somebody used it.
-              onClick={() => breakpoint === 'phone' && toggleSessions(false)}
+              onClick={() => {
+                if (breakpoint === 'phone') toggleSessions(false)
+                setFocusRequest((n) => n + 1)
+              }}
               title={`${sessionName(session)} — ${agentName(session.agent_id)}`}
               className={({ isActive }) =>
                 `block w-full px-2 py-1.5 rounded-md text-sm text-left ${
@@ -300,7 +307,7 @@ export default function Chat() {
         )}
         <div className="flex-1 min-h-0">
           <AssistantRuntimeProvider runtime={runtime}>
-            <Thread disabled={!active} stopping={stopping} />
+            <Thread disabled={!active} stopping={stopping} focusRequest={focusRequest} />
           </AssistantRuntimeProvider>
         </div>
       </div>

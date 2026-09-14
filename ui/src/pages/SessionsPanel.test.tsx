@@ -37,7 +37,13 @@ vi.mock('@assistant-ui/react', () => ({
   AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-vi.mock('../components/Thread', () => ({ default: () => <div>thread</div> }))
+// Records what the page asked of it, so a test can tell a focus request was
+// made without rendering assistant-ui. Thread.test covers what it does with one.
+vi.mock('../components/Thread', () => ({
+  default: ({ focusRequest }: { focusRequest?: number }) => (
+    <div data-testid="thread" data-focus-request={focusRequest}>thread</div>
+  ),
+}))
 vi.mock('../components/SidePane', () => ({ default: () => <div>pane</div> }))
 
 const signedIn: SessionState = {
@@ -98,6 +104,43 @@ describe('picking a session', () => {
     // DOM either way -- what changed is whether the panel is shown at all.
     await waitFor(() =>
       expect(document.querySelector('aside')?.className).toContain('hidden'),
+    )
+  })
+})
+
+describe('asking for the cursor', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('is asked for when a session is picked', async () => {
+    const user = userEvent.setup()
+    setWidth(1440)
+    show()
+
+    const thread = await screen.findByTestId('thread')
+    const before = thread.dataset.focusRequest
+
+    await user.click(await screen.findByText('Second chat'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('thread').dataset.focusRequest).not.toBe(before),
+    )
+  })
+
+  it('is asked for when a session is started', async () => {
+    const user = userEvent.setup()
+    setWidth(1440)
+    show()
+
+    const thread = await screen.findByTestId('thread')
+    const before = thread.dataset.focusRequest
+
+    await user.click(await screen.findByRole('button', { name: 'Helper' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('thread').dataset.focusRequest).not.toBe(before),
     )
   })
 })
