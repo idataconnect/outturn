@@ -16,14 +16,16 @@ Three binaries, deployed as three services:
 | binary | does |
 |---|---|
 | `api` | HTTP API, auth, transcripts, the job queue and its worker |
-| `gateway` | Talks to model providers. Holds the credentials; nothing else does |
+| `gateway` | Talks to model providers, and makes an agent's outbound requests. Holds the credentials; nothing else does |
 | `runtime` | Runs agent components in a WASM sandbox |
 
 The split is a security boundary, not a packaging one. An agent runs in the
 runtime with no filesystem, no sockets and no credentials — every capability it
 has is an explicit host import declared in `wit/agent.wit`. When it wants a
-model it calls `chat`, and the host attaches the token. A compromised agent can
-spend its session's allowance and nothing more.
+model it calls `chat`, and the host attaches the token. When it wants a URL the
+host asks the gateway, because the tier running workspace code is the wrong
+place to hold a credential or to decide what may be reached. A compromised
+agent can spend its session's allowance and nothing more.
 
 The gateway speaks *protocols*, not vendors. `provider/openai.rs` is the OpenAI
 chat-completions protocol, which ollama, Groq, OpenRouter and most others also
@@ -279,7 +281,9 @@ address second, and the second check is not theirs to waive: an allowed name
 that resolves inside the cluster is still refused. Names are resolved once and
 the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
-nobody checked.
+nobody checked. All of it happens in the gateway, which is where the request is
+made from; `src/runtime/egress.rs` still holds the rule matching and the
+address vetting, and the gateway calls it.
 
 **The runtime signs nothing.** It executes workspace components, so it holds no
 key that could mint a credential for anyone: it presents `OUTTURN_RUNTIME_KEY`,
@@ -287,33 +291,43 @@ which is compared in constant time and means only "the runtime tier", and the
 API mints the gateway token each turn travels with. Giving the runtime the
 signing secret would let a compromised component's host mint `system_admin`.
 
-**A turn's egress rules are committed to, and the commitment is not yet
-checked by anyone but the runtime.** The API hashes the rule set it hands to a
-turn -- one hash whatever the list's length, `src/egress/commit.rs` -- mints it
-into the turn token, and sends it beside the rules. Before a fetch, the runtime
-proves the rule it matched belongs to that set, and a rule that was invented,
-edited, or kept from before somebody withdrew it hashes to something else and is
-refused. "Could not prove it" and "not allowed" are deliberately the same
-answer.
+**An agent's requests are made by the gateway, not by the runtime.** The
+runtime executes workspace code, so it holds no credentials and has no outbound
+HTTP path of its own: it asks the gateway, presenting the turn token the API
+minted for it. The gateway reads the egress commitment out of that token,
+checks the rule the caller offered against it, vets the address, attaches the
+credential and makes the call. A runtime that rewrote its own copy of the rules
+gets nowhere, because the copy it can rewrite is not the one consulted -- and
+an approval it was merely trusted to honour would be worth nothing, since a
+compromised runtime would simply not ask.
 
-Be clear about what that is worth today, because the shape invites overclaiming.
-The runtime receives the rules and the commitment in the same request body and
-never opens the signed token -- it holds no validator and passes the token
-through to the gateway. So it proves to itself, from data it was handed, and a
-compromised runtime would simply supply both halves or skip the call. What this
-catches is drift: rules that stopped matching what the API committed to. What it
-does not catch is the tier running workspace code lying about them.
+Two things follow that are easy to undo by accident. Nothing in the runtime may
+decide whether a request is allowed: a check performed by the sandbox's own
+host is the thing being defended against rather than the thing defending, and
+`runtime/fetch.rs` is a client with no policy in it on purpose. And the cluster
+should say the same thing the code does -- `k8s/base/networkpolicy.yaml` denies
+the runtime any egress but the API, the gateway, minio and DNS, so a host that
+grew a socket still reaches nothing. It needs a CNI that enforces
+NetworkPolicy; kind's default does not.
 
-It becomes a boundary when something that is not the runtime does the
-verifying. The gateway holds the public key and can read the committed root out
-of the turn token, so a fetch checked there is checked against a root the
-runtime cannot choose. That is the same move as putting the outbound call behind
-the gateway so a credential need never enter the tier running workspace code,
-and `SessionClaims::egress_commitment()` is the accessor waiting for it --
-minted now so no turn token in flight predates the claim. Until then this is
-groundwork, and `src/egress/commit.rs` is the part that will not need revisiting:
-its empty set has a tag of its own, so a stripped claim can never read as "this
-workspace allows nothing".
+**The commitment is what makes a rule a rule.** The API hashes a turn's egress
+rules into one root -- `src/egress/commit.rs`, one hash whatever the list's
+length -- and signs it into the turn token. A request carries the rule it wants
+and a proof, which is the whole set for a short list and an inclusion path for
+a long one, and the gateway rebuilds the root and compares. The empty set has a
+tag of its own, because a stripped claim must never read as "this workspace
+allows nothing", and a token with no commitment is refused rather than given
+the benefit of the doubt. What the scheme cannot do is prove absence: a host is
+refused by failing to be proven allowed, which is why "could not verify" must
+always mean refused.
+
+**What a compromised runtime still reaches.** It holds the turn tokens of the
+turns it is running, so it can act as those tenants: their allowed hosts, with
+their credentials attached by the gateway, and their responses. That is the
+boundary -- co-residency, not the platform. It cannot obtain a credential, act
+for a workspace whose turn it is not running, or reach a host nobody allowed.
+Narrowing it further is a scheduling decision rather than a code one: do not
+put turns from different tenants on one pod.
 
 **A token is good for one audience.** Browser tokens carry `outturn:api`,
 turn tokens carry `outturn:gateway`, and each validator insists on its own.

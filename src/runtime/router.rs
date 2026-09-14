@@ -81,9 +81,14 @@ pub struct ExecuteRequest {
     #[serde(default)]
     pub egress: Vec<crate::runtime::egress::EgressRule>,
     /// What the API committed to for `egress`, minted into the turn token
-    /// alongside it. Carried here too so whatever mints the token can read it
-    /// off the same request it is signing for, rather than recomputing it from
-    /// a rule list it might have obtained separately.
+    /// alongside it. Carried here so whatever mints the token reads it off the
+    /// same request it is signing for, rather than recomputing it from a rule
+    /// list it might have obtained separately.
+    ///
+    /// The runtime itself never checks anything against this, and must not be
+    /// given a reason to: it is the tier running workspace code, so a check it
+    /// performed on data it was handed would prove nothing. The gateway reads
+    /// the committed root out of the signed token instead.
     pub egress_commitment: crate::egress::commit::Hash,
 }
 

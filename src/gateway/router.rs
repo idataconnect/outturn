@@ -7,6 +7,7 @@ use futures::StreamExt;
 use crate::auth::{self, TokenValidator, SessionClaims};
 
 use super::breaker;
+use super::egress;
 use super::routing::{self};
 use super::llm::provider::{LlmProvider, ProviderError};
 use super::llm::types::{ChatCompletionRequest, ChatCompletionResponse};
@@ -20,6 +21,11 @@ pub struct GatewayState {
     /// existed.
     health: Option<sqlx::postgres::PgPool>,
     providers_by_endpoint: routing::ProviderCache,
+    /// Where a vetted outbound request physically leaves from. `Direct` here
+    /// and in any open-source deployment; the seam exists because spreading
+    /// egress across a pool of addresses, or routing it through an estate's
+    /// own forward proxy, is somebody's infrastructure rather than ours.
+    pub(crate) egress_transport: Arc<dyn egress::transport::EgressTransport>,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -39,7 +45,21 @@ impl GatewayState {
             auth,
             health: None,
             providers_by_endpoint: routing::ProviderCache::default(),
+            egress_transport: Arc::new(egress::transport::Direct),
         }
+    }
+
+    /// Sends outbound requests some other way than straight out of this pod.
+    ///
+    /// Nothing in this repository calls it; it is what a deployment with its
+    /// own egress estate replaces `Direct` with, and it exists so that doing
+    /// so does not mean patching the path that decides what is allowed.
+    pub fn with_egress_transport(
+        mut self,
+        transport: Arc<dyn egress::transport::EgressTransport>,
+    ) -> Self {
+        self.egress_transport = transport;
+        self
     }
 
     pub fn with_health(mut self, pool: sqlx::postgres::PgPool) -> Self {
@@ -204,7 +224,7 @@ fn traffic_type(headers: &axum::http::HeaderMap) -> String {
         .to_string()
 }
 
-fn authenticate(
+pub(crate) fn authenticate(
     state: &GatewayState,
     headers: &axum::http::HeaderMap,
 ) -> Result<SessionClaims, (StatusCode, String)> {
@@ -458,5 +478,8 @@ pub fn routes(state: Arc<GatewayState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/chat/completions/stream", post(chat_completions_stream))
+        // Outbound HTTP for an agent, made here because this is the tier that
+        // holds credentials and the tier the runtime cannot bypass.
+        .route("/v1/egress", post(super::egress::fetch))
         .with_state(state)
 }

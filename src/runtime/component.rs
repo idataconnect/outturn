@@ -116,37 +116,6 @@ pub type UsageSink = Arc<dyn Fn(&CallUsage) + Send + Sync>;
 /// Reports an object the guest wrote, as `(scoped path, resolved key)`.
 pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
-/// How long a request an agent made may take.
-///
-/// Far shorter than a model call, because this is a request to somebody else's
-/// service on behalf of an agent that is holding a turn open while it waits.
-const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// How much of a response may come back.
-///
-/// The body is written by somebody else and a response that never ends is a
-/// way to exhaust a pod that was told to be careful about memory. What arrives
-/// past this is dropped, and the agent is told plainly that it was.
-const FETCH_BODY_LIMIT: usize = 256 * 1024;
-
-/// Removes URLs from an error before it is shown to a model.
-///
-/// A URL an agent built can carry a credential in its query string, and these
-/// strings go into a transcript that is read back on every later turn.
-fn strip_url(message: &str) -> String {
-    message
-        .split_whitespace()
-        .map(|word| {
-            if word.contains("://") {
-                "<url>"
-            } else {
-                word
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
 
@@ -228,13 +197,6 @@ pub struct AgentHost {
     /// Hosts this workspace's agents may reach. Empty means none, which is what a
     /// workspace who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
-    /// What the API committed to for `egress` when it minted this turn.
-    ///
-    /// The runtime runs workspace code, so it cannot be trusted to have kept
-    /// `egress` honest -- it is carried here so every fetch can prove, rather
-    /// than assume, that the rule it is about to use is one the API actually
-    /// vouched for.
-    egress_commitment: crate::egress::commit::Hash,
     /// What the guest may grow to. Consulted by wasmtime on every memory or
     /// table growth; a request past it fails inside the guest rather than
     /// being granted and killing the pod.
@@ -538,147 +500,52 @@ impl outturn::agent::host::Host for AgentHost {
     async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
         use crate::runtime::egress;
 
-        let method = match request.method.to_ascii_uppercase().as_str() {
-            m @ ("GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD") => m.to_string(),
-            other => return Err(format!("{other} is not a method this can send")),
-        };
-
-        let url = reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
-        let (host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
-
-        // The runtime runs workspace code, so `self.egress` is not something it
-        // may trust just because it is holding it -- it must show the rule it
-        // matched is one the API actually committed to for this turn. A rule
-        // the runtime invented, or a stale one from before an edit, hashes to
-        // something else and is refused here, before anything is resolved or
-        // sent. "Could not prove it" and "not allowed" must read the same way
-        // to the model: both are just a fact about the workspace's settings.
-        // The rule used from here on is the one handed back, not the one
-        // `check_url` matched: same rule today, and the only shape in which
-        // checking one and using another is not an edit away.
-        let rule = &egress::vet_commitment(
-            self.workspace_id,
-            &self.egress,
-            &self.egress_commitment,
-            rule,
-            &host,
-        )
-        .map_err(|e| e.to_string())?;
-
-        // A credential travels only where it cannot be read on the way. The
-        // rule names the host; the request names the scheme; and a workspace who
-        // configured a key for a host did not consent to it going out in
-        // clear because a model typed http.
-        if rule.credential_env.is_some() && url.scheme() != "https" {
-            return Err(format!(
-                "{host} has a credential configured, so it can only be reached over https"
-            ));
-        }
-
-        // Resolved once, and the connection pinned to the answer. Checking a
-        // name and then letting the client look it up again is a check of a
-        // different request to the one that gets made.
-        let port = url
-            .port_or_known_default()
-            .ok_or_else(|| "that URL names no port and its scheme implies none".to_string())?;
-        let addrs = egress::resolve_and_vet(&host, port)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        for (name, value) in &request.headers {
-            egress::check_header(name).map_err(|e| e.to_string())?;
-            let name: reqwest::header::HeaderName = name
-                .parse()
-                .map_err(|_| format!("{name} is not a header name"))?;
-            let value = reqwest::header::HeaderValue::from_str(value)
-                .map_err(|_| format!("the {name} header's value cannot be sent"))?;
-            headers.insert(name, value);
-        }
-
-        // Attached after the guest's headers, so nothing it sent can displace
-        // one, and read from the environment rather than from anything that
-        // crossed the sandbox boundary.
-        if let (Some(header), Some(variable)) = (&rule.header, &rule.credential_env) {
-            let secret = std::env::var(variable).map_err(|_| {
-                // Names the variable, not its absence from any particular
-                // place: whoever reads this configured the rule.
-                format!("this host's credential ({variable}) is not configured")
+        // This tier makes no outbound request of its own. It runs workspace
+        // code, so a socket here is a socket a compromised guest's host could
+        // use for anything -- and an approval it was trusted to honour would
+        // be worth nothing, because it could simply not ask. The gateway makes
+        // the call: it holds the credentials, it can read the commitment out
+        // of the turn token this presents, and it is the tier that never runs
+        // anybody's code. The cluster should say the same thing with a
+        // NetworkPolicy, so this is a property of the network rather than of
+        // this function staying honest.
+        //
+        // What is still done here is finding which rule the URL matches, and
+        // building the proof for it. Neither is trusted: the gateway matches
+        // again against the rules that verified, and a proof for a rule the
+        // API never committed to verifies nowhere. Doing it here only saves
+        // sending a workspace's whole rule list on every fetch.
+        let url = reqwest::Url::parse(&request.url)
+            .map_err(|e| format!("that URL is not one: {e}"))?;
+        let (_host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+        let proof = crate::egress::commit::prove(self.workspace_id, &self.egress, rule)
+            .ok_or_else(|| {
+                // The rule is in the list this holds but not in what the API
+                // vouched for, so nothing can be shown about it. Refused here
+                // rather than sent, since the gateway would refuse it anyway
+                // and the message is the same fact about the workspace's
+                // settings either way.
+                egress::Refused::Unproven(rule.host.clone()).to_string()
             })?;
-            let name: reqwest::header::HeaderName = header
-                .parse()
-                .map_err(|_| format!("{header} is not a header name"))?;
-            let mut value = reqwest::header::HeaderValue::from_str(&secret)
-                .map_err(|_| "this host's credential cannot be sent as a header".to_string())?;
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        }
 
-        let mut client = reqwest::Client::builder()
-            .connect_timeout(crate::http_client::CONNECT_TIMEOUT)
-            .timeout(FETCH_TIMEOUT)
-            // A redirect names a host that was never checked. Refusing to
-            // follow is what keeps an allowed host from being a doorway.
-            .redirect(reqwest::redirect::Policy::none());
-        client = client.resolve_to_addrs(&host, &addrs);
-        let client = client
-            .build()
-            .map_err(|e| format!("could not prepare the request: {e}"))?;
-
-        let method = reqwest::Method::from_bytes(method.as_bytes())
-            .map_err(|_| "that is not a method this can send".to_string())?;
-        let mut outgoing = client.request(method, url).headers(headers);
-        if let Some(body) = request.body {
-            outgoing = outgoing.body(body);
-        }
-
-        let response = outgoing.send().await.map_err(|e| {
-            // The URL is stripped: it can carry a credential in a query
-            // string, and this text goes to a model and into a transcript.
-            format!("the request did not complete: {}", strip_url(&e.to_string()))
-        })?;
-
-        let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_string(),
-                    value.to_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect();
-
-        // Read to a bound rather than to the end. A response is written by
-        // somebody else, and a body that does not stop is a way to exhaust a
-        // pod that was told to be careful about memory. Chunks are taken
-        // until the limit is passed and the connection is then dropped, so
-        // what is held in memory is never more than one chunk over the bound.
-        let mut body: Vec<u8> = Vec::new();
-        let mut truncated = false;
-        {
-            use futures::StreamExt;
-            let mut chunks = response.bytes_stream();
-            while let Some(chunk) = chunks.next().await {
-                let chunk = chunk.map_err(|e| {
-                    format!("the response did not arrive whole: {}", strip_url(&e.to_string()))
-                })?;
-                body.extend_from_slice(&chunk);
-                if body.len() > FETCH_BODY_LIMIT {
-                    truncated = true;
-                    body.truncate(FETCH_BODY_LIMIT);
-                    break;
-                }
-            }
-        }
-        let body = String::from_utf8_lossy(&body).to_string();
+        let outcome = crate::runtime::fetch::through_gateway(
+            &self.gateway_url,
+            &self.gateway_token,
+            crate::runtime::fetch::GatewayFetch {
+                method: request.method,
+                url: request.url,
+                headers: request.headers,
+                body: request.body,
+                proof,
+            },
+        )
+        .await?;
 
         Ok(HttpResponse {
-            status,
-            headers,
-            body,
-            truncated,
+            status: outcome.status,
+            headers: outcome.headers,
+            body: outcome.body,
+            truncated: outcome.truncated,
         })
     }
 
@@ -1295,11 +1162,6 @@ pub struct RunOptions {
     pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     /// Hosts this turn may reach, from the workspace's own rules.
     pub egress: Vec<crate::runtime::egress::EgressRule>,
-    /// What the API committed to for `egress`. Required, not defaulted: a
-    /// caller that forgot to pass one should fail to build a `RunOptions`
-    /// rather than have the runtime quietly reach for the empty commitment
-    /// and refuse every rule it was actually given.
-    pub egress_commitment: crate::egress::commit::Hash,
     /// Whose space that is. The guest is never told.
     pub workspace_id: uuid::Uuid,
     pub agent_id: uuid::Uuid,
@@ -1409,7 +1271,6 @@ impl AgentRunner {
                 .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
                 .collect(),
             egress: options.egress,
-            egress_commitment: options.egress_commitment,
             limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(GUEST_MEMORY_LIMIT)
                 // One instance and a handful of tables is what a component

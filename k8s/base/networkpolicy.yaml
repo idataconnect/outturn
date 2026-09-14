@@ -1,0 +1,63 @@
+# The runtime's boundary, said by the network rather than by the runtime.
+#
+# The runtime tier executes workspace code, and every outbound request an agent
+# makes is made for it by the gateway -- the tier that holds credentials and can
+# read a turn's signed egress commitment. That is enforced in the code by the
+# runtime having no outbound HTTP path of its own, which is a property of the
+# code being what it is today. This policy is the same claim made somewhere a
+# compromised runtime cannot edit: even a host that grew a socket reaches
+# nothing but the four places it is allowed to.
+#
+# Requires a CNI that enforces NetworkPolicy. Calico, Cilium and most managed
+# clusters do; kind's default CNI does NOT, and neither does colima's k3s
+# unless it is started with one. On a cluster that ignores this, the object
+# applies cleanly and does nothing -- so local development is unaffected, and a
+# deployment relying on it should check that its CNI enforces rather than
+# assume the manifest is enough.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-runtime-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS, or nothing resolves the three names below. Deliberately not a
+    # licence to reach the internet: a name is not a connection.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Where turns come from, where models and outbound requests are asked for,
+    # and where an agent's files live. Everything else an agent wants is asked
+    # of the gateway rather than reached.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000

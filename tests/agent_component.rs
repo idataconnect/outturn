@@ -87,10 +87,6 @@ async fn component_runs_a_turn_and_streams_progress() {
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 egress: Vec::new(),
-                // No rules, so the commitment is the one the API mints for a
-                // workspace that allows nothing -- not an absent claim, which
-                // the runtime refuses rather than reads as empty.
-                egress_commitment: outturn::egress::commit::empty_root(),
                 fuel: 10_000_000_000,
             },
         )

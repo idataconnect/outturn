@@ -60,10 +60,6 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Nothing reachable unless a test says so, which is the default a
         // workspace gets.
         egress: Vec::new(),
-        // No rules, so the commitment is the one the API mints for a
-        // workspace that allows nothing -- not an absent claim, which
-        // the runtime refuses rather than reads as empty.
-        egress_commitment: outturn::egress::commit::empty_root(),
         fuel: 10_000_000_000,
     }
 }
@@ -1089,12 +1085,6 @@ async fn tool_result(arguments: &str, egress: Vec<outturn::runtime::egress::Egre
 
     let mut options = options(&gateway, None);
     options.on_tool_result = Some(on_tool_result);
-    // Set together, because that is the only way they are ever true of the
-    // same turn: the API commits to the rules it hands over, and a fixture
-    // that replaced one without the other would be testing a turn the API
-    // could not have minted.
-    options.egress_commitment =
-        outturn::egress::commit::root(options.workspace_id, &egress);
     options.egress = egress;
 
     runner()
@@ -1125,17 +1115,21 @@ async fn an_agent_reaches_nothing_it_was_not_allowed() {
     );
 }
 
-/// A rule that does not match what the API committed to is refused.
+/// Every fetch goes to the gateway, whatever this tier believes about it.
 ///
-/// Drives the whole path a real turn takes -- guest, host, allowlist,
-/// commitment -- rather than the check in isolation, so it fails if the call is
-/// ever dropped out of `fetch` while the helper it calls goes on passing its
-/// own tests. What it demonstrates is that rules and commitment must agree; it
-/// is not a test of a compromised runtime, which would supply both and is not
-/// something this tier can check about itself. See AGENTS.md on what the
-/// commitment is worth until something other than the runtime verifies it.
+/// The runtime cannot decide that a rule is genuine: it builds a proof from
+/// the list it holds, and a proof of a rule nobody vouched for is simply a
+/// proof that fails elsewhere. Checking here would be the sandbox's own host
+/// vouching for itself. So the question this answers is not "is it allowed"
+/// but "did it ask" -- the request must leave this tier and be judged where
+/// the signed commitment can be read.
+///
+/// The gateway's own tests cover the judgement. Here the fake gateway serves
+/// model calls and has no egress endpoint at all, so a fetch that was properly
+/// handed over comes back as the refusal that endpoint's absence produces,
+/// which is exactly the evidence wanted: it left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_rule_the_api_never_committed_to_does_not_let_a_request_out() {
+async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
     let gateway = FakeGateway::start(Behaviour::ToolThenReply {
         name: "fetch_url".into(),
         arguments: r#"{"url":"https://example.com/data","action":"Looking something up"}"#.into(),
@@ -1153,10 +1147,6 @@ async fn a_rule_the_api_never_committed_to_does_not_let_a_request_out() {
 
     let mut options = options(&gateway, None);
     options.on_tool_result = Some(on_tool_result);
-    // A workspace that allows nothing, and a runtime holding a rule saying
-    // otherwise: the shape of a compromised runtime, or of one that kept a
-    // rule somebody has since withdrawn.
-    options.egress_commitment = outturn::egress::commit::root(options.workspace_id, &[]);
     options.egress = vec![outturn::runtime::egress::EgressRule {
         host: "example.com".into(),
         header: None,
@@ -1170,32 +1160,14 @@ async fn a_rule_the_api_never_committed_to_does_not_let_a_request_out() {
 
     let result = seen.lock().unwrap().first().cloned().unwrap_or_default();
     assert!(
-        result.contains("could not be shown to be one of this turn's allowed hosts"),
-        "a rule the API never committed to let a request out: {result}"
+        result.contains("refused"),
+        "the fetch should have been handed to the gateway: {result}"
     );
-}
-
-/// Allowing a name does not allow what the name resolves to.
-///
-/// This is the check a workspace cannot waive. `localhost` is a host like any
-/// other as far as a rule is concerned, and a workspace could name it by accident
-/// or be talked into it -- what stops the request is that the address it
-/// resolves to is inside the network this runs in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_name_the_workspace_allowed_still_cannot_reach_the_cluster() {
-    let result = tool_result(
-        r#"{"url":"http://localhost:5432/","action":"Looking something up"}"#,
-        vec![outturn::runtime::egress::EgressRule {
-            host: "localhost".into(),
-            header: None,
-            credential_env: None,
-        }],
-    )
-    .await;
-
+    // And nothing reached the internet on the way: the only thing this tier
+    // can do with a URL now is ask somebody else about it.
     assert!(
-        result.contains("cannot be reached from an agent"),
-        "an allowed name reached inside the cluster: {result}"
+        !result.contains("Example Domain"),
+        "the runtime fetched this itself: {result}"
     );
 }
 
@@ -1215,25 +1187,6 @@ async fn the_node_metadata_service_is_not_reachable() {
     assert!(
         result.contains("cannot be reached from an agent"),
         "the metadata service was reachable: {result}"
-    );
-}
-
-/// A guest cannot aim the workspace's credential somewhere else.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_guest_cannot_set_the_headers_the_host_owns() {
-    let result = tool_result(
-        r#"{"url":"https://example.com/","headers":{"Authorization":"Bearer stolen"},"action":"Looking something up"}"#,
-        vec![outturn::runtime::egress::EgressRule {
-            host: "example.com".into(),
-            header: Some("authorization".into()),
-            credential_env: Some("EXAMPLE_KEY".into()),
-        }],
-    )
-    .await;
-
-    assert!(
-        result.contains("set by the platform"),
-        "a guest set its own authorization header: {result}"
     );
 }
 
