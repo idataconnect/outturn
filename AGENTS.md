@@ -73,6 +73,11 @@ collapses a reply to three chunks — llama3.1 and mistral both do this, gemma4
 does not. It is per-model template behaviour, not an ollama or gateway
 property. olmo-3 cannot do tools at all.
 
+On a Mac, `scripts/dev-mac.sh` runs the `mac` profile instead: ollama on the
+host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
+It passes both checks above -- it streams with tools offered, and unlike gemma4
+it still answers a tool result with thinking off.
+
 Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
 where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
 It hangs off the agent's policy, beside `model`.

@@ -56,3 +56,11 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-tika
+  # A Mac. `skaffold dev -p mac` reaches ollama on the host rather than across
+  # the Linux Docker bridge, and defaults to qwen3.8:27b-mlx. scripts/dev-mac.sh
+  # checks ollama and the model first, then runs this.
+  - name: mac
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/local-mac

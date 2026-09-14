@@ -1,0 +1,66 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The local cluster on a Mac. Selected by `skaffold dev -p mac`, which is what
+# scripts/dev-mac.sh runs.
+#
+# Two differences from ../local, both about where ollama is:
+#
+# - It runs on the Mac rather than in the Docker VM, because that is where the
+#   GPU is. 172.18.0.1 is the Docker bridge on Linux and reaches nothing here;
+#   Docker Desktop and colima both answer host.docker.internal from pods and
+#   forward it to the Mac's loopback, so a stock `ollama serve` needs no
+#   OLLAMA_HOST.
+#
+# - The model is qwen3.8:27b-mlx rather than gemma4. The MLX build runs on
+#   Apple silicon's unified memory, and it holds up where gemma4 was chosen
+#   for: with tools offered it still streams (39 content chunks for the
+#   count-to-twenty prompt), and with reasoning_effort "none" it still answers
+#   a tool result, which gemma4 does not. 18-23GB loaded at its full
+#   context, so it wants a 64GB machine rather than a 16GB one.
+#
+# Strategic merge rather than JSON patches, so env is matched by name and not
+# by its index in ../local, which moves whenever a variable is added there.
+resources:
+  - ../local
+
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: outturn-api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: OUTTURN_DEFAULT_MODEL
+                    value: "qwen3.8:27b-mlx"
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: outturn-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: OPENAI_BASE_URL
+                    value: "http://host.docker.internal:11434"
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: outturn-runtime
+      spec:
+        template:
+          spec:
+            containers:
+              - name: runtime
+                env:
+                  - name: OUTTURN_DEFAULT_MODEL
+                    value: "qwen3.8:27b-mlx"
