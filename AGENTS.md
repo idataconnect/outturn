@@ -499,22 +499,56 @@ misstates a decision becomes the record. Mark it as a summary in the
 transcript rather than folding it in as ordinary history — both so a reader can
 see what happened, and so the next compaction knows it is compacting a summary.
 
-Underneath all of it, a trim that cannot fail: drop whole turns from the oldest
-end until the prompt fits. No model call, so it works when the provider is
-down, the breaker is open, or the summary itself would not fit. It is what
-guarantees a user never sees "context exceeded", which is the actual
+Underneath all of it, a trim that cannot fail. No model call, so it works when
+the provider is down, the breaker is open, or the summary itself would not fit.
+It is what guarantees a user never sees "context exceeded", which is the actual
 requirement — everything above is about doing better than that.
 
-Two things the trim must not get wrong. **Never split a tool turn**: dropping an
-assistant message carrying tool calls while keeping its results produces a
-request both protocols reject, trading one hard error for another, so the unit
-of dropping is a turn including its round trips. And **always keep the last user
-message**, since a turn with nothing to answer is already an error in the guest.
+**Drop by what a message is, not by how old it is.** An earlier draft said to
+drop whole turns from the oldest end, which assumes age tracks irrelevance. In
+the sessions this platform is for, that is close to backwards: a workspace
+employee onboarding a customer runs for hours and calls tools constantly, and
+the oldest turns are where the premise was set — which customer, which system,
+what the constraints were — while the middle fills with tool results that were
+consumed the moment they arrived. Oldest-first discards the brief and keeps the
+mechanics.
 
-Budgets belong on the route, beside `model`, because that is the thing that
-varies. Compact against a fraction of the window rather than the whole of it,
-leaving room for the reply, for tool results arriving mid-turn, and for the
-compaction call itself.
+So the order of sacrifice is by kind:
+
+1. **Tool results, oldest first.** They are the bulk in a tool-heavy session,
+   they are usually spent on arrival, and losing one is recoverable — the agent
+   can call the tool again. Replaced by a stub rather than removed, because a
+   call with no answer is a request both protocols reject.
+2. **Whole assistant/tool round trips**, oldest first, once stubbing is not
+   enough.
+3. **Ordinary conversation turns**, oldest first, last.
+
+The first user message is what a session is *for*, and is the first thing an
+oldest-first rule throws away. Whether that earns an explicit exemption or
+whether it falls out of ordering tool results ahead of conversation is worth
+settling with a real transcript rather than by argument.
+
+**A stub must say it is a stub.** A dropped result replaced by something that
+reads as real output is a silent lie, and the model will reason from it. Say
+the tool ran and its output was dropped to fit, so the agent can call again if
+it mattered. This is the same principle as marking a summary as a summary.
+
+**Always keep the last user message**, since a turn with nothing to answer is
+already an error in the guest.
+
+Budgets belong on the route, beside `model`, because the window is a property
+of the model. But the trim runs where the conversation is built, in the API,
+and the API has no routing; today no routes are seeded at all, so most turns
+would have no budget to read. Settle this before building: a setting that
+cascades like every other, with a route override when the gateway grows one, is
+the shape that works from the first turn. Compact against a fraction of the
+window rather than the whole of it, leaving room for the reply, for tool
+results arriving mid-turn, and for the compaction call itself.
+
+Nothing counts tokens anywhere in this codebase. A per-model tokeniser is a
+dependency that is wrong for every model it was not built for; bytes over a
+conservative budget is approximate in the safe direction, and being wrong costs
+headroom rather than a failed turn.
 
 The gateway must eventually support mid-session provider failover — an
 Anthropic outage substituting Gemini and continuing. That requires separating

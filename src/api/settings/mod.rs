@@ -113,6 +113,25 @@ pub fn catalogue() -> Vec<Setting> {
             default: serde_json::json!(100),
             owner: Owner::WorkspaceOverridable,
         },
+        Setting {
+            key: "context_budget",
+            label: "Conversation size sent to the model",
+            description: "How much of a conversation is sent, in bytes. A long \
+                          session outgrows any model's context, and this is what \
+                          decides when the oldest tool results start being dropped \
+                          to make room. Set it well under the model's real window: \
+                          the reply, tool results arriving mid-turn and the request \
+                          itself all need space that this does not count.",
+            // Bytes rather than tokens, because nothing here counts tokens and
+            // a per-model tokeniser is wrong for every model it was not built
+            // for. Roughly three bytes to a token is the pessimistic end, so
+            // this default is about 130k tokens against a 200k window --
+            // conservative on purpose, since being wrong costs headroom while
+            // the alternative costs the turn.
+            kind: Kind::Integer { min: 1_000, max: 100_000_000 },
+            default: serde_json::json!(400_000),
+            owner: Owner::WorkspaceOverridable,
+        },
     ]
 }
 
@@ -161,6 +180,9 @@ pub struct Resolved {
     pub temperature: Option<f32>,
     pub reasoning_effort: Option<String>,
     pub max_tool_rounds: u32,
+    /// How many bytes of conversation may be sent, before the trim starts
+    /// dropping the oldest tool results to fit.
+    pub context_budget: usize,
     /// Storage scopes the agent may write: always "session", plus whichever
     /// of "agent" and "workspace" the cascade allows.
     pub write_scopes: Vec<String>,

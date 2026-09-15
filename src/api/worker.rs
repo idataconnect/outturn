@@ -722,10 +722,36 @@ impl Worker {
             workspace_id: payload.workspace_id,
             agent_id: payload.agent_id,
             write_scopes: settings.write_scopes,
-            conversation: project(&history)
-                .into_iter()
-                .map(serde_json::from_value)
-                .collect::<Result<_, _>>()?,
+            conversation: {
+                // Cut to fit before it goes, because a request the provider
+                // refuses for length is a turn the user loses -- and this is
+                // the one path that works when there is no model to ask for a
+                // summary, which is exactly when it is most needed.
+                let (projected, trimmed) = super::chat::trim::to_fit(
+                    project(&history),
+                    settings.context_budget,
+                );
+                if !trimmed.is_empty() {
+                    // Said out loud: a turn that quietly lost half its history
+                    // is one nobody can explain afterwards, and these numbers
+                    // are what say whether the budget is set anywhere near
+                    // right.
+                    tracing::info!(
+                        session_id = %payload.session_id,
+                        workspace_id = %payload.workspace_id,
+                        results_dropped = trimmed.results_dropped,
+                        messages_dropped = trimmed.messages_dropped,
+                        was = trimmed.was,
+                        now = trimmed.now,
+                        budget = settings.context_budget,
+                        "conversation trimmed to fit"
+                    );
+                }
+                projected
+                    .into_iter()
+                    .map(serde_json::from_value)
+                    .collect::<Result<_, _>>()?
+            },
             // Composed with the model that will serve this turn, so an agent
             // asked what it is has something true to read rather than a gap to
             // fill.

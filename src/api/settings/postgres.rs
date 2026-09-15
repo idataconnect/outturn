@@ -163,6 +163,10 @@ impl SettingsStore for PostgresSettingsStore {
                 .as_u64()
                 .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
                 .unwrap_or(100),
+            context_budget: get("context_budget")
+                .as_u64()
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                .unwrap_or(400_000),
             write_scopes: {
                 let mut scopes = vec!["session".to_string()];
                 if get("agent_writes_agent_files").as_str() == Some("allow") {

@@ -1,3 +1,4 @@
+pub mod trim;
 mod postgres;
 
 pub use postgres::PostgresChatStore;
