@@ -312,6 +312,77 @@ pub(super) fn validate_name(name: &str) -> Result<(), SkillError> {
 /// An agent with no skills is given exactly what it was before, with no
 /// heading and no preamble: prose that says "here are your skills" above an
 /// empty list is a worse prompt than silence.
+/// What the platform tells every agent about itself, before anything a
+/// workspace wrote.
+///
+/// Agents were asked what they are and made something up: one said it was
+/// Claude, another denied being the model that was demonstrably serving it and
+/// named a product that does not exist, describing its file scopes and tools
+/// accurately around the invented name. None of that was a workspace's prompt
+/// going wrong -- nothing ever told the agent what it was, so the likeliest
+/// continuation was the answer, and a model with no ground truth writes fluent
+/// nonsense in whichever direction the conversation leans. It also agrees when
+/// challenged, so being corrected does not fix it.
+///
+/// So the facts are supplied rather than demanded. "Say you do not know" is
+/// advice a model cannot follow about something it has no access to; the
+/// product, the version and the model actually serving the turn are all things
+/// this tier knows, and stating them costs a few tokens once per turn.
+///
+/// The rule that follows is deliberately narrow. A broad instruction to ground
+/// every claim would be a different feature with a cost on every answer, and
+/// an agent with no egress rules and no search skill cannot ground anything --
+/// it would be told to refuse most of what it is asked. What is ruled out here
+/// is inventing specifics about itself and this platform, which is the failure
+/// that actually happened.
+fn platform_preamble(product: &str, model: &str) -> String {
+    format!(
+        "You are an agent running on {product} {}, served by the model {model}. \
+         Do not invent facts about yourself, this platform, or what you can do: \
+         if you have not been told something, say so.",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// What this deployment calls itself.
+///
+/// Configuration rather than source, for the same reason the UI reads
+/// `VITE_BRAND_NAME`: this is Apache-2.0 and expects to be run by companies
+/// under their own name, and a deployer who has to edit Rust to rename the
+/// product carries a patch on a hot file forever. A separate variable from the
+/// UI's because that one is compiled into the browser bundle at build time and
+/// never reaches this tier.
+pub fn product_name() -> String {
+    std::env::var("OUTTURN_BRAND_NAME").unwrap_or_else(|_| "outturn".into())
+}
+
+/// The prose a turn is given, with the platform's own preamble at the front.
+///
+/// `model` is what will actually serve this turn, resolved by the caller from
+/// the agent's policy and the deployment's default -- not what an agent's
+/// prompt claims and not what a guest might report about itself.
+pub fn compose_for_turn(system_prompt: &str, skills: &[ResolvedSkill], model: &str) -> String {
+    compose_as(&product_name(), system_prompt, skills, model)
+}
+
+/// As `compose_for_turn`, for a caller that knows what the deployment is
+/// called -- which in practice means a test, so the composition can be checked
+/// without reaching into process-wide environment state that every other test
+/// shares.
+pub fn compose_as(
+    product: &str,
+    system_prompt: &str,
+    skills: &[ResolvedSkill],
+    model: &str,
+) -> String {
+    let composed = compose(system_prompt, skills);
+    let preamble = platform_preamble(product, model);
+    if composed.trim().is_empty() {
+        return preamble;
+    }
+    format!("{preamble}\n\n{composed}")
+}
+
 pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
     if skills.is_empty() {
         return system_prompt.to_string();
@@ -341,6 +412,69 @@ pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An agent asked what it is should find the answer in front of it.
+    ///
+    /// The failure this exists for: with nothing in the prompt, agents
+    /// invented an identity -- one claimed to be Claude, another denied being
+    /// the model serving it and named a product that does not exist. The model
+    /// named here is the one the caller resolved for this turn, so the answer
+    /// is the platform's rather than the model's guess.
+    #[test]
+    fn a_turn_is_told_what_is_serving_it() {
+        let composed = compose_as("outturn", "You are a helpful assistant.", &[], "qwen3.8:27b-mlx");
+        assert!(composed.contains("qwen3.8:27b-mlx"), "{composed}");
+        assert!(composed.contains("outturn"), "{composed}");
+        assert!(composed.contains(env!("CARGO_PKG_VERSION")), "{composed}");
+        // And the agent's own prose is still there, after it.
+        assert!(composed.ends_with("You are a helpful assistant."), "{composed}");
+    }
+
+    /// The preamble leads; the workspace's prose follows.
+    ///
+    /// Same reasoning as the skill ordering below: a model reads a later
+    /// instruction as the one that still stands, so an agent that wants a
+    /// persona can have one without the platform's facts being buried under
+    /// it -- and an agent that contradicts them is at least contradicting
+    /// something present rather than filling a vacuum.
+    #[test]
+    fn the_platform_speaks_before_the_workspace_does() {
+        let composed = compose_as("outturn", "You are a pirate.", &[], "gemma4");
+        let preamble_at = composed.find("You are an agent running on").expect("preamble");
+        let prompt_at = composed.find("You are a pirate.").expect("prompt");
+        assert!(preamble_at < prompt_at, "{composed}");
+    }
+
+    /// An agent with no prompt of its own still gets the facts.
+    #[test]
+    fn an_empty_prompt_is_still_told_what_it_is() {
+        let composed = compose_as("outturn", "", &[], "gemma4");
+        assert!(composed.contains("gemma4"), "{composed}");
+        assert!(!composed.starts_with('\n'), "no leading blank: {composed:?}");
+    }
+
+    /// Skills keep their place, after the preamble and the agent's prose.
+    #[test]
+    fn the_preamble_does_not_displace_the_skills() {
+        let skills = vec![skill("Search", "Use the search API.", SkillKind::Standalone)];
+        let composed = compose_as("outturn", "You are terse.", &skills, "gemma4");
+        let prompt_at = composed.find("You are terse.").expect("prompt");
+        let skills_at = composed.find("# Skills").expect("skills");
+        assert!(prompt_at < skills_at, "{composed}");
+        assert!(composed.contains("Use the search API."), "{composed}");
+    }
+
+    /// A deployer's own name reaches the agent, not just the browser.
+    ///
+    /// The UI reads `VITE_BRAND_NAME`, which is compiled into the bundle and
+    /// never reaches this tier; without its own variable an agent would tell a
+    /// deployer's customers they are talking to outturn.
+    #[test]
+    fn a_deployment_can_say_what_it_is_called() {
+        let composed = compose_as("Hollowbrook", "", &[], "gemma4");
+        assert!(composed.contains("Hollowbrook"), "{composed}");
+        assert!(!composed.contains("outturn"), "{composed}");
+    }
 
     fn skill(name: &str, body: &str, kind: SkillKind) -> ResolvedSkill {
         ResolvedSkill {

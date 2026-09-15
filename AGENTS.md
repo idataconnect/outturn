@@ -80,6 +80,21 @@ host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
 It passes both checks above -- it streams with tools offered, and unlike gemma4
 it still answers a tool result with thinking off.
 
+A local model does not know what it is, and will not say so. Asked what
+model it was, an agent claimed to be Claude; asked again after a change, it
+denied being qwen and named a product that does not exist, describing this
+platform's file scopes and tools accurately around the invented name. Neither
+was a prompt going wrong -- nothing told it what it was, so it wrote the
+likeliest continuation, and being challenged moved it rather than correcting
+it. Every turn's prompt now opens with the product, the version and the model
+actually serving it (`skill::compose_for_turn`), which is what a question about
+itself now finds. `OUTTURN_BRAND_NAME` is the deployer's own name for this
+tier, matching the UI's `VITE_BRAND_NAME`, which is compiled into the browser
+bundle and never reaches the API.
+
+That fixes identity and nothing else: the same reply invented HTTP headers to
+check. Small local models embellish, and a prompt can only supply facts it has.
+
 Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
 where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
 It hangs off the agent's policy, beside `model`.

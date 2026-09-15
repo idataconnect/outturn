@@ -713,6 +713,10 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("recording skills: {e}"))?;
 
+        // Resolved once: the prompt has to name the same model the request asks
+        // for, or the agent is told one thing and served by another.
+        let model = model_for(&agent.policy);
+
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             workspace_id: payload.workspace_id,
@@ -722,8 +726,15 @@ impl Worker {
                 .into_iter()
                 .map(serde_json::from_value)
                 .collect::<Result<_, _>>()?,
-            system_prompt: super::skill::compose(&agent.system_prompt, &skills),
-            model: Some(model_for(&agent.policy)),
+            // Composed with the model that will serve this turn, so an agent
+            // asked what it is has something true to read rather than a gap to
+            // fill.
+            system_prompt: super::skill::compose_for_turn(
+                &agent.system_prompt,
+                &skills,
+                &model,
+            ),
+            model: Some(model.clone()),
             timezone: payload.timezone.clone(),
             reasoning_effort: settings.reasoning_effort,
             temperature: settings.temperature,
