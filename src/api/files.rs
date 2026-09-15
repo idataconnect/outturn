@@ -210,6 +210,102 @@ pub async fn download(
         .into_response())
 }
 
+/// The most a preview reads.
+///
+/// A preview is a look, not a download: enough to see what a file is and read
+/// the top of it. The endpoint beside this one hands over the whole thing, and
+/// a text file of forty megabytes rendered into a browser tab helps nobody.
+pub const MAX_PREVIEW_BYTES: usize = 256 * 1024;
+
+/// What a preview may be served as, decided by the bytes rather than the name.
+///
+/// An allowlist and a short one. These files are uploaded by people and
+/// written by agents, so serving one inline means running somebody else's
+/// content on this origin -- and the session cookie that authorises every API
+/// call is on this origin. HTML and SVG are the obvious ways that goes wrong
+/// and are deliberately absent: an SVG is a document that can carry script,
+/// whatever its extension says.
+///
+/// The extension is never consulted. `notes.txt` holding a PNG is a PNG, and
+/// `photo.png` holding HTML is refused rather than believed.
+fn previewable(bytes: &[u8]) -> Option<&'static str> {
+    if let Some(image) = crate::runtime::vision::media_type(bytes) {
+        return Some(image);
+    }
+    // Text, by the same reasoning `describe_binary` uses: something with a NUL
+    // or a stretch of control characters is not prose, whatever it is called.
+    if crate::runtime::component::describe_binary(bytes).is_some() {
+        return None;
+    }
+    // Valid UTF-8 or nothing. A preview that renders replacement characters
+    // is a preview of a file somebody should be downloading instead.
+    std::str::from_utf8(bytes).ok()?;
+    Some("text/plain; charset=utf-8")
+}
+
+/// Serves a file for looking at rather than for keeping.
+///
+/// Separate from `download`, which sends everything as an attachment and
+/// should keep doing so: that is what makes it safe to hand over a file
+/// nobody has vetted. This one serves inline, so it is narrow on purpose --
+/// a short allowlist, sniffed, with the headers that stop a browser having
+/// its own opinion.
+pub async fn preview(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((session_id, scope_name, path)): Path<(Uuid, String, String)>,
+) -> Result<Response, ApiError> {
+    let s = parse_scope(&scope_name)?;
+    let claims = authorize(&state, &headers, read_authority(s)).await?;
+    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let store = storage(&state)?;
+
+    let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
+    // One byte past the bound, so a file exactly at the limit is not reported
+    // as truncated and one over it is.
+    let bytes = store
+        .read(&key, 0, MAX_PREVIEW_BYTES as u32 + 1)
+        .await
+        .map_err(storage_failed)?;
+
+    let truncated = bytes.len() > MAX_PREVIEW_BYTES;
+    let shown = &bytes[..bytes.len().min(MAX_PREVIEW_BYTES)];
+
+    let Some(media_type) = previewable(shown) else {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "this file has no preview".to_string(),
+        ));
+    };
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, media_type.to_string()),
+            // Inline, which is the whole point, but under a sandbox: even if
+            // something got through the allowlist it runs as its own origin
+            // with no script, so it cannot reach the cookie that authorises
+            // this API.
+            (header::CONTENT_DISPOSITION, "inline".to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox; default-src 'none'; style-src 'unsafe-inline'".to_string(),
+            ),
+            // No guessing. Without this a browser may decide a text file is
+            // HTML because it starts with a tag, which is exactly the path the
+            // allowlist is trying to close.
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            // Said in a header rather than in the body, so the bytes are the
+            // file and nothing else.
+            (
+                header::HeaderName::from_static("x-outturn-truncated"),
+                truncated.to_string(),
+            ),
+        ],
+        shown.to_vec(),
+    )
+        .into_response())
+}
+
 pub async fn delete(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -226,4 +322,63 @@ pub async fn delete(
     super::extract::invalidate(store.as_ref(), &key).await;
     tracing::info!(actor = %claims.subject, session_id = %session_id, path = %path, "file deleted");
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_is_what_its_bytes_say_rather_than_what_it_is_called() {
+        // The name comes from whoever uploaded it or whatever the agent wrote,
+        // so it is a claim rather than a fact. Every decision here is made on
+        // the bytes.
+        assert_eq!(previewable(b"just some prose"), Some("text/plain; charset=utf-8"));
+        assert_eq!(previewable(b"\x89PNG\r\n\x1a\n and so on"), Some("image/png"));
+        assert_eq!(previewable(b"\xff\xd8\xff\xe0 jpeg"), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn nothing_that_could_run_is_served_inline() {
+        // The reason the allowlist is short. These files are written by agents
+        // and uploaded by people, and this API's session cookie lives on the
+        // origin that would run them. HTML is refused as HTML, and refused
+        // again for being served under a name that suggests otherwise.
+        let html = b"<html><script>alert(1)</script></html>";
+        assert_eq!(
+            previewable(html),
+            Some("text/plain; charset=utf-8"),
+            "html is shown as text, never as a document"
+        );
+
+        // An SVG is a document that can carry script. It is text, so it comes
+        // back as text -- which is the point: it is never `image/svg+xml`, and
+        // a browser told `text/plain` with `nosniff` will not render it.
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>";
+        assert_eq!(previewable(svg), Some("text/plain; charset=utf-8"));
+        assert_ne!(previewable(svg), Some("image/svg+xml"));
+    }
+
+    #[test]
+    fn something_nobody_can_read_has_no_preview() {
+        // A zip, a PDF, anything with a NUL in it. The modal says so and
+        // offers the download instead, which is a better answer than a page
+        // of replacement characters.
+        assert_eq!(previewable(b"PK\x03\x04\x00\x00"), None);
+        assert_eq!(previewable(b"%PDF-1.7\n\x00\x01\x02"), None);
+        assert_eq!(previewable(&[0x00, 0x01, 0x02, 0x03]), None);
+    }
+
+    #[test]
+    fn broken_text_is_not_offered_as_text() {
+        // Invalid UTF-8 renders as replacement characters, which looks like a
+        // fault in the file rather than in the preview.
+        assert_eq!(previewable(&[0xff, 0xfe, b'h', b'i']), None);
+    }
+
+    #[test]
+    fn an_empty_file_previews_as_empty_rather_than_refusing() {
+        // Nothing is wrong with it, and "no preview" would read as a fault.
+        assert_eq!(previewable(b""), Some("text/plain; charset=utf-8"));
+    }
 }

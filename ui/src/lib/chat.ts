@@ -1,4 +1,4 @@
-import { api } from './api'
+import { api, ApiError } from './api'
 
 export type Agent = { id: string; name: string; slug: string }
 export type AgentSession = { id: string; agent_id: string; title: string }
@@ -209,6 +209,54 @@ export function listFiles(sessionId: string): Promise<StoredFile[]> {
 /** Where a file is fetched from; the session cookie travels with the link. */
 export function fileUrl(sessionId: string, scopedPath: string): string {
   return `/v1/agent-sessions/${sessionId}/files/${scopedPath}`
+}
+
+/** Where a file can be looked at rather than downloaded. */
+export function previewUrl(sessionId: string, scopedPath: string): string {
+  return `/v1/agent-sessions/${sessionId}/files/preview/${scopedPath}`
+}
+
+/** What a preview turned out to be. */
+export type Preview =
+  | { kind: 'text'; text: string; truncated: boolean }
+  | { kind: 'image'; url: string }
+  | { kind: 'none' }
+
+/**
+ * Fetches a file for looking at.
+ *
+ * The server decides what a file is, from its bytes, and refuses anything
+ * outside a short allowlist -- so this trusts the `content-type` it is given
+ * and never the path. A name is a claim by whoever uploaded it.
+ *
+ * An image comes back as a blob URL rather than being pointed at directly,
+ * because the preview endpoint needs the session cookie and an `img` tag
+ * carrying credentials is a different conversation. The caller revokes it.
+ */
+export async function readPreview(
+  sessionId: string,
+  scopedPath: string,
+): Promise<Preview> {
+  const response = await fetch(previewUrl(sessionId, scopedPath), {
+    credentials: 'include',
+  })
+  if (response.status === 415) return { kind: 'none' }
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text())
+  }
+
+  const type = response.headers.get('content-type') ?? ''
+  const truncated = response.headers.get('x-outturn-truncated') === 'true'
+
+  if (type.startsWith('image/')) {
+    return { kind: 'image', url: URL.createObjectURL(await response.blob()) }
+  }
+  return { kind: 'text', text: await response.text(), truncated }
+}
+
+/** Whether a path is one the markdown renderer should handle. */
+export function isMarkdown(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path)
 }
 
 export async function uploadFile(

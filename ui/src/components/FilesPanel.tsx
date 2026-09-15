@@ -3,6 +3,7 @@ import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquar
 
 import { ApiError } from '../lib/api'
 import { deleteFile, fileUrl, listFiles, uploadFile, type StoredFile } from '../lib/chat'
+import FilePreview from './FilePreview'
 import { useSession } from '../lib/session'
 import { iconButton, iconButtonDanger } from '../lib/buttons'
 
@@ -81,6 +82,8 @@ export default function FilesPanel({
   // pointer crosses the file list.
   const depth = useRef(0)
   const [dropping, setDropping] = useState(false)
+  /** The file being looked at, or null. */
+  const [previewing, setPreviewing] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -293,12 +296,23 @@ export default function FilesPanel({
             className="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-surface-50 dark:hover:bg-surface-800/50"
           >
             <FileText size={14} className="shrink-0 text-surface-400" aria-hidden />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-surface-800 dark:text-surface-200 truncate" title={f.path}>
+            {/* A button rather than a clickable row: this is reached by
+                keyboard and announced as something that does a thing. The
+                download and delete controls stay beside it, because a button
+                inside a button is not a thing. */}
+            <button
+              type="button"
+              onClick={() => setPreviewing(f.path)}
+              title={f.path}
+              className="flex-1 min-w-0 text-left rounded-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            >
+              <span className="block text-sm text-surface-800 dark:text-surface-200 truncate">
                 {f.path}
-              </p>
-              <p className="text-xs text-surface-500 dark:text-surface-400">{size(f.size)}</p>
-            </div>
+              </span>
+              <span className="block text-xs text-surface-500 dark:text-surface-400">
+                {size(f.size)}
+              </span>
+            </button>
             <a
               href={fileUrl(sessionId, f.path)}
               download
@@ -321,6 +335,14 @@ export default function FilesPanel({
         ))}
         </ul>
       </div>
+
+      {previewing && (
+        <FilePreview
+          sessionId={sessionId}
+          path={previewing}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
     </aside>
   )
 }
