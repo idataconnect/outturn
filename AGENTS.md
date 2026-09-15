@@ -473,10 +473,25 @@ being worked on now, the recent tool results, the thread of the conversation.
 Summaries are cumulative — each one summarises the tail plus the summary before
 it — because the alternative loses durable facts. Constraints stated once at the
 start are exactly what gets dropped and then violated. Cumulative carrying is
-not a guarantee, only a much better chance; the real fix is memory, an explicit
-write that says "this survives", so compaction does not have to guess what was
-load-bearing. Memory makes compaction safer, which is an argument for building
-it second rather than first.
+not a guarantee, only a much better chance.
+
+The better fix is **compaction carry-over**: marking something as needing to
+survive, so compaction does not have to guess what was load-bearing. Named for
+the mechanism rather than the promise, because it is bounded — a carry-over is
+what a summary takes with it when there is room, not a guarantee of
+permanence, and a name like "kept" would promise what the bound cannot deliver.
+What must not be quiet is the bound: something dropped at it should say so,
+or a summary becomes the record of a fact nobody can see leaving.
+
+**Carry-over is not memory, and the two must not share a store.** Memory is
+user-declared and durable — "I am off on Thursdays, so never set a pay date
+there, whatever the skill says" — stated once, applying to every session, and
+expected to hold. Carry-over is one model's judgement about one conversation,
+and it belongs to that session's transcript. Mixing them makes memory
+unreviewable: a standing instruction somebody gave and a guess a model made
+about a transcript become indistinguishable a month later, and nobody can say
+why the agent believes something. They solve different problems and are
+independently buildable; neither is a prerequisite for the other.
 
 A summary is a message a model wrote about the conversation and will be
 replayed on every later turn, so its failure mode is quiet: a summary that
