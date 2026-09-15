@@ -83,7 +83,31 @@ const components = unstable_memoizeMarkdownComponents({
 })
 
 export default function MarkdownText() {
-  return <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} components={components} />
+  return (
+    <MarkdownTextPrimitive
+      remarkPlugins={[remarkGfm]}
+      components={components}
+      // Smoothing is on by default; these are its knobs. A local model
+      // arrives in bursts -- a whole sentence, then nothing -- and revealing
+      // at a steady rate reads as writing rather than as stuttering.
+      //
+      // Nothing about the DOM changes: the reveal feeds the same renderer a
+      // shorter prefix for a moment, so a streaming message and a settled one
+      // are the same markdown by the same path. That is the property worth
+      // keeping -- a separate streaming representation is where the drift
+      // bugs live.
+      smooth={{
+        // Longer than the 250ms default, so a burst is visibly drawn out
+        // rather than landing at once.
+        drainMs: 400,
+        // Markdown is re-parsed on every commit, so committing every frame
+        // means re-parsing a growing document 60 times a second. Once every
+        // 16ms is one frame's worth and keeps the parse off the critical
+        // path.
+        minCommitMs: 16,
+      }}
+    />
+  )
 }
 
 /**
