@@ -172,27 +172,46 @@ impl GatewayState {
     }
 
     /// Whether this provider may be called, and who owns the next probe.
+    ///
+    /// A provider the platform configured is one circuit for everybody, which
+    /// is what `None` says: the credential and the rate limit behind it are
+    /// shared, so the failures are too. A workspace bringing its own key would
+    /// name itself here and get a circuit of its own.
     async fn admits(&self, provider: &Arc<dyn LlmProvider>) -> bool {
         let Some(pool) = &self.health else {
             return true;
         };
-        breaker::check(pool, &provider.endpoint()).await == breaker::Verdict::Allow
+        breaker::check(pool, &provider.endpoint(), None).await == breaker::Verdict::Allow
     }
 
     /// Feeds the outcome of a call back into the shared breaker.
-    async fn observe(&self, provider: &Arc<dyn LlmProvider>, outcome: Result<(), &ProviderError>) {
+    ///
+    /// The caller travels with it because what an answered failure means
+    /// depends on how many distinct callers are seeing it -- one caller's bad
+    /// request and an upstream that is down look identical from a count.
+    async fn observe(
+        &self,
+        provider: &Arc<dyn LlmProvider>,
+        caller: breaker::policy::Caller,
+        outcome: Result<(), &ProviderError>,
+    ) {
         let Some(pool) = &self.health else {
             return;
         };
         let endpoint = provider.endpoint();
-        match outcome {
-            Ok(()) => breaker::record_success(pool, &endpoint).await,
-            Err(e) if breaker::counts_as_failure(e) => {
-                breaker::record_failure(pool, &endpoint, &e.to_string()).await
-            }
-            // A rejected request or a rate limit says the provider is alive.
-            Err(_) => {}
-        }
+        let (observation, detail) = match outcome {
+            Ok(()) => (breaker::policy::Observation::Success, None),
+            Err(e) => (breaker::observation_for(e), Some(e.to_string())),
+        };
+        breaker::observe(
+            pool,
+            &endpoint,
+            None,
+            observation,
+            caller,
+            detail.as_deref(),
+        )
+        .await;
     }
 }
 
@@ -259,6 +278,14 @@ async fn chat_completions(
         "chat completion request"
     );
 
+    // Who is asking, for the breaker: a turn token names the workspace and the
+    // session, and breadth is counted over one or the other depending on whose
+    // credential the circuit is about.
+    let caller = breaker::policy::Caller {
+        workspace_id: claims.workspace_id,
+        session_id: claims.subject,
+    };
+
     let mut last_error = None;
     let traffic = traffic_type(&headers);
 
@@ -277,12 +304,12 @@ async fn chat_completions(
 
         match provider.chat_completion(&request).await {
             Ok(response) => {
-                state.observe(provider, Ok(())).await;
+                state.observe(provider, caller, Ok(())).await;
                 return Ok(Json(response));
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");
-                state.observe(provider, Err(&e)).await;
+                state.observe(provider, caller, Err(&e)).await;
                 last_error = Some(e);
                 continue;
             }
@@ -323,6 +350,13 @@ async fn chat_completions_stream(
         "streaming chat completion request"
     );
 
+    // As above: breadth is counted over callers, so the breaker has to be told
+    // which one this is.
+    let caller = breaker::policy::Caller {
+        workspace_id: claims.workspace_id,
+        session_id: claims.subject,
+    };
+
     let traffic = traffic_type(&headers);
 
     // Taken before the call rather than after, so a long generation does not
@@ -350,7 +384,7 @@ async fn chat_completions_stream(
                 // streaming. A stream that dies partway is not seen here --
                 // the body is handed to the caller and this scope ends -- so
                 // the breaker measures reachability, not completion.
-                state.observe(provider, Ok(())).await;
+                state.observe(provider, caller, Ok(())).await;
                 let body = chunks.map(|chunk| match chunk {
                     Ok(chunk) => serde_json::to_string(&chunk)
                         .map(|mut line| {
@@ -465,7 +499,7 @@ async fn chat_completions_stream(
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "stream failed");
-                state.observe(provider, Err(&e)).await;
+                state.observe(provider, caller, Err(&e)).await;
                 continue;
             }
         }

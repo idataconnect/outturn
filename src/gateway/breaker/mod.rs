@@ -22,27 +22,8 @@
 
 pub mod policy;
 
-use std::time::Duration;
-
 use sqlx::postgres::PgPool;
 use sqlx::Row;
-
-/// Consecutive failures before the circuit opens.
-///
-/// More than one, because a single error is often a bad request or a blip
-/// rather than an outage; low enough that a genuinely dead provider is not
-/// called many times per replica before anyone notices.
-const FAILURE_THRESHOLD: i32 = 5;
-
-/// How long the circuit stays open before a probe is allowed.
-const BASE_BACKOFF: Duration = Duration::from_secs(30);
-
-/// Ceiling on the backoff, so a long outage does not push the next probe
-/// beyond the point where anyone is still waiting for recovery.
-const MAX_BACKOFF: Duration = Duration::from_secs(600);
-
-/// How long a claimed probe has to finish before another replica may try.
-const PROBE_LEASE: Duration = Duration::from_secs(60);
 
 /// Whether a call may be attempted.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,21 +34,26 @@ pub enum Verdict {
     Reject,
 }
 
-/// Whether an error should count against a provider's health.
+/// What one provider error is evidence of.
 ///
-/// A rejected request is not an outage. A malformed body or an unknown model
-/// is our fault and would trip the breaker on every replica for a bug that
-/// affects one caller; rate limiting is backpressure, which means the provider
-/// is alive and answering. Only unreachability and upstream faults count.
-pub fn counts_as_failure(error: &super::llm::provider::ProviderError) -> bool {
+/// The three kinds are the point of `policy`, and this is where a provider's
+/// vocabulary is translated into them. `Unavailable` is the endpoint not being
+/// there at all, so one caller reporting it is enough. A 5xx means it answered
+/// and failed, which one caller cannot tell apart from its own bad request --
+/// that needs breadth before it means anything. A 4xx and a rate limit are the
+/// provider working correctly: the first says the request was wrong, the
+/// second says it is alive and applying backpressure, and neither is evidence
+/// about health.
+pub fn observation_for(error: &super::llm::provider::ProviderError) -> policy::Observation {
     use super::llm::provider::ProviderError::*;
     match error {
-        Unavailable => true,
-        // A 4xx here is a request we got wrong; a 5xx or a transport error is
-        // the provider failing. The distinction is in the message because the
-        // variant does not carry a status.
-        Upstream(detail) => !starts_with_client_error(detail),
-        RateLimited | Translation(_) => false,
+        Unavailable => policy::Observation::Unreachable,
+        Upstream(detail) if starts_with_client_error(detail) => policy::Observation::NotEvidence,
+        // A transport error arrives here too, with no status to read. It is
+        // the endpoint failing rather than answering, but one caller's
+        // truncated stream is not yet an outage, so it waits for company.
+        Upstream(_) => policy::Observation::Undetermined,
+        RateLimited | Translation(_) => policy::Observation::NotEvidence,
     }
 }
 
@@ -81,115 +67,250 @@ fn starts_with_client_error(detail: &str) -> bool {
         .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
 }
 
+/// Which circuit an endpoint's health is kept under.
+///
+/// A workspace bringing its own credential to a host does not share a fate
+/// with anyone else reaching it, so it gets its own circuit. The platform's own
+/// credential is shared, and so is the rate limit behind it, so one circuit
+/// covers everybody.
+pub fn scope_of(workspace_id: Option<uuid::Uuid>) -> policy::Scope {
+    match workspace_id {
+        Some(_) => policy::Scope::Workspace,
+        None => policy::Scope::Platform,
+    }
+}
+
+/// Reads a circuit, including the evidence that has not aged out.
+async fn load(
+    pool: &PgPool,
+    endpoint: &str,
+    workspace_id: Option<uuid::Uuid>,
+) -> Result<policy::Health, sqlx::Error> {
+    let row = sqlx::query(
+        "select state, failures, probe_after, opened_at from provider_health          where endpoint = $1 and workspace_id is not distinct from $2",
+    )
+    .bind(endpoint)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let mut health = policy::Health::new(scope_of(workspace_id));
+    if let Some(row) = row {
+        let state: String = row.get("state");
+        health.state = match state.as_str() {
+            "open" => policy::State::Open,
+            "half_open" => policy::State::HalfOpen,
+            _ => policy::State::Closed,
+        };
+        let failures: i32 = row.get("failures");
+        health.failures = failures.max(0) as u32;
+        health.probe_after = row.get("probe_after");
+        health.opened_at = row.get("opened_at");
+    }
+
+    // Only what is still inside the window: breadth has to be breadth now, and
+    // a query that read everything would make an old incident count forever.
+    let sightings = sqlx::query(
+        "select seen_by_workspace, seen_by_session, seen_at from breaker_sightings          where endpoint = $1 and workspace_id is not distinct from $2            and seen_at > now() - make_interval(secs => $3)",
+    )
+    .bind(endpoint)
+    .bind(workspace_id)
+    .bind(policy::BREADTH_WINDOW.as_secs_f64())
+    .fetch_all(pool)
+    .await?;
+
+    health.sightings = sightings
+        .iter()
+        .map(|row| policy::Sighting {
+            caller: policy::Caller {
+                workspace_id: row.get("seen_by_workspace"),
+                session_id: row.get("seen_by_session"),
+            },
+            at: row.get("seen_at"),
+        })
+        .collect();
+
+    Ok(health)
+}
+
+/// Writes back what the policy decided.
+async fn store(
+    pool: &PgPool,
+    endpoint: &str,
+    workspace_id: Option<uuid::Uuid>,
+    health: &policy::Health,
+    last_error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let state = match health.state {
+        policy::State::Closed => "closed",
+        policy::State::Open => "open",
+        policy::State::HalfOpen => "half_open",
+    };
+
+    // Two partial uniques, so two conflict targets: `on conflict` has to name
+    // an index that actually covers the row being written, and the platform's
+    // rows are exactly the ones a predicate on `workspace_id is not null`
+    // excludes. One query for both would silently insert a duplicate for every
+    // platform write -- failures would never accumulate, because each one
+    // would land on a row of its own.
+    let sql = if workspace_id.is_some() {
+        "insert into provider_health \
+             (id, endpoint, workspace_id, state, failures, probe_after, opened_at, last_error) \
+         values (uuidv7(), $1, $2, $3, $4, $5, $6, $7) \
+         on conflict (endpoint, workspace_id) where workspace_id is not null do update \
+         set state = $3, failures = $4, probe_after = $5, opened_at = $6, \
+             last_error = $7, updated_at = now()"
+    } else {
+        "insert into provider_health \
+             (id, endpoint, workspace_id, state, failures, probe_after, opened_at, last_error) \
+         values (uuidv7(), $1, $2, $3, $4, $5, $6, $7) \
+         on conflict (endpoint) where workspace_id is null do update \
+         set state = $3, failures = $4, probe_after = $5, opened_at = $6, \
+             last_error = $7, updated_at = now()"
+    };
+
+    sqlx::query(sql)
+        .bind(endpoint)
+        .bind(workspace_id)
+        .bind(state)
+        .bind(health.failures as i32)
+        .bind(health.probe_after)
+        .bind(health.opened_at)
+        .bind(last_error)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
 /// Decides whether `endpoint` may be called, claiming the probe if one is due.
 ///
-/// The claim is a single conditional update, so exactly one replica wins it:
-/// the losers see no affected row and keep rejecting. Moving `probe_after`
-/// forward is what stops a second replica probing while the first is still in
-/// flight, and what makes a replica that dies mid-probe recoverable.
-pub async fn check(pool: &PgPool, endpoint: &str) -> Verdict {
-    let row = sqlx::query("select state, probe_after from provider_health where endpoint = $1")
-        .bind(endpoint)
-        .fetch_optional(pool)
-        .await;
-
-    let Ok(row) = row else {
-        // Fail open: an unreachable database says nothing about the provider.
+/// The policy decides; this claims. A probe is offered to whoever asks once it
+/// is due, and the claim is a single conditional update, so exactly one replica
+/// wins it -- the losers see no affected row and keep rejecting. That is also
+/// what makes a replica dying mid-probe recoverable, and what keeps two
+/// replicas with drifting clocks to one wasted probe rather than a storm.
+pub async fn check(pool: &PgPool, endpoint: &str, workspace_id: Option<uuid::Uuid>) -> Verdict {
+    // Fail open throughout: an unreachable database says nothing about the
+    // endpoint, and refusing every call because the store is down would turn a
+    // database blip into the outage it was meant to prevent.
+    let Ok(health) = load(pool, endpoint, workspace_id).await else {
         return Verdict::Allow;
     };
 
-    let Some(row) = row else {
-        // Never seen. Nothing has failed, so nothing is open.
-        return Verdict::Allow;
-    };
+    match policy::check(&health, chrono::Utc::now()) {
+        policy::Verdict::Allow => Verdict::Allow,
+        policy::Verdict::Reject => Verdict::Reject,
+        policy::Verdict::Probe => {
+            let claimed = sqlx::query(
+                "update provider_health \
+                 set state = 'half_open', \
+                     probe_after = now() + make_interval(secs => $3), \
+                     updated_at = now() \
+                 where endpoint = $1 and workspace_id is not distinct from $2 \
+                   and probe_after is not null \
+                   and probe_after <= now() \
+                 returning endpoint",
+            )
+            .bind(endpoint)
+            .bind(workspace_id)
+            .bind(policy::PROBE_LEASE.as_secs_f64())
+            .fetch_optional(pool)
+            .await;
 
-    let state: String = row.get("state");
-    if state == "closed" {
-        return Verdict::Allow;
-    }
-
-    let claimed = sqlx::query(
-        "update provider_health \
-         set state = 'half_open', \
-             probe_after = now() + make_interval(secs => $2), \
-             updated_at = now() \
-         where endpoint = $1 \
-           and probe_after is not null \
-           and probe_after <= now() \
-         returning endpoint",
-    )
-    .bind(endpoint)
-    .bind(PROBE_LEASE.as_secs_f64())
-    .fetch_optional(pool)
-    .await;
-
-    match claimed {
-        Ok(Some(_)) => Verdict::Allow,
-        Ok(None) => Verdict::Reject,
-        // Fail open rather than reject on a database fault.
-        Err(_) => Verdict::Allow,
-    }
-}
-
-/// Records that a call succeeded, closing the circuit.
-pub async fn record_success(pool: &PgPool, endpoint: &str) {
-    let result = sqlx::query(
-        "insert into provider_health (endpoint, state, failures, probe_after, opened_at) \
-         values ($1, 'closed', 0, null, null) \
-         on conflict (endpoint) do update \
-         set state = 'closed', failures = 0, probe_after = null, \
-             opened_at = null, last_error = null, updated_at = now()",
-    )
-    .bind(endpoint)
-    .execute(pool)
-    .await;
-
-    if let Err(e) = result {
-        tracing::warn!(endpoint, error = %e, "could not record provider success");
-    }
-}
-
-/// Records a failure, opening the circuit once they accumulate.
-///
-/// The backoff grows with the failure count rather than resetting each time
-/// the circuit reopens, so a provider that fails every probe is called
-/// progressively less often instead of every thirty seconds forever.
-pub async fn record_failure(pool: &PgPool, endpoint: &str, error: &str) {
-    let result = sqlx::query(
-        "insert into provider_health (endpoint, state, failures, last_error) \
-         values ($1, 'closed', 1, $2) \
-         on conflict (endpoint) do update \
-         set failures = provider_health.failures + 1, \
-             last_error = $2, \
-             state = case when provider_health.failures + 1 >= $3 then 'open' \
-                          else provider_health.state end, \
-             opened_at = case when provider_health.failures + 1 >= $3 \
-                              then coalesce(provider_health.opened_at, now()) \
-                              else provider_health.opened_at end, \
-             probe_after = case when provider_health.failures + 1 >= $3 \
-                                then now() + make_interval(secs => least( \
-                                    $4 * power(2, provider_health.failures + 1 - $3), $5)) \
-                                else provider_health.probe_after end, \
-             updated_at = now() \
-         returning state, failures",
-    )
-    .bind(endpoint)
-    .bind(error)
-    .bind(FAILURE_THRESHOLD)
-    .bind(BASE_BACKOFF.as_secs_f64())
-    .bind(MAX_BACKOFF.as_secs_f64())
-    .fetch_optional(pool)
-    .await;
-
-    match result {
-        Ok(Some(row)) => {
-            let state: String = row.get("state");
-            let failures: i32 = row.get("failures");
-            if state == "open" {
-                tracing::warn!(endpoint, failures, "provider circuit opened");
+            match claimed {
+                Ok(Some(_)) => Verdict::Allow,
+                Ok(None) => Verdict::Reject,
+                Err(_) => Verdict::Allow,
             }
         }
-        Ok(None) => {}
-        Err(e) => tracing::warn!(endpoint, error = %e, "could not record provider failure"),
     }
+}
+
+/// Records what one call showed about an endpoint.
+///
+/// Takes the caller because breadth is counted over callers rather than over
+/// reports: what makes an answered failure mean something is how many distinct
+/// callers are seeing it, and a count of reports is exactly the measure that
+/// let one noisy agent close a provider for everybody.
+pub async fn observe(
+    pool: &PgPool,
+    endpoint: &str,
+    workspace_id: Option<uuid::Uuid>,
+    observation: policy::Observation,
+    caller: policy::Caller,
+    detail: Option<&str>,
+) {
+    // Nothing is learned and nothing is written. Kept ahead of the read so an
+    // endpoint answering 404s all day costs no queries at all.
+    if observation == policy::Observation::NotEvidence {
+        return;
+    }
+
+    let now = chrono::Utc::now();
+
+    // The sighting is written first, so the read that follows includes it and
+    // two replicas seeing the same thing at once both count.
+    if observation == policy::Observation::Undetermined {
+        let written = sqlx::query(
+            "insert into breaker_sightings \
+                 (id, endpoint, workspace_id, seen_by_workspace, seen_by_session) \
+             values (uuidv7(), $1, $2, $3, $4)",
+        )
+        .bind(endpoint)
+        .bind(workspace_id)
+        .bind(caller.workspace_id)
+        .bind(caller.session_id)
+        .execute(pool)
+        .await;
+        if let Err(e) = written {
+            tracing::warn!(endpoint, error = %e, "could not record a sighting");
+            return;
+        }
+    }
+
+    let Ok(health) = load(pool, endpoint, workspace_id).await else {
+        tracing::warn!(endpoint, "could not read circuit health");
+        return;
+    };
+
+    let was = health.state;
+    let next = policy::record(&health, observation, caller, now);
+
+    if let Err(e) = store(pool, endpoint, workspace_id, &next, detail).await {
+        tracing::warn!(endpoint, error = %e, "could not record what a call showed");
+        return;
+    }
+
+    if was != policy::State::Open && next.state == policy::State::Open {
+        // Worth a line at warn: somebody reading logs during an incident wants
+        // to know when this stopped being one caller's problem.
+        let distinct = next
+            .sightings
+            .iter()
+            .map(|s| s.caller.workspace_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        tracing::warn!(
+            endpoint,
+            failures = next.failures,
+            distinct_callers = distinct,
+            "circuit opened"
+        );
+    }
+}
+
+/// Deletes evidence too old to be evidence of anything current.
+///
+/// Nothing else would ever remove these rows, and a table that only grows is
+/// one somebody meets at 3am. Called on whatever schedule the caller likes;
+/// deleting nothing is not an error.
+pub async fn forget_stale_sightings(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query(
+        "delete from breaker_sightings where seen_at < now() - make_interval(secs => $1)",
+    )
+    .bind(policy::BREADTH_WINDOW.as_secs_f64() * 10.0)
+    .execute(pool)
+    .await?;
+    Ok(deleted.rows_affected())
 }

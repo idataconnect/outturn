@@ -1089,6 +1089,47 @@ async fn an_abandoned_reply_refuses_further_messages() {
 // -- Provider circuit breaker --------------------------------------------------
 
 use outturn::gateway::breaker::{self, Verdict};
+use outturn::gateway::breaker::policy::{Caller, Observation};
+
+/// These circuits are the platform's own, which is what `None` means: one
+/// circuit for everybody, because the credential and the rate limit behind it
+/// are shared.
+const PLATFORM: Option<Uuid> = None;
+
+/// One caller, for tests about failures that need no breadth to count.
+fn a_caller() -> Caller {
+    Caller {
+        workspace_id: Uuid::now_v7(),
+        session_id: Uuid::now_v7(),
+    }
+}
+
+/// A failure nothing but the endpoint explains -- a refused connection rather
+/// than an answer. One caller reporting it is evidence on its own, which is
+/// what these tests are about.
+async fn unreachable(pool: &sqlx::PgPool, endpoint: &str) {
+    breaker::observe(
+        pool,
+        endpoint,
+        PLATFORM,
+        Observation::Unreachable,
+        a_caller(),
+        Some("boom"),
+    )
+    .await;
+}
+
+async fn succeeded(pool: &sqlx::PgPool, endpoint: &str) {
+    breaker::observe(
+        pool,
+        endpoint,
+        PLATFORM,
+        Observation::Success,
+        a_caller(),
+        None,
+    )
+    .await;
+}
 
 /// The circuit opens only after repeated failures, not on the first one.
 #[tokio::test]
@@ -1099,14 +1140,14 @@ async fn the_circuit_opens_after_repeated_failures() {
 
     // A single failure is often a blip or a bad request, so it must not stop
     // every replica from calling the provider.
-    breaker::record_failure(pool, &endpoint, "boom").await;
-    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Allow);
+    unreachable(pool, &endpoint).await;
+    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Allow);
 
     for _ in 0..4 {
-        breaker::record_failure(pool, &endpoint, "boom").await;
+        unreachable(pool, &endpoint).await;
     }
     assert_eq!(
-        breaker::check(pool, &endpoint).await,
+        breaker::check(pool, &endpoint, PLATFORM).await,
         Verdict::Reject,
         "five consecutive failures should open the circuit"
     );
@@ -1126,7 +1167,7 @@ async fn only_one_replica_claims_the_probe() {
     let endpoint = format!("openai:http://{}", Uuid::now_v7());
 
     for _ in 0..5 {
-        breaker::record_failure(pool, &endpoint, "boom").await;
+        unreachable(pool, &endpoint).await;
     }
     // Bring the probe forward rather than waiting out the backoff.
     sqlx::query("update provider_health set probe_after = now() - interval '1 second' where endpoint = $1")
@@ -1138,7 +1179,7 @@ async fn only_one_replica_claims_the_probe() {
     // Ten replicas reach the breaker at once.
     let mut checks = Vec::new();
     for _ in 0..10 {
-        checks.push(breaker::check(pool, &endpoint));
+        checks.push(breaker::check(pool, &endpoint, PLATFORM));
     }
     let verdicts = futures::future::join_all(checks).await;
     let allowed = verdicts.iter().filter(|v| **v == Verdict::Allow).count();
@@ -1156,20 +1197,20 @@ async fn a_success_closes_the_circuit() {
     let endpoint = format!("openai:http://{}", Uuid::now_v7());
 
     for _ in 0..5 {
-        breaker::record_failure(pool, &endpoint, "boom").await;
+        unreachable(pool, &endpoint).await;
     }
-    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Reject);
+    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Reject);
 
-    breaker::record_success(pool, &endpoint).await;
-    assert_eq!(breaker::check(pool, &endpoint).await, Verdict::Allow);
+    succeeded(pool, &endpoint).await;
+    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Allow);
 
     // The count resets too, so an old outage does not shorten the fuse on the
     // next unrelated one.
     for _ in 0..4 {
-        breaker::record_failure(pool, &endpoint, "boom").await;
+        unreachable(pool, &endpoint).await;
     }
     assert_eq!(
-        breaker::check(pool, &endpoint).await,
+        breaker::check(pool, &endpoint, PLATFORM).await,
         Verdict::Allow,
         "four failures after a success must not reopen the circuit"
     );
@@ -1177,30 +1218,157 @@ async fn a_success_closes_the_circuit() {
     finish!(db);
 }
 
-/// Being told off is not the same as being down.
+/// One caller's bad request cannot take a provider away from everybody.
+///
+/// The incident this whole classification exists for, driven through the real
+/// table: an agent sends something that makes an upstream throw 500s, over and
+/// over. Counting failures would have opened the circuit five requests in. What
+/// must happen instead is nothing at all, however loud one caller is.
 #[tokio::test]
-async fn client_errors_and_rate_limits_do_not_count_against_a_provider() {
+async fn a_single_caller_answering_badly_does_not_open_a_circuit() {
+    let (db, _workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+
+    let noisy = a_caller();
+    for _ in 0..50 {
+        breaker::observe(
+            pool,
+            &endpoint,
+            PLATFORM,
+            Observation::Undetermined,
+            noisy,
+            Some("500: upstream exploded"),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Allow,
+        "fifty 500s from one caller is one caller's problem"
+    );
+
+    finish!(db);
+}
+
+/// The same answer from enough distinct callers is an outage.
+///
+/// Breadth is what turns an undetermined failure into evidence: once several
+/// callers see it, the service is answering and failing for everybody, which is
+/// when hammering it helps least.
+#[tokio::test]
+async fn enough_distinct_callers_seeing_it_opens_the_circuit() {
+    let (db, _workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+
+    for _ in 0..3 {
+        breaker::observe(
+            pool,
+            &endpoint,
+            PLATFORM,
+            Observation::Undetermined,
+            a_caller(),
+            Some("500: upstream exploded"),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Reject,
+        "three workspaces seeing the same failure is not one caller's problem"
+    );
+
+    finish!(db);
+}
+
+/// A workspace's own circuit is not the platform's.
+///
+/// A workspace bringing its own credential does not share a fate with anyone
+/// else reaching the same host: one expired key must not close the endpoint for
+/// tenants whose keys are fine.
+#[tokio::test]
+async fn a_workspaces_circuit_is_its_own() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let endpoint = format!("openai:http://{}", Uuid::now_v7());
+    let theirs = Some(workspace);
+
+    for _ in 0..5 {
+        breaker::observe(
+            pool,
+            &endpoint,
+            theirs,
+            Observation::Unreachable,
+            a_caller(),
+            Some("boom"),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        breaker::check(pool, &endpoint, theirs).await,
+        Verdict::Reject,
+        "the workspace that saw the failures backs off"
+    );
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Allow,
+        "everybody else is unaffected by one workspace's credential"
+    );
+
+    finish!(db);
+}
+
+/// Being told off is not the same as being down, and a 500 is neither.
+#[tokio::test]
+async fn what_a_provider_error_is_evidence_of() {
+    use outturn::gateway::breaker::policy::Observation;
     use outturn::gateway::llm::provider::ProviderError;
 
-    assert!(!breaker::counts_as_failure(&ProviderError::RateLimited));
-    assert!(!breaker::counts_as_failure(&ProviderError::Upstream(
-        "400: model does not support tools".into()
-    )));
-    assert!(!breaker::counts_as_failure(&ProviderError::Upstream(
-        "404: no such model".into()
-    )));
+    let evidence = outturn::gateway::breaker::observation_for;
 
-    assert!(breaker::counts_as_failure(&ProviderError::Unavailable));
-    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
-        "503: upstream connect error".into()
-    )));
-    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
-        "error sending request for url".into()
-    )));
-    // A timeout is the provider failing to answer, not refusing.
-    assert!(breaker::counts_as_failure(&ProviderError::Upstream(
-        "408: request timeout".into()
-    )));
+    // The provider answered correctly and the request was wrong, or it is
+    // alive and pushing back. Neither says anything about its health.
+    assert_eq!(evidence(&ProviderError::RateLimited), Observation::NotEvidence);
+    assert_eq!(
+        evidence(&ProviderError::Upstream("400: model does not support tools".into())),
+        Observation::NotEvidence
+    );
+    assert_eq!(
+        evidence(&ProviderError::Upstream("404: no such model".into())),
+        Observation::NotEvidence
+    );
+
+    // Nothing about one caller's request explains not being there at all, so
+    // one caller reporting it is enough to open a circuit.
+    assert_eq!(evidence(&ProviderError::Unavailable), Observation::Unreachable);
+
+    // It answered and it failed. From one caller that is indistinguishable
+    // from a request that provoked it, so it waits for company rather than
+    // counting on its own -- this is the case that used to take a provider
+    // away from everybody because one agent kept sending something bad.
+    assert_eq!(
+        evidence(&ProviderError::Upstream("503: upstream connect error".into())),
+        Observation::Undetermined
+    );
+    assert_eq!(
+        evidence(&ProviderError::Upstream("500: internal error".into())),
+        Observation::Undetermined
+    );
+    // A transport error has no status to read, and a timeout is the provider
+    // failing to answer rather than refusing. Both are failures; both still
+    // want breadth before they mean an outage.
+    assert_eq!(
+        evidence(&ProviderError::Upstream("error sending request for url".into())),
+        Observation::Undetermined
+    );
+    assert_eq!(
+        evidence(&ProviderError::Upstream("408: request timeout".into())),
+        Observation::Undetermined
+    );
 }
 
 // -- Traffic routing -----------------------------------------------------------
@@ -1307,12 +1475,12 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
 
     let routes = routing::routes_for(pool, workspace, "assistant").await.expect("routes");
     for _ in 0..5 {
-        breaker::record_failure(pool, &routes[0].endpoint(), "down").await;
+        unreachable(pool, &routes[0].endpoint()).await;
     }
 
     let mut usable = Vec::new();
     for route in &routes {
-        if breaker::check(pool, &route.endpoint()).await == Verdict::Allow {
+        if breaker::check(pool, &route.endpoint(), PLATFORM).await == Verdict::Allow {
             usable.push(route.model.as_str());
         }
     }

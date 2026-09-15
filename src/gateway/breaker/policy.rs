@@ -121,13 +121,13 @@ impl Scope {
     /// The unit breadth is counted in.
     ///
     /// A platform circuit counts workspaces, because that is the boundary a
-    /// shared credential and a shared rate limit sit on, and counting agents
+    /// shared credential and a shared rate limit sit on, and counting sessions
     /// would let one busy workspace reach breadth alone. A workspace circuit
-    /// counts agents, for the same reason one level down.
+    /// counts sessions, for the same reason one level down.
     pub fn caller_unit(self) -> CallerUnit {
         match self {
             Scope::Platform => CallerUnit::Workspace,
-            Scope::Workspace => CallerUnit::Agent,
+            Scope::Workspace => CallerUnit::Session,
         }
     }
 }
@@ -136,22 +136,28 @@ impl Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerUnit {
     Workspace,
-    Agent,
+    Session,
 }
 
 /// Where an observation came from, so breadth can be counted over callers
 /// rather than over requests.
+///
+/// The finer half is whatever the caller could prove it was. A turn token names
+/// the workspace and the chat session, so a session is what stands for "one
+/// caller" below the workspace -- not an agent id, which the gateway is never
+/// told and would have to be taken on trust from the tier that must not be
+/// believed about itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Caller {
     pub workspace_id: uuid::Uuid,
-    pub agent_id: uuid::Uuid,
+    pub session_id: uuid::Uuid,
 }
 
 impl Caller {
     fn key(&self, unit: CallerUnit) -> uuid::Uuid {
         match unit {
             CallerUnit::Workspace => self.workspace_id,
-            CallerUnit::Agent => self.agent_id,
+            CallerUnit::Session => self.session_id,
         }
     }
 }
@@ -358,17 +364,17 @@ mod tests {
     fn caller() -> Caller {
         Caller {
             workspace_id: ws(),
-            agent_id: ws(),
+            session_id: ws(),
         }
     }
 
-    /// Distinct agents inside one workspace, which is one caller to a platform
-    /// circuit and many to a workspace one.
-    fn agents_of(workspace_id: uuid::Uuid, n: usize) -> Vec<Caller> {
+    /// Distinct sessions inside one workspace, which is one caller to a
+    /// platform circuit and many to a workspace one.
+    fn sessions_of(workspace_id: uuid::Uuid, n: usize) -> Vec<Caller> {
         (0..n)
             .map(|_| Caller {
                 workspace_id,
-                agent_id: ws(),
+                session_id: ws(),
             })
             .collect()
     }
@@ -456,11 +462,11 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_circuit_counts_workspaces_and_a_workspace_one_counts_agents() {
-        // Three agents of one workspace are one caller to the platform, and
+    fn a_platform_circuit_counts_workspaces_and_a_workspace_one_counts_sessions() {
+        // Three sessions of one workspace are one caller to the platform, and
         // three to that workspace: a shared credential is what the platform
         // circuit is about, and a busy workspace should not speak for the rest.
-        let agents = agents_of(ws(), 3);
+        let agents = sessions_of(ws(), 3);
 
         let mut platform = Health::new(Scope::Platform);
         for (i, c) in agents.iter().enumerate() {
