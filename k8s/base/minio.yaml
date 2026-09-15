@@ -30,12 +30,19 @@ spec:
     spec:
       containers:
         - name: minio
-          image: minio/minio:latest
+          # quay.io rather than Docker Hub: MinIO stopped publishing the
+          # community image there, and `docker pull minio/minio` now answers
+          # "pull access denied ... or may require 'docker login'", which reads
+          # like a private repository rather than like an image that has gone.
+          # A machine that already had a copy kept working, so this surfaced
+          # only on a fresh checkout -- the worst place for it, since it is
+          # somebody's first attempt to bring the stack up.
+          image: quay.io/minio/minio:latest
           # A `:latest` tag defaults to pulling on every start, and an
-          # anonymous pull of a popular image is rate limited -- so a cluster
-          # that has the image already sits in ImagePullBackOff waiting for
-          # permission to fetch what is on its own disk. Kept for whatever is
-          # local; a newer one arrives by pulling it deliberately.
+          # anonymous pull of a popular image can be rate limited -- so a
+          # cluster that has the image already would sit in ImagePullBackOff
+          # waiting for permission to fetch what is on its own disk. Kept for
+          # whatever is local; a newer one arrives by pulling it deliberately.
           imagePullPolicy: IfNotPresent
           args: ["server", "/data", "--console-address", ":9001"]
           ports:
