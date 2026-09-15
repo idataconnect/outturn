@@ -1,5 +1,5 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square } from 'lucide-react'
+import { CircleSlash, CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square } from 'lucide-react'
 
 import { useEffect, useRef } from 'react'
 import type React from 'react'
@@ -73,6 +73,16 @@ function describe(status: MessageStatus): {
         icon: <Merge size={14} aria-hidden />,
         label: 'Folded into the reply in progress',
         tone: muted,
+        live: 'status',
+      }
+    case 'silent':
+      // Not red: nothing failed, and dressing it as an error sends somebody
+      // looking for a fault that was never recorded. What the reader needs is
+      // to know the turn is over so they can say something else.
+      return {
+        icon: <CircleSlash size={14} aria-hidden />,
+        label: 'The agent ended its turn without replying',
+        tone: 'text-amber-700 dark:text-amber-400',
         live: 'status',
       }
     case 'failed':

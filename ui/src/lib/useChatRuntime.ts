@@ -35,6 +35,10 @@ export type MessageStatus =
   | { kind: 'retrying' }
   /** Taken into a turn already running; answered there, not separately. */
   | { kind: 'absorbed' }
+  /** The turn finished and the reply is empty: the agent said nothing. Not a
+   *  failure -- nothing went wrong that anyone recorded -- but the reader is
+   *  owed an explanation rather than a spinner that never stops. */
+  | { kind: 'silent' }
   | { kind: 'failed'; message: string }
 
 type Annotated = Message & {
@@ -50,7 +54,7 @@ type Annotated = Message & {
  * `retrying` is the one thing the transcript cannot tell: a retry reuses the
  * same empty reply, so it is remembered from the event until a delta arrives.
  */
-function annotate(
+export function annotate(
   messages: Message[],
   retrying: Set<string>,
   failures: Map<string, string>,
@@ -101,6 +105,16 @@ function annotate(
     }
 
     if (reply) {
+      // A reply exists but has nothing in it. While the job is still going
+      // that is a turn yet to say its first word; once the job has finished it
+      // is a turn that ended without saying anything, and calling that
+      // "waiting" leaves the reader watching a spinner for a reply that is
+      // never coming. gemma4 does this with thinking off, and any model does
+      // it by spending its whole turn on tool calls that go nowhere.
+      const jobOver = m.job_state !== 'pending' && m.job_state !== 'running'
+      if (jobOver && !retrying.has(reply.id)) {
+        return { ...m, status: { kind: 'silent' } }
+      }
       return { ...m, status: { kind: retrying.has(reply.id) ? 'retrying' : 'waiting' } }
     }
 
