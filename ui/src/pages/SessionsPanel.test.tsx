@@ -29,8 +29,16 @@ vi.mock('../lib/chat', () => ({
   sessionName: (s: { title?: string | null }) => s?.title ?? 'Untitled',
 }))
 
+const takeSeen: Array<(() => string) | undefined> = []
 vi.mock('../lib/useChatRuntime', () => ({
-  useChatRuntime: () => ({ runtime: null, error: null, stopping: false }),
+  useChatRuntime: (
+    _id: string | null,
+    _renamed?: (t: string) => void,
+    take?: () => string,
+  ) => {
+    takeSeen.push(take)
+    return { runtime: null, error: null, stopping: false }
+  },
 }))
 
 vi.mock('@assistant-ui/react', () => ({
@@ -40,9 +48,21 @@ vi.mock('@assistant-ui/react', () => ({
 // Records what the page asked of it, so a test can tell a focus request was
 // made without rendering assistant-ui. Thread.test covers what it does with one.
 vi.mock('../components/Thread', () => ({
-  default: ({ focusRequest }: { focusRequest?: number }) => (
-    <div data-testid="thread" data-focus-request={focusRequest}>thread</div>
-  ),
+  default: ({
+    focusRequest,
+    takeAttachments,
+  }: {
+    focusRequest?: number
+    takeAttachments?: { current: (() => string) | null }
+  }) => {
+    // The composer fills this; the page is supposed to hand it to the runtime.
+    if (takeAttachments) takeAttachments.current = () => '[image: session/a.png]'
+    return (
+      <div data-testid="thread" data-focus-request={focusRequest}>
+        thread
+      </div>
+    )
+  },
 }))
 vi.mock('../components/SidePane', () => ({ default: () => <div>pane</div> }))
 
@@ -142,5 +162,30 @@ describe('asking for the cursor', () => {
     await waitFor(() =>
       expect(screen.getByTestId('thread').dataset.focusRequest).not.toBe(before),
     )
+  })
+})
+
+describe('what the composer attaches', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+    takeSeen.length = 0
+  })
+
+  it('reaches the runtime that sends the message', async () => {
+    // The composer holds the attachments and the runtime does the sending, so
+    // the page is the only place they can meet. Wiring the ref into the
+    // component but forgetting to pass it to the runtime leaves a thumbnail
+    // that never clears and a reference the model never sees -- which is
+    // exactly what happened, and no test noticed.
+    setWidth(1440)
+    show()
+
+    await screen.findByTestId('thread')
+    const take = takeSeen.at(-1)
+    expect(take, 'the page never gave the runtime a way to collect attachments').toBeTypeOf(
+      'function',
+    )
+    expect(take?.()).toBe('[image: session/a.png]')
   })
 })

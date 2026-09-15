@@ -42,10 +42,20 @@ export default function Chat() {
   const active = sessionId ?? null
   // A title arriving over the feed -- the namer's, after the first turn, or
   // a rename from another tab -- lands in the list the sidebar draws from.
-  const { runtime, error: chatError, stopping } = useChatRuntime(active, (title) => {
-    if (!active) return
-    setSessions((prev) => prev.map((s) => (s.id === active ? { ...s, title } : s)))
-  })
+  /** Filled by the composer; read by the runtime as a message is sent. */
+  const takeAttachments = useRef<(() => string) | null>(null)
+
+  const { runtime, error: chatError, stopping } = useChatRuntime(
+    active,
+    (title) => {
+      if (!active) return
+      setSessions((prev) => prev.map((s) => (s.id === active ? { ...s, title } : s)))
+    },
+    // Read as a message is sent. Held in a ref filled by the composer, which
+    // is where the attachments are: the runtime is created here, and the two
+    // would otherwise have no way to meet.
+    () => takeAttachments.current?.() ?? '',
+  )
 
   // Agents and sessions are workspace-scoped, so switching workspace reloads both.
   // Selecting a session does not: that only changes which one is shown.
@@ -75,6 +85,18 @@ export default function Chat() {
   // Bumped by choosing a session, new or existing: whoever just picked a
   // conversation is about to type into it.
   const [focusRequest, setFocusRequest] = useState(0)
+  /** Bumped when the composer stores or removes a file, so the files panel
+   *  shows what happened without anyone reopening it. */
+  const [storedChange, setStoredChange] = useState(0)
+
+  function onStoredChange(failure?: string) {
+    if (failure) {
+      setError(failure)
+      return
+    }
+    setStoredChange((n) => n + 1)
+    setError(null)
+  }
 
   function toggleSessions(next: boolean) {
     setSessionsOpen(next)
@@ -163,11 +185,13 @@ export default function Chat() {
               id: 'files',
               label: 'Files',
               icon: Paperclip,
-              render: () => <FilesPanel sessionId={active} />,
+              render: () => <FilesPanel sessionId={active} reloadKey={storedChange} />,
             },
           ]
         : [],
-    [active],
+    // `storedChange` too: the render closes over it, so a panel built before
+    // an upload would keep showing the list from before it.
+    [active, storedChange],
   )
 
   const current = sessions.find((s) => s.id === active)
@@ -307,7 +331,14 @@ export default function Chat() {
         )}
         <div className="flex-1 min-h-0">
           <AssistantRuntimeProvider runtime={runtime}>
-            <Thread disabled={!active} stopping={stopping} focusRequest={focusRequest} />
+            <Thread
+              disabled={!active}
+              stopping={stopping}
+              focusRequest={focusRequest}
+              sessionId={active}
+              onStoredChange={onStoredChange}
+              takeAttachments={takeAttachments}
+            />
           </AssistantRuntimeProvider>
         </div>
       </div>

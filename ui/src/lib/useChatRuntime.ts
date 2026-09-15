@@ -216,14 +216,25 @@ type DeltaProgress = Map<string, number>
  * changed -- the namer working after a turn, or somebody else's rename --
  * so the sidebar and header follow without a reload.
  */
-export function useChatRuntime(sessionId: string | null, onRenamed?: (title: string) => void) {
+export function useChatRuntime(
+  sessionId: string | null,
+  onRenamed?: (title: string) => void,
+  /** Called as a message is sent, for anything the composer has attached to
+   *  it. Returns the text to append and forgets what it returned: an image
+   *  reaches the model as a path it can look at, and belongs in the message
+   *  rather than travelling beside it, so the transcript records what was
+   *  actually asked. */
+  takeAttachments?: () => string,
+) {
   // Kept in a ref so the feed's effects can reach the latest callback without
   // listing it as a dependency and tearing the stream down on every render.
   // Written in a layout effect rather than during render: a render may be
   // discarded, and a discarded render must not leave a ref behind it.
   const renamed = useRef(onRenamed)
+  const attachments = useRef(takeAttachments)
   useLayoutEffect(() => {
     renamed.current = onRenamed
+    attachments.current = takeAttachments
   })
   const [messages, setMessages] = useState<Message[]>([])
   const [isRunning, setIsRunning] = useState(false)
@@ -511,12 +522,17 @@ export function useChatRuntime(sessionId: string | null, onRenamed?: (title: str
         throw new Error('only text messages are supported')
       }
 
+      // Taken at send rather than as it is pasted, so an image removed before
+      // the message goes is an image the model never hears about.
+      const references = attachments.current?.() ?? ''
+      const text = references ? `${part.text}\n\n${references}`.trim() : part.text
+
       setError(null)
       setIsRunning(true)
       try {
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
-        const stored = await sendMessage(sessionId, part.text, delivery)
+        const stored = await sendMessage(sessionId, text, delivery)
         // The POST does not say, but a message it accepted has a job queued
         // for it by construction: the two are written together.
         merge([{ ...stored, job_state: 'pending' }])

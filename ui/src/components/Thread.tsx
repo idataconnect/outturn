@@ -1,13 +1,15 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleSlash, CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square } from 'lucide-react'
+import { CircleSlash, CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 
 import type { MessageStatus } from '../lib/useChatRuntime'
 import MarkdownText, { UserMarkdownText } from './MarkdownText'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
+import { deleteFile, uploadPastedImage } from '../lib/chat'
+import { ApiError } from '../lib/api'
 
 /**
  * Thread built from assistant-ui primitives directly, using this project's
@@ -143,16 +145,37 @@ function AssistantMessage() {
   )
 }
 
+/** An image pasted into this message, stored but not yet sent. */
+type Attachment = {
+  /** Where it was stored, which is what the model is told to look at. */
+  path: string
+  /** A local object URL, so the preview costs no round trip. */
+  preview: string
+}
+
 export default function Thread({
   disabled,
   stopping,
   focusRequest = 0,
+  sessionId,
+  onStoredChange,
+  takeAttachments,
 }: {
   disabled?: boolean
   /** A stop has been asked for and the turn has not ended yet. */
   stopping?: boolean
   /** Changed to put the cursor in the composer, e.g. for a session just chosen. */
   focusRequest?: number
+  /** Where a pasted image is stored. Absent before a session exists, which is
+   *  also when there is nowhere to put one. */
+  sessionId?: string | null
+  /** Told when a pasted image is stored or removed, so the files panel can
+   *  show what the composer just did to it. */
+  onStoredChange?: (error?: string) => void
+  /** Filled with a function the runtime calls at send, to collect what this
+   *  composer has attached. Held by the page because the runtime is created
+   *  there, while the attachments live here with the composer that made them. */
+  takeAttachments?: React.MutableRefObject<(() => string) | null>
 }) {
   // `autoFocus` only speaks for the first mount, and the thread outlives
   // every change of session -- so a session chosen from the sidebar left
@@ -161,6 +184,92 @@ export default function Thread({
   // first session of all enables it a render after the request is made.
   const input = useRef<HTMLTextAreaElement>(null)
   const focused = useRef(0)
+  const [pasting, setPasting] = useState(false)
+  /** Images pasted into this message and not yet sent, with a local preview. */
+  const [attached, setAttached] = useState<Attachment[]>([])
+
+  // The previews are object URLs, which the browser holds until they are
+  // revoked. Left alone they accumulate for as long as the tab is open.
+  useEffect(() => {
+    return () => {
+      for (const image of attached) URL.revokeObjectURL(image.preview)
+    }
+    // Only on unmount: revoking on every change would kill previews still
+    // being shown, and each chip revokes its own when it is removed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Sending is what turns an attachment into part of the message: the model
+  // is told the path, which is what `describe_image` takes, so it can look
+  // without anyone having to type the name out. Handed to the runtime rather
+  // than called here, because the composer's submit goes through it.
+  useEffect(() => {
+    if (!takeAttachments) return
+    takeAttachments.current = () => {
+      const references = attached.map((image) => `[image: ${image.path}]`).join('\n')
+      // Forgotten as they are taken: they belong to the message just sent,
+      // and the previews are no longer anybody's to show.
+      for (const image of attached) URL.revokeObjectURL(image.preview)
+      setAttached([])
+      return references
+    }
+    return () => {
+      if (takeAttachments) takeAttachments.current = null
+    }
+  }, [attached, takeAttachments])
+
+  async function removeAttachment(image: Attachment) {
+    setAttached((current) => current.filter((a) => a.path !== image.path))
+    URL.revokeObjectURL(image.preview)
+    // Removed means removed. The file is already stored, and leaving it would
+    // mean a screenshot somebody pasted by mistake is still there for the
+    // agent to read -- the surprise in the direction that matters.
+    if (sessionId) {
+      try {
+        await deleteFile(sessionId, image.path)
+        onStoredChange?.()
+      } catch (e) {
+        onStoredChange?.(e instanceof ApiError ? e.message : 'could not remove that image')
+      }
+    }
+  }
+
+  // An image on the clipboard is a Blob with no name, so it cannot go through
+  // the file path that drag-and-drop uses. It is stored the moment it is
+  // pasted rather than held in the composer: the agent reads it by path, so
+  // something that exists is something it can be asked about, and a paste
+  // that vanished when the tab closed would be worse than one that landed
+  // somewhere visible in the files panel.
+  async function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = Array.from(event.clipboardData?.items ?? []).filter(
+      (item) => item.kind === 'file' && item.type.startsWith('image/'),
+    )
+    if (images.length === 0) return
+    // Only once there is an image: a paste of ordinary text must land in the
+    // box as text, and calling preventDefault on everything would eat it.
+    event.preventDefault()
+    if (!sessionId) return
+
+    setPasting(true)
+    try {
+      for (const item of images) {
+        const blob = item.getAsFile()
+        if (!blob) continue
+        try {
+          const stored = await uploadPastedImage(sessionId, blob)
+          setAttached((current) => [
+            ...current,
+            { path: stored.path, preview: URL.createObjectURL(blob) },
+          ])
+          onStoredChange?.()
+        } catch (e) {
+          onStoredChange?.(e instanceof ApiError ? e.message : 'could not store that image')
+        }
+      }
+    } finally {
+      setPasting(false)
+    }
+  }
   useEffect(() => {
     if (disabled || focusRequest === focused.current) return
     focused.current = focusRequest
@@ -184,12 +293,46 @@ export default function Thread({
         />
       </ThreadPrimitive.Viewport>
 
-      <ComposerPrimitive.Root className="flex gap-2 p-4 border-t border-surface-200 dark:border-surface-800">
+      {attached.length > 0 && (
+        <div className="flex gap-2 flex-wrap px-4 pt-3 border-t border-surface-200 dark:border-surface-800">
+          {attached.map((image) => (
+            <div key={image.path} className="relative group">
+              <img
+                src={image.preview}
+                alt={`Pasted, stored as ${image.path}`}
+                className="h-16 w-16 object-cover rounded-md border border-surface-300 dark:border-surface-700"
+              />
+              <button
+                type="button"
+                onClick={() => void removeAttachment(image)}
+                aria-label={`Remove ${image.path}`}
+                title="Remove, and delete the stored file"
+                className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-800 dark:bg-surface-200 text-white dark:text-surface-900 p-0.5 opacity-90 hover:opacity-100"
+              >
+                <X size={12} aria-hidden />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ComposerPrimitive.Root className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}`}>
         <ComposerPrimitive.Input
           ref={input}
           autoFocus
           disabled={disabled}
-          placeholder={disabled ? 'Start a session first' : 'Message the agent…'}
+          // Handled here rather than by the composer's own attachment path,
+          // which this project does not use: an image is stored as a session
+          // file and named by path, not carried along with the message.
+          addAttachmentOnPaste={false}
+          onPaste={onPaste}
+          placeholder={
+            pasting
+              ? 'Storing the image…'
+              : disabled
+                ? 'Start a session first'
+                : 'Message the agent…'
+          }
           className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
         {/* One button, two jobs. While a turn is running the send button is

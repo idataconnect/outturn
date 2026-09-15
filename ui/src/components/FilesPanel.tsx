@@ -56,7 +56,16 @@ function size(bytes: number): string {
  * where most uploads belong. A file put here is one the agent lists and reads
  * by the same name, so the panel's names are the agent's names.
  */
-export default function FilesPanel({ sessionId }: { sessionId: string }) {
+export default function FilesPanel({
+  sessionId,
+  reloadKey = 0,
+}: {
+  sessionId: string
+  /** Changed when something outside this panel stored or removed a file, so
+   *  the list shows it without anyone having to reopen the panel. A pasted
+   *  image is uploaded from the composer, which knows nothing about this. */
+  reloadKey?: number
+}) {
   const state = useSession()
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const writable = SCOPES.filter((s) => authorities.includes(s.write))
@@ -84,7 +93,7 @@ export default function FilesPanel({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, reloadKey])
 
   // The chosen scope must be one this person may write; if their rights
   // changed under them, fall back to the first they still hold.

@@ -224,6 +224,55 @@ export async function uploadFile(
   })
 }
 
+/**
+ * Stores something pasted into the composer.
+ *
+ * A pasted image is a `Blob` off the clipboard rather than a `File` off a
+ * disk: it has bytes and a type and no name at all. So a name is made here,
+ * from the clock, which also keeps two pastes in one conversation from
+ * landing on top of each other -- `image.png` twice would mean the second
+ * silently replacing the first.
+ */
+export async function uploadPastedImage(
+  sessionId: string,
+  blob: Blob,
+): Promise<StoredFile> {
+  const extension = extensionFor(blob.type)
+  // Sortable, unambiguous, and readable in a file list: pasted-20260915-081530.png
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d+Z$/, '')
+    .replace('T', '-')
+  const name = `pasted-${stamp}.${extension}`
+
+  return api<StoredFile>(fileUrl(sessionId, `session/${encodeURIComponent(name)}`), {
+    method: 'PUT',
+    headers: { 'content-type': blob.type || 'application/octet-stream' },
+    body: blob,
+  })
+}
+
+/** The file extension for a clipboard image, by what the browser called it. */
+function extensionFor(mediaType: string): string {
+  switch (mediaType) {
+    case 'image/png':
+      return 'png'
+    case 'image/jpeg':
+      return 'jpg'
+    case 'image/gif':
+      return 'gif'
+    case 'image/webp':
+      return 'webp'
+    default:
+      // Safari has been known to paste `image/tiff`. Stored under its own
+      // name anyway: the host reads the bytes to decide what it is, so a
+      // wrong guess here costs nothing, and refusing the paste outright
+      // would lose something the user meant to keep.
+      return mediaType.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+  }
+}
+
 export function deleteFile(sessionId: string, scopedPath: string): Promise<void> {
   return api<void>(fileUrl(sessionId, scopedPath), { method: 'DELETE' })
 }
