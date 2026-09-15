@@ -549,6 +549,89 @@ impl outturn::agent::host::Host for AgentHost {
         })
     }
 
+    /// Asks a model that can see what is in a stored image.
+    ///
+    /// The bytes are read here and never handed over. A guest that could hold
+    /// an image could send it somewhere through the one channel it has, and
+    /// what it wants is the answer rather than the pixels -- the same trade
+    /// `read_object` already makes for a document.
+    async fn describe_image(&mut self, path: String, question: String) -> Result<String, String> {
+        use crate::runtime::vision;
+
+        let (storage, resolved) = self.object_at(&path)?;
+
+        let bytes = storage
+            .read(&resolved, 0, vision::MAX_IMAGE_BYTES as u32)
+            .await
+            .map_err(|e| format!("could not read {path}: {e}"))?;
+
+        // Sniffed rather than trusted from the name: an extension is a claim
+        // by whoever uploaded the file, and a provider told the wrong type
+        // refuses in a way that reads like a fault here.
+        let Some(media_type) = vision::media_type(&bytes) else {
+            return Err(format!(
+                "{path} is not an image this can show a model (PNG, JPEG, GIF and WebP are)"
+            ));
+        };
+
+        if bytes.len() >= vision::MAX_IMAGE_BYTES {
+            return Err(format!(
+                "{path} is too large to show a model; the limit is {}MB",
+                vision::MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
+        }
+
+        let encoded = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        };
+
+        // A `vision` route names the model that looks, and overrides what is
+        // sent here. This turn's own model is the fallback, for the deployment
+        // that has configured no route -- which is the common local case,
+        // where the model holding the conversation can see perfectly well. A
+        // route is how a deployment says otherwise.
+        let body = vision::request(&self.default_model, media_type, &encoded, &question);
+
+        let response = self
+            .http
+            .post(format!("{}/v1/chat/completions", self.gateway_url))
+            .bearer_auth(&self.gateway_token)
+            .header("x-outturn-traffic", vision::TRAFFIC_TYPE)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("could not reach a model that can see: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            // Said plainly rather than dressed up: a deployment with no vision
+            // route configured lands here, and the agent should say so instead
+            // of guessing at the picture.
+            return Err(format!(
+                "a model that can see was not available ({status}): {}",
+                detail.chars().take(200).collect::<String>()
+            ));
+        }
+
+        let completion: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("the answer did not arrive whole: {e}"))?;
+
+        let text = completion["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        if text.is_empty() {
+            return Err("the model looked and said nothing".to_string());
+        }
+        Ok(text)
+    }
+
     async fn read_object(
         &mut self,
         path: String,

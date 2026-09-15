@@ -44,6 +44,9 @@ thiserror = "2"
 argon2 = "0.6"
 sha2 = "0.10"
 hex = "0.4"
+# Data URLs for an image on its way to a model; nothing else here needs it,
+# and the session token that claims to be base64 is hex.
+base64 = "0.22"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 # fail-on-err is in the crate's default set and default-features = false had

@@ -32,6 +32,8 @@ const LIST_OBJECTS: &str = "list_objects";
 /// The model's name for the outbound request tool.
 const FETCH: &str = "fetch_url";
 const EXPAND_ARCHIVE: &str = "expand_archive";
+/// The model's name for asking what is in an image.
+const DESCRIBE_IMAGE: &str = "describe_image";
 const CREATE_ARCHIVE: &str = "create_archive";
 
 /// How much of a file a single read puts in front of the model.
@@ -74,6 +76,19 @@ fn tools() -> Vec<ToolDefinition> {
             MAX_TOOL_BYTES / 1024
         ),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/upload.pdf, agent/notes.md or workspace/reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: DESCRIBE_IMAGE.to_string(),
+        description:
+            "Ask a model that can see what is in a stored image. The answer is \
+             about the question you ask, so ask for what you actually need: \
+             \"what is in this picture\" and \"what is the total on this \
+             receipt\" get different answers, and asking again with a sharper \
+             question is normal rather than wasteful. PNG, JPEG, GIF and WebP. \
+             You never receive the image itself, only the answer."
+                .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path to the image, e.g. session/screenshot.png"},"question":{"type":"string","description":"What you want to know about it. Be specific: this is what the model is asked to look for."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading the receipt."}},"required":["path","question","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -375,6 +390,26 @@ fn whole_lines(fragment: &str, drop_from_start: bool) -> &str {
 /// Both ends are shown instead, and what was skipped is described precisely
 /// enough to go and get: a model that wants the middle can ask for it by
 /// offset rather than guessing.
+/// Asks what is in an image, and hands back what the model said.
+///
+/// Thin on purpose: the host reads the bytes, picks the model and asks. What
+/// is left here is the shape of the answer, and the failure -- an image that
+/// is not one, or a deployment with nowhere to send it -- which the model is
+/// told plainly so it can say so rather than describe a picture it never saw.
+fn describe_image(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    let question = arg(args, "question");
+    match host::describe_image(path, question) {
+        Ok(answer) => serde_json::json!({
+            "path": path,
+            "question": question,
+            "answer": answer,
+        })
+        .to_string(),
+        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    }
+}
+
 fn read_object(args: &serde_json::Value) -> String {
     let path = arg(args, "path");
     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -602,6 +637,7 @@ fn run_tool(call: &ToolCall) -> Message {
         DELETE_OBJECT => delete_object(&args),
         LIST_OBJECTS => list_objects(&args),
         FETCH => fetch_url(&args),
+        DESCRIBE_IMAGE => describe_image(&args),
         EXPAND_ARCHIVE => expand_archive(&args),
         CREATE_ARCHIVE => create_archive(&args),
         CURRENT_TIME => {

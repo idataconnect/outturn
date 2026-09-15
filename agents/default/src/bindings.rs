@@ -511,6 +511,114 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Asks a model that can see what is in an image.
+            ///
+            /// `question` is the point. A pass over an image is directed: "what is in
+            /// this screenshot" and "what is the phone number in the corner" attend to
+            /// different things and answer differently, so a description written when
+            /// the image arrived would have been written before anyone knew what to
+            /// ask. Asking twice with two questions is the intended use, not waste.
+            ///
+            /// The bytes never come back. What returns is prose, the same trade
+            /// `read-object` makes for a document -- and for the same reason: an image
+            /// a guest could hold is an image a compromised component could carry out
+            /// through the one channel it has.
+            ///
+            /// Which model looks is a route rather than anything here. A deployment
+            /// that has configured none is told so plainly, instead of a model being
+            /// asked to look at something it cannot see.
+            pub fn describe_image(
+                path: &str,
+                question: &str,
+            ) -> Result<_rt::String, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = path;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let vec1 = question;
+                    let ptr1 = vec1.as_ptr().cast::<u8>();
+                    let len1 = vec1.len();
+                    let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "describe-image"]
+                        fn wit_import3(
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import3(
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import3(ptr0.cast_mut(), len0, ptr1.cast_mut(), len1, ptr2)
+                    };
+                    let l4 = i32::from(*ptr2.add(0).cast::<u8>());
+                    let result11 = match l4 {
+                        0 => {
+                            let e = {
+                                let l5 = *ptr2
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l6 = *ptr2
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len7 = l6;
+                                let bytes7 = _rt::Vec::from_raw_parts(
+                                    l5.cast(),
+                                    len7,
+                                    len7,
+                                );
+                                _rt::string_lift(bytes7)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l8 = *ptr2
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l9 = *ptr2
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len10 = l9;
+                                let bytes10 = _rt::Vec::from_raw_parts(
+                                    l8.cast(),
+                                    len10,
+                                    len10,
+                                );
+                                _rt::string_lift(bytes10)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result11
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// Reads part of an object exactly as it is stored.
             ///
             /// `read-object` hands over what a reader wants -- for a document, the
@@ -2465,9 +2573,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1579] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa9\x0b\x01A\x02\x01\
-A\x05\x01BN\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1625] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd7\x0b\x01A\x02\x01\
+A\x05\x01BQ\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -2484,22 +2592,23 @@ methods\x03urls\x07headers\x1a\x04body\x07\x04\0\x0chttp-request\x03\0\x1b\x01r\
 me\x03\0\x1f\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0!\x01r\x02\x0f\
 max-tool-roundsy\x09cancelled\x7f\x04\0\x06limits\x03\0#\x01r\x04\x03nows\x07wee\
 kdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0%\x01p}\x01j\x01'\x01s\x01\
-@\x03\x04paths\x06offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x04\0\x0aread-byt\
-es\x01)\x01j\x01\x18\x01s\x01@\x01\x04paths\0*\x04\0\x0bstat-object\x01+\x01j\x01\
-w\x01s\x01@\x02\x04paths\x04data'\0,\x04\0\x0cwrite-object\x01-\x01j\0\x01s\x01@\
-\x01\x04paths\0.\x04\0\x0ddelete-object\x01/\x01j\x01\x1e\x01s\x01@\x01\x07reque\
-st\x1c\00\x04\0\x05fetch\x011\x01p\x18\x01j\x012\x01s\x01@\x01\x06prefixs\03\x04\
-\0\x0clist-objects\x014\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x01\
-5\x01@\x01\x08activity\x16\x01\0\x04\0\x0ctool-started\x016\x01p\"\x01@\0\07\x04\
-\0\x0dpending-input\x018\x01@\0\0$\x04\0\x0ecurrent-limits\x019\x01j\x01\x14\x01\
-s\x01@\x01\x07request\x0f\0:\x04\0\x04chat\x01;\x01@\0\0&\x04\0\x0ccurrent-time\x01\
-<\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01=\x01@\x02\x05levels\x07messages\x01\
-\0\x04\0\x03log\x01>\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07mess\
-age\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01\
-s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\
-\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\
-\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
-wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+@\x03\x04paths\x06offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x01j\x01s\x01s\x01\
+@\x02\x04paths\x08questions\0*\x04\0\x0edescribe-image\x01+\x04\0\x0aread-bytes\x01\
+)\x01j\x01\x18\x01s\x01@\x01\x04paths\0,\x04\0\x0bstat-object\x01-\x01j\x01w\x01\
+s\x01@\x02\x04paths\x04data'\0.\x04\0\x0cwrite-object\x01/\x01j\0\x01s\x01@\x01\x04\
+paths\00\x04\0\x0ddelete-object\x011\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\0\
+2\x04\0\x05fetch\x013\x01p\x18\x01j\x014\x01s\x01@\x01\x06prefixs\05\x04\0\x0cli\
+st-objects\x016\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x017\x01@\x01\
+\x08activity\x16\x01\0\x04\0\x0ctool-started\x018\x01p\"\x01@\0\09\x04\0\x0dpend\
+ing-input\x01:\x01@\0\0$\x04\0\x0ecurrent-limits\x01;\x01j\x01\x14\x01s\x01@\x01\
+\x07request\x0f\0<\x04\0\x04chat\x01=\x01@\0\0&\x04\0\x0ccurrent-time\x01>\x01@\x01\
+\x04texts\x01\0\x04\0\x08progress\x01?\x01@\x02\x05levels\x07messages\x01\0\x04\0\
+\x03log\x01@\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\
+\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\
+\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outtu\
+rn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\
+\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-com\
+ponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

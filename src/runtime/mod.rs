@@ -5,3 +5,4 @@ pub mod fetch;
 pub mod puller;
 pub mod router;
 pub mod storage;
+pub mod vision;
