@@ -64,3 +64,11 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-mac
+  # A Mac with less memory to spare. As `mac`, but gemma4 rather than
+  # qwen3.8:27b-mlx -- about 9.6GB loaded against 22GB. `scripts/dev-mac.sh
+  # --small` runs this.
+  - name: mac-small
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/local-mac-small

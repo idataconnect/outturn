@@ -2,7 +2,8 @@
 # Local development on a Mac: ollama on the host, the rest in the cluster.
 #
 #   scripts/dev-mac.sh            # checks ollama and the model, then skaffold dev -p mac
-#   scripts/dev-mac.sh -v info    # anything after is passed to skaffold
+#   scripts/dev-mac.sh --small    # gemma4 instead, for a Mac with less memory
+#   scripts/dev-mac.sh -v info    # anything else is passed to skaffold
 #
 # Expects a cluster already running (Docker Desktop's Kubernetes, kind, or
 # colima --kubernetes) and kubectl pointed at it. Starting one is left to you:
@@ -12,7 +13,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+profile=mac
 overlay=k8s/overlays/local-mac/kustomization.yaml
+if [[ "${1:-}" == "--small" ]]; then
+  # A smaller model, for a machine that cannot spare 22GB for the big one.
+  profile=mac-small
+  overlay=k8s/overlays/local-mac-small/kustomization.yaml
+  shift
+fi
+
 ollama_url=http://localhost:11434
 
 # Read out of the overlay rather than repeated here, so the model the script
@@ -65,6 +74,6 @@ curl -sf "$ollama_url/api/generate" -d "{\"model\":\"$model\",\"keep_alive\":\"3
 
 # The flags AGENTS.md uses, so a rebuild can be asked for over the Control API
 # with the same curl as on any other machine.
-exec skaffold dev -p mac \
+exec skaffold dev -p "$profile" \
   --auto-build=false --auto-deploy=false --auto-sync=false --rpc-http-port=50052 \
   "$@"
