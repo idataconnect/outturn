@@ -219,6 +219,13 @@ cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
 says what exists.
 
+How somebody finds out their skill is not working is designed but unbuilt, in
+[docs/skill-evaluation.md](docs/skill-evaluation.md) — a skill that documents
+its call the way an API's own docs do ("GET https://…") reads fine to a capable
+model and gets called as a tool name by a weaker one, and nothing today would
+say so. Most of that is a query rather than an inference; the judged half reads
+untrusted transcripts, which is the part to be careful with.
+
 What happens to a write nobody saw the answer to is designed but unbuilt, in
 [docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
 rather than two, and the third one, sent-but-never-observed, is what a stop
