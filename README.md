@@ -39,6 +39,40 @@ curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 On Linux, `skaffold dev` without a profile reaches ollama across the Docker
 bridge and uses gemma4. [AGENTS.md](AGENTS.md) covers both in more depth.
 
+## Changing the agent interface
+
+`wit/agent.wit` is the boundary between the host and the components it runs,
+and two generated files are committed beside it: `assets/agent_default.wasm`,
+so an image build needs no wasm toolchain, and `agents/default/src/bindings.rs`,
+so the guest crate builds without one either. Neither regenerates on its own.
+
+Change the interface without rebuilding them and the guest still compiles --
+against its stale bindings -- while every turn fails at runtime with "component
+imports instance `outturn:agent/host`, but a matching implementation was not
+found in the linker". A test catches it first: `artifact_guard` compares the
+interface against the copy stored beside the component, and fails the moment
+they differ.
+
+Rebuilding needs a toolchain that is not otherwise required:
+
+```bash
+rustup target add wasm32-wasip2
+rustup component add llvm-tools          # rust-lld needs libLLVM to link a component
+cargo install wit-bindgen-cli --version 0.41.0
+
+wit-bindgen rust wit/ --out-dir agents/default/src --runtime-path wit_bindgen_rt --format
+mv agents/default/src/agent_world.rs agents/default/src/bindings.rs
+(cd agents/default && cargo build --release --target wasm32-wasip2)
+cp agents/default/target/wasm32-wasip2/release/outturn_agent_default.wasm assets/agent_default.wasm
+cp wit/agent.wit assets/agent_default.wit
+```
+
+The bindgen flags are not a guess and should not be changed casually: they are
+what reproduces the committed file byte for byte. A cheap way to confirm before
+trusting a regeneration is to run them against the *old* interface and diff
+against the committed bindings -- identical means the flags are right, and
+anything else means the next diff will be full of noise that hides the change.
+
 ## Tests
 
 `cargo test` runs only what needs nothing external. That includes the agent
