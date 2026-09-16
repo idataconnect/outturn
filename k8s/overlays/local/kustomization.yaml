@@ -49,7 +49,7 @@ patches:
           # gemma4 rather than llama3.1: the agent offers tools on every
           # turn, and llama3.1's template stops streaming when tools are
           # present -- a reply collapses from ~26 chunks to 3. gemma4 streams
-          # either way. Per-model behaviour, not an ollama or gateway one.
+          # either way. Per-model behavior, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
             value: "gemma4"
   - target:
@@ -134,7 +134,7 @@ patches:
           # gemma4 rather than llama3.1: the agent offers tools on every
           # turn, and llama3.1's template stops streaming when tools are
           # present -- a reply collapses from ~26 chunks to 3. gemma4 streams
-          # either way. Per-model behaviour, not an ollama or gateway one.
+          # either way. Per-model behavior, not an ollama or gateway one.
           - name: OUTTURN_DEFAULT_MODEL
             value: "gemma4"
           # The pod's memory limit is 512Mi, the same as base, so what is

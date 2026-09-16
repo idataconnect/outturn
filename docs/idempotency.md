@@ -89,7 +89,7 @@ Which settles what to do with an `attempted` record on replay:
 
 ## Three levels, opt-in
 
-A tool declares which it wants. Default is the current behaviour, so nothing
+A tool declares which it wants. Default is the current behavior, so nothing
 changes for tools that do not care.
 
 1. **`none`** — nothing recorded, replay re-executes. Right for reads and for

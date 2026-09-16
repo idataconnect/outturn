@@ -1411,7 +1411,7 @@ pub mod outturn {
             /// the turn queued for that message knows not to answer it again.
             ///
             /// A guest that never calls this simply does not steer; the message is
-            /// answered by its own turn afterwards, which is the behaviour before any
+            /// answered by its own turn afterwards, which is the behavior before any
             /// of this existed.
             pub fn pending_input() -> _rt::Vec<Arrival> {
                 unsafe {

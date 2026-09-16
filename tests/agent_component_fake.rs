@@ -1,4 +1,4 @@
-//! Component behaviour against a scripted gateway.
+//! Component behavior against a scripted gateway.
 //!
 //! These need no model, so they are fast and deterministic. The live-gateway
 //! test in agent_component.rs covers the real wire format; these cover what a
@@ -12,7 +12,7 @@ use outturn::runtime::component::{AgentRunner, Message, RunOptions};
 use uuid::Uuid;
 
 mod common;
-use common::fake_gateway::{Behaviour, FakeGateway};
+use common::fake_gateway::{Behavior, FakeGateway};
 
 fn component() -> Vec<u8> {
     std::fs::read("assets/agent_default.wasm").expect("component fixture")
@@ -74,7 +74,7 @@ fn user(text: &str) -> Vec<Message> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streams_deltas_and_returns_the_whole_reply() {
-    let gateway = FakeGateway::start(Behaviour::Reply("one two three four".into())).await;
+    let gateway = FakeGateway::start(Behavior::Reply("one two three four".into())).await;
     let runner = runner();
 
     let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -105,7 +105,7 @@ async fn streams_deltas_and_returns_the_whole_reply() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_system_prompt_leads_the_conversation() {
-    let gateway = FakeGateway::start(Behaviour::Reply("ok".into())).await;
+    let gateway = FakeGateway::start(Behavior::Reply("ok".into())).await;
     let runner = runner();
 
     runner
@@ -132,7 +132,7 @@ async fn the_system_prompt_leads_the_conversation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gateway_failure_surfaces_as_an_error() {
-    let gateway = FakeGateway::start(Behaviour::Status(
+    let gateway = FakeGateway::start(Behavior::Status(
         StatusCode::SERVICE_UNAVAILABLE,
         "no provider available".into(),
     ))
@@ -159,7 +159,7 @@ async fn a_gateway_failure_surfaces_as_an_error() {
 async fn a_truncated_stream_returns_what_arrived() {
     // An upstream that drops mid-generation: the caller should keep the text
     // it received rather than losing the turn entirely.
-    let gateway = FakeGateway::start(Behaviour::TruncateAfter {
+    let gateway = FakeGateway::start(Behavior::TruncateAfter {
         text: "one two three four five".into(),
         chunks: 2,
     })
@@ -182,7 +182,7 @@ async fn a_truncated_stream_returns_what_arrived() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_conversation_is_refused_without_calling_the_model() {
-    let gateway = FakeGateway::start(Behaviour::Reply("unused".into())).await;
+    let gateway = FakeGateway::start(Behavior::Reply("unused".into())).await;
     let runner = runner();
 
     let result = runner
@@ -207,7 +207,7 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
 /// the reason is stripped before the call goes back to the model.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_a_tool_and_answers_with_its_result() {
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking today's date"}"#.into(),
         reply: "It is Tuesday.".into(),
@@ -315,7 +315,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
 /// Without a zone the clock says so rather than passing off UTC as local.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Reading the clock"}"#.into(),
         reply: "Done.".into(),
@@ -359,7 +359,7 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
 /// reclaimed as abandoned work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
-    let gateway = FakeGateway::start(Behaviour::Hang).await;
+    let gateway = FakeGateway::start(Behavior::Hang).await;
     let runner = runner();
 
     // Bounded from outside rather than measured from inside. The old test
@@ -398,7 +398,7 @@ async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_looping_model_is_bounded_and_still_answers() {
     // Asks for a tool on every single call, so only the limit ends it.
-    let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
+    let gateway = FakeGateway::start(Behavior::AlwaysToolCall {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking again"}"#.into(),
         content: "Working.".into(),
@@ -432,7 +432,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
 /// code is a suggestion. The host counts the calls it makes and refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
-    let gateway = FakeGateway::start(Behaviour::AlwaysToolCall {
+    let gateway = FakeGateway::start(Behavior::AlwaysToolCall {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking again"}"#.into(),
         content: String::new(),
@@ -462,7 +462,7 @@ async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
 /// reason has to be checked rather than the arguments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_reply_does_not_get_its_tools_run() {
-    let gateway = FakeGateway::start(Behaviour::TruncatedToolCall {
+    let gateway = FakeGateway::start(Behavior::TruncatedToolCall {
         name: "get_current_time".into(),
         // Valid JSON, but only because the truncation happened to land here.
         arguments: r#"{"action":"Checking"#.into(),
@@ -507,7 +507,7 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
 /// the runtime needs neither a database nor credentials to be steered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_sent_mid_turn_reaches_the_next_round() {
-    let gateway = FakeGateway::start(Behaviour::ToolThenSteer {
+    let gateway = FakeGateway::start(Behavior::ToolThenSteer {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking the clock"}"#.into(),
         steer: "actually, just tell me the year".into(),
@@ -564,7 +564,7 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
 /// the turn ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rounds_are_separated_before_the_second_begins_not_after() {
-    let gateway = FakeGateway::start(Behaviour::TextThenSteer {
+    let gateway = FakeGateway::start(Behavior::TextThenSteer {
         first: "Oh, one!".into(),
         steer: "two".into(),
         reply: "Two! Yay!".into(),
@@ -597,7 +597,7 @@ async fn rounds_are_separated_before_the_second_begins_not_after() {
 /// no temperature of its own, so what the gateway sees is the cascade's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_turns_temperature_reaches_the_model() {
-    let gateway = FakeGateway::start(Behaviour::Reply("Hi.".into())).await;
+    let gateway = FakeGateway::start(Behavior::Reply("Hi.".into())).await;
     let mut opts = options(&gateway, None);
     opts.temperature = Some(0.1);
 
@@ -620,7 +620,7 @@ async fn the_turns_temperature_reaches_the_model() {
 /// needs and a sum at the end cannot give.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_model_call_reports_its_own_cost() {
-    let gateway = FakeGateway::start(Behaviour::TextThenSteer {
+    let gateway = FakeGateway::start(Behavior::TextThenSteer {
         first: "One.".into(),
         steer: "and two".into(),
         reply: "Two.".into(),
@@ -658,7 +658,7 @@ async fn each_model_call_reports_its_own_cost() {
 async fn a_turn_reports_what_it_spent() {
     // Two rounds: a tool call, then the answer. Each reports usage, so a
     // turn that only counted the last one would come up short.
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking the clock"}"#.into(),
         reply: "Tuesday.".into(),
@@ -701,7 +701,7 @@ async fn a_turn_reports_what_it_spent() {
 /// browser gets the rest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking the clock"}"#.into(),
         reply: "Tuesday.".into(),
@@ -758,7 +758,7 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
         .await
         .expect("seed");
 
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "write_object".into(),
         arguments: r#"{"path":"agent/notes/hello.txt","content":"written by the agent","action":"Saving a note"}"#.into(),
         reply: "Saved.".into(),
@@ -804,7 +804,7 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
 async fn a_scopeless_path_is_corrected_not_just_refused() {
     use outturn::runtime::storage::MemoryStorage;
 
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "write_object".into(),
         arguments: r#"{"path":"notes.txt","content":"x","action":"Saving"}"#.into(),
         reply: "Oh.".into(),
@@ -840,7 +840,7 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "write_object".into(),
         arguments: r#"{"path":"workspace/pricing.csv","content":"cheap","action":"Updating prices"}"#.into(),
         reply: "Refused.".into(),
@@ -892,7 +892,7 @@ async fn deleting_removes_the_object_rather_than_emptying_it() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "delete_object".into(),
         arguments: r#"{"path":"session/recipe.pdf","action":"Deleting the file"}"#.into(),
         reply: "Deleted.".into(),
@@ -936,7 +936,7 @@ async fn deleting_outside_the_allowed_scopes_is_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "delete_object".into(),
         arguments: r#"{"path":"workspace/pricing.csv","action":"Deleting the price list"}"#.into(),
         reply: "Refused.".into(),
@@ -969,7 +969,7 @@ async fn deleting_outside_the_allowed_scopes_is_refused() {
 async fn deleting_a_path_that_names_nothing_says_so() {
     use outturn::runtime::storage::MemoryStorage;
 
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "delete_object".into(),
         arguments: r#"{"path":"session/never-existed.md","action":"Deleting the draft"}"#.into(),
         reply: "It was not there.".into(),
@@ -1009,7 +1009,7 @@ async fn a_large_file_is_read_from_both_ends() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "read_object".into(),
         arguments: r#"{"path":"session/app.log","action":"Reading the log"}"#.into(),
         reply: "It caught fire.".into(),
@@ -1068,7 +1068,7 @@ async fn a_large_file_is_read_from_both_ends() {
 
 /// Runs one scripted tool call and returns what the tool produced.
 async fn tool_result(arguments: &str, egress: Vec<outturn::runtime::egress::EgressRule>) -> String {
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "fetch_url".into(),
         arguments: arguments.into(),
         reply: "Done.".into(),
@@ -1130,7 +1130,7 @@ async fn an_agent_reaches_nothing_it_was_not_allowed() {
 /// which is exactly the evidence wanted: it left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "fetch_url".into(),
         arguments: r#"{"url":"https://example.com/data","action":"Looking something up"}"#.into(),
         reply: "Done.".into(),
@@ -1220,7 +1220,7 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "read_object".into(),
         arguments: r#"{"path":"session/doc.txt","action":"Reading the document"}"#.into(),
         reply: "Read it.".into(),
@@ -1293,7 +1293,7 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let gateway = FakeGateway::start(Behaviour::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "read_object".into(),
         arguments: r#"{"path":"session/bundle.min.js","action":"Reading the bundle"}"#.into(),
         reply: "Had a look.".into(),

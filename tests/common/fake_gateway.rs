@@ -4,7 +4,7 @@
 //! measured at ~5 minutes, and the same prompt yields different text each run.
 //! This serves scripted chunks over the same wire format, so the tiers above it
 //! -- the component host, the worker, the event feed -- can be tested for
-//! behaviour rather than for whatever a model happened to say.
+//! behavior rather than for whatever a model happened to say.
 //!
 //! It deliberately does not validate tokens: it exists to exercise the callers,
 //! and the gateway's own auth is covered against the real thing.
@@ -21,7 +21,7 @@ use axum::{Json, Router};
 
 /// How the fake should answer the next request.
 #[derive(Clone, Debug)]
-pub enum Behaviour {
+pub enum Behavior {
     /// Stream this text, split into chunks of a few characters.
     Reply(String),
     /// Stream some text, then drop the connection mid-generation.
@@ -77,8 +77,8 @@ pub struct FakeGateway {
 }
 
 struct GatewayInner {
-    behaviour: Mutex<Behaviour>,
-    /// Requests answered so far, so a two-phase behaviour knows which turn
+    behavior: Mutex<Behavior>,
+    /// Requests answered so far, so a two-phase behavior knows which turn
     /// of the loop it is serving.
     calls: Mutex<usize>,
     /// Requests received, for asserting what the caller actually sent.
@@ -87,9 +87,9 @@ struct GatewayInner {
 
 impl FakeGateway {
     /// Binds to an ephemeral port and serves until dropped.
-    pub async fn start(behaviour: Behaviour) -> Self {
+    pub async fn start(behavior: Behavior) -> Self {
         let inner = Arc::new(GatewayInner {
-            behaviour: Mutex::new(behaviour),
+            behavior: Mutex::new(behavior),
             calls: Mutex::new(0),
             seen: Mutex::new(Vec::new()),
         });
@@ -116,8 +116,8 @@ impl FakeGateway {
     }
 
     /// Changes what the next request receives.
-    pub fn set(&self, behaviour: Behaviour) {
-        *self.state.behaviour.lock().unwrap() = behaviour;
+    pub fn set(&self, behavior: Behavior) {
+        *self.state.behavior.lock().unwrap() = behavior;
     }
 
     /// Requests received so far.
@@ -195,15 +195,15 @@ async fn completions_stream(
     Json(request): Json<serde_json::Value>,
 ) -> Response {
     state.seen.lock().unwrap().push(request);
-    let behaviour = state.behaviour.lock().unwrap().clone();
+    let behavior = state.behavior.lock().unwrap().clone();
     let call_number = {
         let mut calls = state.calls.lock().unwrap();
         *calls += 1;
         *calls
     };
 
-    match behaviour {
-        Behaviour::ToolThenSteer {
+    match behavior {
+        Behavior::ToolThenSteer {
             name,
             arguments,
             steer,
@@ -233,7 +233,7 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behaviour::TextThenSteer { first, steer, reply } => {
+        Behavior::TextThenSteer { first, steer, reply } => {
             let text = if call_number > 1 { reply } else { first };
             let mut lines: Vec<String> = chunk_text(&text)
                 .iter()
@@ -251,7 +251,7 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behaviour::TruncatedToolCall { name, arguments } => {
+        Behavior::TruncatedToolCall { name, arguments } => {
             let mut lines = vec![format!(
                 "{}\n",
                 tool_chunk(Some("call_cut"), Some(&name), &arguments)
@@ -261,7 +261,7 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behaviour::AlwaysToolCall {
+        Behavior::AlwaysToolCall {
             name,
             arguments,
             content,
@@ -278,7 +278,7 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behaviour::ToolThenReply {
+        Behavior::ToolThenReply {
             name,
             arguments,
             reply,
@@ -307,15 +307,15 @@ async fn completions_stream(
             lines.push(format!("{}\n", chunk_json("", Some("tool_calls"))));
             ndjson(lines)
         }
-        Behaviour::Status(code, message) => (code, message).into_response(),
+        Behavior::Status(code, message) => (code, message).into_response(),
 
-        Behaviour::Hang => {
+        Behavior::Hang => {
             // Never resolves; the caller must impose its own deadline.
             std::future::pending::<()>().await;
             unreachable!()
         }
 
-        Behaviour::Reply(text) => {
+        Behavior::Reply(text) => {
             let mut lines: Vec<String> = chunk_text(&text)
                 .iter()
                 .map(|piece| format!("{}\n", chunk_json(piece, None)))
@@ -324,7 +324,7 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behaviour::TruncateAfter { text, chunks } => {
+        Behavior::TruncateAfter { text, chunks } => {
             // Ends without a finish_reason, as a dropped upstream would.
             let lines: Vec<String> = chunk_text(&text)
                 .iter()
@@ -341,18 +341,18 @@ async fn completions(
     Json(request): Json<serde_json::Value>,
 ) -> Response {
     state.seen.lock().unwrap().push(request);
-    let behaviour = state.behaviour.lock().unwrap().clone();
+    let behavior = state.behavior.lock().unwrap().clone();
 
-    let text = match behaviour {
-        Behaviour::Reply(text) => text,
-        Behaviour::ToolThenReply { reply, .. } => reply,
-        Behaviour::AlwaysToolCall { content, .. } => content,
-        Behaviour::TruncatedToolCall { .. } => String::new(),
-        Behaviour::ToolThenSteer { reply, .. } => reply,
-        Behaviour::TextThenSteer { reply, .. } => reply,
-        Behaviour::TruncateAfter { text, .. } => text,
-        Behaviour::Status(code, message) => return (code, message).into_response(),
-        Behaviour::Hang => {
+    let text = match behavior {
+        Behavior::Reply(text) => text,
+        Behavior::ToolThenReply { reply, .. } => reply,
+        Behavior::AlwaysToolCall { content, .. } => content,
+        Behavior::TruncatedToolCall { .. } => String::new(),
+        Behavior::ToolThenSteer { reply, .. } => reply,
+        Behavior::TextThenSteer { reply, .. } => reply,
+        Behavior::TruncateAfter { text, .. } => text,
+        Behavior::Status(code, message) => return (code, message).into_response(),
+        Behavior::Hang => {
             std::future::pending::<()>().await;
             unreachable!()
         }

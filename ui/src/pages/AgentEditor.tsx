@@ -121,7 +121,7 @@ export default function AgentEditor() {
             system_prompt: form.system_prompt,
           }),
         })
-        // Straight to the editor, where the behaviour settings live: they
+        // Straight to the editor, where the behavior settings live: they
         // are overrides on an agent that has to exist first. Navigating here
         // does not unmount this component -- both routes render AgentEditor
         // in the same spot in the tree -- so saving must be cleared by hand.
@@ -267,7 +267,7 @@ export default function AgentEditor() {
         <section className="mt-8 space-y-4">
           <div>
             <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
-              Behaviour
+              Behavior
             </h2>
             <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
               Each value comes from the workspace unless overridden for this agent.

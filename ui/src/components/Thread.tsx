@@ -188,6 +188,20 @@ export default function Thread({
   /** Images pasted into this message and not yet sent, with a local preview. */
   const [attached, setAttached] = useState<Attachment[]>([])
 
+  // Which of the two buttons the composer offers. assistant-ui's own
+  // `isEmpty` counts its attachments, which are always none here: a pasted
+  // image is stored as a session file and referenced by path, so the only
+  // record that one is waiting is `attached`. Counting it is what keeps the
+  // send button offered to somebody who pasted a screenshot and typed
+  // nothing.
+  const composerEmpty = useAuiState((s) => s.composer.isEmpty) && attached.length === 0
+  // Stop is what an empty composer offers mid-run, and the only state in
+  // which the send button is not the more useful of the two. `canCancel`
+  // rather than the thread's `isRunning`, so the stop is never shown by a
+  // runtime that could not honour it.
+  const canCancel = useAuiState((s) => s.composer.canCancel)
+  const showSend = !canCancel || !composerEmpty
+
   // The previews are object URLs, which the browser holds until they are
   // revoked. Left alone they accumulate for as long as the tab is open.
   useEffect(() => {
@@ -335,33 +349,42 @@ export default function Thread({
           }
           className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
-        {/* One button, two jobs. While a turn is running the send button is
-            not merely unavailable -- there is something better to do with that
-            square of screen, and a person reaching for it mid-reply is usually
-            reaching to stop it. Both are rendered and assistant-ui shows
-            whichever the run state calls for. */}
-        <ComposerPrimitive.Send
-          disabled={disabled}
-          className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
-        >
-          <Send size={16} />
-        </ComposerPrimitive.Send>
-        <ComposerPrimitive.Cancel
-          aria-label={stopping ? 'Stopping' : 'Stop'}
-          disabled={stopping}
-          title={
-            stopping
-              ? 'Stopping at the end of the current step'
-              : 'Stop this reply'
-          }
-          className="flex items-center gap-2 px-4 py-2 rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-700 text-surface-700 dark:text-surface-100 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-600 disabled:opacity-60"
-        >
-          {/* The square is the universal "stop", and it keeps spinning while
-              the request is in flight: the turn ends at its next step, not the
-              instant the button is pressed, and a control that went still
-              immediately would promise something the system cannot do. */}
-          {stopping ? <Loader size={16} className="animate-spin" /> : <Square size={16} />}
-        </ComposerPrimitive.Cancel>
+        {/* One square of screen, two jobs, chosen by what is in the box
+            rather than by the run state alone. An empty composer mid-reply
+            has nothing to send, so it offers the stop; anything typed or
+            pasted is worth sending even mid-reply, because a message sent
+            then steers the turn at its next round boundary rather than
+            waiting for a runtime. Send is what that person is reaching for,
+            and clearing the box brings the stop back. */}
+        {showSend ? (
+          <ComposerPrimitive.Send
+            // Named, because the icon is the only thing in it and this square
+            // changes which button it is: somebody listening rather than
+            // looking is told what it became.
+            aria-label="Send"
+            disabled={disabled || composerEmpty}
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
+          >
+            <Send size={16} />
+          </ComposerPrimitive.Send>
+        ) : (
+          <ComposerPrimitive.Cancel
+            aria-label={stopping ? 'Stopping' : 'Stop'}
+            disabled={stopping}
+            title={
+              stopping
+                ? 'Stopping at the end of the current step'
+                : 'Stop this reply'
+            }
+            className="flex items-center gap-2 px-4 py-2 rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-700 text-surface-700 dark:text-surface-100 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-600 disabled:opacity-60"
+          >
+            {/* The square is the universal "stop", and it keeps spinning while
+                the request is in flight: the turn ends at its next step, not the
+                instant the button is pressed, and a control that went still
+                immediately would promise something the system cannot do. */}
+            {stopping ? <Loader size={16} className="animate-spin" /> : <Square size={16} />}
+          </ComposerPrimitive.Cancel>
+        )}
       </ComposerPrimitive.Root>
     </ThreadPrimitive.Root>
   )

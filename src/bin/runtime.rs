@@ -103,7 +103,7 @@ async fn main() {
         Err(_) => {
             // In-memory rather than nothing, so a local run without MinIO
             // still exercises the same code path -- and loses everything on
-            // restart, which is the honest behaviour for a store that is not
+            // restart, which is the honest behavior for a store that is not
             // configured.
             tracing::warn!("no OUTTURN_S3_ENDPOINT; using in-memory object storage");
             Some(Arc::new(MemoryStorage::new()))

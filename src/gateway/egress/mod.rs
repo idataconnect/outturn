@@ -14,7 +14,7 @@
 //! runs workspace code has no outbound path of its own, so asking is the only
 //! way out. (The cluster should say so too: a NetworkPolicy denying egress
 //! from runtime pods makes that a property of the network rather than of the
-//! runtime's good behaviour.)
+//! runtime's good behavior.)
 //!
 //! The same move solves the credential. A legacy internal service wants its
 //! own header with its own secret, and it is never going to verify one of our

@@ -72,7 +72,7 @@ Local development runs against ollama through the OpenAI protocol
 (`OPENAI_BASE_URL`, no key). **Use gemma4.** The agent offers tools on every
 turn, and a model whose template stops streaming when tools are present
 collapses a reply to three chunks — llama3.1 and mistral both do this, gemma4
-does not. It is per-model template behaviour, not an ollama or gateway
+does not. It is per-model template behavior, not an ollama or gateway
 property. olmo-3 cannot do tools at all.
 
 On a Mac, `scripts/dev-mac.sh` runs the `mac` profile instead: ollama on the
@@ -178,7 +178,7 @@ Every test gets a private Postgres schema, so the suite is safe to run in
 parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`
 serves scripted responses — including a tool call, a truncated stream and a
 connection that hangs — so the tiers above the provider can be tested for
-behaviour rather than for whatever a model happened to say. Only
+behavior rather than for whatever a model happened to say. Only
 `tests/agent_component.rs` needs a live model.
 
 Two things are declared in `k8s/base` but do nothing until asked. The mock
@@ -434,7 +434,7 @@ charged until there is pressure, so usage climbs to the limit and never comes
 back. Subtract inactive file cache, or a pod that has read some files reports
 itself permanently full.
 
-**Pods can silently predate your edits.** When behaviour contradicts the
+**Pods can silently predate your edits.** When behavior contradicts the
 source, check pod age before theorising.
 
 ## Direction

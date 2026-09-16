@@ -351,7 +351,7 @@ export default function SkillEditor() {
               value={form.description}
               disabled={!editable}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              placeholder="What this is for, for whoever picks it later."
+              placeholder="Describe what this skill does, for other users."
               className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
           </label>
@@ -378,12 +378,11 @@ export default function SkillEditor() {
               disabled={!editable}
               onChange={(e) => setForm((f) => ({ ...f, hosts: e.target.value }))}
               rows={3}
-              placeholder="api.open-meteo.com"
+              placeholder="api.example.com"
               className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
             <span className="mt-1 block text-xs text-surface-600 dark:text-surface-400">
-              One per line. Naming a host asks for it; somebody who can change this
-              workspace's settings still has to allow it.
+              One per line. Listing a host will require its approval during skill installation.
             </span>
           </label>
 
