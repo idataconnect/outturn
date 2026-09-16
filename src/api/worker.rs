@@ -227,6 +227,13 @@ pub struct Worker {
     pub usage: Arc<dyn super::usage::UsageStore>,
     /// The cascade a turn's knobs come from.
     pub settings: Arc<dyn super::settings::SettingsStore>,
+    /// Signs the token a summary's model call carries. Optional because the
+    /// worker runs without one: a deployment with no gateway configured still
+    /// prepares turns, it just cannot summarise.
+    pub minter: Option<Arc<crate::auth::TokenMinter>>,
+    /// Where to ask for a summary. Absent means no summarising, and the trim
+    /// underneath carries on alone.
+    pub gateway_url: Option<String>,
 }
 
 
@@ -240,7 +247,6 @@ impl Worker {
     /// and a reader with no error event waits on an indicator that resolves on
     /// no timescale at all. Both halves matter, which is why they are one
     /// function rather than two blocks that drifted apart.
-
     async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
         if let Err(e) = self.chat.discard_placeholder(payload.message_id).await {
             tracing::error!(
@@ -717,18 +723,42 @@ impl Worker {
         // for, or the agent is told one thing and served by another.
         let model = model_for(&agent.policy);
 
+        // Composed before the conversation is built, because a summary is
+        // written against it: what the agent was told to do is what decides
+        // which parts of a conversation mattered.
+        let system_prompt =
+            super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
+
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
             workspace_id: payload.workspace_id,
             agent_id: payload.agent_id,
             write_scopes: settings.write_scopes,
             conversation: {
-                // Cut to fit before it goes, because a request the provider
-                // refuses for length is a turn the user loses -- and this is
-                // the one path that works when there is no model to ask for a
-                // summary, which is exactly when it is most needed.
+                let projected = project(&history);
+
+                // Over budget is where compaction begins. A summary is tried
+                // first because it loses less: the early turns become a
+                // paragraph rather than disappearing. It is a model call the
+                // user did not ask for, so it happens only when the
+                // alternative is losing the messages outright.
+                let projected = self
+                    .summarised(
+                        &projected,
+                        &system_prompt,
+                        settings.context_budget,
+                        payload.session_id,
+                        payload.workspace_id,
+                    )
+                    .await
+                    .unwrap_or(projected);
+
+                // Then the floor underneath it. Whatever a summary did not
+                // save, this drops -- and when there is no model to ask, or
+                // the summary itself would not fit, this is the whole of what
+                // happens.
                 let (projected, trimmed) = super::chat::trim::to_fit(
-                    project(&history),
+                    projected,
                     settings.context_budget,
                 );
                 if !trimmed.is_empty() {
@@ -755,11 +785,7 @@ impl Worker {
             // Composed with the model that will serve this turn, so an agent
             // asked what it is has something true to read rather than a gap to
             // fill.
-            system_prompt: super::skill::compose_for_turn(
-                &agent.system_prompt,
-                &skills,
-                &model,
-            ),
+            system_prompt,
             model: Some(model.clone()),
             timezone: payload.timezone.clone(),
             reasoning_effort: settings.reasoning_effort,
@@ -770,6 +796,94 @@ impl Worker {
             egress,
             egress_commitment,
         }))
+    }
+
+    /// Replaces the early part of a conversation with a summary of it, when it
+    /// is over budget and there is a model to ask.
+    ///
+    /// Returns `None` whenever it did not happen, for any reason -- no
+    /// gateway, nothing worth summarising, the model refused, the summary came
+    /// back empty. Every one of those means the trim underneath does the work
+    /// alone, which is exactly what it is for. A failure here must never cost
+    /// a turn: the user asked for an answer, not for a summary.
+    async fn summarised(
+        &self,
+        conversation: &[serde_json::Value],
+        system_prompt: &str,
+        budget: usize,
+        session_id: uuid::Uuid,
+        workspace_id: uuid::Uuid,
+    ) -> Option<Vec<serde_json::Value>> {
+        use super::chat::summarise;
+
+        if super::chat::trim::total_cost(conversation) <= budget {
+            return None;
+        }
+        let (Some(minter), Some(gateway_url)) = (&self.minter, &self.gateway_url) else {
+            return None;
+        };
+        let through = summarise::boundary(conversation.len())?;
+
+        let request = summarise::request(system_prompt, &conversation[..through]);
+        // Bounded by construction: the system prompt, what is being replaced,
+        // and the instruction. Never the whole transcript, which is the thing
+        // that does not fit.
+        let body = serde_json::json!({
+            "model": std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into()),
+            "messages": request,
+            "stream": false,
+            // Long enough to carry the constraints forward, short enough that
+            // a summary cannot itself become the thing that does not fit.
+            "max_tokens": 1024,
+            "reasoning_effort": "none",
+        });
+
+        // Signed for the session it is summarising, so the spend lands on the
+        // workspace that caused it: every model call is a row in the usage
+        // ledger, and a summary nobody is billed for is a summary nobody can
+        // account for. No egress commitment, because summarising reaches
+        // nothing but the model.
+        let token = minter
+            .mint_turn(session_id, workspace_id, crate::egress::commit::empty_root())
+            .ok()?;
+
+        let response = reqwest::Client::new()
+            .post(format!("{gateway_url}/v1/chat/completions"))
+            .bearer_auth(token)
+            .header(crate::gateway::TRAFFIC_HEADER, summarise::TRAFFIC_TYPE)
+            .json(&body)
+            .send()
+            .await
+            .ok()?;
+
+        if !response.status().is_success() {
+            tracing::warn!(
+                status = %response.status(),
+                "could not summarise; the trim will carry the conversation"
+            );
+            return None;
+        }
+
+        let completion: serde_json::Value = response.json().await.ok()?;
+        let summary = completion["choices"][0]["message"]["content"].as_str()?.trim();
+        if summary.is_empty() {
+            return None;
+        }
+
+        let replaced = summarise::apply(conversation.to_vec(), summary, through);
+        // A summary larger than what it replaced is one that helped nobody,
+        // and sending it would be worse than the trim alone.
+        if super::chat::trim::total_cost(&replaced) >= super::chat::trim::total_cost(conversation) {
+            tracing::warn!("the summary was no smaller than the conversation; keeping the original");
+            return None;
+        }
+
+        tracing::info!(
+            messages_replaced = through,
+            summary_bytes = summary.len(),
+            "conversation summarised"
+        );
+        Some(replaced)
     }
 
     /// Records what a turn produced, and closes the job out.

@@ -160,6 +160,13 @@ async fn main() {
         chat: chat.clone(),
         usage,
         settings,
+        // A summary is a model call, so it needs both a way to reach the
+        // gateway and a token to present. Either missing means the trim
+        // does the work alone, which is what it is for.
+        // Its own, like the namer's: the one above is moved into the API
+        // state, and a second is cheaper than restructuring what holds it.
+        minter: Some(Arc::new(TokenMinter::from_env().expect("token minter"))),
+        gateway_url: std::env::var("OUTTURN_GATEWAY_URL").ok(),
     });
     // A turn is claimed here and reported by whichever runtime ran it, and
     // nothing joins those but a lease. When a runtime dies mid-turn the job is

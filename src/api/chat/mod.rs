@@ -1,3 +1,4 @@
+pub mod summarise;
 pub mod trim;
 mod postgres;
 
