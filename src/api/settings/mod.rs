@@ -159,6 +159,14 @@ pub struct Effective {
     pub source: Source,
     /// The row at the level being viewed, if there is one. Present means the
     /// override toggle is on here.
+    ///
+    /// Omitted entirely when there is no row, rather than sent as null. A
+    /// nullable setting can be overridden *to* null -- temperature unset is a
+    /// real choice, meaning "leave it to the provider" -- so null on the wire
+    /// has to mean that and nothing else. Sending it for an absent row made
+    /// every setting on a new agent look overridden, and unchecking the box
+    /// deleted a row that was never there and changed nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub override_value: Option<serde_json::Value>,
     /// What this level would get if its own row were removed: the value from
     /// the levels above. Shown greyed beside the toggle so turning it off has
@@ -288,5 +296,54 @@ mod tests {
         assert!(validate(&r, &serde_json::json!(0)).is_ok());
         assert!(validate(&r, &serde_json::json!(-1)).is_err());
         assert!(validate(&r, &serde_json::json!(2.5)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    fn effective(override_value: Option<serde_json::Value>) -> Effective {
+        Effective {
+            setting: find("temperature").expect("temperature"),
+            value: serde_json::Value::Null,
+            source: Source::Default,
+            override_value,
+            inherited: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn an_absent_override_is_not_on_the_wire_at_all() {
+        // The UI reads absence as "not overridden". Sending null for a row
+        // that does not exist made every setting on a new agent look
+        // overridden, and unchecking the box deleted nothing and changed
+        // nothing -- the box stayed on because the field was still there.
+        let json = serde_json::to_value(effective(None)).expect("serialises");
+        assert!(
+            json.get("override_value").is_none(),
+            "an absent override was sent anyway: {json}"
+        );
+    }
+
+    #[test]
+    fn an_override_to_null_is_still_an_override() {
+        // Temperature is nullable, and unset is a real choice meaning "leave
+        // it to the provider". So null on the wire has to mean that, which is
+        // why absence is what says there is no row.
+        let json = serde_json::to_value(effective(Some(serde_json::Value::Null)))
+            .expect("serialises");
+        assert!(
+            json.get("override_value").is_some(),
+            "an override to null vanished: {json}"
+        );
+        assert!(json["override_value"].is_null());
+    }
+
+    #[test]
+    fn an_ordinary_override_is_sent_as_its_value() {
+        let json = serde_json::to_value(effective(Some(serde_json::json!(0.7))))
+            .expect("serialises");
+        assert_eq!(json["override_value"], 0.7);
     }
 }
