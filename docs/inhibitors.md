@@ -4,9 +4,17 @@ How work is stopped or held, by whom, and what it takes to start again.
 
 ## What exists
 
-Nothing yet. This is the design the kill switches, human-in-the-loop and
-notifications are all meant to be built on, written down before any of them so
-the three do not each invent their own answer.
+The storage and the join. `inhibitors` rows in the database, an
+`InhibitorStore` that takes, releases and resolves the cascade, and
+`inhibitor::decide` -- a plain function over a slice that returns the verdict
+and everything that contributed to it.
+
+Nothing consults it yet. The checkpoints, the latch and the markers are the next
+piece, and the API that lets somebody take a hold comes with them.
+
+`decide` is a function rather than anything swappable on purpose: there is one
+correct answer and every call path has to get it. A join that could differ
+between callers is a kill switch that works in one place and not another.
 
 ## Why not a flag
 
