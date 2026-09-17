@@ -237,6 +237,16 @@ impl Puller {
             } else {
                 request.write_scopes
             },
+            // A job queued before reads were gated has no read scopes at all,
+            // and reading that as "nothing" would stop a turn that was
+            // accepted on the understanding it could read. Empty means what it
+            // has always meant in practice: everything this agent can write,
+            // plus the reads that were never restricted.
+            read_scopes: if request.read_scopes.is_empty() {
+                vec!["session".to_string(), "agent".to_string(), "workspace".to_string()]
+            } else {
+                request.read_scopes
+            },
             idle_timeout: self.idle_timeout,
             egress: request.egress,
         };

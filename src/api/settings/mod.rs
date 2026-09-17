@@ -82,25 +82,31 @@ pub fn catalogue() -> Vec<Setting> {
             default: serde_json::json!("low"),
             owner: Owner::WorkspaceOverridable,
         },
+        // One ordered choice per scope rather than a read flag beside a write
+        // flag. "May write but not read" is not a thing anyone means, and a
+        // pair of booleans invites somebody to configure it and believe it:
+        // the extraction a write triggers would read the file back regardless.
+        // Ordering the options is what makes that unsayable.
         Setting {
-            key: "agent_writes_agent_files",
-            label: "Agents may write agent files",
-            description: "Whether an agent may write under agent/, the files it keeps \
-                          between conversations. Session files are always writable; \
-                          they are the agent's scratch space.",
-            kind: Kind::Choice { options: &["allow", "deny"] },
-            default: serde_json::json!("allow"),
+            key: "agent_file_access",
+            label: "Agent files",
+            description: "What an agent may do under agent/, the files it keeps between \
+                          conversations. Session files are always read/write; they are \
+                          the agent's scratch space.",
+            kind: Kind::Choice { options: &["none", "read", "read_write"] },
+            default: serde_json::json!("read_write"),
             owner: Owner::WorkspaceOverridable,
         },
         Setting {
-            key: "agent_writes_workspace_files",
-            label: "Agents may write workspace files",
-            description: "Whether an agent may write under workspace/, the files the whole \
-                          workspace shares. Off unless somebody decides otherwise: a \
-                          prompt that talks an agent into overwriting shared reference \
-                          material should find it cannot.",
-            kind: Kind::Choice { options: &["allow", "deny"] },
-            default: serde_json::json!("deny"),
+            key: "workspace_file_access",
+            label: "Workspace files",
+            description: "What an agent may do under workspace/, the files the whole \
+                          workspace shares. Read by default: a prompt that talks an \
+                          agent into overwriting shared reference material should find \
+                          it cannot, and an agent with no business reading that \
+                          material at all can be given none.",
+            kind: Kind::Choice { options: &["none", "read", "read_write"] },
+            default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
         },
         Setting {
@@ -194,6 +200,10 @@ pub struct Resolved {
     /// Storage scopes the agent may write: always "session", plus whichever
     /// of "agent" and "workspace" the cascade allows.
     pub write_scopes: Vec<String>,
+    /// Storage scopes the agent may read. Always a superset of `write_scopes`:
+    /// the vocabulary has no way to say "write but not read", and a write
+    /// triggers an extraction that reads the file back anyway.
+    pub read_scopes: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

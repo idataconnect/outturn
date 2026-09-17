@@ -79,6 +79,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 workspace_id,
                 agent_id: Uuid::now_v7(),
                 write_scopes: vec!["session".into()],
+                read_scopes: vec!["session".into()],
                 timezone: None,
                 reasoning_effort: None,
                 temperature: None,

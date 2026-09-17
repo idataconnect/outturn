@@ -49,6 +49,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         workspace_id: Uuid::now_v7(),
         agent_id: Uuid::now_v7(),
         write_scopes: vec!["session".into(), "agent".into()],
+        read_scopes: vec!["session".into(), "agent".into(), "workspace".into()],
         timezone: None,
         reasoning_effort: None,
         temperature: None,
@@ -1341,5 +1342,124 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
     assert!(
         !content.contains("aaaaaaaaaaaaaaaaaaaa"),
         "the budget was spent on a fragment of a minified file"
+    );
+}
+
+/// A scope the agent may not read refuses the read, rather than serving it.
+///
+/// Reads used to be allowed anywhere in the space on the reasoning that an
+/// agent which could not read its own workspace's reference material could not
+/// do its job. That holds for the agent you want reading it and says nothing
+/// about one you don't -- a triage agent beside an HR agent has no business in
+/// the shared files, and before `workspace_file_access` there was no way to say
+/// so short of a second workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scope_it_may_not_read_is_refused() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "read_object".into(),
+        arguments: r#"{"path":"workspace/salaries.csv","action":"Reading the file"}"#.into(),
+        reply: "Refused.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.write_scopes = vec!["session".into()];
+    options.read_scopes = vec!["session".into()];
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    // There to be read, so the refusal is the permission and not a miss.
+    store
+        .write(&scope::resolve(&space, "workspace/salaries.csv").unwrap(), 0, b"secret")
+        .await
+        .expect("seed");
+
+    runner()
+        .run(&component(), user("Read the salaries."), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(
+        !result.contains("secret"),
+        "the file it may not read was served anyway: {result}"
+    );
+    assert!(
+        result.contains("workspace/"),
+        "the refusal should name the scope: {result}"
+    );
+}
+
+/// Listing everything lists only what the agent may read.
+///
+/// An empty prefix means "everything I have", which expanded to all three
+/// scopes whatever the settings said. A filename is often the sensitive part,
+/// so a listing that named files in a scope the guest cannot open would leak
+/// the thing the setting was turned on to protect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listing_everything_omits_a_scope_it_may_not_read() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "list_objects".into(),
+        arguments: r#"{"prefix":"","action":"Listing the files"}"#.into(),
+        reply: "Listed.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.write_scopes = vec!["session".into()];
+    options.read_scopes = vec!["session".into()];
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    store
+        .write(&scope::resolve(&space, "workspace/severance.csv").unwrap(), 0, b"x")
+        .await
+        .expect("seed");
+    store
+        .write(&scope::resolve(&space, "session/notes.txt").unwrap(), 0, b"y")
+        .await
+        .expect("seed");
+
+    runner()
+        .run(&component(), user("What files are there?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(
+        !result.contains("severance"),
+        "a file in a scope it may not read was named in the listing: {result}"
+    );
+    assert!(
+        result.contains("notes.txt"),
+        "the scope it may read should still be listed: {result}"
     );
 }

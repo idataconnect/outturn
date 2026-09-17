@@ -50,6 +50,11 @@ pub struct ExecuteRequest {
     /// Storage scopes this turn may write to. Absent means session only.
     #[serde(default)]
     pub write_scopes: Vec<String>,
+    /// Storage scopes this turn may read. Absent means session only -- but a
+    /// job queued before reads were gated carries none, and the puller reads
+    /// that as the scopes it would have had.
+    #[serde(default)]
+    pub read_scopes: Vec<String>,
     pub conversation: Vec<ConversationMessage>,
     #[serde(default)]
     pub system_prompt: String,

@@ -734,6 +734,7 @@ impl Worker {
             workspace_id: payload.workspace_id,
             agent_id: payload.agent_id,
             write_scopes: settings.write_scopes,
+            read_scopes: settings.read_scopes,
             conversation: {
                 let projected = project(&history);
 

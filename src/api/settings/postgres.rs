@@ -167,13 +167,29 @@ impl SettingsStore for PostgresSettingsStore {
                 .as_u64()
                 .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
                 .unwrap_or(400_000),
+            // Session is in both lists whatever the cascade says: it is the
+            // agent's own scratch space, and an agent that could not write it
+            // could not hold a thought for the length of a turn.
             write_scopes: {
                 let mut scopes = vec!["session".to_string()];
-                if get("agent_writes_agent_files").as_str() == Some("allow") {
-                    scopes.push("agent".to_string());
+                for (key, scope) in
+                    [("agent_file_access", "agent"), ("workspace_file_access", "workspace")]
+                {
+                    if get(key).as_str() == Some("read_write") {
+                        scopes.push(scope.to_string());
+                    }
                 }
-                if get("agent_writes_workspace_files").as_str() == Some("allow") {
-                    scopes.push("workspace".to_string());
+                scopes
+            },
+            read_scopes: {
+                let mut scopes = vec!["session".to_string()];
+                for (key, scope) in
+                    [("agent_file_access", "agent"), ("workspace_file_access", "workspace")]
+                {
+                    // Read or read/write, so writing always implies reading.
+                    if matches!(get(key).as_str(), Some("read") | Some("read_write")) {
+                        scopes.push(scope.to_string());
+                    }
                 }
                 scopes
             },

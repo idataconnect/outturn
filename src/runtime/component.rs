@@ -194,6 +194,11 @@ pub struct AgentHost {
     /// always allowed within the space; a guest that could not read its own
     /// workspace's reference material could not do its job.
     write_scopes: Vec<crate::runtime::storage::scope::Scope>,
+    /// Scopes the guest may read, resolved above the runtime. Always a
+    /// superset of `write_scopes`: the setting that grants a write grants the
+    /// read with it, because a write extracts the file's text straight back
+    /// out and "write but not read" would be a promise the host cannot keep.
+    read_scopes: Vec<crate::runtime::storage::scope::Scope>,
     /// Hosts this workspace's agents may reach. Empty means none, which is what a
     /// workspace who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
@@ -260,6 +265,11 @@ impl AgentHost {
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
+        // Here rather than in each caller: every way the guest reaches a file
+        // resolves its path through this, including the ones that hand the
+        // bytes to something else -- `describe_image` would otherwise let a
+        // vision model read what the agent may not.
+        self.may_read(path)?;
         let resolved = crate::runtime::storage::scope::resolve(&self.space, path).map_err(|e| match e {
             // Said in full: this is the one a model will hit, and the message
             // tells it how to correct itself.
@@ -267,6 +277,20 @@ impl AgentHost {
             _ => format!("path is not allowed: {path}"),
         })?;
         Ok((storage, resolved))
+    }
+
+    /// Whether this turn may read at `path`, by the scope it names.
+    fn may_read(&self, path: &str) -> Result<(), String> {
+        let (scope, _) = crate::runtime::storage::scope::split(path).map_err(|e| e.to_string())?;
+        if self.read_scopes.contains(&scope) {
+            Ok(())
+        } else {
+            Err(format!(
+                "this agent may not read {0}/. Ask whoever runs the workspace to allow it \
+                 access to {0}/.",
+                scope.as_str()
+            ))
+        }
     }
 
     /// Whether this turn may write at `path`, by the scope it names.
@@ -791,7 +815,14 @@ impl outturn::agent::host::Host for AgentHost {
         // An empty prefix means "everything I have": the three scopes, each
         // listed under its own name.
         let prefixes: Vec<String> = if prefix.trim().is_empty() {
-            Scope::ALL.iter().map(|s| scope::root_for(&self.space, *s)).collect()
+            // Only the scopes it may read. A filename is often the sensitive
+            // part -- "everything I have" must not be a way to enumerate a
+            // scope the guest cannot open.
+            Scope::ALL
+                .iter()
+                .filter(|s| self.read_scopes.contains(s))
+                .map(|s| scope::root_for(&self.space, *s))
+                .collect()
         } else {
             vec![scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
                 crate::runtime::storage::StorageError::Refused(m) => m,
@@ -1250,6 +1281,8 @@ pub struct RunOptions {
     pub agent_id: uuid::Uuid,
     /// Scopes the guest may write: "session", "agent", "workspace".
     pub write_scopes: Vec<String>,
+    /// Scopes the guest may read. A superset of `write_scopes`.
+    pub read_scopes: Vec<String>,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -1351,6 +1384,16 @@ impl AgentRunner {
             write_scopes: options
                 .write_scopes
                 .iter()
+                .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
+                .collect(),
+            // Unioned with the writes rather than trusted as given. The
+            // cascade already resolves reads as a superset, and this is the
+            // boundary where being wrong about that would mean a write the
+            // guest cannot read back.
+            read_scopes: options
+                .read_scopes
+                .iter()
+                .chain(options.write_scopes.iter())
                 .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
                 .collect(),
             egress: options.egress,
