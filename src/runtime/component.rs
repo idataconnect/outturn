@@ -169,6 +169,8 @@ pub struct AgentHost {
     /// mid-turn rides the one connection it already has open. Sticky once set
     /// -- a cancel is not withdrawn by the next round failing to mention it.
     cancelled: bool,
+    /// Why a hold cut this turn, where one did.
+    held: Option<String>,
     /// The reply this turn is writing. Sent to the gateway so it can record
     /// which reply absorbed a message it handed over.
     reply_id: uuid::Uuid,
@@ -497,6 +499,11 @@ impl outturn::agent::host::Host for AgentHost {
         // is not a withdrawal, and the guest may not look until the round
         // after the one that carried the news.
         self.cancelled |= served.cancelled;
+        // Sticky for the same reason: a later round saying nothing about it is
+        // not a withdrawal.
+        if self.held.is_none() {
+            self.held = served.held.clone();
+        }
 
         // Summed across rounds: a turn's cost is every call it made, not the
         // last one. A provider that reports nothing simply adds nothing.
@@ -1070,11 +1077,11 @@ async fn stream_completion(
                 if outturn["cancelled"].as_bool() == Some(true) {
                     served.cancelled = true;
                 }
-                // Why, where a hold rather than a person did it. Logged rather
-                // than carried up: the next turn's checkpoint reads the same
-                // holds from the database and latches the session there, so
-                // threading this through the turn result would be a second
-                // path to an answer that already exists.
+                // Why, where a hold rather than a person did it. Carried out
+                // of the turn rather than only logged: a hold taken and then
+                // released while this turn streamed leaves nothing in the
+                // table for the next turn's checkpoint to find, so the latch
+                // has to be written from what stopped this one.
                 if let Some(reason) = outturn["held"].as_str() {
                     if served.held.is_none() {
                         tracing::info!(reason = %reason, "a hold cut this turn's stream");
@@ -1357,13 +1364,14 @@ impl AgentRunner {
         conversation: Vec<Message>,
         system_prompt: String,
         options: RunOptions,
-    ) -> anyhow::Result<(String, TurnCost)> {
+    ) -> anyhow::Result<(String, TurnCost, Option<String>)> {
         let component = self.component_for(component_bytes)?;
 
         // No preopened directories, no environment, no network: everything the
         // guest can reach is an explicit import.
         let host = AgentHost {
             cancelled: false,
+            held: None,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             gateway_url: options.gateway_url,
@@ -1466,7 +1474,11 @@ impl AgentRunner {
             provider: host.served_by.clone(),
         };
 
-        Ok((reply, cost))
+        // Beside the cost rather than on it: `TurnCost` is what a turn spent,
+        // and why it stopped is not a number. The tier above needs both and
+        // treats them differently -- one goes to the ledger, the other to the
+        // latch.
+        Ok((reply, cost, host.held.clone()))
     }
 }
 

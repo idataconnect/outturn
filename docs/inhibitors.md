@@ -9,11 +9,17 @@ The storage and the join. `inhibitors` rows in the database, an
 `inhibitor::decide` -- a plain function over a slice that returns the verdict
 and everything that contributed to it.
 
-One checkpoint consults it: turn preparation, which is the tier that decides
-whether a runtime is handed work. A `stopped` verdict refuses the turn and
-latches the session with what stopped it; the job completes rather than failing,
-and the runtime is told only that there is no work -- it is not the tier that
-decides, so it is not told why.
+Two checkpoints consult it. Turn preparation decides whether a runtime is handed
+work at all: a `stopped` verdict refuses the turn and latches the session with
+what stopped it, the job completes rather than failing, and the runtime is told
+only that there is no work -- it is not the tier that decides, so it is not told
+why. The gateway decides whether a turn already running may keep going.
+
+Both latch, and both go through `decide` to say why. A stop reported by one and
+a stop reported by the other name the same holds in the same words: two holds at
+once otherwise have the gateway naming one and preparation naming both, and
+whoever reads the stopped session releases the hold they were shown and finds it
+still stopped.
 
 The latch is `agent_sessions.stopped_at` and `stopped_reason`, cleared by a
 prompt carrying a real `user_id`.
@@ -140,8 +146,10 @@ and cutting it mid-token is how a resumable turn becomes a broken one.
 
 The gateway's check fails open, like everything else it cannot look up: a
 database it cannot reach stops nothing rather than stopping everything. That is
-the wrong way round for a spend cap and the right way round for an outage, and
-the turn-preparation check catches on the next turn what this missed.
+the wrong way round for a spend cap and the right way round for an outage. What
+it misses, the turn-preparation check catches on the next turn -- unless the
+hold is gone by then, which is why a cut turn latches its own session rather
+than leaving that to the turn after it.
 
 ## The latch
 
@@ -207,6 +215,13 @@ This is the right trade -- nothing walks a workspace's sessions on a write, and
 a conversation nobody touched needs no restarting -- but it makes the earlier
 claim more precise. The cost of a kill switch is a deliberate restart per
 conversation that *tried to continue*, not per conversation that exists.
+
+A turn cut mid-stream is the exception, and it has to be. It latches on the turn
+that was cut rather than the next one, because the hold may be released before
+there is a next one -- and a session that was never latched simply carries on,
+which is the whole thing a stop is supposed to prevent. That latch write fails
+the turn if it fails, rather than being logged and shrugged off: a stop that did
+not record itself is a kill switch that silently did not take.
 
 ## Input is never blocked
 

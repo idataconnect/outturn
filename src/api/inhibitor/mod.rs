@@ -137,6 +137,19 @@ impl Decision {
         self.verdict == Verdict::Proceed
     }
 
+    /// Why, in one line, for a session that is being stopped.
+    ///
+    /// Every deciding contributor rather than the first: a person shown one
+    /// reason releases one hold and finds the session still stopped. Written
+    /// here so both checkpoints say the same thing -- the gateway cutting a
+    /// stream and turn preparation refusing the next one are the same stop.
+    pub fn why(&self) -> String {
+        self.deciding()
+            .map(|i| i.reason.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// The inhibitors of the strength that decided it.
     ///
     /// What a refusal message quotes: the ones that are stopping this, rather

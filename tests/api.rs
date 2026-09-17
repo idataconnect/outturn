@@ -2945,7 +2945,7 @@ async fn a_hold_without_a_reason_is_refused() {
 #[tokio::test]
 async fn the_gateway_sees_a_hold_at_any_level() {
     use outturn::api::inhibitor::{
-        InhibitorStore, Scope, Strength, TakeInhibitor, postgres::strongest_for_session,
+        InhibitorStore, Scope, Strength, TakeInhibitor, decide, postgres::covering_session,
     };
 
     let h = harness_or_skip!();
@@ -2983,10 +2983,10 @@ async fn the_gateway_sees_a_hold_at_any_level() {
 
     // Nothing held: nothing to report.
     assert!(
-        strongest_for_session(&h.db.pool, acme, session_id)
+        covering_session(&h.db.pool, acme, session_id)
             .await
             .expect("query")
-            .is_none()
+            .is_empty()
     );
 
     // An agent hold, which the gateway can only find through the session.
@@ -2999,11 +2999,8 @@ async fn the_gateway_sees_a_hold_at_any_level() {
         })
         .await
         .expect("take");
-    let found = strongest_for_session(&h.db.pool, acme, session_id)
-        .await
-        .expect("query")
-        .expect("a hold");
-    assert_eq!(found.0, Strength::Suspended, "{found:?}");
+    let decision = decide(covering_session(&h.db.pool, acme, session_id).await.expect("query"));
+    assert_eq!(decision.verdict, outturn::api::inhibitor::Verdict::Suspended);
 
     // A stop anywhere outranks it, and its reason is the one reported.
     inhibitors
@@ -3015,10 +3012,205 @@ async fn the_gateway_sees_a_hold_at_any_level() {
         })
         .await
         .expect("take");
-    let found = strongest_for_session(&h.db.pool, acme, session_id)
-        .await
-        .expect("query")
-        .expect("a hold");
-    assert_eq!(found.0, Strength::Stopped);
-    assert_eq!(found.1, "spend cap reached", "the weaker hold's reason was reported");
+    let decision = decide(covering_session(&h.db.pool, acme, session_id).await.expect("query"));
+    assert_eq!(decision.verdict, outturn::api::inhibitor::Verdict::Stopped);
+    // The deciding hold's reason, and only it: the suspended one is not what
+    // stopped this, so naming it would send somebody to release the wrong hold.
+    assert_eq!(decision.why(), "spend cap reached");
+}
+
+/// A hold that cuts a turn latches the session, even if it is released first.
+///
+/// The gateway cuts the stream and the turn ends, but the hold may be gone by
+/// the time anybody sends another message -- and a session that was never
+/// latched would simply carry on. A stop is supposed to need a person to lift
+/// it, so the latch is written when generation stops rather than a turn later.
+#[tokio::test]
+async fn a_hold_that_cut_a_turn_latches_the_session_even_once_released() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"tell me a long story"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "no work: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job");
+    let lease = assignment["lease_token"].as_str().expect("lease");
+
+    // The turn reports what a gateway-cut turn reports: a partial reply, and
+    // the reason the stream ended. No hold is taken here at all -- this is the
+    // case where it was taken and released while the turn was still streaming,
+    // so there is nothing left in the table to find.
+    let stream = [
+        r#"{"kind":"delta","idx":0,"text":"Once upon a"}"#,
+        r#"{"kind":"done","content":"Once upon a","prompt_tokens":10,"completion_tokens":3,"held":"runaway turn"}"#,
+    ]
+    .join("\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    // Latched, with the reason, though nothing is holding the workspace now.
+    let latched: Option<String> = sqlx::query_scalar(
+        "select stopped_reason from agent_sessions where id = $1 and stopped_at is not null",
+    )
+    .bind(session_id.parse::<Uuid>().unwrap())
+    .fetch_optional(&h.db.pool)
+    .await
+    .expect("query")
+    .flatten();
+    assert_eq!(
+        latched.as_deref(),
+        Some("runaway turn"),
+        "a turn cut by a hold left the session able to carry on"
+    );
+
+    // And the latch is what the next turn actually trips over. The message is
+    // accepted -- input is never blocked -- so what proves the refusal is that
+    // no work is handed out for it.
+    //
+    // Posted by the runtime rather than a person, because a person's message
+    // clears the latch by design: asserting on one would test the restart, not
+    // the refusal.
+    let another = Uuid::now_v7();
+    sqlx::query(
+        "insert into agent_messages (id, session_id, role, content, metadata, delivery) \
+         values ($1, $2, 'user', 'go on', '{}'::jsonb, 'steer')",
+    )
+    .bind(another)
+    .bind(session_id.parse::<Uuid>().unwrap())
+    .execute(&h.db.pool)
+    .await
+    .expect("insert");
+    outturn::jobs::enqueue(
+        &h.db.pool,
+        acme,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": acme,
+            "session_id": session_id.parse::<Uuid>().unwrap(),
+            "agent_id": agent_id.parse::<Uuid>().unwrap(),
+            "message_id": another,
+        }),
+        None,
+        Some(&format!("session:{session_id}")),
+        outturn::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body, "null",
+        "a latched session handed out work to a message no person sent: {body}"
+    );
+}
+
+/// An ordinary turn leaves the session alone.
+#[tokio::test]
+async fn a_turn_that_finished_normally_does_not_latch() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job");
+    let lease = assignment["lease_token"].as_str().expect("lease");
+
+    let stream = r#"{"kind":"done","content":"Hi","prompt_tokens":10,"completion_tokens":1}"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let stopped: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("select stopped_at from agent_sessions where id = $1")
+            .bind(session_id.parse::<Uuid>().unwrap())
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("query");
+    assert!(stopped.is_none(), "an ordinary turn latched the session");
 }

@@ -679,7 +679,7 @@ async fn a_turn_reports_what_it_spent() {
     .await;
 
     let runner = runner();
-    let (_reply, cost) = runner
+    let (_reply, cost, _held) = runner
         .run(
             &component(),
             user("What day is it?"),

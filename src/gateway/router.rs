@@ -111,19 +111,31 @@ impl GatewayState {
         session_id: uuid::Uuid,
     ) -> Option<String> {
         let pool = self.health.as_ref()?;
-        match crate::api::inhibitor::postgres::strongest_for_session(pool, workspace_id, session_id)
-            .await
-        {
-            // Only a stop cuts a stream. A suspended turn is one that will be
-            // picked up again, and cutting it mid-token is how a resumable
-            // turn becomes a broken one.
-            Ok(Some((crate::api::inhibitor::Strength::Stopped, reason))) => Some(reason),
-            Ok(_) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not check whether a turn was held");
-                None
-            }
+        let held =
+            match crate::api::inhibitor::postgres::covering_session(pool, workspace_id, session_id)
+                .await
+            {
+                Ok(held) => held,
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not check whether a turn was held");
+                    return None;
+                }
+            };
+
+        // Through `decide`, like every other checkpoint, so the reason a
+        // mid-stream cut reports is the same one the next turn's refusal would
+        // report. Two holds at once otherwise name one of them here and both
+        // there, and whoever reads the stopped session releases the one they
+        // were shown and wonders why it is still stopped.
+        let decision = crate::api::inhibitor::decide(held);
+
+        // Only a stop cuts a stream. A suspended turn is one that will be
+        // picked up again, and cutting it mid-token is how a resumable turn
+        // becomes a broken one.
+        if decision.verdict != crate::api::inhibitor::Verdict::Stopped {
+            return None;
         }
+        Some(decision.why())
     }
 
     /// Anything the user has said since this turn began.

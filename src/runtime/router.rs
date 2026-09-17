@@ -197,6 +197,11 @@ pub enum ExecuteEvent {
         reasoning_tokens: u32,
         #[serde(default)]
         provider: Option<String>,
+        /// Why a hold ended this turn, where one did. Absent otherwise, and
+        /// absent from an older runtime that does not send it -- which reads
+        /// as "a person stopped it", the same thing it read as before.
+        #[serde(default)]
+        held: Option<String>,
     },
     /// The turn failed.
     Failed { message: String },

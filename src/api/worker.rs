@@ -560,7 +560,36 @@ impl Worker {
                         cache_write_tokens,
                         reasoning_tokens,
                         provider,
+                        held,
                     }) => {
+                        // Latched here, where generation actually stopped,
+                        // rather than a turn later when the next one is
+                        // refused. Without this a hold taken and released
+                        // while a turn streamed would leave the session
+                        // unlatched -- and the next turn, finding nothing
+                        // holding it, would simply run. A stop is supposed to
+                        // need a person to lift it.
+                        if let Some(reason) = &held {
+                            // Fails the turn rather than logging and carrying
+                            // on, which is what the latch at preparation does
+                            // and for the same reason: a stop that did not
+                            // record itself is a session that answers the next
+                            // message as though nothing happened. The reply is
+                            // already written and the transcript keeps it -- so
+                            // what a retry costs is a repeated latch, which is
+                            // a no-op, against the alternative of a kill switch
+                            // that silently did not take.
+                            self.chat
+                                .stop_session(payload.session_id, reason)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("latching a cut turn: {e}"))?;
+                            tracing::info!(
+                                session_id = %payload.session_id,
+                                reason = %reason,
+                                "a hold cut this turn; the session is stopped until somebody restarts it"
+                            );
+                        }
+
                         return Ok(TurnOutcome {
                             content,
                             tools,
@@ -728,11 +757,7 @@ impl Worker {
                 // Said in the transcript as well as latched: the next turn
                 // reads this history, and a reply that simply stops is one the
                 // model apologises for or tries to finish.
-                let why = decision
-                    .deciding()
-                    .map(|i| i.reason.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; ");
+                let why = decision.why();
                 self.chat
                     .stop_session(payload.session_id, &why)
                     .await

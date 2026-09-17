@@ -257,7 +257,7 @@ impl Puller {
         tokio::spawn(async move {
             let outcome = runner.run(&module, conversation, prompt, options).await;
             let _ = match outcome {
-                Ok((content, cost)) => tx.send(ExecuteEvent::Done {
+                Ok((content, cost, held)) => tx.send(ExecuteEvent::Done {
                     content,
                     prompt_tokens: cost.prompt_tokens,
                     completion_tokens: cost.completion_tokens,
@@ -265,6 +265,7 @@ impl Puller {
                     cache_write_tokens: cost.cache_write_tokens,
                     reasoning_tokens: cost.reasoning_tokens,
                     provider: cost.provider,
+                    held,
                 }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
