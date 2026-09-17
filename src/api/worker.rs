@@ -1021,7 +1021,15 @@ impl Worker {
                 round: 0,
                 traffic_type: summarise::TRAFFIC_TYPE.to_string(),
                 endpoint,
-                model: completion.model.clone(),
+                // What answered, falling back to what was asked for -- the
+                // same order the turn path uses, so a route that rewrote the
+                // model is visible in the ledger and a provider that names
+                // nothing does not leave the column blank.
+                model: if completion.model.is_empty() {
+                    model.to_string()
+                } else {
+                    completion.model.clone()
+                },
                 credential_owner: paid_by,
                 fallback: "none".to_string(),
                 prompt_tokens: counted.map(|u| u.prompt_tokens as i32).unwrap_or(0),

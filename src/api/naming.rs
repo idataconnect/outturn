@@ -198,7 +198,79 @@ async fn run_one(
         let detail = response.text().await.unwrap_or_default();
         anyhow::bail!("gateway returned {status}: {detail}");
     }
+    // Read before the body is consumed, and the only place the endpoint and
+    // payer are named: the completion itself does not say.
+    let endpoint = response
+        .headers()
+        .get("x-outturn-provider")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    let paid_by = response
+        .headers()
+        .get("x-outturn-paid-by")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("operator")
+        .to_string();
+
     let completion: ChatCompletionResponse = response.json().await?;
+
+    // Naming a session is a model call the user did not ask for and is billed
+    // for regardless, so it belongs in the ledger like any other. Recorded
+    // before the title is validated: a reply that turned out to be unusable
+    // still cost what it cost.
+    let provider_usage = completion
+        .usage
+        .as_ref()
+        .and_then(|u| serde_json::to_value(u).ok());
+    let counted = completion.usage.as_ref();
+    let usage_store = crate::api::usage::PostgresUsageStore::new(pool.clone());
+    if let Err(e) = crate::api::usage::UsageStore::record(
+        &usage_store,
+        crate::api::usage::RecordUsage {
+            workspace_id: job.workspace_id,
+            // No agent and no job of the agent's: naming is the platform's own
+            // work on behalf of a session.
+            agent_id: None,
+            session_id: Some(session_id),
+            user_id: None,
+            account: None,
+            reply_id: None,
+            job_id: None,
+            round: 0,
+            traffic_type: TRAFFIC_TYPE.to_string(),
+            endpoint,
+            model: if completion.model.is_empty() {
+                model.to_string()
+            } else {
+                completion.model.clone()
+            },
+            credential_owner: paid_by,
+            fallback: "none".to_string(),
+            prompt_tokens: counted.map(|u| u.prompt_tokens as i32).unwrap_or(0),
+            completion_tokens: counted.map(|u| u.completion_tokens as i32).unwrap_or(0),
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            usage_source: match &provider_usage {
+                Some(u) if !u.is_null() => crate::api::usage::UsageSource::Reported,
+                _ => crate::api::usage::UsageSource::Unknown,
+            },
+            provider_usage,
+            service_tier: None,
+        },
+    )
+    .await
+    {
+        // Loud, like every other ledger write: the bill is wrong without it.
+        tracing::error!(
+            workspace_id = %job.workspace_id,
+            session_id = %session_id,
+            error = %e,
+            "could not record the session naming's usage"
+        );
+    }
+
     let raw = completion
         .choices
         .first()
