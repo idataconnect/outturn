@@ -238,6 +238,13 @@ the upstream connection and is the only thing a provider understands as "never
 mind"; the guest hears about it through `limits.cancelled` and returns at its
 next round boundary, keeping whatever it had written.
 
+Stopping work for a reason other than somebody clicking stop -- a spend cap, an
+operator, a turn waiting on an approval -- is designed and unbuilt in
+[docs/inhibitors.md](docs/inhibitors.md). Zero or more holds, each contributing
+`suspended` or `stopped`, with the strongest winning and the verdict derived
+rather than stored. Kill switches come first because they are pure `stopped`,
+and human-in-the-loop is the same mechanism once suspension and resume work.
+
 A round cut partway is therefore untrusted in full: its tool calls may carry
 arguments truncated mid-JSON, and running one is precisely the outcome that
 document is about. They are refused the same way a reply cut off at the token
