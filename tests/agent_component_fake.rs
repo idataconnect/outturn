@@ -127,7 +127,19 @@ async fn the_system_prompt_leads_the_conversation() {
     // Ahead of the conversation, so editing an agent takes effect on its next
     // turn rather than only on new sessions.
     assert_eq!(messages[0]["role"], "system");
-    assert_eq!(messages[0]["content"], "you are a lighthouse");
+    // The agent's own prompt leads, and the guest adds the one rule the model
+    // is judged by underneath it -- see `TURN_RULE` in agents/default. Asserted
+    // as a prefix rather than in full so the rule's wording stays the guest's
+    // to change.
+    let system = messages[0]["content"].as_str().expect("system content");
+    assert!(
+        system.starts_with("you are a lighthouse"),
+        "the agent's prompt should lead the system message: {system}"
+    );
+    assert!(
+        system.contains("ends the turn"),
+        "the turn rule should reach the model: {system}"
+    );
     assert_eq!(messages[1]["role"], "user");
 }
 

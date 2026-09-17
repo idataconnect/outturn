@@ -100,7 +100,7 @@ impl UsageStore for PostgresUsageStore {
                     reply_id, job_id, round, traffic_type, endpoint, model, \
                     credential_owner, fallback, prompt_tokens, completion_tokens, \
                     cache_read_tokens, cache_write_tokens, reasoning_tokens, \
-                    provider_usage, service_tier \
+                    usage_source, provider_usage, service_tier \
              from usage_ledger \
              where workspace_id = $1 \
                and ($2::timestamptz is null or occurred_at >= $2) \

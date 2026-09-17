@@ -113,6 +113,10 @@ async fn harness() -> Harness {
         chat: chat.clone(),
         usage: usage.clone(),
         settings: settings.clone(),
+        // No gateway, so no summarising: the trim underneath carries the
+        // whole of what these tests exercise.
+        minter: None,
+        gateway_url: None,
     }));
 
     Harness {
@@ -1872,7 +1876,9 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
     let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
-    assert_eq!(effort["value"], "none");
+    // Low rather than none: thinking off leaves a tool turn silent on some
+    // models, so the catalogue default was raised.
+    assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "default");
 
     // The operator sets a platform default.
@@ -2441,8 +2447,12 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
     let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
     let prompt = assignment["system_prompt"].as_str().expect("system_prompt");
 
-    assert!(prompt.starts_with("Be brief."), "the agent's own prompt went missing:\n{prompt}");
+    // The platform's preamble leads, and the agent's own prompt follows it --
+    // see `platform_preamble`. Ordering is what matters here, so the prompt is
+    // located rather than required to come first.
+    let own_at = prompt.find("Be brief.").expect("the agent's own prompt went missing");
     let base_at = prompt.find("Call the v1 endpoint.").expect("base prose missing");
+    assert!(own_at < base_at, "the agent's prompt should lead its skills:\n{prompt}");
     let over_at = prompt.find("Our region is on v2.").expect("override prose missing");
     assert!(base_at < over_at, "the override did not come last:\n{prompt}");
 
