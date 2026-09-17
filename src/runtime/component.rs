@@ -991,6 +991,7 @@ async fn stream_completion(
     };
     let mut served = Served {
         cancelled: false,
+        held: None,
         endpoint: header("x-outturn-provider"),
         paid_by: header("x-outturn-paid-by"),
         model: None,
@@ -1068,6 +1069,17 @@ async fn stream_completion(
                 // after the one that carried it.
                 if outturn["cancelled"].as_bool() == Some(true) {
                     served.cancelled = true;
+                }
+                // Why, where a hold rather than a person did it. Logged rather
+                // than carried up: the next turn's checkpoint reads the same
+                // holds from the database and latches the session there, so
+                // threading this through the turn result would be a second
+                // path to an answer that already exists.
+                if let Some(reason) = outturn["held"].as_str() {
+                    if served.held.is_none() {
+                        tracing::info!(reason = %reason, "a hold cut this turn's stream");
+                    }
+                    served.held = Some(reason.to_string());
                 }
                 continue;
             }
@@ -1148,6 +1160,10 @@ struct Served {
     /// reports it on the response it was already sending, the same way it
     /// reports a steer.
     cancelled: bool,
+    /// Why, where a hold stopped it rather than a person. The distinction
+    /// matters afterwards: "you stopped this" and "the workspace was stopped"
+    /// are different things to tell whoever reads the transcript.
+    held: Option<String>,
     endpoint: Option<String>,
     model: Option<String>,
     paid_by: Option<String>,

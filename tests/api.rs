@@ -2936,3 +2936,89 @@ async fn a_hold_without_a_reason_is_refused() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "a blank reason was accepted: {body}");
 }
+
+/// The gateway's check sees every level, and reports the strongest.
+///
+/// It holds a turn token naming a workspace and a session but no agent, so the
+/// agent level is resolved from the session row. A hold it could not see is a
+/// runaway turn that keeps generating past a cap that has already tripped.
+#[tokio::test]
+async fn the_gateway_sees_a_hold_at_any_level() {
+    use outturn::api::inhibitor::{
+        InhibitorStore, Scope, Strength, TakeInhibitor, postgres::strongest_for_session,
+    };
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+
+    // Nothing held: nothing to report.
+    assert!(
+        strongest_for_session(&h.db.pool, acme, session_id)
+            .await
+            .expect("query")
+            .is_none()
+    );
+
+    // An agent hold, which the gateway can only find through the session.
+    inhibitors
+        .take(TakeInhibitor {
+            scope: Scope::Agent { workspace_id: acme, agent_id },
+            strength: Strength::Suspended,
+            reason: "waiting on somebody".into(),
+            held_by: "tester".into(),
+        })
+        .await
+        .expect("take");
+    let found = strongest_for_session(&h.db.pool, acme, session_id)
+        .await
+        .expect("query")
+        .expect("a hold");
+    assert_eq!(found.0, Strength::Suspended, "{found:?}");
+
+    // A stop anywhere outranks it, and its reason is the one reported.
+    inhibitors
+        .take(TakeInhibitor {
+            scope: Scope::Workspace { workspace_id: acme },
+            strength: Strength::Stopped,
+            reason: "spend cap reached".into(),
+            held_by: "billing-bot".into(),
+        })
+        .await
+        .expect("take");
+    let found = strongest_for_session(&h.db.pool, acme, session_id)
+        .await
+        .expect("query")
+        .expect("a hold");
+    assert_eq!(found.0, Strength::Stopped);
+    assert_eq!(found.1, "spend cap reached", "the weaker hold's reason was reported");
+}

@@ -39,9 +39,14 @@ A restarted conversation carries a marker saying what went unanswered and why,
 placed ahead of the prompts it explains. Only the before-the-turn case exists,
 because only that case can happen: nothing stops a turn once it is running.
 
-Still to come: stopping mid-flight and the different marker it needs, and
-suspension -- which currently refuses a turn like a stop but without latching,
-because nothing takes a suspended hold until human-in-the-loop does.
+A hold also cuts a turn already running: the gateway polls for it on the same
+tick it polls for cancels, and the reason rides the trailer so the runtime can
+say what stopped it rather than looking like a provider that hung up.
+
+Still to come: the marker for a turn stopped mid-flight, which unlike the
+before-it-ran case does leave a partial reply to explain. And suspension --
+which currently refuses a turn like a stop but without latching, because nothing
+takes a suspended hold until human-in-the-loop does.
 
 `decide` is a function rather than anything swappable on purpose: there is one
 correct answer and every call path has to get it. A join that could differ
@@ -111,11 +116,32 @@ That is the round boundary, and it is where a suspended turn can be picked up
 again without inventing state. Tool results are recorded, no call is
 outstanding, and the transcript is a conversation rather than a fragment.
 
-A `stopped` verdict is different: it does not have to resume, so it can take
-effect anywhere -- mid-stream, mid-tool-call -- at the cost of leaving a partial
-reply behind. That cost is worth paying. A kill switch that waits politely for a
-round boundary is not a kill switch, and the thing being stopped is often
-precisely a turn that will not stop on its own.
+A `stopped` verdict is different, and it is checked in two places that answer
+different questions.
+
+**The gateway cuts the stream.** It already polls per-session state every 250ms
+to carry cancels and steers, so the hold rides that tick: a stop sets the same
+flag a person pressing stop sets, and the provider connection closes. This is
+what makes the switch worth having. A round boundary can be a whole completion
+away, and every token until then is spend past a cap that has already tripped --
+which is an arithmetic problem rather than a security one, and applies to a
+perfectly well-behaved guest.
+
+**The guest stops at its round boundary.** The gateway's trailer tells it the
+turn was cut and why, and it returns at the next boundary keeping what it wrote.
+This is the tidy half: tool results recorded, no call outstanding, a transcript
+that reads as a conversation.
+
+Neither is a layer of the other. One stops the spend now; the other stops
+without making a mess. Whichever arrives first does its job.
+
+Only a stop cuts a stream. A suspended turn is one that will be picked up again,
+and cutting it mid-token is how a resumable turn becomes a broken one.
+
+The gateway's check fails open, like everything else it cannot look up: a
+database it cannot reach stops nothing rather than stopping everything. That is
+the wrong way round for a spend cap and the right way round for an outage, and
+the turn-preparation check catches on the next turn what this missed.
 
 ## The latch
 

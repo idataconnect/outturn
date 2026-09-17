@@ -85,6 +85,50 @@ macro_rules! select_inhibitors {
     };
 }
 
+/// The strongest hold on a session, by session alone.
+///
+/// For the gateway, which holds a turn token naming a workspace and a session
+/// but no agent -- so the agent level is resolved from the session row rather
+/// than passed in. One indexed lookup, at the cadence a stream is already
+/// polled at.
+///
+/// A free function rather than a trait method because the gateway has a pool
+/// and nothing else: it is a tier without stores, and giving it one to reach
+/// this would be the only reason it had any.
+pub async fn strongest_for_session(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+    session_id: uuid::Uuid,
+) -> Result<Option<(Strength, String)>, InhibitorError> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "select i.strength, i.reason from inhibitors i \
+         where i.level = 'platform' \
+            or (i.level = 'workspace' and i.workspace_id = $1) \
+            or (i.level = 'session' and i.session_id = $2) \
+            or (i.level = 'agent' and i.agent_id = ( \
+                   select s.agent_id from agent_sessions s where s.id = $2)) \
+         -- The join, written out rather than leaning on how the words happen
+         -- to sort: a strength added later would land wherever its spelling
+         -- put it, which is not a thing to discover from a kill switch.
+         order by case i.strength when 'stopped' then 2 when 'suspended' then 1 else 0 end desc, \
+                  i.created_at \
+         limit 1",
+    )
+    .bind(workspace_id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+
+    match row {
+        Some((strength, reason)) => {
+            let strength = strength.parse::<Strength>().map_err(InhibitorError::Internal)?;
+            Ok(Some((strength, reason)))
+        }
+        None => Ok(None),
+    }
+}
+
 #[async_trait]
 impl InhibitorStore for PostgresInhibitorStore {
     async fn take(&self, input: TakeInhibitor) -> Result<Inhibitor, InhibitorError> {

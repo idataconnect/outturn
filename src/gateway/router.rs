@@ -93,6 +93,39 @@ impl GatewayState {
         }
     }
 
+    /// Why this session's work is being held, if it is.
+    ///
+    /// The other half of the kill switch. The guest checks at its round
+    /// boundary, which is where a turn stops tidily -- but a boundary can be a
+    /// whole completion away, and every token until then is spend past a cap
+    /// that has already tripped. This cuts the stream instead.
+    ///
+    /// Fail-open, like every other thing the gateway cannot look up: a database
+    /// it cannot reach stops nothing rather than stopping everything. That is
+    /// the wrong way round for a spend cap and the right way round for an
+    /// outage, and the turn-preparation check catches what this misses on the
+    /// very next turn.
+    async fn held_for(
+        &self,
+        workspace_id: uuid::Uuid,
+        session_id: uuid::Uuid,
+    ) -> Option<String> {
+        let pool = self.health.as_ref()?;
+        match crate::api::inhibitor::postgres::strongest_for_session(pool, workspace_id, session_id)
+            .await
+        {
+            // Only a stop cuts a stream. A suspended turn is one that will be
+            // picked up again, and cutting it mid-token is how a resumable
+            // turn becomes a broken one.
+            Ok(Some((crate::api::inhibitor::Strength::Stopped, reason))) => Some(reason),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not check whether a turn was held");
+                None
+            }
+        }
+    }
+
     /// Anything the user has said since this turn began.
     ///
     /// Empty without a database or without a reply to attribute it to, which
@@ -431,6 +464,11 @@ async fn chat_completions_stream(
                 let stopper = Arc::clone(&state);
                 let workspace_id = claims.workspace_id;
                 let session_id = claims.subject;
+                // Why it stopped, where a hold rather than a person stopped it.
+                // Carried to the turn so the transcript can say more than that
+                // the words ceased.
+                let held = Arc::new(std::sync::Mutex::new(None::<String>));
+                let noting = Arc::clone(&held);
 
                 // One task asking, on a tick, for as long as the stream runs.
                 // It ends when the stream is dropped, because the flag it
@@ -444,6 +482,17 @@ async fn chat_completions_stream(
                             return;
                         }
                         if stopper.cancel_requested(workspace_id, session_id).await {
+                            watcher.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                        // A hold cuts the stream the same way a person pressing
+                        // stop does. The turn is told which it was, because
+                        // "you were stopped" and "the workspace was stopped"
+                        // are different things to say afterwards.
+                        if let Some(reason) = stopper.held_for(workspace_id, session_id).await {
+                            if let Ok(mut slot) = noting.lock() {
+                                *slot = Some(reason);
+                            }
                             watcher.store(true, std::sync::atomic::Ordering::Relaxed);
                             return;
                         }
@@ -472,6 +521,11 @@ async fn chat_completions_stream(
                     }
                     if announce.load(std::sync::atomic::Ordering::Relaxed) {
                         outturn.insert("cancelled".into(), serde_json::json!(true));
+                        // Present only where a hold did it, so a turn can tell
+                        // a person pressing stop from a kill switch.
+                        if let Some(reason) = held.lock().ok().and_then(|slot| slot.clone()) {
+                            outturn.insert("held".into(), serde_json::json!(reason));
+                        }
                     }
                     // Nothing to say is not worth a line: an empty envelope
                     // still costs a reader a parse. Decided on the map rather
