@@ -290,6 +290,43 @@ call, this turn, this session, until revoked -- because a key without one is a
 standing grant, and a standing grant is an authority that the roles UI cannot
 see.
 
+### Who may approve, and of what
+
+Two questions that look like one.
+
+*May this person answer approvals at all* is an ordinary authority, and gets
+one: held by whoever a workspace decides, most likely admins and the operators
+who run the agents.
+
+*Is the approver entitled to the thing being approved* is the harder one, and
+the answer depends on who owns the concept. Where the authority is one of ours,
+requiring it is right and its absence is a real escalation: somebody approving a
+workspace file write they could not perform themselves has lent the agent an
+authority nobody gave them. Where it belongs to a remote system -- "create work
+ticket" in somebody's ticketing API -- it is not ours to check. The vocabulary
+in `rbac.rs` is fixed and code-defined; a customer's idea of who may dispatch a
+technician was never in it and cannot be.
+
+So for a remote call the approval is what it says it is: a person who holds
+`approvals:answer` looked at this and said yes, recorded with what they saw.
+Modelling more would mean maintaining a mapping from every integration's
+operations onto authorities we do not own, to make a guarantee the remote system
+never asked for -- it either checks the credential the workspace supplied or it
+does not.
+
+Two smaller notes for whoever builds this. A workspace could be given
+authorities of its own -- strings meaningless here and meaningful there -- which
+is a small schema change and a large conceptual one; worth doing only once
+something needs it. And an integration's endpoints reach the world through
+egress, which approves a *host*: a workspace that allowed `api.example.com` has
+allowed every endpoint on it, which is why a per-request gate is a separate
+mechanism rather than an extension of that one.
+
+Tagging endpoints by risk is the right shape applied too early. It is meaningful
+once there are endpoints to tag and one can see whether they sort into groups or
+each want their own answer; invented beforehand it is a taxonomy fitted to
+nothing.
+
 ## Rate limits take inhibitors
 
 Everything above is a switch: somebody decides to stop something. What is
@@ -353,6 +390,14 @@ time, against checkpoints that have never fired.
 **Notifications after that.** They look independent and are not: until
 inhibitors exist there is nothing to notify about, and what the notification
 system has to carry is decided by what generates the events.
+
+**The approval *rule* waits for something to point at.** HITL's mechanism --
+suspend, hold, resume -- is independent of what triggers it and can be built
+whenever. How an integration's endpoint declares that it needs approval is not:
+designing that without a single real endpoint in front of you is how a schema
+comes out fitting nothing. The OpenAPI work comes first, with no approval
+concept in it at all, and the rule is designed afterwards against operations
+people actually want gated.
 
 ## Not yet
 
