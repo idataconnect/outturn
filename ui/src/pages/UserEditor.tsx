@@ -286,6 +286,11 @@ function EditUser({ id }: { id: string }) {
   const here = user?.memberships.find((m) => m.workspace_id === workspaceId)
   const heldRoles = new Set(here?.roles ?? [])
   const isSystem = user?.system_roles.includes('system_admin') ?? false
+  // Workspaces with roles actually held, which is not every row: a system
+  // administrator is listed against all of them, holding roles in only some.
+  const elsewhere = (user?.memberships ?? []).filter(
+    (m) => m.workspace_id !== workspaceId && m.roles.length > 0,
+  )
 
   return (
     <div className="p-6 max-w-3xl">
@@ -436,14 +441,21 @@ function EditUser({ id }: { id: string }) {
                 ))}
               </div>
             )}
-            {user.memberships.length > 1 && (
+            {/* A system administrator's memberships list every workspace,
+                granted or not: the right to sign in anywhere comes from
+                `user_system_roles` rather than from a grant in each one. Those
+                rows carry no roles, and calling them membership would name the
+                wrong thing -- so the reach is said once, and only the
+                workspaces where roles are actually held are listed. */}
+            {isSystem && (
+              <p className="text-xs text-surface-500 dark:text-surface-400">
+                A system administrator, so may sign in to any workspace.
+              </p>
+            )}
+            {elsewhere.length > 0 && (
               <p className="text-xs text-surface-500 dark:text-surface-400">
                 Also a member of{' '}
-                {user.memberships
-                  .filter((m) => m.workspace_id !== workspaceId)
-                  .map((m) => `${m.name} (${m.roles.join(', ')})`)
-                  .join('; ')}
-                .
+                {elsewhere.map((m) => `${m.name} (${m.roles.join(', ')})`).join('; ')}.
               </p>
             )}
           </section>
