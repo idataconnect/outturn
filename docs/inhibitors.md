@@ -41,18 +41,20 @@ it returned -- by id rather than by scope, because several holds can cover the
 same work and releasing "the workspace's" would be ambiguous about which. The
 UI lists them on the agents page, workspace-wide holds first.
 
-A restarted conversation carries a marker saying what went unanswered and why,
-placed ahead of the prompts it explains. Only the before-the-turn case exists,
-because only that case can happen: nothing stops a turn once it is running.
+A restarted conversation carries a marker saying why it stopped, placed ahead of
+what it explains. Both shapes exist: a message that went unanswered, and a reply
+that stops partway.
 
 A hold also cuts a turn already running: the gateway polls for it on the same
 tick it polls for cancels, and the reason rides the trailer so the runtime can
 say what stopped it rather than looking like a provider that hung up.
 
-Still to come: the marker for a turn stopped mid-flight, which unlike the
-before-it-ran case does leave a partial reply to explain. And suspension --
-which currently refuses a turn like a stop but without latching, because nothing
-takes a suspended hold until human-in-the-loop does.
+Still to come: suspension -- which currently refuses a turn like a stop but
+without latching, because nothing takes a suspended hold until human-in-the-loop
+does. A suspended turn needs no marker: it pauses where the conversation is
+consistent and resumes from there, so there is no fragment to explain. What it
+may need is something for a reader looking at a paused conversation, which is a
+question for the panel rather than the prompt.
 
 `decide` is a function rather than anything swappable on purpose: there is one
 correct answer and every call path has to get it. A join that could differ
@@ -187,10 +189,14 @@ a fragment that does not exist.
 
 *Stopped mid-flight.* There is a partial assistant message, and the next turn
 replays it. Without an explanation the model reads its own reply trailing off
-and either apologises or tries to finish the abandoned thought. This is the case
-the marker was first written for.
+and either apologises or tries to finish the abandoned thought. So it is told
+the reply stops partway, and to carry on from there if that still makes sense.
 
-So the marker says which happened, rather than assuming the second.
+The transcript says which happened, so nothing has to be recorded to tell them
+apart: a turn stopped before it ran leaves the person's message newest, and one
+cut mid-flight leaves the agent's. The reply has to have something in it --
+a placeholder exists from the moment a turn starts, and an empty one is the
+silence case wearing the other shape.
 
 ## What the restart answers
 

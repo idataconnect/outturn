@@ -226,40 +226,62 @@ fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::
 
 /// Says why the conversation stops where it does, for a turn picking it up.
 ///
-/// A session that was stopped before its turn ran has no partial reply -- the
-/// transcript is a prompt and then silence. So the marker says a message went
-/// unanswered and why, rather than that a reply was cut off: telling a model its
-/// reply was stopped when it never wrote one invites it to apologise for a
-/// fragment that does not exist.
+/// Two shapes, and they need different words. Telling a model its reply was cut
+/// off when it never wrote one invites it to apologise for a fragment that does
+/// not exist; telling it a message went unanswered when half a reply is sitting
+/// there leaves the fragment unexplained, which is how a turn ends up finishing
+/// somebody else's abandoned sentence.
 ///
-/// Stopping mid-flight is the other case and wants different words. It does not
-/// happen yet -- nothing stops a turn once it is running -- and when it does,
-/// this is where that marker goes.
+/// The transcript says which happened. A turn stopped before it ran leaves a
+/// prompt and then silence, so the newest message is the person's. A turn cut
+/// mid-flight leaves what it had written, so the newest is the agent's.
 ///
-/// Placed before the prompts rather than after, because it is context for what
-/// follows: everything below it is what was asked while nothing could answer.
+/// Placed before what it explains rather than after: it is context for what
+/// follows, not a remark about what came before.
 fn marked(projected: Vec<serde_json::Value>, restarting_from: Option<&str>) -> Vec<serde_json::Value> {
     let Some(reason) = restarting_from else {
         return projected;
     };
 
-    // Ahead of the last message, which is the prompt that restarted the
-    // session. What sits between the marker and the end is the question that
-    // went unanswered and the one asking again -- and the guest's own framing
-    // asks the model to answer each in order.
+    // The restarting prompt is the last message, so what decides the shape is
+    // the one before it: an assistant message there is a reply that was cut.
+    //
+    // Only a reply with something in it. A turn stopped before the model said
+    // anything leaves an empty assistant row, which is not a fragment anybody
+    // needs explaining -- it is the silence case wearing the other shape.
     let split = projected.len().saturating_sub(1);
+    let cut_reply = split
+        .checked_sub(1)
+        .and_then(|i| projected.get(i))
+        .is_some_and(|m| {
+            m["role"] == "assistant"
+                && m["parts"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|p| {
+                        p["type"] == "text" && !p["text"].as_str().unwrap_or("").trim().is_empty()
+                    }))
+        });
+
+    let text = if cut_reply {
+        format!(
+            "[the reply above stops partway through: this conversation was \
+             stopped -- {reason}. It has been restarted. Carry on from where it \
+             broke off if that still makes sense, and do not apologise for the \
+             pause.]"
+        )
+    } else {
+        format!(
+            "[the messages below went unanswered: this conversation was \
+             stopped -- {reason}. It has been restarted. Answer what was asked, \
+             and do not apologise for the pause.]"
+        )
+    };
+
     let mut out = Vec::with_capacity(projected.len() + 1);
     out.extend(projected.iter().take(split).cloned());
     out.push(serde_json::json!({
         "role": "user",
-        "parts": [{
-            "type": "text",
-            "text": format!(
-                "[the messages below went unanswered: this conversation was \
-                 stopped -- {reason}. It has been restarted. Answer what was \
-                 asked, and do not apologise for the pause.]"
-            ),
-        }],
+        "parts": [{"type": "text", "text": text}],
     }));
     out.extend(projected.into_iter().skip(split));
     out
@@ -1656,6 +1678,53 @@ mod projection_tests {
         // still there, in order, after the marker.
         assert_eq!(projected[0]["parts"][0]["text"], "what is our Q3 revenue?");
         assert_eq!(projected[2]["parts"][0]["text"], "hello?");
+    }
+
+    /// A reply cut partway is explained as a fragment, not as silence.
+    ///
+    /// Telling the model a message went unanswered while half its own reply sits
+    /// above would leave the fragment unaccounted for -- and a model that
+    /// notices an unexplained broken sentence tends to finish it.
+    #[test]
+    fn a_cut_reply_is_explained_as_one() {
+        let projected = marked(
+            vec![
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "tell me a story"}]}),
+                serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": "Once upon a"}]}),
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
+            ],
+            Some("runaway turn"),
+        );
+
+        assert_eq!(projected.len(), 4, "{projected:?}");
+        let marker = projected[2]["parts"][0]["text"].as_str().expect("marker");
+        assert!(marker.contains("stops partway"), "{marker}");
+        assert!(marker.contains("runaway turn"), "{marker}");
+        // The fragment is still there, above the marker that explains it.
+        assert_eq!(projected[1]["parts"][0]["text"], "Once upon a");
+        assert_eq!(projected[3]["parts"][0]["text"], "hello?");
+    }
+
+    /// A turn stopped before the model spoke is silence, not a fragment.
+    ///
+    /// The placeholder reply exists from the moment a turn starts, so an
+    /// assistant message alone does not mean anything was written.
+    #[test]
+    fn an_empty_reply_is_not_treated_as_a_fragment() {
+        let projected = marked(
+            vec![
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "what is our Q3 revenue?"}]}),
+                serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": ""}]}),
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
+            ],
+            Some("spend cap reached"),
+        );
+
+        let marker = projected[2]["parts"][0]["text"].as_str().expect("marker");
+        assert!(
+            marker.contains("went unanswered"),
+            "an empty reply was explained as a cut-off fragment: {marker}"
+        );
     }
 
     /// An ordinary turn carries no marker at all.
