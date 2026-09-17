@@ -268,7 +268,7 @@ async fn chat_completions(
     State(state): State<Arc<GatewayState>>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     let claims = authenticate(&state, &headers)?;
 
     tracing::debug!(
@@ -305,7 +305,23 @@ async fn chat_completions(
         match provider.chat_completion(&request).await {
             Ok(response) => {
                 state.observe(provider, caller, Ok(())).await;
-                return Ok(Json(response));
+                // The same two the streamed path sets. A caller that does not
+                // stream still has to write a ledger row, and it cannot name
+                // the endpoint it reached or who paid for it from the body.
+                return Ok((
+                    [
+                        (
+                            axum::http::HeaderName::from_static("x-outturn-provider"),
+                            provider.endpoint(),
+                        ),
+                        (
+                            axum::http::HeaderName::from_static("x-outturn-paid-by"),
+                            "operator".to_string(),
+                        ),
+                    ],
+                    Json(response),
+                )
+                    .into_response());
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");

@@ -18,19 +18,20 @@
 //! switching -- which also bills somebody for an expensive operation at the
 //! moment they asked for something else.
 //!
-//! **A summary lasts as long as the turn that made it.** Nothing is persisted:
-//! the conversation is re-projected from stored messages each time, so an
-//! over-budget session is summarised again on every turn, from the same early
-//! history. That is a cost -- a model call per turn rather than one per
-//! compaction -- and it is also why a summary cannot yet drift: each one is
-//! written from the messages themselves rather than from the summary before
-//! it.
+//! **A summary is stored and carried.** It is written to the session as an
+//! assistant message marked with the id it covers, and every later projection
+//! replaces the covered messages with it. So an over-budget session is
+//! summarised once per compaction rather than once per turn, and the messages
+//! behind it stay in the database untouched -- only what is sent to the model
+//! changes.
 //!
-//! Cumulative summaries would fix the cost and introduce the drift. They need
-//! a summary to be stored and recognised on the way back in, which is what the
-//! instruction below already asks for ("if an earlier summary is included,
-//! carry its content forward") and what nothing yet supplies. Until then that
-//! clause is doing nothing.
+//! **A carried summary is folded, not appended to.** Left to accumulate it
+//! would grow into the thing that does not fit. Past `SUMMARY_MAX_BYTES` the
+//! next compaction summarises the summary along with what followed it, which
+//! is a summary of a summary and drifts -- so the bound is set high enough
+//! that a session has to be long indeed to reach it, and the instruction tells
+//! the model to carry an earlier summary's content forward rather than
+//! describe it.
 //!
 //! **A summary says it is one, in its text.** It is a model's account of a
 //! conversation that will be replayed for the rest of the turn, so its failure
@@ -48,6 +49,24 @@ use crate::gateway::llm::types::{Message, MessageContent, Role};
 /// not ask for, and paying frontier prices for it is a choice rather than a
 /// requirement.
 pub const TRAFFIC_TYPE: &str = "compaction";
+
+/// Marks a stored message as a summary, and says what it stands in for.
+///
+/// In metadata rather than in a new role: the schema allows four roles and a
+/// summary is an assistant message whatever else it is. The value is the id of
+/// the last message it covers -- everything at or before that id is replaced by
+/// this one when a conversation is projected, so the messages themselves are
+/// never destroyed and a later change of mind can still read them.
+pub const SUMMARY_MARK: &str = "summary_through";
+
+/// How long a carried summary may get before it is summarised in its turn.
+///
+/// A summary that is only ever added to grows without bound and eventually
+/// becomes the thing that does not fit, which is the problem it exists to
+/// solve. Past this it is folded into the next one rather than carried beside
+/// it: the cost is a summary of a summary, which drifts, so the bound is
+/// generous enough that most sessions never reach it.
+pub const SUMMARY_MAX_BYTES: usize = 4096;
 
 /// How much of the conversation is left verbatim behind a summary.
 ///

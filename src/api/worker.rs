@@ -74,6 +74,32 @@ pub struct ChatTurnPayload {
 /// batch. That is a faithful account of what was asked and answered, and a
 /// lossy one of when.
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
+    // A stored summary stands in for everything it covers. The last one wins:
+    // a later summary's range includes any earlier one, because each is
+    // written from the projection the one before it produced.
+    //
+    // Dropped from the projection rather than from the session -- the messages
+    // are still there to read, and a summary that turns out to have lost
+    // something is a bad turn rather than a bad archive.
+    let covered = messages
+        .iter()
+        .filter_map(|m| {
+            m.metadata
+                .get(super::chat::summarise::SUMMARY_MARK)
+                .and_then(|v| v.as_str())
+                .and_then(|id| id.parse::<Uuid>().ok())
+                .map(|through| (m.id, through))
+        })
+        .next_back();
+
+    let messages: Vec<&super::chat::Message> = match covered {
+        Some((summary_id, through)) => messages
+            .iter()
+            .filter(|m| m.id == summary_id || !(m.id <= through))
+            .collect(),
+        None => messages.iter().collect(),
+    };
+
     let mut projected = Vec::with_capacity(messages.len());
 
     for message in messages {
@@ -746,6 +772,7 @@ impl Worker {
                 let projected = self
                     .summarised(
                         &projected,
+                        &history,
                         &system_prompt,
                         settings.context_budget,
                         payload.session_id,
@@ -811,6 +838,11 @@ impl Worker {
     async fn summarised(
         &self,
         conversation: &[serde_json::Value],
+        // What the conversation was projected from, so the summary can be
+        // stored against the last message it covers. The projection has no
+        // ids in it -- it is what goes to the model -- and a summary that
+        // cannot say what it stands in for cannot be carried.
+        history: &[super::chat::Message],
         system_prompt: &str,
         budget: usize,
         session_id: uuid::Uuid,
@@ -878,6 +910,22 @@ impl Worker {
             return None;
         }
 
+        // Read before the body is consumed. These are what let the ledger say
+        // where the call went and whose credential paid, which it cannot get
+        // from the completion itself.
+        let endpoint = response
+            .headers()
+            .get("x-outturn-provider")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        let paid_by = response
+            .headers()
+            .get("x-outturn-paid-by")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("operator")
+            .to_string();
+
         let completion: ChatCompletionResponse = match response.json().await {
             Ok(c) => c,
             Err(e) => {
@@ -902,6 +950,18 @@ impl Worker {
             tracing::warn!("the summary came back empty; the trim will carry the conversation");
             return None;
         };
+        // A model asked for 1024 tokens can still answer with more. Past the
+        // bound the summary is refused rather than truncated: half a summary
+        // ending mid-sentence would be carried forward for the rest of the
+        // session, and the trim underneath loses less than that.
+        if summary.len() > summarise::SUMMARY_MAX_BYTES {
+            tracing::warn!(
+                summary_bytes = summary.len(),
+                limit = summarise::SUMMARY_MAX_BYTES,
+                "the summary came back longer than a summary may be; the trim will carry the conversation"
+            );
+            return None;
+        }
 
         let replaced = summarise::apply(conversation.to_vec(), summary, through);
         // A summary larger than what it replaced is one that helped nobody,
@@ -911,12 +971,143 @@ impl Worker {
             return None;
         }
 
+        // A carried summary that has grown past the bound is folded rather
+        // than carried again: it was at the front of what was just summarised,
+        // so the new summary already stands for it and everything after it.
+        // Under the bound the old one is left where it is and the new one
+        // supersedes it by covering more -- the projection takes the last mark
+        // it finds.
+        //
+        // Stored, so the next turn reads the summary instead of paying to
+        // write it again. Best effort: a summary that could not be saved has
+        // still done its job for this turn, and a failed write must not cost
+        // the turn the user actually asked for.
+        //
+        // Covered is everything before the tail that survived. Taken from the
+        // stored messages rather than from `through`, which indexes the
+        // projection -- and the projection may already have a summary standing
+        // where several messages were.
+        if let Some(through_id) = history
+            .len()
+            .checked_sub(summarise::TAIL_MESSAGES)
+            .and_then(|end| history.get(end.saturating_sub(1)))
+            .map(|m| m.id)
+        {
+            self.store_summary(session_id, summary, through_id, model).await;
+        }
+
+        // A summary is a model call the user did not ask for and is billed
+        // for regardless, so it belongs in the ledger like any other. Written
+        // after the summary is known to be usable: a call whose result was
+        // thrown away still cost money, but the rows above return early and
+        // are recorded the same way for the same reason.
+        let provider_usage = completion
+            .usage
+            .as_ref()
+            .and_then(|u| serde_json::to_value(u).ok());
+        let counted = completion.usage.as_ref();
+        if let Err(e) = self
+            .usage
+            .record(super::usage::RecordUsage {
+                workspace_id,
+                // No agent and no job: a summary is the platform's own work on
+                // behalf of a session, not a turn the agent ran.
+                agent_id: None,
+                session_id: Some(session_id),
+                user_id: None,
+                account: None,
+                reply_id: None,
+                job_id: None,
+                round: 0,
+                traffic_type: summarise::TRAFFIC_TYPE.to_string(),
+                endpoint,
+                model: completion.model.clone(),
+                credential_owner: paid_by,
+                fallback: "none".to_string(),
+                prompt_tokens: counted.map(|u| u.prompt_tokens as i32).unwrap_or(0),
+                completion_tokens: counted.map(|u| u.completion_tokens as i32).unwrap_or(0),
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+                usage_source: source_of(&provider_usage),
+                provider_usage,
+                service_tier: None,
+            })
+            .await
+        {
+            // Loud, like the turn path: a ledger write that fails means the
+            // bill is wrong.
+            tracing::error!(
+                workspace_id = %workspace_id,
+                session_id = %session_id,
+                error = %e,
+                "could not record the summary's usage"
+            );
+        }
+
         tracing::info!(
             messages_replaced = through,
             summary_bytes = summary.len(),
             "conversation summarised"
         );
         Some(replaced)
+    }
+
+    /// Writes a summary into the session, marked with what it stands in for.
+    ///
+    /// Best effort throughout: every failure path leaves the turn exactly as it
+    /// would have been without storing, which is a summary that works for this
+    /// turn and is written again next time. Nothing here is worth failing a
+    /// turn over.
+    async fn store_summary(
+        &self,
+        session_id: uuid::Uuid,
+        summary: &str,
+        through: uuid::Uuid,
+        model: &str,
+    ) {
+        use super::chat::{Delivery, Usage};
+
+        // Appended and then marked, because appending takes no metadata. A
+        // summary that lost its mark between the two would be read as an
+        // ordinary assistant message: wrong, but wrong in the direction of
+        // saying too much rather than dropping the conversation.
+        let stored = match self
+            .chat
+            .append_message(
+                session_id,
+                "assistant",
+                summary,
+                Some(model),
+                Usage::default(),
+                // Only meaningful for a user message arriving mid-turn; a
+                // summary is neither, and the column takes the default.
+                Delivery::default(),
+                None,
+            )
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not store the summary; it will be written again next turn");
+                return;
+            }
+        };
+
+        if let Err(e) = self
+            .chat
+            .set_message_content(
+                stored.id,
+                summary,
+                Some(model),
+                None,
+                Usage::default(),
+                serde_json::json!({ super::chat::summarise::SUMMARY_MARK: through.to_string() }),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "could not mark the summary; it will be written again next turn");
+        }
     }
 
     /// Records what a turn produced, and closes the job out.
@@ -1196,6 +1387,56 @@ mod projection_tests {
         let kept = up_to(vec![first, later], prompt);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].content, "Bleargh 2");
+    }
+
+    /// A stored summary stands in for what it covers.
+    ///
+    /// The whole point of storing one: the next turn reads it instead of
+    /// paying a model to write the same paragraph again.
+    #[test]
+    fn a_stored_summary_replaces_the_messages_behind_it() {
+        let first = message("user", "the long beginning", serde_json::json!({}));
+        let second = message("assistant", "a long answer", serde_json::json!({}));
+        let summary = message(
+            "assistant",
+            "they discussed beginnings",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+        );
+        let after = message("user", "and then?", serde_json::json!({}));
+
+        let projected = project(&[first, second, summary, after]);
+
+        assert_eq!(projected.len(), 2, "{projected:?}");
+        assert_eq!(projected[0]["parts"][0]["text"], "they discussed beginnings");
+        assert_eq!(projected[1]["parts"][0]["text"], "and then?");
+    }
+
+    /// The newest summary wins, and takes the older one with it.
+    ///
+    /// Each summary is written from the projection the one before it produced,
+    /// so a later mark always covers an earlier summary as well as the
+    /// messages after it. Carrying both would replay the same history twice.
+    #[test]
+    fn a_later_summary_supersedes_the_one_before_it() {
+        let first = message("user", "the long beginning", serde_json::json!({}));
+        let older = message(
+            "assistant",
+            "an older summary",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+        );
+        let middle = message("user", "more talk", serde_json::json!({}));
+        let newer = message(
+            "assistant",
+            "a newer summary",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: middle.id.to_string() }),
+        );
+        let after = message("user", "and now?", serde_json::json!({}));
+
+        let projected = project(&[first, older, middle, newer, after]);
+
+        assert_eq!(projected.len(), 2, "{projected:?}");
+        assert_eq!(projected[0]["parts"][0]["text"], "a newer summary");
+        assert_eq!(projected[1]["parts"][0]["text"], "and now?");
     }
 
     #[test]

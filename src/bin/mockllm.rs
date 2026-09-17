@@ -425,6 +425,14 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
         return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
             "id": "mock",
             "object": "chat.completion",
+            // Required by the response the gateway decodes into, and its
+            // absence is why a non-streaming call here failed to parse while
+            // the streamed path was fine: the summariser is the only caller
+            // that does not stream, so nothing exercised this until it existed.
+            "created": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
             "model": req.model,
             "choices": [{
                 "index": 0,
