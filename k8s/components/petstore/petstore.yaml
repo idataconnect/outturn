@@ -1,0 +1,83 @@
+# Swagger Petstore, as something for an agent to call.
+#
+# The reference OpenAPI 3 implementation, here because building anything that
+# consumes OpenAPI against a spec somebody wrote by hand teaches you about that
+# spec rather than about OpenAPI. This one has path and query parameters, request
+# bodies, enums, two security schemes and nineteen operations, and it is correct
+# -- which is what makes it useful for finding out what a consumer has to handle.
+#
+# Local only, so a component rather than part of the base: nobody load tests
+# against a pet store, and an installation that never wanted a sample API should
+# not carry one. (The mock model is in base at zero replicas for the opposite
+# reason -- it is wanted in CI and staging, whose overlays are not ours.)
+#
+# It holds nothing worth reaching. Its state is in memory and resets when the
+# pod does, which is the point: a test that depends on what a previous test left
+# behind is a test that passes in the wrong order.
+apiVersion: v1
+kind: Service
+metadata:
+  name: petstore
+spec:
+  selector:
+    app: petstore
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petstore
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: petstore
+  template:
+    metadata:
+      labels:
+        app: petstore
+    spec:
+      containers:
+        - name: petstore
+          image: swaggerapi/petstore3:unstable
+          # As with tika and minio: a floating tag pulls on every start, and an
+          # anonymous pull is rate limited, so a node holding the image sits in
+          # ImagePullBackOff waiting for permission to fetch what it has.
+          imagePullPolicy: IfNotPresent
+          # The image's own command, minus `--log /var/log/...`. Jetty writes a
+          # request log there, which a non-root user cannot create -- and the
+          # log is of no interest here, where the thing being watched is what
+          # the agent sent rather than what Jetty received.
+          command: ["java"]
+          args:
+            - "-jar"
+            - "-DswaggerUrl=openapi.yaml"
+            - "/swagger-petstore/jetty-runner.jar"
+            - "/swagger-petstore/server.war"
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /api/v3/openapi.json
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Jetty unpacks the war under /tmp, so the root filesystem cannot
+            # be read-only.
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 35003
+            capabilities:
+              drop: ["ALL"]

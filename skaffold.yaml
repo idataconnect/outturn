@@ -56,6 +56,16 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-tika
+  # A sample OpenAPI service. `skaffold dev -p petstore` brings up Swagger
+  # Petstore beside the rest, for building against a real spec rather than one
+  # written to suit the thing consuming it. Nothing points at it: an agent
+  # reaches a host through the gateway, and the gateway refuses private
+  # addresses, so this serves a spec to read rather than an endpoint to call.
+  - name: petstore
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/local-petstore
   # A Mac. `skaffold dev -p mac` reaches ollama on the host rather than across
   # the Linux Docker bridge, and defaults to qwen3.8:27b-mlx. scripts/dev-mac.sh
   # checks ollama and the model first, then runs this.

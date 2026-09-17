@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - petstore.yaml
+
+# No configuration travels with it, unlike the tika component -- nothing in
+# outturn is pointed at a sample API, because an agent reaches one the way it
+# reaches any other host: through the gateway, against an egress rule a
+# workspace allowed.
+#
+# Which is the thing to know before using this. `resolve_and_vet` refuses any
+# host resolving to a private address, with no exception a rule can waive (see
+# `vet_addresses` in src/runtime/egress.rs), so `petstore:8080` is unreachable
+# from an agent by design. That guard is not the kind to weaken for a
+# convenience; reaching this from a turn means giving it an address the vetting
+# accepts -- a tunnel with a public name, or a second cluster -- and until then
+# this is for building an OpenAPI consumer against a real spec, which is what it
+# is here for.
