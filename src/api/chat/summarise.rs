@@ -18,19 +18,28 @@
 //! switching -- which also bills somebody for an expensive operation at the
 //! moment they asked for something else.
 //!
-//! **Summaries are cumulative.** Each one summarises the tail plus the summary
-//! before it, because the alternative loses durable facts: a constraint stated
-//! once at the start is exactly what gets dropped and then violated. Carrying
-//! it forward is not a guarantee, only a much better chance. The guarantee is
-//! what compaction carry-over is for, and that is not built.
+//! **A summary lasts as long as the turn that made it.** Nothing is persisted:
+//! the conversation is re-projected from stored messages each time, so an
+//! over-budget session is summarised again on every turn, from the same early
+//! history. That is a cost -- a model call per turn rather than one per
+//! compaction -- and it is also why a summary cannot yet drift: each one is
+//! written from the messages themselves rather than from the summary before
+//! it.
 //!
-//! **A summary is marked as one.** It is a model's account of a conversation
-//! that will be replayed on every later turn, so its failure mode is quiet: a
-//! summary that misstates a decision becomes the record. Marking it means a
-//! reader can see what happened, and the next summary knows it is summarising
-//! a summary.
+//! Cumulative summaries would fix the cost and introduce the drift. They need
+//! a summary to be stored and recognised on the way back in, which is what the
+//! instruction below already asks for ("if an earlier summary is included,
+//! carry its content forward") and what nothing yet supplies. Until then that
+//! clause is doing nothing.
+//!
+//! **A summary says it is one, in its text.** It is a model's account of a
+//! conversation that will be replayed for the rest of the turn, so its failure
+//! mode is quiet: a summary that misstates a decision becomes the record.
+//! Saying so in the message means a reader can see what happened.
 
 use serde_json::Value;
+
+use crate::gateway::llm::types::{Message, MessageContent, Role};
 
 /// The traffic type a summary is asked for under.
 ///
@@ -39,14 +48,6 @@ use serde_json::Value;
 /// not ask for, and paying frontier prices for it is a choice rather than a
 /// requirement.
 pub const TRAFFIC_TYPE: &str = "compaction";
-
-/// Marks a message as a summary, and says what it stands in for.
-///
-/// In metadata rather than in a new role: the schema allows four roles and a
-/// summary is an assistant message whatever else it is. `summary_through` is
-/// the id of the last message it covers -- everything at or below that id is
-/// replaced by this one when a conversation is projected.
-pub const SUMMARY_MARK: &str = "summary_through";
 
 /// How much of the conversation is left verbatim behind a summary.
 ///
@@ -84,11 +85,26 @@ as the new messages -- it is the only record of what came before it.";
 /// Returns the index the tail begins at, or `None` when there is nothing worth
 /// summarising -- a conversation shorter than the tail it would keep has
 /// nothing behind that tail to replace.
-pub fn boundary(messages: usize) -> Option<usize> {
+///
+/// The cut never lands between a call and what answers it. A tail starting on
+/// a tool result is one whose call has just been summarised away, and both
+/// protocols reject that as firmly as they reject a call with no result -- so
+/// the boundary slides forward over any results it would have stranded, taking
+/// them into the summary with the call they belong to.
+pub fn boundary(conversation: &[Value]) -> Option<usize> {
     // Strictly greater: a conversation exactly the length of the tail would
     // summarise nothing, and asking a model for a summary of nothing spends a
     // call to produce a paragraph saying so.
-    (messages > TAIL_MESSAGES + 1).then(|| messages - TAIL_MESSAGES)
+    let mut cut = (conversation.len() > TAIL_MESSAGES + 1)
+        .then(|| conversation.len() - TAIL_MESSAGES)?;
+
+    while conversation.get(cut).is_some_and(super::trim::is_result) {
+        cut += 1;
+    }
+
+    // Sliding past everything leaves nothing to summarise, which is the same
+    // answer as never having had enough.
+    (cut < conversation.len()).then_some(cut)
 }
 
 /// Builds the request sent to the model.
@@ -98,16 +114,26 @@ pub fn boundary(messages: usize) -> Option<usize> {
 /// replaced, and the instruction last -- a model reads the final instruction as
 /// the one that stands, and what is being asked for should not be buried under
 /// the thing it is being asked about.
-pub fn request(system_prompt: &str, replacing: &[Value]) -> Vec<Value> {
+pub fn request(system_prompt: &str, replacing: &[Value]) -> Vec<Message> {
+    fn said(role: Role, content: String) -> Message {
+        Message {
+            role,
+            content: MessageContent::Text(content),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
     let mut messages = Vec::with_capacity(replacing.len() + 2);
     if !system_prompt.trim().is_empty() {
-        messages.push(serde_json::json!({
-            "role": "system",
-            "content": format!(
+        messages.push(said(
+            Role::System,
+            format!(
                 "The assistant in the conversation below was given these \
                  instructions:\n\n{system_prompt}"
             ),
-        }));
+        ));
     }
 
     for message in replacing {
@@ -119,17 +145,21 @@ pub fn request(system_prompt: &str, replacing: &[Value]) -> Vec<Value> {
         if text.trim().is_empty() {
             continue;
         }
-        messages.push(serde_json::json!({
-            "role": if role == "tool" { "user" } else { role },
-            "content": if role == "tool" {
-                format!("[result of a tool call]\n{text}")
-            } else {
-                text
-            },
-        }));
+        // A result arrives as something the summariser is told about rather
+        // than as a tool message, which would need the call beside it.
+        if role == "tool" {
+            messages.push(said(Role::User, format!("[result of a tool call]\n{text}")));
+            continue;
+        }
+        let role = match role {
+            "system" => Role::System,
+            "assistant" => Role::Assistant,
+            _ => Role::User,
+        };
+        messages.push(said(role, text));
     }
 
-    messages.push(serde_json::json!({"role": "user", "content": INSTRUCTION}));
+    messages.push(said(Role::User, INSTRUCTION.into()));
     messages
 }
 
@@ -211,21 +241,63 @@ mod tests {
         json!({"role": "tool", "tool_call_id": "c1", "parts": [{"type": "text", "text": text}]})
     }
 
+    /// What a built message says, for tests that care about the text rather
+    /// than the shape it travels in.
+    fn text_of(message: &Message) -> String {
+        match &message.content {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Parts(_) => String::new(),
+        }
+    }
+
+    /// `n` plain messages, which the boundary may cut anywhere.
+    fn plain(n: usize) -> Vec<Value> {
+        (0..n).map(|i| user(&format!("m{i}"))).collect()
+    }
+
     #[test]
     fn a_short_conversation_is_not_worth_summarising() {
         // Asking a model to summarise nothing spends a call to be told so.
-        assert_eq!(boundary(0), None);
-        assert_eq!(boundary(TAIL_MESSAGES), None);
-        assert_eq!(boundary(TAIL_MESSAGES + 1), None);
+        assert_eq!(boundary(&plain(0)), None);
+        assert_eq!(boundary(&plain(TAIL_MESSAGES)), None);
+        assert_eq!(boundary(&plain(TAIL_MESSAGES + 1)), None);
     }
 
     #[test]
     fn the_tail_is_what_survives_intact() {
         // The live context -- what is being worked on now -- is not something
         // to summarise, so the cut leaves exactly the tail behind it.
-        let cut = boundary(TAIL_MESSAGES + 5).expect("worth summarising");
+        let conversation = plain(TAIL_MESSAGES + 5);
+        let cut = boundary(&conversation).expect("worth summarising");
         assert_eq!(cut, 5);
-        assert_eq!(TAIL_MESSAGES + 5 - cut, TAIL_MESSAGES);
+        assert_eq!(conversation.len() - cut, TAIL_MESSAGES);
+    }
+
+    /// The cut never strands a result from the call it answers.
+    ///
+    /// Cutting purely by count put the tail's first message at whatever index
+    /// arithmetic landed on -- and a tail that opens on a tool result is one
+    /// whose call has just been summarised away, which the provider rejects
+    /// outright. The turn traded a context error for a 400.
+    #[test]
+    fn the_cut_does_not_strand_a_result_from_its_call() {
+        // The tail would begin at 5, so put the call at 4 and its answers on
+        // top of it: the cut has to move past them rather than between.
+        let mut conversation = plain(4);
+        conversation.push(calling("fetch_url"));
+        conversation.push(result("first"));
+        conversation.push(result("second"));
+        conversation.extend(plain(TAIL_MESSAGES));
+
+        let cut = boundary(&conversation).expect("worth summarising");
+
+        assert!(
+            !super::super::trim::is_result(&conversation[cut]),
+            "the tail opens on a result whose call was summarised away"
+        );
+        // Past both answers, so the call and what answered it are summarised
+        // together.
+        assert_eq!(cut, 7);
     }
 
     #[test]
@@ -233,11 +305,8 @@ mod tests {
         // A summary written without it is a summary of what happened rather
         // than of what matters.
         let out = request("never touch production", &[user("hello")]);
-        assert_eq!(out[0]["role"], "system");
-        assert!(
-            out[0]["content"].as_str().unwrap().contains("never touch production"),
-            "{out:?}"
-        );
+        assert_eq!(out[0].role, Role::System);
+        assert!(text_of(&out[0]).contains("never touch production"), "{out:?}");
     }
 
     #[test]
@@ -246,8 +315,8 @@ mod tests {
         // is being asked for should not be buried under what it is about.
         let out = request("sys", &[user("a"), user("b")]);
         let last = out.last().unwrap();
-        assert_eq!(last["role"], "user");
-        assert!(last["content"].as_str().unwrap().contains("summarising"));
+        assert_eq!(last.role, Role::User);
+        assert!(text_of(last).contains("summarising"));
     }
 
     #[test]
@@ -256,10 +325,8 @@ mod tests {
         // been asked a question it has to answer, which is a conversation
         // rather than a summary.
         let out = request("", &[calling("fetch_url"), result("200 OK")]);
-        assert!(out.iter().all(|m| m["role"] != "tool"), "{out:?}");
-        let mentioned = out
-            .iter()
-            .any(|m| m["content"].as_str().is_some_and(|c| c.contains("result of a tool call")));
+        assert!(out.iter().all(|m| m.role != Role::Tool), "{out:?}");
+        let mentioned = out.iter().any(|m| text_of(m).contains("result of a tool call"));
         assert!(mentioned, "{out:?}");
     }
 
@@ -268,7 +335,7 @@ mod tests {
         // That a tool was called is often what matters; its arguments rarely
         // are, and they are bulk.
         let out = request("", &[calling("expand_archive")]);
-        let text = out[0]["content"].as_str().unwrap();
+        let text = text_of(&out[0]);
         assert!(text.contains("[called expand_archive]"), "{text}");
     }
 

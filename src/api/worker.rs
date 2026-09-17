@@ -750,6 +750,7 @@ impl Worker {
                         settings.context_budget,
                         payload.session_id,
                         payload.workspace_id,
+                        &model,
                     )
                     .await
                     .unwrap_or(projected);
@@ -814,8 +815,16 @@ impl Worker {
         budget: usize,
         session_id: uuid::Uuid,
         workspace_id: uuid::Uuid,
+        // The model this turn is routed to. The summary goes to the same one:
+        // asking a different model would bill a route the turn is not using,
+        // and a deployment whose default is unset or unroutable would fail
+        // every compaction while the turn itself is fine.
+        model: &str,
     ) -> Option<Vec<serde_json::Value>> {
         use super::chat::summarise;
+        use crate::gateway::llm::types::{
+            ChatCompletionRequest, ChatCompletionResponse, ContentPart, MessageContent,
+        };
 
         if super::chat::trim::total_cost(conversation) <= budget {
             return None;
@@ -823,21 +832,25 @@ impl Worker {
         let (Some(minter), Some(gateway_url)) = (&self.minter, &self.gateway_url) else {
             return None;
         };
-        let through = summarise::boundary(conversation.len())?;
+        let through = summarise::boundary(conversation)?;
 
         let request = summarise::request(system_prompt, &conversation[..through]);
         // Bounded by construction: the system prompt, what is being replaced,
         // and the instruction. Never the whole transcript, which is the thing
         // that does not fit.
-        let body = serde_json::json!({
-            "model": std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into()),
-            "messages": request,
-            "stream": false,
+        let body = ChatCompletionRequest {
+            model: model.to_string(),
+            messages: request,
+            temperature: None,
             // Long enough to carry the constraints forward, short enough that
             // a summary cannot itself become the thing that does not fit.
-            "max_tokens": 1024,
-            "reasoning_effort": "none",
-        });
+            max_tokens: Some(1024),
+            tools: None,
+            // Summarising is reading, not deciding.
+            reasoning_effort: Some("none".into()),
+            stream: false,
+            stream_options: None,
+        };
 
         // Signed for the session it is summarising, so the spend lands on the
         // workspace that caused it: every model call is a row in the usage
@@ -865,11 +878,30 @@ impl Worker {
             return None;
         }
 
-        let completion: serde_json::Value = response.json().await.ok()?;
-        let summary = completion["choices"][0]["message"]["content"].as_str()?.trim();
-        if summary.is_empty() {
+        let completion: ChatCompletionResponse = match response.json().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the summary; the trim will carry the conversation");
+                return None;
+            }
+        };
+        // Both shapes, because a provider may answer with either and a summary
+        // silently skipped is one that was paid for and thrown away.
+        let summary = completion.choices.first().map(|c| match &c.message.content {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        });
+        let Some(summary) = summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            tracing::warn!("the summary came back empty; the trim will carry the conversation");
             return None;
-        }
+        };
 
         let replaced = summarise::apply(conversation.to_vec(), summary, through);
         // A summary larger than what it replaced is one that helped nobody,

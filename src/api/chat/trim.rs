@@ -77,7 +77,7 @@ impl Trimmed {
 }
 
 /// Whether this message is a tool result.
-fn is_result(message: &Value) -> bool {
+pub(super) fn is_result(message: &Value) -> bool {
     message["role"] == "tool"
 }
 
@@ -154,7 +154,14 @@ pub fn to_fit(conversation: Vec<Value>, budget: usize) -> (Vec<Value>, Trimmed) 
 
         // Whatever answered it goes too. Results are the messages immediately
         // following, and they are meaningless without the call that asked.
-        while conversation.len() > 1 && is_result(&conversation[0]) {
+        //
+        // Not stopping at one left, unlike the loop above: the point of
+        // keeping a last message is to send something rather than nothing, and
+        // a result whose call has just gone is not something -- both protocols
+        // reject it exactly as firmly as they reject a call with no result.
+        // Emptying the conversation is the honest outcome, and the caller is
+        // told by the report how much went.
+        while conversation.first().is_some_and(is_result) {
             let orphan = conversation.remove(0);
             running -= cost(&orphan);
             report.messages_dropped += 1;
@@ -203,7 +210,6 @@ mod tests {
     /// had already gone. Both protocols reject a result with no call just as
     /// firmly as a call with no result.
     #[test]
-    #[ignore = "known bug: pass two can leave a lone result, see the doc above"]
     fn a_result_is_never_the_last_thing_standing() {
         let conversation = vec![
             user(&"a".repeat(5000)),
