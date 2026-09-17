@@ -290,6 +290,54 @@ call, this turn, this session, until revoked -- because a key without one is a
 standing grant, and a standing grant is an authority that the roles UI cannot
 see.
 
+## Rate limits take inhibitors
+
+Everything above is a switch: somebody decides to stop something. What is
+missing is a governor -- the thing that catches a runaway nobody is watching, at
+three in the morning, before anyone thinks to look. `max_tool_rounds` is the
+only guard today and its own description says what it is not: "a runaway guard,
+not a budget: what costs money is tokens". It bounds one turn and says nothing
+about a thousand.
+
+The case to design for is an invoice-processing agent that should work at a
+steady pace, spawning a hundred sessions that each loop and spend ten thousand
+dollars in a few minutes. Every session looks reasonable on its own. **So the
+bucket is per agent, across all its sessions** -- a per-session or per-turn
+limit misses this entirely, because the damage is in the aggregate and each part
+of it is unremarkable.
+
+A token bucket rather than a ceiling per hour, because "burst but do not
+rampage" is exactly what a refill rate and a capacity encode separately. A fixed
+ceiling either blocks legitimate bursts or sits so high it never fires.
+
+**Tokens across all models, and the clunkiness is accepted.** An Opus token and
+a Haiku token cost wildly differently, so this is a crude proxy for money -- and
+a fine one for a runaway guard, which is what it is. Pricing stays out, for the
+reason `docs/usage.md` gives.
+
+**Charged on completion, admitted optimistically.** A call's cost is known only
+after it returns, so the bucket is always a little behind and a single enormous
+call can overshoot. Against a looping agent spending five figures, one call of
+slack is a rounding error, and the alternative -- reserving an estimate and
+reconciling -- buys accuracy nobody needs here.
+
+The gateway is where it belongs: the only tier that sees every model call, holds
+a database connection, and can refuse before the tokens are spent. It already
+polls per-session state on a tick and already cuts streams, so a bucket that
+empties mid-stream uses machinery that exists. Note the turn token names a
+workspace and a session but no agent, so a per-agent bucket resolves the agent
+from the session the way the mid-flight check already does.
+
+**An exhausted bucket takes an inhibitor.** It is a machine holder with a reason
+-- "token bucket empty: 2.1M tokens in the last hour" -- and everything below it
+is already built: the join, the latch, the panel, the release. That also answers
+what a machine-held inhibitor looks like, which was an open question.
+
+What is undecided is whether the hold lifts when the bucket refills or waits for
+a person. Auto-release makes it a governor and manual makes it a tripwire; the
+likely answer is auto-release *with* a record, so a rampage is visible
+afterwards even though work resumed on its own.
+
 ## Order of work
 
 **Kill switches first, without HITL.** They are pure `stopped`: no resume, no
@@ -309,6 +357,9 @@ system has to carry is decided by what generates the events.
 ## Not yet
 
 - The capability's extent, above.
+- Whether an exhausted rate limit's hold lifts on refill or waits for a person.
+- Where a rate limit is configured. The settings cascade is the obvious home,
+  but a bucket has two numbers rather than one and the cascade takes scalars.
 - Whether a suspended turn can be stopped by timeout, or waits indefinitely.
   Waiting is the honest default and costs nothing while input is unblocked.
 - What an inhibitor costs to display when it is held by a machine rather than a
