@@ -3148,6 +3148,88 @@ async fn a_hold_that_cut_a_turn_latches_the_session_even_once_released() {
     );
 }
 
+/// A turn a hold cut and that then failed latches too.
+///
+/// A failure and a stop both end a turn without a reply, and the difference
+/// matters: a failure is retried, and a retry that finds the hold released
+/// would run the work the hold existed to prevent.
+#[tokio::test]
+async fn a_held_turn_that_then_failed_still_latches() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"tell me a long story"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job");
+    let lease = assignment["lease_token"].as_str().expect("lease");
+
+    // The stream was cut by a hold, and then the guest fell over while tidying
+    // up -- so what the runtime reports is a failure carrying the reason.
+    let stream =
+        r#"{"kind":"failed","message":"guest trapped","held":"runaway turn"}"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    // The turn failed, so the report is not a success -- but the latch is
+    // written regardless, which is the point.
+    assert_ne!(status, StatusCode::OK, "a failed turn reported as succeeding");
+
+    let latched: Option<String> = sqlx::query_scalar(
+        "select stopped_reason from agent_sessions where id = $1 and stopped_at is not null",
+    )
+    .bind(session_id.parse::<Uuid>().unwrap())
+    .fetch_optional(&h.db.pool)
+    .await
+    .expect("query")
+    .flatten();
+    assert_eq!(
+        latched.as_deref(),
+        Some("runaway turn"),
+        "a held turn that failed left the session able to carry on"
+    );
+}
+
 /// An ordinary turn leaves the session alone.
 #[tokio::test]
 async fn a_turn_that_finished_normally_does_not_latch() {

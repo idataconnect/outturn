@@ -269,6 +269,7 @@ impl Puller {
                 }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
+                    held: e.held,
                 }),
             };
         });

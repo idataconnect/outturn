@@ -607,7 +607,23 @@ impl Worker {
                             provider,
                         });
                     }
-                    Ok(ExecuteEvent::Failed { message }) => {
+                    Ok(ExecuteEvent::Failed { message, held }) => {
+                        // A turn a hold cut and that then failed is a stop
+                        // first and a failure second. Latched before the bail,
+                        // because the bail is what retries it -- and a retry
+                        // that finds the hold released would run the work the
+                        // hold existed to prevent.
+                        if let Some(reason) = &held {
+                            self.chat
+                                .stop_session(payload.session_id, reason)
+                                .await
+                                .map_err(|e| anyhow::anyhow!("latching a cut turn: {e}"))?;
+                            tracing::info!(
+                                session_id = %payload.session_id,
+                                reason = %reason,
+                                "a hold cut this turn before it failed; the session is stopped"
+                            );
+                        }
                         anyhow::bail!("guest failed: {message}")
                     }
                     Err(e) => tracing::warn!(error = %e, "malformed event from runtime"),

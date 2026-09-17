@@ -204,7 +204,16 @@ pub enum ExecuteEvent {
         held: Option<String>,
     },
     /// The turn failed.
-    Failed { message: String },
+    Failed {
+        message: String,
+        /// Why a hold cut it, where one did.
+        ///
+        /// A failure and a stop both end a turn without a reply, and they are
+        /// not the same: a failure is retried, and a stop that is retried runs
+        /// the work the stop existed to prevent as soon as the hold is lifted.
+        #[serde(default)]
+        held: Option<String>,
+    },
 }
 
 /// The three sinks a turn reports progress through.

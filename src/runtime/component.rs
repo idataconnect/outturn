@@ -310,6 +310,39 @@ impl AgentHost {
     }
 }
 
+/// A turn that failed, and whether a hold was what ended it.
+///
+/// A failure and a stop look identical from outside -- both end a turn without
+/// a reply -- and they must not be treated alike. A failure is retried; a stop
+/// that is retried runs the work the stop existed to prevent, as soon as
+/// whoever took the hold releases it.
+#[derive(Debug)]
+pub struct HeldError {
+    /// Why a hold cut this turn, where one did.
+    pub held: Option<String>,
+    pub error: anyhow::Error,
+}
+
+impl HeldError {
+    fn new(held: Option<String>, error: anyhow::Error) -> Self {
+        Self { held, error }
+    }
+}
+
+impl<E: Into<anyhow::Error>> From<E> for HeldError {
+    /// For the failures that happen before a guest exists to be held --
+    /// instantiating, fuel, the component itself. Nothing had cut them.
+    fn from(error: E) -> Self {
+        Self { held: None, error: error.into() }
+    }
+}
+
+impl std::fmt::Display for HeldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 /// What a turn cost, and who served it.
 #[derive(Debug, Clone, Default)]
 pub struct TurnCost {
@@ -1364,7 +1397,7 @@ impl AgentRunner {
         conversation: Vec<Message>,
         system_prompt: String,
         options: RunOptions,
-    ) -> anyhow::Result<(String, TurnCost, Option<String>)> {
+    ) -> Result<(String, TurnCost, Option<String>), HeldError> {
         let component = self.component_for(component_bytes)?;
 
         // No preopened directories, no environment, no network: everything the
@@ -1456,11 +1489,26 @@ impl AgentRunner {
 
         let instance = AgentWorld::instantiate_async(&mut store, &component, &self.linker).await?;
 
-        let reply = instance
+        // Taken apart rather than chained, because a turn that a hold cut and
+        // that then failed still has to say what cut it. A `?` here would drop
+        // the store, and with it the only record that this was a stop rather
+        // than a crash -- so the turn would be retried and, once the hold was
+        // released, simply run.
+        let outcome = instance
             .outturn_agent_agent()
             .call_run(&mut store, &conversation, &system_prompt)
-            .await?
-            .map_err(|e| anyhow::anyhow!("guest returned an error: {e}"))?;
+            .await;
+
+        let reply = match outcome {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(e)) => {
+                return Err(HeldError::new(
+                    store.data().held.clone(),
+                    anyhow::anyhow!("guest returned an error: {e}"),
+                ));
+            }
+            Err(e) => return Err(HeldError::new(store.data().held.clone(), e.into())),
+        };
 
         // Read back from the host rather than returned by the guest: the
         // guest never sees these numbers, which is the point.

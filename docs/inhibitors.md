@@ -223,6 +223,13 @@ which is the whole thing a stop is supposed to prevent. That latch write fails
 the turn if it fails, rather than being logged and shrugged off: a stop that did
 not record itself is a kill switch that silently did not take.
 
+That holds whether the cut turn then ends tidily or falls over. A failure and a
+stop look identical from outside -- both end a turn with no reply -- and they
+are not the same thing: a failure is retried, and a retry that finds the hold
+released runs the work the hold existed to prevent. So the reason travels out of
+the runtime on the error path as well as the successful one, and the latch is
+written before the failure is reported.
+
 ## Input is never blocked
 
 A suspended turn keeps accepting messages. Refusing them is the one place the
