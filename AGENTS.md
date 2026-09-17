@@ -188,6 +188,26 @@ not, so it belongs where CI cannot forget to install it. Everything it serves
 carries an `x-outturn-mock` header, so a transcript it produced can be told
 apart from a real one later by somebody who does not know it exists.
 
+Scale it to one and set what it should pretend to be:
+
+```bash
+kubectl scale deployment outturn-mockllm --replicas=1
+kubectl set env deployment/outturn-mockllm \
+    MOCK_TTFT_MS=0 MOCK_TOKENS_PER_SEC=100000 MOCK_REPLY_TOKENS=24 \
+    MOCK_TOOL_CALLS=0 MOCK_LOG_BODIES=1
+```
+
+`MOCK_TTFT_MS` and `MOCK_TOKENS_PER_SEC` are worth setting deliberately: at the
+defaults a turn takes seconds, and a test driving a dozen of them spends
+minutes waiting for a model that is pretending anyway. A slow setting has its
+own use -- a stream long enough to interrupt is how the mid-turn stop is
+tested. `MOCK_DROP_RATE` and `MOCK_HANG_RATE` make it misbehave on purpose.
+
+`MOCK_LOG_BODIES=1` logs every request in full. That is the only way to see
+what actually reached the model: the database says what a turn produced, and
+inferring the prompt from it is how a marker or an instruction gets asserted
+against somebody's idea of what was sent rather than what was.
+
 KEDA's manifests are *not* in base, and the difference is not arbitrary. A
 deployment at zero replicas costs one object; a controller with CRDs and
 webhooks cannot be installed inertly. So `k8s/autoscaling` is applied

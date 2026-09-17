@@ -88,6 +88,13 @@ struct Config {
     hang_rate: f64,
     /// Whether a request carrying tools should answer with a tool call.
     tool_calls: bool,
+    /// Log every request's messages, in full.
+    ///
+    /// Off by default because a transcript grows with the conversation and
+    /// most runs do not want it. On, it is the only way to see what actually
+    /// reached the model: a test can assert on the database afterwards and
+    /// still be asserting on its own idea of what was sent.
+    log_bodies: bool,
 }
 
 impl Config {
@@ -102,6 +109,7 @@ impl Config {
             drop_rate: num("MOCK_DROP_RATE", 0.0),
             hang_rate: num("MOCK_HANG_RATE", 0.0),
             tool_calls: num::<u8>("MOCK_TOOL_CALLS", 1) != 0,
+            log_bodies: num::<u8>("MOCK_LOG_BODIES", 0) != 0,
         }
     }
 }
@@ -141,7 +149,7 @@ struct AppState {
     counter: AtomicU64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ChatRequest {
     #[serde(default)]
     model: String,
@@ -358,6 +366,25 @@ async fn plan(
 ///
 /// Separated because all three protocols share them: a breaker that only
 /// trips for one wire format has not been tested.
+/// Writes out what a caller actually sent, when asked to.
+///
+/// The whole body, pretty-printed, rather than a summary: what is usually
+/// wanted is one line buried in a system prompt -- a marker, an instruction,
+/// a summary that was supposed to be carried forward -- and a summary of the
+/// body is exactly the part that gets dropped.
+///
+/// Named by protocol because a deployment under test may be reaching more than
+/// one, and "which of these is the compaction call" is otherwise guesswork.
+fn log_body(state: &AppState, protocol: &str, body: &impl Serialize) {
+    if !state.config.log_bodies {
+        return;
+    }
+    match serde_json::to_string_pretty(body) {
+        Ok(json) => tracing::info!(protocol, "request body:\n{json}"),
+        Err(e) => tracing::warn!(protocol, error = %e, "could not render a request body"),
+    }
+}
+
 async fn refuse_or_hang(state: &AppState) -> Option<Response> {
     let m = &state.metrics;
     if every(state.config.drop_rate, &state.counter) {
@@ -383,6 +410,7 @@ async fn refuse_or_hang(state: &AppState) -> Option<Response> {
 /// reason a reader that stops at `finish_reason` records nothing for every
 /// stream rather than only for interrupted ones.
 async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatRequest>) -> Response {
+    log_body(&state, "openai", &req);
     if let Some(refusal) = refuse_or_hang(&state).await {
         return refusal;
     }
@@ -497,7 +525,7 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
 /// Its messages carry content as either a string or a sequence of blocks, and
 /// a turn that has used tools is always the second. Both are flattened to the
 /// one line-per-message form the cache accounting works in.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct AnthropicRequest {
     #[serde(default)]
     model: String,
@@ -579,6 +607,7 @@ async fn anthropic_messages(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AnthropicRequest>,
 ) -> Response {
+    log_body(&state, "anthropic", &req);
     if let Some(refusal) = refuse_or_hang(&state).await {
         return refusal;
     }
@@ -721,7 +750,7 @@ async fn anthropic_messages(
 }
 
 /// A request in Gemini's `generateContent` shape.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct GeminiRequest {
     #[serde(default)]
     contents: Vec<serde_json::Value>,
@@ -812,6 +841,7 @@ async fn gemini_generate(
     Json(req): Json<GeminiRequest>,
 ) -> Response {
     let method = model_and_method.rsplit(':').next().unwrap_or_default().to_string();
+    log_body(&state, "gemini", &req);
     if let Some(refusal) = refuse_or_hang(&state).await {
         return refusal;
     }
@@ -988,6 +1018,7 @@ async fn main() {
         tokens_per_sec = config.tokens_per_sec,
         drop_rate = config.drop_rate,
         hang_rate = config.hang_rate,
+        log_bodies = config.log_bodies,
         "mock model starting"
     );
 
@@ -1214,6 +1245,7 @@ mod tests {
                 drop_rate: 0.0,
                 hang_rate: 0.0,
                 tool_calls: true,
+                log_bodies: false,
             },
             metrics: Metrics::default(),
             seen: Mutex::new(HashMap::new()),
