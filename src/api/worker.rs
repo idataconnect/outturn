@@ -224,6 +224,47 @@ fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::
     messages.into_iter().filter(|m| m.id <= prompt).collect()
 }
 
+/// Says why the conversation stops where it does, for a turn picking it up.
+///
+/// A session that was stopped before its turn ran has no partial reply -- the
+/// transcript is a prompt and then silence. So the marker says a message went
+/// unanswered and why, rather than that a reply was cut off: telling a model its
+/// reply was stopped when it never wrote one invites it to apologise for a
+/// fragment that does not exist.
+///
+/// Stopping mid-flight is the other case and wants different words. It does not
+/// happen yet -- nothing stops a turn once it is running -- and when it does,
+/// this is where that marker goes.
+///
+/// Placed before the prompts rather than after, because it is context for what
+/// follows: everything below it is what was asked while nothing could answer.
+fn marked(projected: Vec<serde_json::Value>, restarting_from: Option<&str>) -> Vec<serde_json::Value> {
+    let Some(reason) = restarting_from else {
+        return projected;
+    };
+
+    // Ahead of the last message, which is the prompt that restarted the
+    // session. What sits between the marker and the end is the question that
+    // went unanswered and the one asking again -- and the guest's own framing
+    // asks the model to answer each in order.
+    let split = projected.len().saturating_sub(1);
+    let mut out = Vec::with_capacity(projected.len() + 1);
+    out.extend(projected.iter().take(split).cloned());
+    out.push(serde_json::json!({
+        "role": "user",
+        "parts": [{
+            "type": "text",
+            "text": format!(
+                "[the messages below went unanswered: this conversation was \
+                 stopped -- {reason}. It has been restarted. Answer what was \
+                 asked, and do not apologise for the pause.]"
+            ),
+        }],
+    }));
+    out.extend(projected.into_iter().skip(split));
+    out
+}
+
 /// What a completed turn produced.
 pub(super) struct TurnOutcome {
     content: String,
@@ -630,11 +671,20 @@ impl Worker {
     /// The latch is read first and cleared here rather than at the API edge,
     /// because what clears it is a prompt carrying a real `user_id` -- and this
     /// is the tier that has the prompt in hand.
+    /// `Ok(Err(_))` is the whole answer for this turn, already recorded.
+    /// `Ok(Ok(reason))` means carry on, and `reason` is what this turn is
+    /// restarting from -- `None` when nothing was holding it.
+    #[allow(clippy::type_complexity)]
     async fn inhibited(
         &self,
         payload: &ChatTurnPayload,
-    ) -> anyhow::Result<Option<anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>>> {
+    ) -> anyhow::Result<
+        Result<Option<String>, anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>>,
+    > {
         use super::inhibitor::Verdict;
+
+        // What this turn is picking up from, where it is picking up at all.
+        let mut restarting_from: Option<String> = None;
 
         // A stopped session stays stopped until a person says something. Not
         // until the hold is released: releasing a kill switch must not resume
@@ -655,9 +705,10 @@ impl Worker {
                     session_id = %payload.session_id,
                     "a stopped session declined work that no person asked for"
                 );
-                return Ok(Some(Ok(None)));
+                return Ok(Err(Ok(None)));
             }
-            self.chat
+            restarting_from = self
+                .chat
                 .clear_stop(payload.session_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("clear stop: {e}"))?;
@@ -672,7 +723,7 @@ impl Worker {
         let decision = super::inhibitor::decide(holds);
 
         match decision.verdict {
-            Verdict::Proceed => Ok(None),
+            Verdict::Proceed => Ok(Ok(restarting_from)),
             Verdict::Stopped => {
                 // Said in the transcript as well as latched: the next turn
                 // reads this history, and a reply that simply stops is one the
@@ -692,7 +743,7 @@ impl Worker {
                     reason = %why,
                     "a turn was stopped before it ran"
                 );
-                Ok(Some(Ok(None)))
+                Ok(Err(Ok(None)))
             }
             // Nothing takes a suspended hold yet -- that arrives with
             // human-in-the-loop. Until then it is treated as a stop without the
@@ -702,7 +753,7 @@ impl Worker {
                     session_id = %payload.session_id,
                     "a turn was suspended before it ran"
                 );
-                Ok(Some(Ok(None)))
+                Ok(Err(Ok(None)))
             }
         }
     }
@@ -741,9 +792,10 @@ impl Worker {
         // Before anything is read or written for this turn. A hold that
         // arrives while a turn is being prepared is one the next turn catches;
         // a hold checked after the work is done has already paid for it.
-        if let Some(refusal) = self.inhibited(payload).await? {
-            return refusal;
-        }
+        let restarting_from = match self.inhibited(payload).await? {
+            Ok(reason) => reason,
+            Err(refusal) => return refusal,
+        };
 
         let history = self
             .chat
@@ -856,7 +908,7 @@ impl Worker {
             write_scopes: settings.write_scopes,
             read_scopes: settings.read_scopes,
             conversation: {
-                let projected = project(&history);
+                let projected = marked(project(&history), restarting_from.as_deref());
 
                 // Over budget is where compaction begins. A summary is tried
                 // first because it loses less: the early turns become a
@@ -1539,6 +1591,57 @@ mod projection_tests {
         assert_eq!(projected.len(), 2, "{projected:?}");
         assert_eq!(projected[0]["parts"][0]["text"], "a newer summary");
         assert_eq!(projected[1]["parts"][0]["text"], "and now?");
+    }
+
+    /// A restarted conversation says why it stopped, and says it truthfully.
+    ///
+    /// The stop happened before the turn ran, so there is no partial reply to
+    /// explain -- what needs explaining is the message nobody answered.
+    #[test]
+    fn a_restart_says_what_went_unanswered() {
+        let projected = marked(
+            vec![
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "what is our Q3 revenue?"}]}),
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
+            ],
+            Some("monthly spend cap reached"),
+        );
+
+        assert_eq!(projected.len(), 3, "{projected:?}");
+        let marker = projected[1]["parts"][0]["text"].as_str().expect("marker");
+        assert!(marker.contains("monthly spend cap reached"), "{marker}");
+        assert!(marker.contains("went unanswered"), "{marker}");
+        // Both the question nobody answered and the one that restarted it are
+        // still there, in order, after the marker.
+        assert_eq!(projected[0]["parts"][0]["text"], "what is our Q3 revenue?");
+        assert_eq!(projected[2]["parts"][0]["text"], "hello?");
+    }
+
+    /// An ordinary turn carries no marker at all.
+    #[test]
+    fn a_conversation_that_was_never_stopped_is_left_alone() {
+        let original = vec![
+            serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello"}]}),
+        ];
+        assert_eq!(marked(original.clone(), None), original);
+    }
+
+    #[test]
+    fn a_restart_with_nothing_before_it_still_explains_itself() {
+        // The stop landed on the session's first prompt, so there is nothing
+        // ahead of the marker. It still has to be said.
+        let projected = marked(
+            vec![serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hi"}]})],
+            Some("stopped by an operator"),
+        );
+        assert_eq!(projected.len(), 2, "{projected:?}");
+        assert!(
+            projected[0]["parts"][0]["text"]
+                .as_str()
+                .expect("marker")
+                .contains("stopped by an operator")
+        );
+        assert_eq!(projected[1]["parts"][0]["text"], "hi");
     }
 
     #[test]

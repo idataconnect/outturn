@@ -35,9 +35,13 @@ it returned -- by id rather than by scope, because several holds can cover the
 same work and releasing "the workspace's" would be ambiguous about which. The
 UI lists them on the agents page, workspace-wide holds first.
 
-Still to come: the transcript marker, and suspension -- which currently refuses
-a turn like a stop but without latching, because nothing takes a suspended hold
-until human-in-the-loop does.
+A restarted conversation carries a marker saying what went unanswered and why,
+placed ahead of the prompts it explains. Only the before-the-turn case exists,
+because only that case can happen: nothing stops a turn once it is running.
+
+Still to come: stopping mid-flight and the different marker it needs, and
+suspension -- which currently refuses a turn like a stop but without latching,
+because nothing takes a suspended hold until human-in-the-loop does.
 
 `decide` is a function rather than anything swappable on purpose: there is one
 correct answer and every call path has to get it. A join that could differ
@@ -134,16 +138,49 @@ switch that un-kills in bulk is one nobody can reason about afterwards.
 
 ## Markers
 
-A stopped turn leaves a partial assistant message in the transcript. The next
-turn replays it, and without an explanation the model reads its own reply
-trailing off mid-sentence -- and either apologises for it or tries to finish the
-abandoned thought.
+A stop has to be legible in the conversation, not only in the latch column. The
+latch governs whether work may proceed; the marker tells the model what became
+of the work that did not. Both are needed and they are not the same requirement.
 
-So a stop is legible in the conversation, not only in the latch column: the
-projection emits what happened, so the next turn sees that the reply was stopped
-by the workspace's kill switch rather than an unexplained fragment. The latch
-governs whether work may proceed; the marker tells the model what became of it.
-Both are needed and they are not the same requirement.
+**There are two situations and they need different words.** Conflating them
+produces the failure the marker exists to prevent.
+
+*Stopped before the turn ran.* Nothing started, so there is no partial reply --
+the transcript is a prompt followed by silence. What the next turn needs is not
+"your reply was cut off" but that a message went unanswered and why. Telling a
+model its reply was stopped when it never wrote one invites it to apologise for
+a fragment that does not exist.
+
+*Stopped mid-flight.* There is a partial assistant message, and the next turn
+replays it. Without an explanation the model reads its own reply trailing off
+and either apologises or tries to finish the abandoned thought. This is the case
+the marker was first written for.
+
+So the marker says which happened, rather than assuming the second.
+
+## What the restart answers
+
+Clearing the latch takes a message from a person, and that message starts a
+turn. But the prompt that was refused is still sitting there unanswered -- so
+somebody who asks a real question, is stopped, and comes back later with
+"hello?" would get an answer to "hello?" while the question is never addressed.
+
+The restart turn sees both. This is the batch resume a suspended turn already
+needs: `injected()` formats several arrivals as *"mid-turn message N of M;
+respond to each of the M in order"*, and an unanswered prompt plus the message
+that restarted it is that list with two entries.
+
+## Stopping is lazy
+
+A workspace hold does not latch its sessions when it is taken. Each session
+latches as it next tries to run, which means a workspace with fifty
+conversations has fifty latches only if all fifty were attempted while the hold
+was on.
+
+This is the right trade -- nothing walks a workspace's sessions on a write, and
+a conversation nobody touched needs no restarting -- but it makes the earlier
+claim more precise. The cost of a kill switch is a deliberate restart per
+conversation that *tried to continue*, not per conversation that exists.
 
 ## Input is never blocked
 
