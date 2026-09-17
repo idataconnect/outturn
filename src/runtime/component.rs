@@ -190,9 +190,9 @@ pub struct AgentHost {
     storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
     workspace_id: uuid::Uuid,
     space: crate::runtime::storage::scope::Space,
-    /// Scopes the guest may write, resolved above the runtime. Reads are
-    /// always allowed within the space; a guest that could not read its own
-    /// workspace's reference material could not do its job.
+    /// Scopes the guest may write, resolved above the runtime. Always a subset
+    /// of `read_scopes`: the setting that grants a write grants the read with
+    /// it.
     write_scopes: Vec<crate::runtime::storage::scope::Scope>,
     /// Scopes the guest may read, resolved above the runtime. Always a
     /// superset of `write_scopes`: the setting that grants a write grants the
@@ -300,8 +300,8 @@ impl AgentHost {
             Ok(())
         } else {
             Err(format!(
-                "this agent may read {0}/ but not write to it. Write under session/ instead, \
-                 or ask whoever runs the workspace to allow writes to {0}/.",
+                "this agent may not write to {0}/. Write under session/ instead, or ask \
+                 whoever runs the workspace to allow writes to {0}/.",
                 scope.as_str()
             ))
         }
@@ -824,6 +824,10 @@ impl outturn::agent::host::Host for AgentHost {
                 .map(|s| scope::root_for(&self.space, *s))
                 .collect()
         } else {
+            // Named outright rather than reached for with an empty prefix, and
+            // gated the same: filtering only "everything I have" would have
+            // left asking for the scope by name as the way round it.
+            self.may_read(&prefix)?;
             vec![scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
                 crate::runtime::storage::StorageError::Refused(m) => m,
                 other => other.to_string(),

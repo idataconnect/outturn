@@ -18,10 +18,14 @@ with a correction that shows the same path under all three, which is the one
 storage error a model hits most and the one it can fix on its own. Listing
 with no prefix lists all three scopes.
 
-Which scopes an agent may *write* is decided above the runtime, in the
-settings cascade: session always, agent by default, workspace off by default so a
-prompt that talks an agent into overwriting shared reference material finds
-it cannot. Reads within the space are always allowed.
+What an agent may do with each scope is decided above the runtime, in the
+settings cascade: session is always read/write, agent is read/write by default,
+and workspace is read-only by default so a prompt that talks an agent into
+overwriting shared reference material finds it cannot. Either of the latter two
+can be set to `none`, for an agent with no business in those files at all --
+a triage agent beside an HR agent. Writing implies reading: the vocabulary has
+no way to say otherwise, and a write extracts the file's text straight back
+out.
 
 Session files are swept by a lifecycle rule the runtime installs on the bucket
 at startup, after `OUTTURN_SESSION_FILE_TTL_DAYS` (default 30). One rule for

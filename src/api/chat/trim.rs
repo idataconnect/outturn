@@ -196,6 +196,29 @@ mod tests {
         result(id, &"x".repeat(4000))
     }
 
+    /// A result is never left as the whole conversation.
+    ///
+    /// The pass drops a call with everything answering it, but stopped at one
+    /// message left -- and if that one was the answer, the call it belonged to
+    /// had already gone. Both protocols reject a result with no call just as
+    /// firmly as a call with no result.
+    #[test]
+    #[ignore = "known bug: pass two can leave a lone result, see the doc above"]
+    fn a_result_is_never_the_last_thing_standing() {
+        let conversation = vec![
+            user(&"a".repeat(5000)),
+            assistant_calling("c1", &"b".repeat(5000)),
+            big_result("c1"),
+        ];
+
+        let (out, _) = to_fit(conversation, 100);
+
+        assert!(
+            !out.iter().any(|m| is_result(m) && out.len() == 1),
+            "a lone tool result survived with nothing to answer: {out:?}"
+        );
+    }
+
     #[test]
     fn a_conversation_that_fits_is_left_exactly_as_it_was() {
         let conversation = vec![user("hello"), user("again")];

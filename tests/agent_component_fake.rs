@@ -1475,3 +1475,54 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
         "the scope it may read should still be listed: {result}"
     );
 }
+
+/// Naming the scope outright does not get round the gate either.
+///
+/// Filtering only the empty prefix left the obvious way in open: a guest told
+/// "everything I have" omits what it may not read, and then asks for that scope
+/// by name and is handed the listing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listing_a_scope_it_may_not_read_is_refused() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "list_objects".into(),
+        arguments: r#"{"prefix":"workspace/","action":"Listing the shared files"}"#.into(),
+        reply: "Listed.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.write_scopes = vec!["session".into()];
+    options.read_scopes = vec!["session".into()];
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    store
+        .write(&scope::resolve(&space, "workspace/severance.csv").unwrap(), 0, b"x")
+        .await
+        .expect("seed");
+
+    runner()
+        .run(&component(), user("List the shared files."), String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(
+        !result.contains("severance"),
+        "naming the scope listed what it may not read: {result}"
+    );
+}
