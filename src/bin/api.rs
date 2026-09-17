@@ -160,6 +160,7 @@ async fn main() {
         chat: chat.clone(),
         usage,
         settings,
+        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(pool.clone())),
         // A summary is a model call, so it needs both a way to reach the
         // gateway and a token to present. Either missing means the trim
         // does the work alone, which is what it is for.

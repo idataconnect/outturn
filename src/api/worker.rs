@@ -253,6 +253,8 @@ pub struct Worker {
     pub usage: Arc<dyn super::usage::UsageStore>,
     /// The cascade a turn's knobs come from.
     pub settings: Arc<dyn super::settings::SettingsStore>,
+    /// Holds on work: kill switches, and later the approvals a turn waits on.
+    pub inhibitors: Arc<dyn super::inhibitor::InhibitorStore>,
     /// Signs the token a summary's model call carries. Optional because the
     /// worker runs without one: a deployment with no gateway configured still
     /// prepares turns, it just cannot summarise.
@@ -620,6 +622,91 @@ impl Worker {
         });
     }
 
+    /// Whether anything is holding this turn, and what to do about it.
+    ///
+    /// `Ok(None)` means nothing is: carry on. `Ok(Some(_))` is the whole answer
+    /// for this turn, already recorded, and the caller returns it.
+    ///
+    /// The latch is read first and cleared here rather than at the API edge,
+    /// because what clears it is a prompt carrying a real `user_id` -- and this
+    /// is the tier that has the prompt in hand.
+    async fn inhibited(
+        &self,
+        payload: &ChatTurnPayload,
+    ) -> anyhow::Result<Option<anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>>> {
+        use super::inhibitor::Verdict;
+
+        // A stopped session stays stopped until a person says something. Not
+        // until the hold is released: releasing a kill switch must not resume
+        // fifty conversations that were killed while it was on.
+        if self
+            .chat
+            .stopped_reason(payload.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("stopped: {e}"))?
+            .is_some()
+        {
+            // `user_id` is null for anything the platform produced, so the
+            // agent cannot clear its own latch and neither can a steer it
+            // provoked.
+            let by_a_person = payload.user_id.is_some();
+            if !by_a_person {
+                tracing::info!(
+                    session_id = %payload.session_id,
+                    "a stopped session declined work that no person asked for"
+                );
+                return Ok(Some(Ok(None)));
+            }
+            self.chat
+                .clear_stop(payload.session_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("clear stop: {e}"))?;
+            tracing::info!(session_id = %payload.session_id, "a person restarted a stopped session");
+        }
+
+        let holds = self
+            .inhibitors
+            .covering(payload.workspace_id, payload.agent_id, payload.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("inhibitors: {e}"))?;
+        let decision = super::inhibitor::decide(holds);
+
+        match decision.verdict {
+            Verdict::Proceed => Ok(None),
+            Verdict::Stopped => {
+                // Said in the transcript as well as latched: the next turn
+                // reads this history, and a reply that simply stops is one the
+                // model apologises for or tries to finish.
+                let why = decision
+                    .deciding()
+                    .map(|i| i.reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                self.chat
+                    .stop_session(payload.session_id, &why)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("stop session: {e}"))?;
+                tracing::info!(
+                    session_id = %payload.session_id,
+                    workspace_id = %payload.workspace_id,
+                    reason = %why,
+                    "a turn was stopped before it ran"
+                );
+                Ok(Some(Ok(None)))
+            }
+            // Nothing takes a suspended hold yet -- that arrives with
+            // human-in-the-loop. Until then it is treated as a stop without the
+            // latch: the turn does not run, and the next one re-evaluates.
+            Verdict::Suspended => {
+                tracing::info!(
+                    session_id = %payload.session_id,
+                    "a turn was suspended before it ran"
+                );
+                Ok(Some(Ok(None)))
+            }
+        }
+    }
+
     /// Everything a turn needs before it can run.
     ///
     /// All of it touches the database -- the agent, the transcript, the egress
@@ -649,6 +736,13 @@ impl Worker {
             .map_err(|e| anyhow::anyhow!("absorbed: {e}"))?
         {
             return Ok(None);
+        }
+
+        // Before anything is read or written for this turn. A hold that
+        // arrives while a turn is being prepared is one the next turn catches;
+        // a hold checked after the work is done has already paid for it.
+        if let Some(refusal) = self.inhibited(payload).await? {
+            return refusal;
         }
 
         let history = self

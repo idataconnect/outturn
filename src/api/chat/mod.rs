@@ -244,6 +244,22 @@ pub trait ChatStore: Send + Sync {
     /// queued for it must not answer it a second time.
     async fn was_absorbed(&self, message_id: Uuid) -> Result<bool, ChatError>;
 
+    /// Latches a session as stopped, with what to tell the next turn.
+    ///
+    /// Separate from the inhibitor that caused it because the two outlive each
+    /// other: releasing the hold must not resume anything. See
+    /// `docs/inhibitors.md`.
+    async fn stop_session(&self, session_id: Uuid, reason: &str) -> Result<(), ChatError>;
+
+    /// Lifts the latch, for a prompt that carries a real `user_id`.
+    ///
+    /// Returns what the session was stopped for, where it was stopped, so the
+    /// turn that clears it can say so rather than starting in silence.
+    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<String>, ChatError>;
+
+    /// Why this session is stopped, if it is.
+    async fn stopped_reason(&self, session_id: Uuid) -> Result<Option<String>, ChatError>;
+
     /// Discards a job's placeholder, for a turn that will never be retried.
     ///
     /// Without this a permanently failed turn leaves an empty message that

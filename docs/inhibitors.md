@@ -9,8 +9,19 @@ The storage and the join. `inhibitors` rows in the database, an
 `inhibitor::decide` -- a plain function over a slice that returns the verdict
 and everything that contributed to it.
 
-Nothing consults it yet. The checkpoints, the latch and the markers are the next
-piece, and the API that lets somebody take a hold comes with them.
+One checkpoint consults it: turn preparation, which is the tier that decides
+whether a runtime is handed work. A `stopped` verdict refuses the turn and
+latches the session with what stopped it; the job completes rather than failing,
+and the runtime is told only that there is no work -- it is not the tier that
+decides, so it is not told why.
+
+The latch is `agent_sessions.stopped_at` and `stopped_reason`, cleared by a
+prompt carrying a real `user_id`.
+
+Still to come: the API that lets somebody take a hold without reaching into the
+database, the transcript marker, and suspension -- which currently refuses a
+turn like a stop but without latching, because nothing takes a suspended hold
+until human-in-the-loop does.
 
 `decide` is a function rather than anything swappable on purpose: there is one
 correct answer and every call path has to get it. A join that could differ

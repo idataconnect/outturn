@@ -113,6 +113,7 @@ async fn harness() -> Harness {
         chat: chat.clone(),
         usage: usage.clone(),
         settings: settings.clone(),
+        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(pool.clone())),
         // No gateway, so no summarising: the trim underneath carries the
         // whole of what these tests exercise.
         minter: None,
@@ -2667,4 +2668,173 @@ async fn only_a_new_host_asks_for_approval_again() {
     let unmet = after["unmet_hosts"].as_array().unwrap();
     assert_eq!(unmet.len(), 1, "should ask about the new host alone: {body}");
     assert_eq!(unmet[0], "api.example.com");
+}
+
+/// A workspace kill switch stops a turn before it runs.
+///
+/// The enforcement point is turn preparation, not the API edge: a message is
+/// always accepted, and what a hold stops is the agent acting on it. So the
+/// message is taken, no work is handed out, and the session is latched with
+/// what stopped it -- see docs/inhibitors.md.
+#[tokio::test]
+async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
+    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let runtime = h.runtime_token(acme);
+
+    // The customer's spend cap trips.
+    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    inhibitors
+        .take(TakeInhibitor {
+            scope: Scope::Workspace { workspace_id: acme },
+            strength: Strength::Stopped,
+            reason: "monthly spend cap reached".into(),
+            held_by: "billing-bot".into(),
+        })
+        .await
+        .expect("take");
+
+    // The message is still accepted: what a hold stops is the agent, not the
+    // person talking to it.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the hold refused a message");
+
+    // No work: an idle cluster answers 200 with a null body, and a held one
+    // looks the same to a runtime -- which is the point. The runtime is not
+    // told why, because it is not the tier that decides.
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body, "null", "work was handed out while a kill switch was on: {body}");
+
+    // And the session says why, so the next turn does not read an unexplained
+    // silence.
+    let latched: Option<String> = sqlx::query_scalar(
+        "select stopped_reason from agent_sessions where id = $1 and stopped_at is not null",
+    )
+    .bind(session_id.parse::<Uuid>().unwrap())
+    .fetch_optional(&h.db.pool)
+    .await
+    .expect("query")
+    .flatten();
+    assert_eq!(latched.as_deref(), Some("monthly spend cap reached"));
+}
+
+/// Releasing the hold does not resume anything; a person has to.
+///
+/// This is what makes it a kill switch rather than a pause with a harsher
+/// name. Fifty conversations stopped by one switch need fifty deliberate
+/// restarts.
+#[tokio::test]
+async fn a_released_kill_switch_does_not_resume_by_itself() {
+    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    let hold = inhibitors
+        .take(TakeInhibitor {
+            scope: Scope::Workspace { workspace_id: acme },
+            strength: Strength::Stopped,
+            reason: "cap reached".into(),
+            held_by: "billing-bot".into(),
+        })
+        .await
+        .expect("take");
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let runtime = h.runtime_token(acme);
+    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(body, "null", "the hold let work through: {body}");
+
+    // The customer tops up.
+    inhibitors.release(hold.id).await.expect("release");
+
+    // Nothing resumes on its own: the latch outlives the hold.
+    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(
+        body, "null",
+        "a released hold resumed a stopped session by itself: {body}"
+    );
+
+    // A person saying something clears it, and that turn runs.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"are you there?"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "a person could not restart it: {body}");
 }

@@ -386,6 +386,54 @@ impl ChatStore for PostgresChatStore {
         Ok(absorbed.is_some())
     }
 
+    async fn stop_session(&self, session_id: Uuid, reason: &str) -> Result<(), ChatError> {
+        // The first stop wins. A session already stopped keeps the reason it
+        // was stopped for: the second hold to arrive did not stop anything, and
+        // overwriting would tell the next turn the wrong story about why its
+        // reply broke off.
+        sqlx::query(
+            "update agent_sessions              set stopped_at = now(), stopped_reason = $2, updated_at = now()              where id = $1 and stopped_at is null",
+        )
+        .bind(session_id)
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<String>, ChatError> {
+        // Returns what it cleared, so a turn can tell the model why the reply
+        // above it stops mid-sentence. Nothing comes back when the session was
+        // not stopped, which is the ordinary case and not an error.
+        // The old reason, read from a subquery rather than from `returning`:
+        // `returning` hands back the row as it now is, and as it now is the
+        // reason has just been set to null.
+        let was: Option<Option<String>> = sqlx::query_scalar(
+            "update agent_sessions s \
+             set stopped_at = null, stopped_reason = null, updated_at = now() \
+             from (select id, stopped_reason from agent_sessions where id = $1) old \
+             where s.id = old.id and s.stopped_at is not null \
+             returning old.stopped_reason",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(was.flatten())
+    }
+
+    async fn stopped_reason(&self, session_id: Uuid) -> Result<Option<String>, ChatError> {
+        let reason: Option<Option<String>> = sqlx::query_scalar(
+            "select stopped_reason from agent_sessions where id = $1 and stopped_at is not null",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(reason.flatten())
+    }
+
     async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError> {
         // Only while still empty: a turn that failed after writing its reply
         // must not have that reply deleted.
