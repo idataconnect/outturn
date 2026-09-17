@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { Bot, Plus, Trash2 } from 'lucide-react'
+import { Bot, OctagonX, Play, Plus, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
+import Holds from '../components/Holds'
+import {
+  coveringAgent,
+  listInhibitors,
+  release,
+  stopAgent,
+  stopWorkspace,
+  type Inhibitor,
+} from '../lib/inhibitors'
 import type { Agent } from './AgentEditor'
 
 /**
@@ -23,21 +32,61 @@ export default function Agents() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('agents:create')
   const canDelete = authorities.includes('agents:delete')
+  const canStopAgent = authorities.includes('agents:inhibit')
+  const canStopWorkspace = authorities.includes('workspaces:inhibit')
   // Only worth saying to somebody who can be looking at more than one workspace.
   // To everybody else there is no "currently viewing" -- there is only their
   // workspace -- and the sentence raises a question they cannot act on.
   const manyWorkspaces =
     state.status === 'authenticated' && state.session.workspaces.length > 1
 
+  const [held, setHeld] = useState<Inhibitor[]>([])
+
   async function refresh() {
     try {
-      setAgents(await api<Agent[]>('/v1/agents'))
+      // Together, so the list never renders an agent as running while the
+      // workspace holding it is still loading.
+      const [list, holds] = await Promise.all([api<Agent[]>('/v1/agents'), listInhibitors()])
+      setAgents(list)
+      setHeld(holds)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load agents')
     } finally {
       setLoading(false)
     }
+  }
+
+  /** Asks why, because a hold with no reason explains nothing to whoever finds it. */
+  async function onStop(what: 'workspace' | Agent) {
+    const subject = what === 'workspace' ? 'this whole workspace' : what.name
+    const reason = window.prompt(`Why is ${subject} being stopped?`)
+    if (reason === null) return
+    if (!reason.trim()) {
+      setError('a hold needs a reason')
+      return
+    }
+    try {
+      if (what === 'workspace') await stopWorkspace(reason)
+      else await stopAgent(what.id, reason)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to stop')
+    }
+  }
+
+  async function onRelease(hold: Inhibitor) {
+    try {
+      await release(hold.id)
+      await refresh()
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to release')
+    }
+  }
+
+  /** Whether this viewer may lift a given hold: agent holds are narrower. */
+  function mayRelease(hold: Inhibitor) {
+    return hold.scope.level === 'agent' ? canStopAgent : canStopWorkspace
   }
 
   // Agents are scoped to the active workspace, so switching reloads the list.
@@ -67,6 +116,16 @@ export default function Agents() {
             </p>
           )}
         </div>
+        {canStopWorkspace && !held.some((i) => i.scope.level === 'workspace') && (
+          <button
+            type="button"
+            onClick={() => void onStop('workspace')}
+            className="flex items-center gap-2 px-4 py-2 rounded-md border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/40"
+          >
+            <OctagonX size={16} aria-hidden />
+            Stop workspace
+          </button>
+        )}
         {canCreate && (
           <Link
             to="/agents/new"
@@ -82,6 +141,18 @@ export default function Agents() {
         <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
         </p>
+      )}
+
+      {/* Workspace-wide holds lead, because they explain why every agent below
+          is quiet -- reading them per agent would say the same thing N times. */}
+      {held.some((i) => i.scope.level !== 'agent') && (
+        <div className="mt-4">
+          <Holds
+            held={held.filter((i) => i.scope.level !== 'agent')}
+            canRelease={mayRelease}
+            onRelease={(hold) => void onRelease(hold)}
+          />
+        </div>
       )}
 
       <div className="mt-6 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
@@ -112,6 +183,13 @@ export default function Agents() {
                         disabled
                       </span>
                     )}
+                    {/* Stopped is not disabled: one is a hold somebody took and
+                        can lift, the other is how the agent is configured. */}
+                    {coveringAgent(held, agent.id).length > 0 && (
+                      <span className="ml-2 text-xs font-normal text-red-700 dark:text-red-400">
+                        stopped
+                      </span>
+                    )}
                   </p>
                   <p className="text-xs font-mono text-surface-600 dark:text-surface-400 truncate">
                     {agent.slug}
@@ -122,6 +200,33 @@ export default function Agents() {
                     </p>
                   )}
                 </Link>
+                {canStopAgent &&
+                  (held.some(
+                    (i) => i.scope.level === 'agent' && i.scope.agent_id === agent.id,
+                  ) ? (
+                    <button
+                      onClick={() => {
+                        const own = held.find(
+                          (i) => i.scope.level === 'agent' && i.scope.agent_id === agent.id,
+                        )
+                        if (own) void onRelease(own)
+                      }}
+                      aria-label={`Start ${agent.name}`}
+                      title="Release this agent's hold"
+                      className="p-2 rounded-md text-surface-400 hover:text-green-700 dark:hover:text-green-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                    >
+                      <Play size={16} aria-hidden />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void onStop(agent)}
+                      aria-label={`Stop ${agent.name}`}
+                      title="Stop this agent"
+                      className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                    >
+                      <OctagonX size={16} aria-hidden />
+                    </button>
+                  ))}
                 {canDelete && (
                   <button
                     onClick={() => void onDelete(agent)}

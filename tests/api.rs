@@ -2838,3 +2838,101 @@ async fn a_released_kill_switch_does_not_resume_by_itself() {
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "a person could not restart it: {body}");
 }
+
+/// Stopping an org and stopping one agent are different powers.
+///
+/// An operator builds and runs agents, so stopping one is theirs; the
+/// workspace switch stops work they may know nothing about, so it is not.
+#[tokio::test]
+async fn stopping_an_org_needs_more_than_stopping_an_agent() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let operator = h
+        .login_as("op@acme.example", None, Some((acme, "operator")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // An operator may stop an agent.
+    let (status, body) = h
+        .post(
+            &format!("/v1/agents/{agent_id}/stop"),
+            Some(&operator),
+            r#"{"reason":"looping on the same tool"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "an operator could not stop an agent: {body}");
+
+    // But not the whole workspace.
+    let (status, body) = h
+        .post("/v1/workspace/stop", Some(&operator), r#"{"reason":"nope"}"#)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an operator stopped the whole workspace: {body}"
+    );
+
+    // An admin may.
+    let (status, body) = h
+        .post("/v1/workspace/stop", Some(&admin), r#"{"reason":"spend cap"}"#)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "an admin could not stop the workspace: {body}");
+
+    // Both show up, with their reasons, to anyone who can see agents.
+    let (status, body) = h.get("/v1/inhibitors", Some(&operator)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let held: Vec<serde_json::Value> = serde_json::from_str(&body).expect("inhibitors");
+    assert_eq!(held.len(), 2, "{held:?}");
+    let reasons: Vec<&str> = held.iter().map(|i| i["reason"].as_str().unwrap()).collect();
+    assert!(reasons.contains(&"looping on the same tool"), "{reasons:?}");
+    assert!(reasons.contains(&"spend cap"), "{reasons:?}");
+
+    // Releasing the workspace hold needs the wider authority too.
+    let workspace_hold = held
+        .iter()
+        .find(|i| i["scope"]["level"] == "workspace")
+        .expect("workspace hold");
+    let id = workspace_hold["id"].as_str().unwrap();
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/inhibitors/{id}"))
+        .header("authorization", format!("Bearer {operator}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an operator released the workspace's hold: {body}"
+    );
+}
+
+/// A hold needs a reason, because the conversation it stops cannot explain
+/// itself.
+#[tokio::test]
+async fn a_hold_without_a_reason_is_refused() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post("/v1/workspace/stop", Some(&admin), r#"{"reason":"   "}"#)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a blank reason was accepted: {body}");
+}

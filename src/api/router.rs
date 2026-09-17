@@ -18,6 +18,8 @@ use super::session::SessionStore;
 use super::role::{CreateRole, RoleError, RoleStore, WorkspaceRole, UpdateRole};
 use super::user::{CreateUser, Identity, WorkspaceMembership, User, UserStore};
 
+use super::inhibitor::InhibitorStore as _;
+
 pub struct ApiState {
     pub(super) workspaces: Arc<dyn WorkspaceStore>,
     pub(super) users: Arc<dyn UserStore>,
@@ -178,6 +180,18 @@ impl From<RoleError> for ApiError {
             RoleError::Duplicate(_) | RoleError::InUse(_) => StatusCode::CONFLICT,
             RoleError::Invalid(_) => StatusCode::BAD_REQUEST,
             RoleError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+impl From<super::inhibitor::InhibitorError> for ApiError {
+    fn from(e: super::inhibitor::InhibitorError) -> Self {
+        use super::inhibitor::InhibitorError;
+        let status = match e {
+            InhibitorError::NotFound => StatusCode::NOT_FOUND,
+            InhibitorError::Invalid(_) => StatusCode::BAD_REQUEST,
+            InhibitorError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, e.to_string())
     }
@@ -829,6 +843,122 @@ async fn clear_operator_setting(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// What is holding this workspace, and what is holding each of its agents.
+///
+/// One call rather than one per agent: the panel that shows this shows all of
+/// it at once, and a page that had to ask per agent would show a workspace
+/// halfway held while it walked the list.
+async fn list_inhibitors(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::inhibitor::Inhibitor>>, ApiError> {
+    // Seeing what is stopped is not the same as being able to stop it.
+    // `agents:read` rather than either inhibit authority: a viewer watching a
+    // silent agent is owed the reason, and withholding it is how "why is
+    // nothing happening" becomes a support ticket.
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    Ok(Json(store.in_workspace(claims.workspace_id).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct StopRequest {
+    /// Why, in the holder's words. Required: a hold nobody can act on is worse
+    /// than none, because the conversation it stops says only that it stopped.
+    reason: String,
+}
+
+async fn stop_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<StopRequest>,
+) -> Result<(StatusCode, Json<super::inhibitor::Inhibitor>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesInhibit).await?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store
+        .take(super::inhibitor::TakeInhibitor {
+            scope: super::inhibitor::Scope::Workspace { workspace_id: claims.workspace_id },
+            strength: super::inhibitor::Strength::Stopped,
+            reason: request.reason,
+            held_by: claims.subject.to_string(),
+        })
+        .await?;
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        actor = %claims.subject,
+        reason = %held.reason,
+        "a workspace was stopped"
+    );
+    Ok((StatusCode::CREATED, Json(held)))
+}
+
+async fn stop_agent(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<StopRequest>,
+) -> Result<(StatusCode, Json<super::inhibitor::Inhibitor>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsInhibit).await?;
+    // Read first, so stopping an agent in somebody else's workspace is a 404
+    // rather than a hold on an id that means nothing here.
+    state.agents.get(claims.workspace_id, agent_id).await?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store
+        .take(super::inhibitor::TakeInhibitor {
+            scope: super::inhibitor::Scope::Agent {
+                workspace_id: claims.workspace_id,
+                agent_id,
+            },
+            strength: super::inhibitor::Strength::Stopped,
+            reason: request.reason,
+            held_by: claims.subject.to_string(),
+        })
+        .await?;
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        agent_id = %agent_id,
+        actor = %claims.subject,
+        reason = %held.reason,
+        "an agent was stopped"
+    );
+    Ok((StatusCode::CREATED, Json(held)))
+}
+
+/// Lifts one hold, by the handle taking it returned.
+///
+/// By id rather than by scope, because several holds can cover the same work
+/// and releasing "the workspace's" would be ambiguous about which -- the whole
+/// reason this is a set. Authorised by what the hold covers: releasing an
+/// agent's hold needs `agents:inhibit`, a workspace's needs the wider one.
+async fn release_inhibitor(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store.get(id).await?;
+
+    if held.scope.workspace_id() != Some(claims.workspace_id) {
+        // Not "forbidden": a hold in another workspace is one this caller has
+        // no business knowing exists.
+        return Err((StatusCode::NOT_FOUND, "no such inhibitor".to_string()));
+    }
+    let needed = match held.scope {
+        super::inhibitor::Scope::Agent { .. } => Authority::AgentsInhibit,
+        _ => Authority::WorkspacesInhibit,
+    };
+    require(&state, &claims, needed).await?;
+
+    store.release(id).await?;
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        actor = %claims.subject,
+        "a hold was released"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn view_workspace_settings(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -974,6 +1104,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(super::files::MAX_UPLOAD_BYTES)),
         )
         .route("/v1/usage", get(export_usage))
+        .route("/v1/inhibitors", get(list_inhibitors))
+        .route("/v1/inhibitors/{id}", axum::routing::delete(release_inhibitor))
+        .route("/v1/workspace/stop", post(stop_workspace))
+        .route("/v1/agents/{id}/stop", post(stop_agent))
         .route("/v1/settings", get(view_workspace_settings))
         .route(
             "/v1/settings/{key}",

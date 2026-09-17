@@ -204,6 +204,20 @@ pub trait InhibitorStore: Send + Sync {
 
     /// What is held at exactly this scope, for showing and releasing.
     async fn at(&self, scope: Scope) -> Result<Vec<Inhibitor>, InhibitorError>;
+
+    /// One hold, by the handle taking it returned.
+    ///
+    /// The caller checks what it covers before acting on it: a hold is
+    /// authorised by the work it holds, which cannot be known from the id.
+    async fn get(&self, id: Uuid) -> Result<Inhibitor, InhibitorError>;
+
+    /// Everything held anywhere in a workspace, including on its agents and
+    /// sessions.
+    ///
+    /// What a panel shows. Distinct from `covering`, which answers "may this
+    /// turn run" and therefore includes platform holds that are none of a
+    /// workspace's business.
+    async fn in_workspace(&self, workspace_id: Uuid) -> Result<Vec<Inhibitor>, InhibitorError>;
 }
 
 #[cfg(test)]

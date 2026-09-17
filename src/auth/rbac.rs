@@ -44,6 +44,18 @@ pub enum Authority {
     UsersRead,
     UsersUpdate,
     UsersDelete,
+    /// Stopping and restarting everything a workspace runs.
+    ///
+    /// Separate from `WorkspacesUpdate` deliberately: a credential that can
+    /// halt an org should not thereby be able to rename or delete it, and an
+    /// admin UI should not carry kill rights on every request it makes.
+    WorkspacesInhibit,
+    /// Stopping and restarting one agent.
+    ///
+    /// Narrower than the workspace switch and held more widely: an operator who
+    /// builds agents is the right person to stop one misbehaving, without also
+    /// being able to halt everything the workspace runs.
+    AgentsInhibit,
     /// Granting and revoking roles to people.
     RolesAssign,
     /// Defining what a role means: creating, editing and deleting roles.
@@ -115,6 +127,8 @@ impl Authority {
         Authority::SkillsRead,
         Authority::SkillsWrite,
         Authority::UsageRead,
+        Authority::WorkspacesInhibit,
+        Authority::AgentsInhibit,
         Authority::GatewayInvoke,
         Authority::WorkTake,
     ];
@@ -148,6 +162,8 @@ impl Authority {
             Authority::SkillsRead => "skills:read",
             Authority::SkillsWrite => "skills:write",
             Authority::UsageRead => "usage:read",
+            Authority::WorkspacesInhibit => "workspaces:inhibit",
+            Authority::AgentsInhibit => "agents:inhibit",
             Authority::GatewayInvoke => "gateway:invoke",
             Authority::WorkTake => "work:take",
         }
@@ -183,6 +199,8 @@ impl Authority {
             Authority::SkillsRead => "See skills, the workspace's own and the operator's",
             Authority::SkillsWrite => "Write skills, and override or fork the operator's",
             Authority::UsageRead => "Read the usage ledger",
+            Authority::WorkspacesInhibit => "Stop and restart everything this workspace runs",
+            Authority::AgentsInhibit => "Stop and restart one agent",
             Authority::GatewayInvoke => "Call a model",
             Authority::WorkTake => "Take turns off the queue (the runtime tier)",
         }
@@ -194,6 +212,11 @@ impl Authority {
     /// itself `workspaces:create` could make workspaces, and one that could grant
     /// `work:take` could ask for every other workspace's turns. This is the
     /// replacement for the check constraint that used to pin role names.
+    ///
+    /// `workspaces:inhibit` is not reserved despite the prefix, because it acts
+    /// on the caller's own workspace rather than across them -- it is closer to
+    /// `settings:update` than to `workspaces:delete`, and a customer holding a
+    /// credential that can halt their own org is the case it exists for.
     pub fn workspace_assignable(self) -> bool {
         !matches!(
             self,

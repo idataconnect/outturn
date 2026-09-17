@@ -162,6 +162,27 @@ impl InhibitorStore for PostgresInhibitorStore {
         rows.iter().map(read).collect()
     }
 
+    async fn get(&self, id: Uuid) -> Result<Inhibitor, InhibitorError> {
+        let row = sqlx::query(select_inhibitors!("where id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?
+            .ok_or(InhibitorError::NotFound)?;
+        read(&row)
+    }
+
+    async fn in_workspace(&self, workspace_id: Uuid) -> Result<Vec<Inhibitor>, InhibitorError> {
+        let rows = sqlx::query(select_inhibitors!(
+            "where workspace_id = $1 order by created_at"
+        ))
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.iter().map(read).collect()
+    }
+
     async fn at(&self, scope: Scope) -> Result<Vec<Inhibitor>, InhibitorError> {
         let (level, workspace_id, agent_id, session_id) = columns(&scope);
         let rows = sqlx::query(select_inhibitors!(

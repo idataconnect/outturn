@@ -18,9 +18,25 @@ decides, so it is not told why.
 The latch is `agent_sessions.stopped_at` and `stopped_reason`, cleared by a
 prompt carrying a real `user_id`.
 
-Still to come: the API that lets somebody take a hold without reaching into the
-database, the transcript marker, and suspension -- which currently refuses a
-turn like a stop but without latching, because nothing takes a suspended hold
+Two authorities decide who may hold what. `agents:inhibit` stops one agent and
+is held by operators as well as admins -- whoever builds agents is the right
+person to stop one misbehaving. `workspaces:inhibit` stops everything and is
+admins only, because it halts work its holder may know nothing about. Neither is
+folded into the matching `:update`: a credential that exists to halt an org
+should not also be able to rename or delete it.
+
+Seeing what is held needs only `agents:read`. Withholding the reason from
+somebody watching a silent agent is how "why is nothing happening" becomes a
+support ticket.
+
+`POST /v1/workspace/stop` and `POST /v1/agents/{id}/stop` take a hold, both
+requiring a reason. `DELETE /v1/inhibitors/{id}` lifts one by the handle taking
+it returned -- by id rather than by scope, because several holds can cover the
+same work and releasing "the workspace's" would be ambiguous about which. The
+UI lists them on the agents page, workspace-wide holds first.
+
+Still to come: the transcript marker, and suspension -- which currently refuses
+a turn like a stop but without latching, because nothing takes a suspended hold
 until human-in-the-loop does.
 
 `decide` is a function rather than anything swappable on purpose: there is one
