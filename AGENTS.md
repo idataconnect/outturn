@@ -228,6 +228,13 @@ Storage layout and retention are written up separately, in
 ordered scope-first rather than as the hierarchy you would expect, which looks
 like a mistake until you know about S3's per-bucket lifecycle rule cap.
 
+How an agent reaches anything outside the platform -- and why the tier running
+workspace code holds no credential and opens no socket -- is in
+[docs/egress.md](docs/egress.md). It also has the design for reaching a service
+inside the cluster, which is refused today: most deployments will want an agent
+to call something the customer runs, and the guard that stops a workspace aiming
+the gateway at `outturn-api` currently stops that too.
+
 Every model call is a row in the usage ledger, tagged with workspace, agent,
 session, user, the workspace's own account label, the model that actually served,
 and whose key paid; the export at `/v1/usage` is what bills are built from.
