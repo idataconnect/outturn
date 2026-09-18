@@ -74,6 +74,77 @@ through a workspace-scoped table. Authorities would still come only from the
 workspace's own rows; an external system could say "this person is in group X",
 never "this person may do Y".
 
+## Narrowing an authority to some agents
+
+Designed, not built.
+
+An authority is a workspace-wide statement: holding `sessions:read` reads every
+conversation with every agent in the workspace. That is right for a workspace
+whose agents are all the same business, and wrong for one running an accounting
+agent beside a support agent, where the people who should read one have no
+business reading the other.
+
+**The line is existence against contents.** Which agents exist is
+workspace-public -- an admin has to see what is running to administer it, and a
+roster is not a leak. What an agent has *done* is not: a transcript is what was
+said, an agent's files are what somebody uploaded, and an approval request
+carries the thing being approved. So `agents:read` stays workspace-wide, and
+three authorities gain a per-agent narrowing:
+
+| Authority | Narrowed | Why |
+|---|---|---|
+| `agents:read` | no | The roster is what an administrator needs |
+| `sessions:create` | yes | Who may talk to this agent at all |
+| `sessions:read` | yes | Who may read *other people's* conversations with it |
+| `storage:agent:read` | yes | An agent's files leak separately from its transcripts |
+
+Writes narrow with their reads -- `sessions:delete` and `storage:agent:write`
+against the same grant -- because somebody who cannot read an agent's
+conversations should certainly not be able to delete them.
+
+**Your own conversations stay yours.** `agent_sessions.user_id` already records
+who started one, so "may talk to an agent but not read what others said to it"
+is expressible without a new column, and is the ordinary shape: a person uses
+an agent and sees their own history, while reading everybody's is a separate
+grant.
+
+**A grant narrows; no grant means the workspace-wide authority stands.** A
+deployment that has never used this behaves exactly as it does today, and the
+migration is a no-op. The alternative -- no grant meaning no access -- would
+lock every existing workspace out of its own data on upgrade to buy a default
+nobody asked for.
+
+**The grant is per person, not per role.** Two support leads holding the same
+role may cover different agents: the job is the same and the patch differs.
+Putting it on the role would mean a role per patch, which is how a role list
+becomes unreadable. So a table keyed `(workspace_id, user_id, agent_id)`,
+consulted only for the narrowed authorities.
+
+**Nothing about the token changes.** Authorities are already resolved per
+request rather than minted into the token, so the scope is another lookup on a
+path that is already doing one. It caches the way roles do -- per workspace, in
+each pod, dropped on a Postgres notification -- and for the same reason: a
+change to who may see what should take effect on the next click, not at the next
+refresh.
+
+Two checks rather than one, then. *May you do this at all* is `authorities_of`
+as it stands; *for this agent* is the new grant. Listings filter rather than
+refuse, so a session list returns the agents you may see instead of failing on
+the first one you may not.
+
+### Why this is the thing to build before approvals
+
+A human-in-the-loop request carries what is being approved, which is the
+payload it exists to show somebody. A support lead seeing "may I create a ticket
+for this customer's medical billing dispute" has read the thing the grant was
+meant to keep from them.
+
+Routing approvals separately -- an on-call rotation, say -- would be theatre
+while the same person can open the agent's sessions and read it there. So the
+approval queue filters by the same predicate as everything else: the agents
+whose contents you may read. Build the narrowing first and approvals inherit it;
+build approvals first and the queue ships with the wrong visibility.
+
 ## Storage scopes
 
 Files have three lifetimes (see [storage.md](storage.md)), and access to two of
