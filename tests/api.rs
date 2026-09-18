@@ -3405,3 +3405,115 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
     }
     assert!(restored, "clearing the scope never restored access within a second");
 }
+
+/// An agent's files are narrowed with its conversations, and your own are
+/// still yours.
+///
+/// A transcript says what was said; an agent's files are what somebody
+/// uploaded. Both are what an agent has done, so a scope that hides one has to
+/// hide the other -- and the session a person started themselves is theirs to
+/// read whoever else may not. See docs/authorities.md.
+#[tokio::test]
+async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
+    use outturn::api::scope::{PostgresScopeStore, ScopeStore};
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let operator = h
+        .login_as("op@acme.example", None, Some((acme, "operator")))
+        .await;
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Two sessions: one the operator started, one the admin did.
+    let body = format!(r#"{{"agent_id":"{agent_id}","title":"t"}}"#);
+    let (_, made) = h.post("/v1/agent-sessions", Some(&admin), &body).await;
+    let theirs = serde_json::from_str::<serde_json::Value>(&made).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, made) = h.post("/v1/agent-sessions", Some(&operator), &body).await;
+    let mine = serde_json::from_str::<serde_json::Value>(&made).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let put = |token: &str, session: &str, bytes: &str| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/agent-sessions/{session}/files/session/note.txt"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(bytes.to_string()))
+            .expect("request")
+    };
+    let (status, _) = h.send(put(&admin, &theirs, "theirs")).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = h.send(put(&operator, &mine, "mine")).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Narrow the operator to an agent that is not this one.
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"B","slug":"b"}"#)
+        .await;
+    let other: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let op_id: Uuid = sqlx::query_scalar(
+        "select user_id from user_identities where provider_subject = $1",
+    )
+    .bind("op@acme.example")
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the operator's account");
+    PostgresScopeStore::new(h.db.pool.clone())
+        .set(acme, op_id, &[other])
+        .await
+        .expect("set scope");
+
+    // Somebody else's session with the narrowed-away agent is closed to them.
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{theirs}/files/session/note.txt"),
+            Some(&operator),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a narrowed person read another session's files: {body}"
+    );
+
+    // Their own is not. They put it there.
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{mine}/files/session/note.txt"),
+            Some(&operator),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "their own files were withheld: {body}");
+    assert_eq!(body, "mine");
+
+    // And the admin, narrowed by nobody, still reads both.
+    for session in [&theirs, &mine] {
+        let (status, body) = h
+            .get(
+                &format!("/v1/agent-sessions/{session}/files/session/note.txt"),
+                Some(&admin),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "an unnarrowed reader was refused: {body}");
+    }
+}

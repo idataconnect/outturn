@@ -81,8 +81,13 @@ caches them, and `require_for_agent` is the guard. Starting a conversation is
 narrowed, reading one is narrowed with your own always readable, and the session
 listing filters rather than refusing.
 
-Still to come: the same guard on an agent's files, and a way to assign a scope
-that is not a SQL statement.
+An agent's files narrow with its conversations -- a transcript says what was
+said and a file is what somebody uploaded, both being what the agent has done --
+and the file listing leaves out a scope it may not read rather than refusing the
+call. The guard sits in `files::space_for`, which is the one place that knows
+which agent a session belongs to.
+
+Still to come: a way to assign a scope that is not a SQL statement.
 
 An authority is a workspace-wide statement: holding `sessions:read` reads every
 conversation with every agent in the workspace. That is right for a workspace

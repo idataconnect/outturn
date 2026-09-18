@@ -63,14 +63,35 @@ fn parse_scope(s: &str) -> Result<Scope, ApiError> {
     ))
 }
 
-/// The space a session's files live in, checked to be the caller's workspace's.
-async fn space_for(state: &ApiState, workspace_id: Uuid, session_id: Uuid) -> Result<Space, ApiError> {
-    let session = state.chat.get_session(workspace_id, session_id).await?;
-    Ok(Space {
-        workspace_id,
-        agent_id: session.agent_id,
-        session_id,
-    })
+/// The space a session's files live in, checked to be the caller's workspace's
+/// and one their authorities reach.
+///
+/// The scope check belongs here rather than in each handler because this is the
+/// one place that knows which agent a session belongs to -- a path names a
+/// session, and the agent behind it is what a narrowing is about.
+///
+/// A person's own session is their own files, the same way it is their own
+/// transcript: using an agent and keeping what you produced with it is one
+/// permission, and reading what everybody else produced is another.
+async fn space_for(
+    state: &ApiState,
+    claims: &crate::auth::SessionClaims,
+    session_id: Uuid,
+    authority: Authority,
+) -> Result<(Space, bool), ApiError> {
+    let session = state.chat.get_session(claims.workspace_id, session_id).await?;
+    let mine = session.user_id == Some(claims.subject);
+    if !mine {
+        super::router::require_for_agent(state, claims, authority, session.agent_id).await?;
+    }
+    Ok((
+        Space {
+            workspace_id: claims.workspace_id,
+            agent_id: session.agent_id,
+            session_id,
+        },
+        mine,
+    ))
 }
 
 fn storage(state: &ApiState) -> Result<Arc<dyn crate::runtime::storage::StorageBackend>, ApiError> {
@@ -101,9 +122,13 @@ pub async fn list(
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<Vec<StoredFile>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
-    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let (space, mine) = space_for(&state, &claims, session_id, Authority::SessionsRead).await?;
     let store = storage(&state)?;
     let granted = authorities_of(&state, &claims).await?;
+    // Which agents this caller was narrowed to, if anybody narrowed them. Their
+    // own session's files are theirs either way, which `space_for` has already
+    // allowed them through on.
+    let reach = super::router::reach_of(&state, &claims).await?;
 
     let mut out = Vec::new();
     for s in Scope::ALL {
@@ -111,6 +136,15 @@ pub async fn list(
         // a viewer sees their conversation's files and nothing about what
         // else exists.
         if !granted.contains(&read_authority(s)) {
+            continue;
+        }
+        // And a scope whose authority was narrowed away from this agent is
+        // left out the same way. Session scope is exempt when the session is
+        // the caller's own: what they put there is theirs to see.
+        if !mine
+            && super::scope::is_narrowed(read_authority(s))
+            && !reach.covers(space.agent_id)
+        {
             continue;
         }
         let found = store
@@ -150,7 +184,7 @@ pub async fn upload(
 ) -> Result<(StatusCode, Json<StoredFile>), ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, write_authority(s)).await?;
-    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let (space, _) = space_for(&state, &claims, session_id, write_authority(s)).await?;
     let store = storage(&state)?;
 
     let scoped = format!("{}/{path}", s.as_str());
@@ -190,7 +224,7 @@ pub async fn download(
 ) -> Result<Response, ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, read_authority(s)).await?;
-    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let (space, _) = space_for(&state, &claims, session_id, read_authority(s)).await?;
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
@@ -257,7 +291,7 @@ pub async fn preview(
 ) -> Result<Response, ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, read_authority(s)).await?;
-    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let (space, _) = space_for(&state, &claims, session_id, read_authority(s)).await?;
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
@@ -313,7 +347,7 @@ pub async fn delete(
 ) -> Result<StatusCode, ApiError> {
     let s = parse_scope(&scope_name)?;
     let claims = authorize(&state, &headers, write_authority(s)).await?;
-    let space = space_for(&state, claims.workspace_id, session_id).await?;
+    let (space, _) = space_for(&state, &claims, session_id, write_authority(s)).await?;
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
