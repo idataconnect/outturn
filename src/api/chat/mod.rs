@@ -8,6 +8,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A latch that was lifted: what stopped it, and when it was stopped.
+#[derive(Debug, Clone)]
+pub struct Stopped {
+    pub reason: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSession {
     pub id: Uuid,
@@ -261,7 +268,13 @@ pub trait ChatStore: Send + Sync {
     ///
     /// Returns what the session was stopped for, where it was stopped, so the
     /// turn that clears it can say so rather than starting in silence.
-    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<String>, ChatError>;
+    /// Lifts the latch, returning why it was stopped and when.
+    ///
+    /// The time matters as much as the reason. An agent resuming after three
+    /// weeks that is told only "the workspace was stopped" will carry on from
+    /// what it last said as though no time passed, stating balances and
+    /// deadlines it has no current basis for.
+    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<Stopped>, ChatError>;
 
     /// Why this session is stopped, if it is.
     async fn stopped_reason(&self, session_id: Uuid) -> Result<Option<String>, ChatError>;

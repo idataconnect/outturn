@@ -238,10 +238,15 @@ fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::
 ///
 /// Placed before what it explains rather than after: it is context for what
 /// follows, not a remark about what came before.
-fn marked(projected: Vec<serde_json::Value>, restarting_from: Option<&str>) -> Vec<serde_json::Value> {
-    let Some(reason) = restarting_from else {
+fn marked(
+    projected: Vec<serde_json::Value>,
+    restarting_from: Option<&super::chat::Stopped>,
+) -> Vec<serde_json::Value> {
+    let Some(stopped) = restarting_from else {
         return projected;
     };
+    let reason = &stopped.reason;
+    let waited = elapsed(chrono::Utc::now() - stopped.at);
 
     // The restarting prompt is the last message, so what decides the shape is
     // the one before it: an assistant message there is a reply that was cut.
@@ -262,18 +267,25 @@ fn marked(projected: Vec<serde_json::Value>, restarting_from: Option<&str>) -> V
                     }))
         });
 
+    // How long it was stopped for, always. An agent told only that it was
+    // stopped carries on from what it last said as though no time passed --
+    // restating a balance, a deadline, a queue length it has no current basis
+    // for. Three weeks is not a rounding error on "as I mentioned".
     let text = if cut_reply {
         format!(
             "[the reply above stops partway through: this conversation was \
-             stopped -- {reason}. It has been restarted. Carry on from where it \
-             broke off if that still makes sense, and do not apologise for the \
-             pause.]"
+             stopped {waited} ago -- {reason} -- and has been restarted. Carry \
+             on from where it broke off if that still makes sense. Anything you \
+             established before the pause may have changed since; check rather \
+             than restate it, and do not apologise for the pause.]"
         )
     } else {
         format!(
-            "[the messages below went unanswered: this conversation was \
-             stopped -- {reason}. It has been restarted. Answer what was asked, \
-             and do not apologise for the pause.]"
+            "[the messages below went unanswered: this conversation was stopped \
+             {waited} ago -- {reason} -- and has been restarted. Answer what was \
+             asked. Anything established before the pause may have changed \
+             since; check rather than restate it, and do not apologise for the \
+             pause.]"
         )
     };
 
@@ -285,6 +297,27 @@ fn marked(projected: Vec<serde_json::Value>, restarting_from: Option<&str>) -> V
     }));
     out.extend(projected.into_iter().skip(split));
     out
+}
+
+/// How long ago, in words a person would use.
+///
+/// Coarse on purpose. What the reader needs is the order of magnitude -- a
+/// minute against three weeks -- and "1209600 seconds" is a number somebody has
+/// to convert before it means anything.
+fn elapsed(span: chrono::TimeDelta) -> String {
+    let seconds = span.num_seconds().max(0);
+    let (n, unit) = match seconds {
+        0..=89 => (seconds.max(1), "second"),
+        90..=5399 => (span.num_minutes(), "minute"),
+        5400..=172_799 => (span.num_hours(), "hour"),
+        172_800..=5_183_999 => (span.num_days(), "day"),
+        _ => (span.num_days() / 30, "month"),
+    };
+    if n == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{n} {unit}s")
+    }
 }
 
 /// What a completed turn produced.
@@ -746,12 +779,15 @@ impl Worker {
         &self,
         payload: &ChatTurnPayload,
     ) -> anyhow::Result<
-        Result<Option<String>, anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>>,
+        Result<
+            Option<super::chat::Stopped>,
+            anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>,
+        >,
     > {
         use super::inhibitor::Verdict;
 
         // What this turn is picking up from, where it is picking up at all.
-        let mut restarting_from: Option<String> = None;
+        let mut restarting_from: Option<super::chat::Stopped> = None;
 
         // A stopped session stays stopped until a person says something. Not
         // until the hold is released: releasing a kill switch must not resume
@@ -971,7 +1007,7 @@ impl Worker {
             write_scopes: settings.write_scopes,
             read_scopes: settings.read_scopes,
             conversation: {
-                let projected = marked(project(&history), restarting_from.as_deref());
+                let projected = marked(project(&history), restarting_from.as_ref());
 
                 // Over budget is where compaction begins. A summary is tried
                 // first because it loses less: the early turns become a
@@ -1656,6 +1692,47 @@ mod projection_tests {
         assert_eq!(projected[1]["parts"][0]["text"], "and now?");
     }
 
+    /// A latch lifted `ago_secs` ago, for the marker to describe.
+    fn stopped(reason: &str, ago_secs: i64) -> super::super::chat::Stopped {
+        super::super::chat::Stopped {
+            reason: reason.to_string(),
+            at: chrono::Utc::now() - chrono::TimeDelta::seconds(ago_secs),
+        }
+    }
+
+    /// How long it was stopped for is said in the marker, always.
+    ///
+    /// An agent told only that it was stopped resumes from what it last said
+    /// as though no time passed. After three weeks that is a balance, a
+    /// deadline or a queue length stated with no current basis.
+    #[test]
+    fn a_marker_says_how_long_the_pause_lasted() {
+        let three_weeks = marked(
+            vec![
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "what is the balance?"}]}),
+                serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "still there?"}]}),
+            ],
+            Some(&stopped("spend cap reached", 21 * 86_400)),
+        );
+        let marker = three_weeks[1]["parts"][0]["text"].as_str().expect("marker");
+        assert!(marker.contains("21 days ago"), "{marker}");
+        assert!(marker.contains("may have changed"), "{marker}");
+    }
+
+    #[test]
+    fn a_pause_is_described_at_the_scale_a_person_would_use() {
+        // The order of magnitude is the point; seconds since the epoch is a
+        // number somebody has to convert before it means anything.
+        assert_eq!(elapsed(chrono::TimeDelta::seconds(1)), "1 second");
+        assert_eq!(elapsed(chrono::TimeDelta::seconds(45)), "45 seconds");
+        assert_eq!(elapsed(chrono::TimeDelta::minutes(5)), "5 minutes");
+        assert_eq!(elapsed(chrono::TimeDelta::hours(3)), "3 hours");
+        assert_eq!(elapsed(chrono::TimeDelta::days(9)), "9 days");
+        assert_eq!(elapsed(chrono::TimeDelta::days(90)), "3 months");
+        // A clock that went backwards says something rather than a negative.
+        assert_eq!(elapsed(chrono::TimeDelta::seconds(-5)), "1 second");
+    }
+
     /// A restarted conversation says why it stopped, and says it truthfully.
     ///
     /// The stop happened before the turn ran, so there is no partial reply to
@@ -1667,7 +1744,7 @@ mod projection_tests {
                 serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "what is our Q3 revenue?"}]}),
                 serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
             ],
-            Some("monthly spend cap reached"),
+            Some(&stopped("monthly spend cap reached", 0)),
         );
 
         assert_eq!(projected.len(), 3, "{projected:?}");
@@ -1693,7 +1770,7 @@ mod projection_tests {
                 serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": "Once upon a"}]}),
                 serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
             ],
-            Some("runaway turn"),
+            Some(&stopped("runaway turn", 0)),
         );
 
         assert_eq!(projected.len(), 4, "{projected:?}");
@@ -1717,7 +1794,7 @@ mod projection_tests {
                 serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": ""}]}),
                 serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello?"}]}),
             ],
-            Some("spend cap reached"),
+            Some(&stopped("spend cap reached", 0)),
         );
 
         let marker = projected[2]["parts"][0]["text"].as_str().expect("marker");
@@ -1742,7 +1819,7 @@ mod projection_tests {
         // ahead of the marker. It still has to be said.
         let projected = marked(
             vec![serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hi"}]})],
-            Some("stopped by an operator"),
+            Some(&stopped("stopped by an operator", 0)),
         );
         assert_eq!(projected.len(), 2, "{projected:?}");
         assert!(

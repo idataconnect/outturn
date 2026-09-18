@@ -403,25 +403,28 @@ impl ChatStore for PostgresChatStore {
         Ok(())
     }
 
-    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<String>, ChatError> {
+    async fn clear_stop(&self, session_id: Uuid) -> Result<Option<super::Stopped>, ChatError> {
         // Returns what it cleared, so a turn can tell the model why the reply
         // above it stops mid-sentence. Nothing comes back when the session was
         // not stopped, which is the ordinary case and not an error.
         // The old reason, read from a subquery rather than from `returning`:
         // `returning` hands back the row as it now is, and as it now is the
         // reason has just been set to null.
-        let was: Option<Option<String>> = sqlx::query_scalar(
+        let was: Option<(Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
             "update agent_sessions s \
              set stopped_at = null, stopped_reason = null, updated_at = now() \
-             from (select id, stopped_reason from agent_sessions where id = $1) old \
+             from (select id, stopped_reason, stopped_at from agent_sessions where id = $1) old \
              where s.id = old.id and s.stopped_at is not null \
-             returning old.stopped_reason",
+             returning old.stopped_reason, old.stopped_at",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(was.flatten())
+        Ok(was.map(|(reason, at)| super::Stopped {
+            reason: reason.unwrap_or_default(),
+            at,
+        }))
     }
 
     async fn stopped_reason(&self, session_id: Uuid) -> Result<Option<String>, ChatError> {
