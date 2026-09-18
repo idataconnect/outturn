@@ -33,6 +33,9 @@ pub struct ApiState {
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
     pub(super) settings: Arc<dyn super::settings::SettingsStore>,
+    /// Which agents a person's narrowed authorities apply to. Consulted on
+    /// every request that names one.
+    pub(super) scopes: Arc<dyn super::scope::ScopeStore>,
     /// The same bucket the runtime reads and writes, so a file a person
     /// uploads is one the agent can name. Absent when none is configured.
     pub(super) storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
@@ -87,6 +90,14 @@ impl ApiState {
             roles,
             usage,
             settings,
+            // Built here rather than passed in: it needs only the pool, and a
+            // parameter for it would be one more thing every caller repeats.
+            scopes: {
+                let store = Arc::new(super::scope::PostgresScopeStore::new(pool.clone()));
+                store.spawn_invalidation();
+                store
+            },
+            
             storage,
             auth,
             minter,
@@ -161,6 +172,51 @@ pub(super) async fn require(
     } else {
         Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()))
     }
+}
+
+/// The same question, asked about one agent.
+///
+/// Two checks rather than one: whether the caller holds the authority at all,
+/// and whether anybody narrowed them to a set of agents this one is not in. An
+/// authority that is not narrowed by a scope -- `agents:read`, and everything
+/// that is not about an agent -- takes the first check alone.
+pub(super) async fn require_for_agent(
+    state: &ApiState,
+    claims: &SessionClaims,
+    authority: Authority,
+    agent_id: Uuid,
+) -> Result<(), ApiError> {
+    require(state, claims, authority).await?;
+
+    if !super::scope::is_narrowed(authority) {
+        return Ok(());
+    }
+    let reach = state
+        .scopes
+        .reach(claims.workspace_id, claims.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if reach.covers(agent_id) {
+        Ok(())
+    } else {
+        // Forbidden rather than not-found: the roster is workspace-public, so
+        // the caller already knows this agent exists and pretending otherwise
+        // would only be confusing.
+        Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()))
+    }
+}
+
+/// What this caller may reach, for a listing that filters rather than refuses.
+pub(super) async fn reach_of(
+    state: &ApiState,
+    claims: &SessionClaims,
+) -> Result<super::scope::Reach, ApiError> {
+    state
+        .scopes
+        .reach(claims.workspace_id, claims.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 pub(super) async fn authorize(

@@ -76,7 +76,13 @@ never "this person may do Y".
 
 ## Narrowing an authority to some agents
 
-Designed, not built.
+Half built. `user_agent_scopes` holds the grants, `ScopeStore` resolves and
+caches them, and `require_for_agent` is the guard. Starting a conversation is
+narrowed, reading one is narrowed with your own always readable, and the session
+listing filters rather than refusing.
+
+Still to come: the same guard on an agent's files, and a way to assign a scope
+that is not a SQL statement.
 
 An authority is a workspace-wide statement: holding `sessions:read` reads every
 conversation with every agent in the workspace. That is right for a workspace

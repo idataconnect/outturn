@@ -137,6 +137,7 @@ fn read_session(row: &sqlx::postgres::PgRow) -> AgentSession {
         id: row.get("id"),
         workspace_id: row.get("workspace_id"),
         agent_id: row.get("agent_id"),
+        user_id: row.get("user_id"),
         title: row.get("title"),
         account: row.try_get("account").ok().flatten(),
     }
@@ -185,7 +186,7 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "insert into agent_sessions (id, workspace_id, agent_id, user_id, title, account) \
              values ($1, $2, $3, $4, $5, $6) \
-             returning id, workspace_id, agent_id, title, account",
+             returning id, workspace_id, agent_id, user_id, title, account",
         )
         .bind(Uuid::now_v7())
         .bind(workspace_id)
@@ -202,7 +203,7 @@ impl ChatStore for PostgresChatStore {
 
     async fn list_sessions(&self, workspace_id: Uuid) -> Result<Vec<AgentSession>, ChatError> {
         let rows = sqlx::query(
-            "select id, workspace_id, agent_id, title, account from agent_sessions \
+            "select id, workspace_id, agent_id, user_id, title, account from agent_sessions \
              where workspace_id = $1 order by created_at desc",
         )
         .bind(workspace_id)
@@ -219,7 +220,7 @@ impl ChatStore for PostgresChatStore {
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError> {
         let row = sqlx::query(
-            "select id, workspace_id, agent_id, title, account from agent_sessions \
+            "select id, workspace_id, agent_id, user_id, title, account from agent_sessions \
              where workspace_id = $1 and id = $2",
         )
         .bind(workspace_id)
@@ -241,7 +242,7 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "update agent_sessions set title = $3, updated_at = now() \
              where workspace_id = $1 and id = $2 \
-             returning id, workspace_id, agent_id, title, account",
+             returning id, workspace_id, agent_id, user_id, title, account",
         )
         .bind(workspace_id)
         .bind(session_id)

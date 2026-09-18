@@ -3296,3 +3296,112 @@ async fn a_turn_that_finished_normally_does_not_latch() {
             .expect("query");
     assert!(stopped.is_none(), "an ordinary turn latched the session");
 }
+
+/// A person narrowed to one agent cannot start a conversation with another.
+///
+/// The roster stays workspace-public -- an administrator has to see what is
+/// running -- so what a scope narrows is what an agent has done, and who may
+/// talk to it. See docs/authorities.md.
+#[tokio::test]
+async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
+    use outturn::api::scope::{PostgresScopeStore, ScopeStore};
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let mut ids = Vec::new();
+    for slug in ["accounting", "support"] {
+        let (_, body) = h
+            .post(
+                "/v1/agents",
+                Some(&admin),
+                &format!(r#"{{"name":"{slug}","slug":"{slug}","system_prompt":"x"}}"#),
+            )
+            .await;
+        ids.push(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        );
+    }
+    let (accounting, support) = (ids[0], ids[1]);
+
+    // Before anybody narrows them, both are reachable: absence of a scope is
+    // the authority behaving as it always did.
+    for agent in [accounting, support] {
+        let (status, body) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &format!(r#"{{"agent_id":"{agent}","title":"t"}}"#),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "unnarrowed access refused: {body}");
+    }
+
+    // Narrowed to accounting.
+    let scopes = PostgresScopeStore::new(h.db.pool.clone());
+    let me: Uuid = sqlx::query_scalar(
+        "select user_id from user_identities where provider_subject = $1",
+    )
+    .bind("admin@acme.example")
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the account that logged in");
+    scopes.set(acme, me, &[accounting]).await.expect("set scope");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{accounting}","title":"t"}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "the named agent was refused: {body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{support}","title":"t"}}"#),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an agent nobody granted was still reachable: {body}"
+    );
+
+    // The roster is not narrowed: an administrator still sees what runs here.
+    let (status, body) = h.get("/v1/agents", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let agents: Vec<serde_json::Value> = serde_json::from_str(&body).expect("agents");
+    assert_eq!(agents.len(), 2, "the roster was narrowed too: {body}");
+
+    // And removing the narrowing puts everything back. The notification that
+    // drops the cache travels through Postgres, so a moment passes between the
+    // write and every pod knowing -- including this one. Polled rather than
+    // slept through: what is asserted is that it arrives, not how long it takes.
+    scopes.set(acme, me, &[]).await.expect("clear scope");
+    let mut restored = false;
+    for _ in 0..50 {
+        let (status, _) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &format!(r#"{{"agent_id":"{support}","title":"t"}}"#),
+            )
+            .await;
+        if status == StatusCode::CREATED {
+            restored = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(restored, "clearing the scope never restored access within a second");
+}

@@ -12,7 +12,7 @@ use crate::auth::Authority;
 use crate::{events, jobs};
 
 use super::chat::{AgentSession, ChatError, CreateSession, Delivery, History, Usage};
-use super::router::{ApiError, ApiState, authorize};
+use super::router::{ApiError, ApiState, authenticate, authorize};
 use super::worker::{CHAT_TURN, ChatTurnPayload};
 
 impl From<ChatError> for ApiError {
@@ -33,7 +33,32 @@ pub async fn list_sessions(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<AgentSession>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
-    Ok(Json(state.chat.list_sessions(claims.workspace_id).await?))
+    let all = state.chat.list_sessions(claims.workspace_id).await?;
+
+    // Filtered rather than refused: a listing that failed because one session
+    // is out of reach would tell the caller nothing and hide what is theirs.
+    let reach = super::router::reach_of(&state, &claims).await?;
+    Ok(Json(
+        all.into_iter()
+            .filter(|s| reach.covers(s.agent_id) || s.user_id == Some(claims.subject))
+            .collect(),
+    ))
+}
+
+/// Whether this caller may read somebody's conversation.
+///
+/// Their own always, whoever else may not: `agent_sessions.user_id` records who
+/// started it, so using an agent and seeing your own history is one permission
+/// and reading everybody's is another.
+async fn readable(
+    state: &ApiState,
+    claims: &crate::auth::SessionClaims,
+    session: &AgentSession,
+) -> Result<(), ApiError> {
+    if session.user_id == Some(claims.subject) {
+        return Ok(());
+    }
+    super::router::require_for_agent(state, claims, Authority::SessionsRead, session.agent_id).await
 }
 
 /// Starting a session is how a user gets a fresh context: history is per
@@ -43,7 +68,16 @@ pub async fn create_session(
     headers: axum::http::HeaderMap,
     Json(input): Json<CreateSession>,
 ) -> Result<(StatusCode, Json<AgentSession>), ApiError> {
-    let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
+    let claims = authenticate(&state, &headers)?;
+    // Which agent decides it: talking to the accounting agent and talking to
+    // the support agent are separate permissions where somebody said so.
+    super::router::require_for_agent(
+        &state,
+        &claims,
+        Authority::SessionsCreate,
+        input.agent_id,
+    )
+    .await?;
     let session = state
         .chat
         .create_session(claims.workspace_id, claims.subject, input)
@@ -79,7 +113,8 @@ pub async fn get_messages(
     // workspace-scoped. It also has to happen before the cursor is used: a
     // cursor names a message, and reading one from another workspace's session
     // must fail on the session rather than on the row it points at.
-    state.chat.get_session(claims.workspace_id, id).await?;
+    let session = state.chat.get_session(claims.workspace_id, id).await?;
+    readable(&state, &claims, &session).await?;
 
     let limit = query
         .limit

@@ -13,6 +13,12 @@ pub struct AgentSession {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub agent_id: Uuid,
+    /// Who started it. Null for a session the platform made, and kept when an
+    /// account goes away so a transcript is not silently reattributed. What
+    /// makes "may use this agent, may not read what others said to it"
+    /// expressible: your own conversations are yours whoever else may not read
+    /// them.
+    pub user_id: Option<Uuid>,
     pub title: String,
     /// Which of the workspace's own customers this conversation is for, in the
     /// workspace's own terms. Copied onto every usage row the session produces

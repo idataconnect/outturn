@@ -2,6 +2,7 @@ pub mod agent;
 pub mod chat;
 pub mod egress;
 pub mod inhibitor;
+pub mod scope;
 pub mod role;
 pub mod usage;
 pub mod settings;
