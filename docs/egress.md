@@ -77,9 +77,21 @@ act about a specific service, and a service that moves keeps its name. The cost
 is that an operator with forty internal services lists forty of them, which is
 tedious and is also forty decisions somebody made on purpose.
 
-That leaves one thing to get right: outturn's own service names must not be
-allowable, however they are spelled. An operator who adds `outturn-gateway` to
-save a hop has built the proxy this exists to prevent.
+An operator who adds outturn's own hostname to this list has built the proxy it
+exists to prevent, and nothing here stops them. That is accepted rather than
+solved: the list is the operator's statement of which services agents may call,
+and naming the platform's own API in it is not a slip. A workspace still cannot
+reach it -- the operator's list says a host is reachable, the workspace's rules
+say who may reach it, and a guest would need the credentials and the context to
+do anything with it. Several deliberate mistakes rather than one.
+
+The alternative was a namespace: services an agent may reach get deployed into
+a designated one, and a NetworkPolicy permits the gateway to reach that
+namespace and no other. Kubernetes enforces it rather than a string comparison,
+so no spelling of an internal name gets through. It was not chosen because it
+costs operators a deployment convention to save them from a mistake they have
+to make on purpose -- but it is the thing to reach for if this list ever needs
+to be safe against its own holder.
 
 ## Not yet
 
