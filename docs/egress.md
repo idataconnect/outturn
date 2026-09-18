@@ -123,6 +123,19 @@ a name that resolves to it are separate entries, which is right rather than
 tedious: allowlisting a name trusts DNS to keep pointing where you expect, and
 allowlisting an address trusts nothing.
 
+**An entry may name a port, and one that does permits only that port.**
+`tickets.internal:8080` allows the ticketing API and not the Postgres beside it
+on the same host, or the admin interface on 9000. The port is already resolved
+before the check -- `port_or_known_default` runs a few lines above -- so matching
+on it is one comparison, and narrowing a permission for one comparison is not a
+trade worth thinking about.
+
+A bare `tickets.internal` permits any port on that host. That is the looser
+entry and it stays available, because an operator who wants the whole host
+should be able to say so in one line rather than enumerating ports -- but a host
+inside the network is a host running more than the service somebody meant, and
+the narrower spelling is the one to reach for.
+
 ## Credentials to an internal host
 
 A rule carrying a credential may only be reached over https, because a key on a
@@ -159,8 +172,6 @@ every integration begins with a certificate.
 ## Not yet
 
 - The allowlist itself. Everything above is design.
-- Whether a name is enough, or a name and a port. A customer running two
-  services on one host would want the second; nobody has yet.
 - Where the list lives. Configuration on the gateway is the smallest thing that
   works and fits who may change it -- an operator adding an internal service is
   already editing manifests. A table like `egress_rules` is the shape people
