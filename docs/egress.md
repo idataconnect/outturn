@@ -93,6 +93,36 @@ costs operators a deployment convention to save them from a mistake they have
 to make on purpose -- but it is the thing to reach for if this list ever needs
 to be safe against its own holder.
 
+## One list, both paths
+
+There are two ways the gateway reaches a host, and only one of them is vetted.
+
+An agent's request goes through `resolve_and_vet` and is refused if the address
+is private. A model call does not: `Route::base_url` is used as given, so
+`http://outturn-mockllm:8083` and an ollama at `172.18.0.1:11434` are reached
+without anything asking whether they should be. That is how local development
+works today.
+
+So the same list answers both. A host an operator has named is reachable,
+whether an agent asked for it or a route pointed at it; anything private that is
+not on the list is refused on either path. That is the whole of the abstraction
+paying for itself -- it is not a new policy beside an old one, it is one policy
+where there were two, and one of those two was "no policy".
+
+It also settles a question before it is asked. `traffic_routes` has a nullable
+`workspace_id`, so a workspace's own routes are already a shape the schema
+allows; nothing writes one today because routes are managed by hand. The moment
+routes get an API, a workspace pointing one at `http://outturn-api:8080` is a
+question somebody has to remember. Vetting the route path now means nobody has
+to remember.
+
+**Entries are hosts as written, names or literal addresses.** A literal address
+is matched as itself and never resolved -- asking a resolver to look up
+`172.18.0.1` would let it answer with something else. That means an address and
+a name that resolves to it are separate entries, which is right rather than
+tedious: allowlisting a name trusts DNS to keep pointing where you expect, and
+allowlisting an address trusts nothing.
+
 ## Credentials to an internal host
 
 A rule carrying a credential may only be reached over https, because a key on a
@@ -131,3 +161,9 @@ every integration begins with a certificate.
 - The allowlist itself. Everything above is design.
 - Whether a name is enough, or a name and a port. A customer running two
   services on one host would want the second; nobody has yet.
+- Where the list lives. Configuration on the gateway is the smallest thing that
+  works and fits who may change it -- an operator adding an internal service is
+  already editing manifests. A table like `egress_rules` is the shape people
+  here already read, and is what to build when somebody wants to see the list
+  without a redeploy. The check is the same either way; only the management
+  surface differs.
