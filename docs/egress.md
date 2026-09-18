@@ -93,13 +93,41 @@ costs operators a deployment convention to save them from a mistake they have
 to make on purpose -- but it is the thing to reach for if this list ever needs
 to be safe against its own holder.
 
+## Credentials to an internal host
+
+A rule carrying a credential may only be reached over https, because a key on a
+plaintext connection is a key given away. That is right for the public internet
+and wrong for the case this feature exists for: an internal service is usually
+plain http, TLS inside the cluster being a thing people mean to get to. An
+authenticated call to `tickets.internal` would be refused -- and an internal API
+wanting a key is more likely than one that does not, so the allowlist would ship
+and fail on the first realistic service.
+
+So a credential requires https **unless the host is one the operator
+allowlisted**. The list is the discriminator, because it is the only exact one
+available: the operator named that host, on a network they run, as somewhere
+agents may call. Nothing is inferred from the shape of the name.
+
+Not from the shape of the name, specifically. A bare hostname looks like it
+marks the internal case and does the opposite -- the realistic spellings are
+`tickets.internal` and `tickets.default.svc.cluster.local`, while `tickets` is
+the one nobody uses because it only resolves from inside one namespace. A syntax
+rule would select almost exactly the wrong set.
+
+Worth stating plainly, because the allowlist now does two things rather than
+one: it makes a private address reachable, *and* it permits a credential to
+travel there in plaintext.
+
+**Internal services should still terminate TLS**, and the reason is sharper than
+"TLS is good". Runtime pods are shared between workspaces. A key crossing the
+cluster in plaintext is a key on a network where other tenants' agents are
+running, and the guarantee that they cannot read it rests on the network rather
+than on anything outturn does. That is an argument for TLS the operator should
+hear; it is not an argument for refusing to work without it, which would mean
+every integration begins with a certificate.
+
 ## Not yet
 
 - The allowlist itself. Everything above is design.
 - Whether a name is enough, or a name and a port. A customer running two
   services on one host would want the second; nobody has yet.
-- How this interacts with a workspace bringing its own credential to an internal
-  host. The https rule exists because a credential on a plaintext connection is
-  given away -- and an internal service on plain http is the ordinary case, so
-  the two rules collide the first time somebody wants an authenticated internal
-  call.
