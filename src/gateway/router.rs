@@ -10,7 +10,7 @@ use super::breaker;
 use super::egress;
 use super::routing::{self};
 use super::llm::provider::{LlmProvider, ProviderError};
-use super::llm::types::{ChatCompletionRequest, ChatCompletionResponse};
+use super::llm::types::ChatCompletionRequest;
 
 pub struct GatewayState {
     providers: Vec<Arc<dyn LlmProvider>>,
@@ -26,6 +26,10 @@ pub struct GatewayState {
     /// egress across a pool of addresses, or routing it through an estate's
     /// own forward proxy, is somebody's infrastructure rather than ours.
     pub(crate) egress_transport: Arc<dyn egress::transport::EgressTransport>,
+    /// Hosts inside the network an operator has opened, to agents and to
+    /// routes alike. Empty unless one said otherwise, which leaves every
+    /// private address refused as it was.
+    pub(crate) internal: egress::internal::Internal,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -46,7 +50,17 @@ impl GatewayState {
             health: None,
             providers_by_endpoint: routing::ProviderCache::default(),
             egress_transport: Arc::new(egress::transport::Direct),
+            // Read once, at startup: an operator changing which internal hosts
+            // are open is changing the deployment, and the list is read on
+            // every outbound request.
+            internal: egress::internal::Internal::from_env(),
         }
+    }
+
+    /// The internal hosts to treat as open, for a test that needs some.
+    pub fn with_internal_hosts(mut self, internal: egress::internal::Internal) -> Self {
+        self.internal = internal;
+        self
     }
 
     /// Sends outbound requests some other way than straight out of this pod.
@@ -181,6 +195,59 @@ impl GatewayState {
         }
     }
 
+    /// Whether a route points somewhere this gateway may go.
+    ///
+    /// Public is fine, and private only where an operator opened it -- the same
+    /// list the agent path consults, because "may the gateway reach this host"
+    /// is one question however it came to be asked.
+    ///
+    /// A route naming something unparseable, or a host that does not resolve,
+    /// is dropped rather than refused: it was already going to fail, and
+    /// failing here says why once instead of on every request.
+    fn route_is_reachable(&self, route: &routing::Route) -> bool {
+        let Ok(url) = reqwest::Url::parse(&route.base_url) else {
+            tracing::warn!(base_url = %route.base_url, "a route's base URL is not a URL; skipping it");
+            return false;
+        };
+        let Some(host) = url.host_str() else {
+            tracing::warn!(base_url = %route.base_url, "a route's base URL names no host; skipping it");
+            return false;
+        };
+        let Some(port) = url.port_or_known_default() else {
+            return false;
+        };
+
+        // Opened settles it, by name or by address, which is the case a
+        // deliberately configured internal route takes.
+        if self.internal.allows(host, port) {
+            return true;
+        }
+
+        // Otherwise only a literal address is judged here, and a name is left
+        // alone. Resolving on this path was tried and is not affordable: a name
+        // that does not resolve costs the resolver's full timeout -- four
+        // seconds, measured -- and this runs per route per request, so one
+        // stale route would stall every turn in the deployment.
+        //
+        // What that leaves open is a route naming one of our own services by
+        // hostname. It is a narrower hole than it looks: routes are written by
+        // whoever runs the deployment, `traffic_routes` has no write API, and
+        // the thing it would buy an attacker is reaching an API that requires a
+        // token the gateway will not mint for them. Worth closing when routes
+        // become workspace-writable, and worth closing then by giving the
+        // gateway its siblings' names rather than by resolving.
+        match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+            Ok(addr) if crate::runtime::egress::is_forbidden(addr) => {
+                tracing::warn!(
+                    base_url = %route.base_url,
+                    "a route points inside the network and no operator opened that host; skipping it"
+                );
+                false
+            }
+            _ => true,
+        }
+    }
+
     /// What to try, in order of precedence.
     ///
     /// A configured route list wins. With none -- no database, or nothing
@@ -193,6 +260,16 @@ impl GatewayState {
                 Ok(routes) if !routes.is_empty() => {
                     let mut attempts = Vec::with_capacity(routes.len());
                     for route in routes {
+                        // A route's base URL was taken as given until now, so
+                        // this path could reach anywhere the agent path could
+                        // not. `traffic_routes` already has a nullable
+                        // workspace_id, so workspace-owned routes are a shape
+                        // the schema allows and only the absence of an API
+                        // prevents -- vetting here means whoever builds that
+                        // API does not have to notice.
+                        if !self.route_is_reachable(&route) {
+                            continue;
+                        }
                         if let Some(provider) = self.providers_by_endpoint.get(&route).await {
                             attempts.push(Attempt {
                                 provider,
@@ -598,4 +675,92 @@ pub fn routes(state: Arc<GatewayState>) -> Router {
         // holds credentials and the tier the runtime cannot bypass.
         .route("/v1/egress", post(super::egress::fetch))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::egress::internal::Internal;
+
+    fn route(base_url: &str) -> routing::Route {
+        routing::Route {
+            provider: "openai".into(),
+            base_url: base_url.into(),
+            model: "m".into(),
+            credential_ref: None,
+        }
+    }
+
+    fn gateway(internal: &str) -> GatewayState {
+        // A real validator over a throwaway key: nothing here presents a
+        // token, and building one is cheaper than a seam for not having one.
+        let validator = TokenValidator::with_keys(&[[7u8; 32]], crate::auth::AUDIENCE_GATEWAY)
+            .expect("validator");
+        GatewayState::new(Vec::new(), validator).with_internal_hosts(Internal::parse(internal))
+    }
+
+    /// A route pointed at the public internet is not this list's business.
+    #[test]
+    fn a_public_route_is_reachable_without_anybody_opening_it() {
+        let state = gateway("");
+        assert!(state.route_is_reachable(&route("https://api.openai.com")));
+    }
+
+    /// The hole this closes: routes were taken as given, so one pointed inside
+    /// the network was reached while an agent asking for the same host was not.
+    #[test]
+    fn a_route_inside_the_network_is_skipped_unless_opened() {
+        let shut = gateway("");
+        assert!(!shut.route_is_reachable(&route("http://10.1.2.3:8000")));
+        assert!(!shut.route_is_reachable(&route("http://[fd00::1]:8000")));
+    }
+
+    /// And the part it does not close, asserted so nobody believes otherwise.
+    ///
+    /// A route naming one of our own services by hostname is reached, because
+    /// resolving to find out costs a resolver timeout on every request for
+    /// every route that does not resolve. Narrow today -- routes have no write
+    /// API and are written by whoever runs the deployment -- and the thing to
+    /// close when they become workspace-writable, by telling the gateway its
+    /// siblings' names rather than by looking them up.
+    #[test]
+    fn a_route_naming_one_of_our_own_services_is_not_caught() {
+        let shut = gateway("");
+        assert!(shut.route_is_reachable(&route("http://outturn-api:8080")));
+    }
+
+    #[test]
+    fn an_opened_host_is_reachable_by_a_route() {
+        let open = gateway("10.1.2.3:8000");
+        assert!(open.route_is_reachable(&route("http://10.1.2.3:8000")));
+    }
+
+    /// The port narrows a route the same way it narrows an agent's request.
+    #[test]
+    fn opening_one_port_does_not_open_the_host() {
+        let open = gateway("10.1.2.3:8000");
+        assert!(!open.route_is_reachable(&route("http://10.1.2.3:9000")));
+    }
+
+    /// A name is left to the provider, and an operator can still open one.
+    ///
+    /// Resolving here was tried and costs a resolver timeout per route per
+    /// request for a name that does not resolve, which one stale route would
+    /// inflict on every turn. So what this catches is a literal address inside
+    /// the network, which is the form a route configured by hand takes.
+    #[test]
+    fn a_name_is_left_to_the_provider() {
+        let state = gateway("");
+        assert!(state.route_is_reachable(&route("http://tickets.internal:8080")));
+
+        let open = gateway("tickets.internal:8080");
+        assert!(open.route_is_reachable(&route("http://tickets.internal:8080")));
+    }
+
+    #[test]
+    fn a_route_that_is_not_a_url_is_dropped_rather_than_tried() {
+        let state = gateway("");
+        assert!(!state.route_is_reachable(&route("not a url")));
+        assert!(!state.route_is_reachable(&route("http://")));
+    }
 }

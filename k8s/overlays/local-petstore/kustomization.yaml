@@ -8,3 +8,18 @@ resources:
 
 components:
   - ../../components/petstore
+
+# What makes it reachable. The gateway refuses private addresses, so a host
+# inside the cluster is opened by name and port -- see docs/egress.md. A
+# workspace still has to allow `petstore` in its own egress rules; this only
+# says the gateway may go there.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-gateway
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OUTTURN_INTERNAL_HOSTS
+          value: "petstore:8080"

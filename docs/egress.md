@@ -68,7 +68,10 @@ A workspace still has to allow the host in its own rules -- the operator's list
 says a host is *reachable*, not that anyone may reach it.
 
 Empty by default, so a deployment that has not thought about it behaves exactly
-as it does now.
+as it does now. `OUTTURN_INTERNAL_HOSTS` on the gateway, comma or whitespace
+separated: configuration rather than a table, because an operator adding an
+internal service is already editing manifests, and a table is what to build when
+somebody wants the list without a redeploy.
 
 **Names, not ranges.** An operator allowing `10.0.0.0/8` would re-open the path
 to outturn's own services, and would not have meant to: it reads as "our
@@ -171,7 +174,14 @@ every integration begins with a certificate.
 
 ## Not yet
 
-- The allowlist itself. Everything above is design.
+- A route naming one of our own services by hostname is reached. Only a literal
+  address is judged on the route path: resolving there was built and reverted,
+  because a name that does not resolve costs the resolver's full timeout --
+  four seconds, measured -- and it runs per route per request, so one stale
+  route would stall every turn in the deployment. Narrow today, since routes
+  have no write API and are written by whoever runs the deployment. The thing
+  to do when routes become workspace-writable is give the gateway its siblings'
+  names, not look them up.
 - Where the list lives. Configuration on the gateway is the smallest thing that
   works and fits who may change it -- an operator adding an internal service is
   already editing manifests. A table like `egress_rules` is the shape people

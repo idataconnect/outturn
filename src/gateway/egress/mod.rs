@@ -26,6 +26,7 @@
 //! What is *not* decided here is where the request physically leaves from.
 //! See `transport`.
 
+pub mod internal;
 pub mod transport;
 
 use std::sync::Arc;
@@ -140,9 +141,24 @@ pub async fn fetch(
     // The check a workspace cannot waive. An allowed name that resolves into
     // the cluster is still refused, and the answer is pinned so the check and
     // the connection are about the same place.
-    let addrs = rules::resolve_and_vet(&host, port)
-        .await
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    //
+    // Unless an operator opened this host. The refusal exists to stop a
+    // workspace aiming the gateway at `outturn-api`, and it stops a customer's
+    // own ticketing API for the same reason -- so the exceptions are named by
+    // somebody outside the workspace. Resolution still happens and the address
+    // is still pinned; only the judgement about the address is skipped, so what
+    // was checked and what is connected to remain the same place.
+    let addrs = if state.internal.allows(&host, port) {
+        let addrs = rules::resolve(&host, port)
+            .await
+            .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+        tracing::debug!(%host, port, "reaching an internal host an operator opened");
+        addrs
+    } else {
+        rules::resolve_and_vet(&host, port)
+            .await
+            .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?
+    };
 
     let mut outgoing = reqwest::header::HeaderMap::new();
     for (name, value) in &request.headers {

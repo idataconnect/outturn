@@ -370,12 +370,23 @@ pub fn vet_commitment(
 /// which is the whole of DNS rebinding. Resolving once and pinning the answer
 /// closes that, because the name is never asked twice.
 pub async fn resolve_and_vet(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, Refused> {
+    let addrs = resolve(host, port).await?;
+    vet_addresses(host, &addrs)?;
+    Ok(addrs)
+}
+
+/// Where a host is, without judging whether it may be reached.
+///
+/// Split out for the one caller that has already been told the answer: a host
+/// an operator opened is reached despite being private, and the judgement is
+/// the only part being skipped. Resolution still happens and the addresses are
+/// still pinned, so what was checked and what is connected to stay the same
+/// place -- which is the property that would be lost by resolving twice.
+pub async fn resolve(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, Refused> {
     // A literal address needs no lookup, and asking for one would let a
     // resolver answer for it.
     if let Ok(addr) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
-        let addrs = vec![std::net::SocketAddr::new(addr, port)];
-        vet_addresses(host, &addrs)?;
-        return Ok(addrs);
+        return Ok(vec![std::net::SocketAddr::new(addr, port)]);
     }
 
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
@@ -383,7 +394,9 @@ pub async fn resolve_and_vet(host: &str, port: u16) -> Result<Vec<std::net::Sock
         .map_err(|_| Refused::Unresolvable(host.to_string()))?
         .collect();
 
-    vet_addresses(host, &addrs)?;
+    if addrs.is_empty() {
+        return Err(Refused::Unresolvable(host.to_string()));
+    }
     Ok(addrs)
 }
 
