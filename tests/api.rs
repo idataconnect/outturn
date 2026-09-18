@@ -3517,3 +3517,89 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
         assert_eq!(status, StatusCode::OK, "an unnarrowed reader was refused: {body}");
     }
 }
+
+/// Narrowing somebody is an act of administering people, so it needs the
+/// authority that grants roles -- and only inside your own workspace.
+#[tokio::test]
+async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let operator = h
+        .login_as("op@acme.example", None, Some((acme, "operator")))
+        .await;
+
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let op_id: Uuid = sqlx::query_scalar(
+        "select user_id from user_identities where provider_subject = $1",
+    )
+    .bind("op@acme.example")
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the operator's account");
+
+    let put = |token: &str, user: Uuid, body: String| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/scopes/{user}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("request")
+    };
+
+    // An operator builds agents; deciding who may reach them is not theirs.
+    let (status, body) = h
+        .send(put(&operator, op_id, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an operator narrowed somebody: {body}");
+
+    let (status, body) = h
+        .send(put(&admin, op_id, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "an admin could not narrow: {body}");
+
+    // It reads back, and only the narrowed are listed.
+    let (status, body) = h.get("/v1/scopes", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("scopes");
+    assert_eq!(rows.len(), 1, "the unnarrowed were listed too: {body}");
+    assert_eq!(rows[0]["user_id"], op_id.to_string());
+    assert_eq!(rows[0]["agents"][0], agent_id);
+
+    // Somebody outside the workspace cannot be narrowed into it.
+    let stranger = Uuid::now_v7();
+    let (status, body) = h
+        .send(put(&admin, stranger, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a stranger was given a scope here: {body}"
+    );
+
+    // An agent in no workspace of theirs is refused rather than stored.
+    let (status, body) = h
+        .send(put(&admin, op_id, format!(r#"{{"agents":["{}"]}}"#, Uuid::now_v7())))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a scope named an agent that does not exist: {body}"
+    );
+
+    // And clearing it empties the listing.
+    let (status, _) = h.send(put(&admin, op_id, r#"{"agents":[]}"#.to_string())).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h.get("/v1/scopes", Some(&admin)).await;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("scopes");
+    assert!(rows.is_empty(), "a cleared scope was still listed: {body}");
+}

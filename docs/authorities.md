@@ -87,7 +87,15 @@ and the file listing leaves out a scope it may not read rather than refusing the
 call. The guard sits in `files::space_for`, which is the one place that knows
 which agent a session belongs to.
 
-Still to come: a way to assign a scope that is not a SQL statement.
+`GET /v1/scopes` lists who is narrowed and to what; `PUT /v1/scopes/{user_id}`
+replaces one person's set, and an empty list restores them to the whole
+workspace. Both need `roles:assign`: deciding whose reach is narrowed is the
+same kind of act as deciding what roles they hold, and an operator who builds
+agents is not the person to make it. The user editor shows it as a list of
+agents to tick, absent for everybody until somebody ticks one.
+
+Only the narrowed are listed. Showing every unnarrowed person as "all agents
+ticked" would make the ordinary case look like a decision somebody took.
 
 An authority is a workspace-wide statement: holding `sessions:read` reads every
 conversation with every agent in the workspace. That is right for a workspace

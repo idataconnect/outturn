@@ -223,6 +223,14 @@ function EditUser({ id }: { id: string }) {
     void load()
   }, [load])
 
+  // Separate from `load`, because it needs an authority the page does not
+  // require: somebody who may read a user but not assign their roles sees the
+  // rest of the page without this.
+  useEffect(() => {
+    void loadScope()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, canAssign, workspaceId])
+
   async function onRename(event: React.FormEvent) {
     event.preventDefault()
     setSavingName(true)
@@ -263,6 +271,39 @@ function EditUser({ id }: { id: string }) {
       await load()
     } catch (e) {
       setError(message(e, 'failed to remove sign-in'))
+    }
+  }
+
+  /** Which agents this person is confined to, empty meaning nobody confined them. */
+  const [scoped, setScoped] = useState<string[]>([])
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([])
+
+  async function loadScope() {
+    if (!canAssign) return
+    try {
+      const [rows, list] = await Promise.all([
+        api<{ user_id: string; agents: string[] }[]>('/v1/scopes'),
+        api<{ id: string; name: string }[]>('/v1/agents'),
+      ])
+      setAgents(list)
+      setScoped(rows.find((r) => r.user_id === id)?.agents ?? [])
+    } catch (e) {
+      setError(message(e, 'failed to load agent access'))
+    }
+  }
+
+  async function onToggleAgent(agentId: string, held: boolean) {
+    // The whole set is sent, because the endpoint replaces rather than merges:
+    // saying what somebody may reach is one decision, not a running total.
+    const next = held ? scoped.filter((a) => a !== agentId) : [...scoped, agentId]
+    try {
+      await api<void>(`/v1/scopes/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ agents: next }),
+      })
+      setScoped(next)
+    } catch (e) {
+      setError(message(e, 'failed to change agent access'))
     }
   }
 
@@ -447,6 +488,44 @@ function EditUser({ id }: { id: string }) {
                 rows carry no roles, and calling them membership would name the
                 wrong thing -- so the reach is said once, and only the
                 workspaces where roles are actually held are listed. */}
+            {/* Which agents this person's authorities reach. Absent for
+                everybody by default: an unnarrowed person holds what their
+                roles say across the workspace, and showing that as "every
+                agent ticked" would make the ordinary case look like a decision
+                somebody took. */}
+            {canAssign && agents.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-sm font-medium text-surface-900 dark:text-surface-100">
+                  Agent access
+                </h3>
+                <p className="mt-1 text-xs text-surface-600 dark:text-surface-400">
+                  {scoped.length === 0
+                    ? 'Every agent in this workspace. Tick some to confine them to those.'
+                    : 'Confined to the agents ticked. Untick them all to restore the rest.'}
+                </p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {agents.map((agent) => (
+                    <label
+                      key={agent.id}
+                      className="flex items-start gap-2 text-sm text-surface-700 dark:text-surface-300"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={scoped.includes(agent.id)}
+                        onChange={() => void onToggleAgent(agent.id, scoped.includes(agent.id))}
+                      />
+                      <span>{agent.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs text-surface-500 dark:text-surface-400">
+                  Everyone sees which agents exist. This decides whose
+                  conversations and files they may read, and which agents they
+                  may talk to.
+                </p>
+              </div>
+            )}
             {isSystem && (
               <p className="text-xs text-surface-500 dark:text-surface-400">
                 A system administrator, so may sign in to any workspace.

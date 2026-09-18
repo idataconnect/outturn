@@ -602,6 +602,86 @@ async fn remove_identity(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Deserialize)]
+struct SetScope {
+    /// The agents this person's narrowed authorities apply to. Empty removes
+    /// the narrowing and returns them to the whole workspace, which is a
+    /// widening and so needs the same authority as everything else here.
+    agents: Vec<Uuid>,
+}
+
+/// Which agents each narrowed person in this workspace may reach.
+///
+/// Only the narrowed appear. Somebody absent from this list holds their
+/// authorities across the workspace, which is the default and not a state to
+/// enumerate -- listing every unnarrowed person as "all agents" would make the
+/// common case look like a decision somebody took.
+async fn list_scopes(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<ScopeRow>>, ApiError> {
+    // Seeing who is confined to what is part of administering people, so it
+    // rides with the authority that assigns them.
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+    let rows = state
+        .scopes
+        .listing(claims.workspace_id)
+        .await
+        .map_err(scope_error)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(user_id, agents)| ScopeRow { user_id, agents })
+            .collect(),
+    ))
+}
+
+#[derive(serde::Serialize)]
+struct ScopeRow {
+    user_id: Uuid,
+    agents: Vec<Uuid>,
+}
+
+/// Replaces what one person may reach.
+async fn set_scope(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Json(input): Json<SetScope>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+
+    // Narrowing somebody who is not in this workspace would write a row that
+    // no query here would ever find, and would read as having worked.
+    let memberships = state.users.memberships(user_id).await?;
+    if !memberships.iter().any(|m| m.workspace_id == claims.workspace_id) {
+        return Err((StatusCode::NOT_FOUND, "no such user in this workspace".into()));
+    }
+
+    state
+        .scopes
+        .set(claims.workspace_id, user_id, &input.agents)
+        .await
+        .map_err(scope_error)?;
+
+    tracing::info!(
+        actor = %claims.subject,
+        user_id = %user_id,
+        workspace_id = %claims.workspace_id,
+        agents = input.agents.len(),
+        "agent scope set"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn scope_error(e: super::scope::ScopeError) -> ApiError {
+    use super::scope::ScopeError;
+    let status = match e {
+        ScopeError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ScopeError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, e.to_string())
+}
+
 async fn grant_workspace_role(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -1221,6 +1301,8 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             axum::routing::put(set_agent_setting).delete(clear_agent_setting),
         )
         .route("/v1/authorities", get(list_authorities))
+        .route("/v1/scopes", get(list_scopes))
+        .route("/v1/scopes/{user_id}", axum::routing::put(set_scope))
         .route("/v1/roles", get(list_roles).post(create_role))
         .route(
             "/v1/roles/{id}",
