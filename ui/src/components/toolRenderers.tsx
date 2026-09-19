@@ -1,9 +1,12 @@
 import type { ToolCallMessagePartComponent } from '@assistant-ui/react'
+import ToolClock from './ToolClock'
+import ToolLoad from './ToolLoad'
+import ToolTarget from './ToolTarget'
 
 /**
  * Tools that render as something other than their verb.
  *
- * Empty on purpose, and adding to it should be a decision rather than a
+ * Short on purpose, and adding to it should be a decision rather than a
  * default. A tool not named here shows the verb the model wrote and nothing
  * more -- which is the whole of what most tool calls are worth to a reader,
  * and is never wrong in the way that showing raw output is wrong.
@@ -18,6 +21,16 @@ import type { ToolCallMessagePartComponent } from '@assistant-ui/react'
  * is there the day someone writes a renderer for it -- but nothing reaches the
  * transcript unless something here asks for it.
  */
-const toolRenderers: Record<string, ToolCallMessagePartComponent> = {}
+const toolRenderers: Record<string, ToolCallMessagePartComponent> = {
+  read_object: ToolTarget,
+  write_object: ToolTarget,
+  delete_object: ToolTarget,
+  describe_image: ToolTarget,
+  expand_archive: ToolTarget,
+  create_archive: ToolTarget,
+  fetch_url: ToolTarget,
+  get_current_time: ToolClock,
+  load_tools: ToolLoad,
+}
 
 export default toolRenderers
