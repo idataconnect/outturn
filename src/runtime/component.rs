@@ -154,6 +154,12 @@ pub struct AgentHost {
     on_write: Option<WriteSink>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
+    /// Tools the guest should offer without being asked, by name.
+    ///
+    /// The deployment's policy, not the component's: a guest with many tools
+    /// can name them and hand over definitions on request, and this says which
+    /// are worth the rounds they would otherwise cost. Empty defers everything.
+    eager_tools: Vec<String>,
     /// Model calls made so far this turn, counted host-side so a guest that
     /// ignores `limits` still cannot exceed them.
     rounds_used: u32,
@@ -935,6 +941,10 @@ impl outturn::agent::host::Host for AgentHost {
         }
     }
 
+    async fn eager_tools(&mut self) -> Vec<String> {
+        self.eager_tools.clone()
+    }
+
     async fn tool_started(&mut self, activity: ToolActivity) {
         tracing::info!(
             session_id = %self.session_id,
@@ -1330,6 +1340,10 @@ pub struct RunOptions {
     pub traffic_type: String,
     /// Model calls permitted in this turn; zero is unbounded.
     pub max_tool_rounds: u32,
+    /// Tools to offer from the first round, by name; empty defers every tool
+    /// to an explicit request from the guest. Names the component does not
+    /// have are ignored, so a stale policy is harmless.
+    pub eager_tools: Vec<String>,
     /// The reply being written, so messages absorbed mid-turn can name it.
     pub reply_id: uuid::Uuid,
     /// Object storage the guest may reach, within its workspace's own space.
@@ -1423,6 +1437,7 @@ impl AgentRunner {
             temperature: options.temperature,
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
+            eager_tools: options.eager_tools,
             rounds_used: 0,
             arrivals: Vec::new(),
             reply_id: options.reply_id,

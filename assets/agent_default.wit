@@ -301,6 +301,26 @@ interface host {
     /// What this turn is allowed to do.
     current-limits: func() -> limits;
 
+    /// Tools to offer from the first round, rather than on request.
+    ///
+    /// A guest with many tools need not put every definition in front of the
+    /// model on every round: it can name them and hand over the descriptions
+    /// and arguments when they are asked for. What that trades is a round --
+    /// a tool wanted is a tool fetched first -- so the tools an agent uses
+    /// constantly are better offered outright, and which those are is a
+    /// property of the deployment rather than of the component.
+    ///
+    /// Names, matching the tools the guest exposes to the model; anything
+    /// unrecognised is ignored, so a policy naming a tool this component does
+    /// not have is harmless rather than fatal. An empty list defers
+    /// everything, which is the default.
+    ///
+    /// Separate from `limits` because it is read once at the start of a turn,
+    /// while `limits` is deliberately re-read every round to catch a stop
+    /// arriving mid-generation. Folding a fixed list into that call would
+    /// invite re-reading what cannot change.
+    eager-tools: func() -> list<string>;
+
     /// The wall clock of whoever is being talked to.
     ///
     /// Carries the day name and zone abbreviation rather than only a

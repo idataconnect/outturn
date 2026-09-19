@@ -62,6 +62,9 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // workspace gets.
         egress: Vec::new(),
         fuel: 10_000_000_000,
+        // Nothing eager, so a test sees the deferred path -- which is the
+        // default a deployment gets until it promotes something.
+        eager_tools: Vec::new(),
     }
 }
 
@@ -218,9 +221,114 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
 /// a tool call arriving in fragments, the guest reads the model's reason out of
 /// the arguments and announces it, the clock answers in the user's zone, and
 /// the reason is stripped before the call goes back to the model.
+/// Tools are named up front and their definitions fetched on demand.
+///
+/// The names have to be in front of the model from the first round: a model
+/// cannot ask for a tool it does not know exists, so deferring the names along
+/// with the schemas would make the whole set unreachable. What is deferred is
+/// each definition's description and arguments, which is the bulk of the cost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_names_are_offered_up_front_and_definitions_on_request() {
+    let gateway = FakeGateway::start(Behavior::LoadThenToolThenReply {
+        load: vec!["get_current_time".into()],
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "It is Tuesday.".into(),
+    })
+    .await;
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.timezone = Some("Australia/Brisbane".into());
+
+    let reply = runner
+        .run(
+            &component(),
+            user("What day is it?"),
+            "You are helpful.".into(),
+            options,
+        )
+        .await
+        .expect("run")
+        .0;
+
+    assert_eq!(reply, "It is Tuesday.");
+
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 3, "one to load, one to call, one to answer");
+
+    let offered = |request: &serde_json::Value| -> Vec<String> {
+        request["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|t| t["function"]["name"].as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // Round one: the loader and nothing else, since nothing is eager.
+    let first = offered(&requests[0]);
+    assert_eq!(
+        first,
+        vec!["load_tools".to_string()],
+        "only the loader is offered before anything is loaded, got {first:?}"
+    );
+
+    // ...but every tool's name is in the loader's description, or the model
+    // would have nothing to ask for.
+    let description = requests[0]["tools"][0]["function"]["description"]
+        .as_str()
+        .expect("the loader describes itself");
+    for name in [
+        "read_object",
+        "write_object",
+        "delete_object",
+        "list_objects",
+        "fetch_url",
+        "describe_image",
+        "expand_archive",
+        "create_archive",
+        "get_current_time",
+    ] {
+        assert!(
+            description.contains(name),
+            "{name} should be named up front, got {description:?}"
+        );
+    }
+
+    // Round two: what was asked for is now on offer, and the loader is still
+    // there because tools remain unloaded.
+    let second = offered(&requests[1]);
+    assert!(
+        second.contains(&"get_current_time".to_string()),
+        "the loaded tool should be offered, got {second:?}"
+    );
+    assert!(
+        !second.contains(&"read_object".to_string()),
+        "a tool nobody asked for stays deferred, got {second:?}"
+    );
+
+    // The loader reported what it loaded, so the model knows it worked.
+    let messages = requests[1]["messages"].as_array().expect("messages");
+    let loaded = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("the loader answered");
+    let content = loaded["content"].as_str().unwrap_or_default();
+    assert!(
+        content.contains("get_current_time"),
+        "the loader names what it loaded, got {content:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_a_tool_and_answers_with_its_result() {
-    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+    let gateway = FakeGateway::start(Behavior::LoadThenToolThenReply {
+        load: vec!["get_current_time".into()],
         name: "get_current_time".into(),
         arguments: r#"{"action":"Checking today's date"}"#.into(),
         reply: "It is Tuesday.".into(),
@@ -255,23 +363,27 @@ async fn runs_a_tool_and_answers_with_its_result() {
 
     assert_eq!(reply, "It is Tuesday.");
 
-    // The guest announced the call, with the model's own reason attached --
-    // reassembled from arguments that arrived seven bytes at a time.
+    // The guest announced both calls, with the model's own reason attached --
+    // reassembled from arguments that arrived seven bytes at a time. Loading
+    // is announced like any other call: it is something the agent did.
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(
-            "get_current_time".to_string(),
-            "Checking today's date".to_string()
-        )]
+        vec![
+            ("load_tools".to_string(), "Getting the tools ready".to_string()),
+            (
+                "get_current_time".to_string(),
+                "Checking today's date".to_string()
+            )
+        ]
     );
 
     let requests = gateway.requests();
-    assert_eq!(requests.len(), 2, "one call to ask, one to answer");
+    assert_eq!(requests.len(), 3, "one to load, one to ask, one to answer");
 
-    // The tool was among those offered on the first request. Which position
+    // The tool was among those offered once it had been loaded. Which position
     // it holds is not meaningful, and asserting one made this break the
     // moment another tool was added.
-    let offered: Vec<&str> = requests[0]["tools"]
+    let offered: Vec<&str> = requests[1]["tools"]
         .as_array()
         .expect("tools were offered")
         .iter()
@@ -279,14 +391,16 @@ async fn runs_a_tool_and_answers_with_its_result() {
         .collect();
     assert!(
         offered.contains(&"get_current_time"),
-        "the clock should be on offer, got {offered:?}"
+        "the clock should be on offer once loaded, got {offered:?}"
     );
 
-    // The second request carries the model's request and the answer to it.
-    let messages = requests[1]["messages"].as_array().expect("messages");
+    // The third request carries the model's request and the answer to it.
+    // Both rounds are in there -- the load and the call -- so each lookup
+    // names the clock's rather than taking whichever came first.
+    let messages = requests[2]["messages"].as_array().expect("messages");
     let assistant = messages
         .iter()
-        .find(|m| m["tool_calls"].is_array())
+        .find(|m| m["tool_calls"][0]["function"]["name"] == "get_current_time")
         .expect("the assistant's tool call went back to the model");
     let echoed = assistant["tool_calls"][0]["function"]["arguments"]
         .as_str()
@@ -298,9 +412,8 @@ async fn runs_a_tool_and_answers_with_its_result() {
 
     let result = messages
         .iter()
-        .find(|m| m["role"] == "tool")
+        .find(|m| m["role"] == "tool" && m["tool_call_id"] == "call_fake_2")
         .expect("the tool result went back to the model");
-    assert_eq!(result["tool_call_id"], "call_fake_1");
     let content = result["content"].as_str().unwrap_or_default();
     assert!(
         content.contains("Australia/Brisbane"),
@@ -1524,5 +1637,53 @@ async fn listing_a_scope_it_may_not_read_is_refused() {
     assert!(
         !result.contains("severance"),
         "naming the scope listed what it may not read: {result}"
+    );
+}
+
+/// A load that recognised nothing is reported as a failure.
+///
+/// Not an empty success: a model told the call worked goes on to use tools it
+/// does not have, and a reader watching the turn sees a tick against work that
+/// did not happen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_load_that_matched_nothing_is_an_error() {
+    let gateway = FakeGateway::start(Behavior::LoadThenToolThenReply {
+        load: vec!["fetch_the_web".into()],
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+        })
+    };
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+
+    runner
+        .run(&component(), user("What day is it?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let results = seen.lock().unwrap().clone();
+    let (content, is_error) = results.first().expect("the loader answered").clone();
+    assert!(
+        is_error,
+        "a load that recognised nothing should be an error, got {content:?}"
+    );
+    assert!(
+        content.contains("fetch_the_web"),
+        "the failure should name what was not found, got {content:?}"
+    );
+    assert!(
+        content.contains("get_current_time"),
+        "and what was available instead, got {content:?}"
     );
 }

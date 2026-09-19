@@ -57,6 +57,20 @@ pub enum Behavior {
         /// show rather than ending empty.
         content: String,
     },
+    /// Load tools, then call one of them, then answer with text.
+    ///
+    /// Three phases because that is what a deferred tool loop is: the model
+    /// sees a name it wants, asks for the definition, calls the tool, and
+    /// answers. Scripted rather than inferred, so the test says which tool is
+    /// loaded and no model has to be trusted to choose.
+    LoadThenToolThenReply {
+        /// Names for `load_tools` to be asked for, as they go in the array.
+        load: Vec<String>,
+        /// The tool called once the definitions are in hand.
+        name: String,
+        arguments: String,
+        reply: String,
+    },
     /// Ask for a tool on the first request, then answer with text.
     ///
     /// Two phases because that is what a tool loop is: the model asks, the
@@ -278,6 +292,45 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behavior::LoadThenToolThenReply {
+            load,
+            name,
+            arguments,
+            reply,
+        } => {
+            // Third request: the tool has run, so answer in prose.
+            if call_number > 2 {
+                let mut lines: Vec<String> = chunk_text(&reply)
+                    .iter()
+                    .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                    .collect();
+                lines.push(format!("{}\n", chunk_json("", Some("stop"))));
+                return ndjson(lines);
+            }
+
+            // Second request: the definitions are loaded, so call the tool.
+            let (id, call_name, call_args) = if call_number == 2 {
+                ("call_fake_2", name.clone(), arguments.clone())
+            } else {
+                // First request: only the loader is on offer, so ask it for
+                // the tools by name.
+                let names = serde_json::to_string(&load).expect("names");
+                (
+                    "call_load_1",
+                    "load_tools".to_string(),
+                    format!(r#"{{"names":{names},"action":"Getting the tools ready"}}"#),
+                )
+            };
+
+            let mut lines = vec![format!("{}\n", tool_chunk(Some(id), Some(&call_name), ""))];
+            for piece in call_args.as_bytes().chunks(7) {
+                let piece = String::from_utf8_lossy(piece).to_string();
+                lines.push(format!("{}\n", tool_chunk(None, None, &piece)));
+            }
+            lines.push(format!("{}\n", chunk_json("", Some("tool_calls"))));
+            ndjson(lines)
+        }
+
         Behavior::ToolThenReply {
             name,
             arguments,
@@ -346,6 +399,7 @@ async fn completions(
     let text = match behavior {
         Behavior::Reply(text) => text,
         Behavior::ToolThenReply { reply, .. } => reply,
+        Behavior::LoadThenToolThenReply { reply, .. } => reply,
         Behavior::AlwaysToolCall { content, .. } => content,
         Behavior::TruncatedToolCall { .. } => String::new(),
         Behavior::ToolThenSteer { reply, .. } => reply,

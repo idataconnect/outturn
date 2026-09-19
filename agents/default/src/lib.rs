@@ -14,6 +14,8 @@ mod bindings;
 
 mod archive;
 
+use std::collections::BTreeSet;
+
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
     ContentPart,
@@ -35,6 +37,28 @@ const EXPAND_ARCHIVE: &str = "expand_archive";
 /// The model's name for asking what is in an image.
 const DESCRIBE_IMAGE: &str = "describe_image";
 const CREATE_ARCHIVE: &str = "create_archive";
+
+/// The model's name for the tool that loads other tools.
+///
+/// Always offered, and never itself deferred: it is the only way to reach
+/// anything in the deferred set, so a turn that did not have it would be a
+/// turn with no tools at all.
+const LOAD_TOOLS: &str = "load_tools";
+
+/// Tools offered from the first round, without being asked for.
+///
+/// The deployment's, not the component's: it comes from `host::eager_tools`,
+/// which the API fills from the agent's settings. A name here is offered
+/// eagerly, a name absent is deferred, and nothing else decides it. Empty --
+/// the default -- defers everything, so every tool is reached through
+/// `load_tools`.
+///
+/// Read once per turn rather than per round. It cannot change mid-turn, and a
+/// tool set that shifted under the model would strand a definition it had
+/// already been given.
+fn eager_tools() -> BTreeSet<String> {
+    host::eager_tools().into_iter().collect()
+}
 
 /// How much of a file a single read puts in front of the model.
 ///
@@ -58,7 +82,13 @@ const HEAD_SHARE: u64 = 70;
 /// attributed to the agent.
 const ACTION: &str = "action";
 
-fn tools() -> Vec<ToolDefinition> {
+/// Every tool this agent can run, whether or not it is currently offered.
+///
+/// The single source of what exists. Both the offered set and the name list in
+/// `load_tools`'s own description are derived from this, so a tool cannot be
+/// added to one and forgotten in the other -- the same reason the ceilings
+/// below are interpolated rather than written out.
+fn all_tools() -> Vec<ToolDefinition> {
     vec![
     ToolDefinition {
         name: READ_OBJECT.to_string(),
@@ -179,6 +209,141 @@ fn tools() -> Vec<ToolDefinition> {
             .to_string(),
     },
     ]
+}
+
+/// The names of every tool not offered from the start.
+///
+/// Derived, never written down: a tool is deferred by not being eager, so the
+/// two sets cannot disagree about a tool and cannot leave one unreachable.
+fn deferred_names(eager: &BTreeSet<String>) -> Vec<String> {
+    all_tools()
+        .into_iter()
+        .map(|t| t.name)
+        .filter(|name| !eager.contains(name))
+        .collect()
+}
+
+/// The tool that offers the others.
+///
+/// Its description carries the name of every deferred tool, and that is the
+/// point: a model cannot ask for what it does not know exists, so withholding
+/// the names along with the schemas would mean a tool nothing ever reaches.
+/// What is deferred is each tool's description and arguments -- the bulk of
+/// what a definition costs -- while the fact of it stays in front of the model
+/// on every round.
+///
+/// Names alone, deliberately. A line of explanation each would defeat the
+/// saving, and these names were written to be read by a model: `create_archive`
+/// and `describe_image` say what they do. A tool whose name does not is a tool
+/// that needs renaming rather than annotating.
+fn loader_tool(eager: &BTreeSet<String>) -> ToolDefinition {
+    let names = deferred_names(eager);
+    ToolDefinition {
+        name: LOAD_TOOLS.to_string(),
+        description: format!(
+            "Load the tools you need before using them. These tools exist but \
+             are not yet loaded: {}. Name the ones this turn needs and they \
+             become available immediately, for the rest of this turn -- then \
+             call them as usual. Load several at once rather than one at a \
+             time. Loading a tool does not use it, so this is never the last \
+             thing you do: the turn ends when you stop calling tools, so load, \
+             then act. If nothing here is relevant, do not call this at all.",
+            names.join(", ")
+        ),
+        parameters: r#"{"type":"object","properties":{"names":{"type":"array","description":"The tools to load, by exact name.","items":{"type":"string"}},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Getting ready to unpack the archive."}},"required":["names","action"]}"#
+            .to_string(),
+    }
+}
+
+/// What the model is offered this round.
+///
+/// The eager set, plus whatever has been loaded so far, plus the loader itself
+/// while anything is still unloaded. The loader drops out once nothing is left
+/// to load, so a turn that has loaded everything does not carry a tool whose
+/// whole description is an empty list.
+fn offered_tools(eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> Vec<ToolDefinition> {
+    let mut offered: Vec<ToolDefinition> = all_tools()
+        .into_iter()
+        .filter(|t| eager.contains(&t.name) || loaded.contains(&t.name))
+        .collect();
+
+    if deferred_names(eager).iter().any(|name| !loaded.contains(name)) {
+        offered.push(loader_tool(eager));
+    }
+
+    offered
+}
+
+/// Loads tools, reporting what was recognised.
+///
+/// Unknown names are named back rather than failing: a model that misremembered
+/// a name can correct itself, where an error would end the turn. A name that is
+/// already loaded is a success, not a complaint -- it is loaded, which is what
+/// was asked for.
+fn load_tools(
+    args: &serde_json::Value,
+    eager: &BTreeSet<String>,
+    loaded: &mut BTreeSet<String>,
+) -> String {
+    let available = deferred_names(eager);
+    let requested: Vec<String> = args
+        .get("names")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if requested.is_empty() {
+        return serde_json::json!({
+            "error": "name at least one tool to load",
+            "available": available,
+        })
+        .to_string();
+    }
+
+    let (found, missing): (Vec<String>, Vec<String>) = requested
+        .into_iter()
+        .partition(|name| available.contains(name));
+
+    for name in &found {
+        loaded.insert(name.clone());
+    }
+
+    if missing.is_empty() {
+        serde_json::json!({ "loaded": found }).to_string()
+    } else if found.is_empty() {
+        // Nothing matched, so nothing was loaded and the call achieved
+        // nothing. Reported as a failure rather than as an empty success:
+        // a model told the call succeeded will go on to use tools it does
+        // not have, and a reader watching the turn sees a tick against work
+        // that did not happen.
+        serde_json::json!({
+            "error": format!(
+                "no such tool: {}. Available: {}",
+                missing.join(", "),
+                available.join(", ")
+            ),
+            "no_such_tool": missing,
+            "available": available,
+        })
+        .to_string()
+    } else {
+        // Both halves are reported. Some tools became available even though a
+        // name was wrong, and a model told only about the failure would load
+        // them again. Not an error: what was asked for partly happened, and
+        // the turn can continue with what did load.
+        serde_json::json!({
+            "loaded": found,
+            "no_such_tool": missing,
+            "available": available,
+        })
+        .to_string()
+    }
 }
 
 /// Reads a JSON string argument, or an empty string if it is missing.
@@ -602,6 +767,8 @@ fn fetch_url(args: &serde_json::Value) -> String {
         .and_then(|b| b.as_str())
         .map(str::to_string);
 
+    // Echoed in the result, so the reader can see what was asked for.
+    let requested = method.clone();
     match host::fetch(&host::HttpRequest {
         method,
         url: url.to_string(),
@@ -609,6 +776,8 @@ fn fetch_url(args: &serde_json::Value) -> String {
         body,
     }) {
         Ok(response) => serde_json::json!({
+            "method": requested,
+            "url": url,
             "status": response.status,
             "body": response.body,
             "truncated": response.truncated,
@@ -622,16 +791,25 @@ fn fetch_url(args: &serde_json::Value) -> String {
                 .map(|(_, value)| value.clone()),
         })
         .to_string(),
-        Err(e) => serde_json::json!({ "error": e }).to_string(),
+        Err(e) => serde_json::json!({ "method": requested, "url": url, "error": e }).to_string(),
     }
 }
 
 /// Runs one tool call and returns the message answering it.
-fn run_tool(call: &ToolCall) -> Message {
+///
+/// `loaded` is carried in rather than owned here because `load_tools` writes to
+/// it: which tools are available is turn state, and the next round's offer has
+/// to see what this round loaded.
+fn run_tool(
+    call: &ToolCall,
+    eager: &BTreeSet<String>,
+    loaded: &mut BTreeSet<String>,
+) -> Message {
     let args: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
 
     let content = match call.name.as_str() {
+        LOAD_TOOLS => load_tools(&args, eager, loaded),
         READ_OBJECT => read_object(&args),
         WRITE_OBJECT => write_object(&args),
         DELETE_OBJECT => delete_object(&args),
@@ -742,6 +920,15 @@ impl Guest for Component {
         // of being refused mid-loop.
         let max_rounds = host::current_limits().max_tool_rounds;
 
+        // The deployment's eager set, read once: it cannot change mid-turn.
+        let eager = eager_tools();
+
+        // Which deferred tools this turn has loaded. Turn state, not session
+        // state: a later turn starts from the eager set again, because what a
+        // model needed once is not what it needs next, and carrying the set
+        // forward would quietly undo the deferral over a long conversation.
+        let mut loaded: BTreeSet<String> = BTreeSet::new();
+
         let mut round: u32 = 0;
         loop {
             // Asked again every round rather than once at the start, because
@@ -763,7 +950,7 @@ impl Guest for Component {
 
             let completion = host::chat(&CompletionRequest {
                 messages: messages.clone(),
-                tools: if exhausted { Vec::new() } else { tools() },
+                tools: if exhausted { Vec::new() } else { offered_tools(&eager, &loaded) },
                 model: None,
                 temperature: None,
                 max_tokens: None,
@@ -892,7 +1079,7 @@ impl Guest for Component {
                 tool_call_id: None,
             });
             for call in &round_calls {
-                messages.push(run_tool(call));
+                messages.push(run_tool(call, &eager, &mut loaded));
             }
 
             // Injected after the results and before the next model call: the

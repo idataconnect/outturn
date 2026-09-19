@@ -1508,6 +1508,80 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Tools to offer from the first round, rather than on request.
+            ///
+            /// A guest with many tools need not put every definition in front of the
+            /// model on every round: it can name them and hand over the descriptions
+            /// and arguments when they are asked for. What that trades is a round --
+            /// a tool wanted is a tool fetched first -- so the tools an agent uses
+            /// constantly are better offered outright, and which those are is a
+            /// property of the deployment rather than of the component.
+            ///
+            /// Names, matching the tools the guest exposes to the model; anything
+            /// unrecognised is ignored, so a policy naming a tool this component does
+            /// not have is harmless rather than fatal. An empty list defers
+            /// everything, which is the default.
+            ///
+            /// Separate from `limits` because it is read once at the start of a turn,
+            /// while `limits` is deliberately re-read every round to catch a stop
+            /// arriving mid-generation. Folding a fixed list into that call would
+            /// invite re-reading what cannot change.
+            pub fn eager_tools() -> _rt::Vec<_rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 2
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "eager-tools"]
+                        fn wit_import1(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = *ptr0.add(0).cast::<*mut u8>();
+                    let l3 = *ptr0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let base7 = l2;
+                    let len7 = l3;
+                    let mut result7 = _rt::Vec::with_capacity(len7);
+                    for i in 0..len7 {
+                        let base = base7
+                            .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                        let e7 = {
+                            let l4 = *base.add(0).cast::<*mut u8>();
+                            let l5 = *base
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len6 = l5;
+                            let bytes6 = _rt::Vec::from_raw_parts(l4.cast(), len6, len6);
+                            _rt::string_lift(bytes6)
+                        };
+                        result7.push(e7);
+                    }
+                    _rt::cabi_dealloc(
+                        base7,
+                        len7 * (2 * ::core::mem::size_of::<*const u8>()),
+                        ::core::mem::size_of::<*const u8>(),
+                    );
+                    let result8 = result7;
+                    result8
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// Calls a model.
             ///
             /// The credential is attached host-side, so the guest names a request and
@@ -2573,9 +2647,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1625] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd7\x0b\x01A\x02\x01\
-A\x05\x01BQ\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1649] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xef\x0b\x01A\x02\x01\
+A\x05\x01BT\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -2600,15 +2674,16 @@ paths\00\x04\0\x0ddelete-object\x011\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\0
 2\x04\0\x05fetch\x013\x01p\x18\x01j\x014\x01s\x01@\x01\x06prefixs\05\x04\0\x0cli\
 st-objects\x016\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x017\x01@\x01\
 \x08activity\x16\x01\0\x04\0\x0ctool-started\x018\x01p\"\x01@\0\09\x04\0\x0dpend\
-ing-input\x01:\x01@\0\0$\x04\0\x0ecurrent-limits\x01;\x01j\x01\x14\x01s\x01@\x01\
-\x07request\x0f\0<\x04\0\x04chat\x01=\x01@\0\0&\x04\0\x0ccurrent-time\x01>\x01@\x01\
-\x04texts\x01\0\x04\0\x08progress\x01?\x01@\x02\x05levels\x07messages\x01\0\x04\0\
-\x03log\x01@\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\
-\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\
-\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outtu\
-rn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\
-\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-com\
-ponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+ing-input\x01:\x01@\0\0$\x04\0\x0ecurrent-limits\x01;\x01ps\x01@\0\0<\x04\0\x0be\
+ager-tools\x01=\x01j\x01\x14\x01s\x01@\x01\x07request\x0f\0>\x04\0\x04chat\x01?\x01\
+@\0\0&\x04\0\x0ccurrent-time\x01@\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01A\
+\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01B\x03\0\x18outturn:agent/h\
+ost@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07mes\
+sage\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prom\
+pts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1f\
+outturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09\
+producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
+t\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
