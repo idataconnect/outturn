@@ -37,7 +37,9 @@ curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 ```
 
 On Linux, `skaffold dev` without a profile reaches ollama across the Docker
-bridge and uses gemma4. [AGENTS.md](AGENTS.md) covers both in more depth.
+bridge and uses qwen3.5. [AGENTS.md](AGENTS.md) covers both in more depth,
+including which models can be relied on to call a tool and why thinking is
+left on.
 
 ## Changing the agent interface
 

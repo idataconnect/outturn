@@ -69,11 +69,24 @@ Local dev seeds `admin@outturn.local` / `outturn-dev`.
 ## Models
 
 Local development runs against ollama through the OpenAI protocol
-(`OPENAI_BASE_URL`, no key). **Use gemma4.** The agent offers tools on every
+(`OPENAI_BASE_URL`, no key). **Use qwen3.5.** The agent offers tools on every
 turn, and a model whose template stops streaming when tools are present
-collapses a reply to three chunks — llama3.1 and mistral both do this, gemma4
-does not. It is per-model template behavior, not an ollama or gateway
+collapses a reply to three chunks — llama3.1 and mistral both do this, qwen3.5
+and gemma4 do not. It is per-model template behavior, not an ollama or gateway
 property. olmo-3 cannot do tools at all.
+
+qwen3.5 over gemma4, which this used to say, because gemma4 writes its whole
+reply before it acts. Asked to check the time and then report it, it produced
+the prose first — quoting a time from earlier in the session, which it had
+invented having not yet called the clock — and only then made the call. Handed
+the correct answer on the next round it replied with a single token rather
+than correcting itself. It also never called `load_tools` at all: offered the
+loader and the names, it guessed at schemas it had never read, calling
+`write_object` with `content_bytes` and `object_name`. qwen3.5 calls the
+loader unprompted and acts after it rather than before.
+
+Some of that was `reasoning_effort` rather than the model -- see below -- but
+not the guessing.
 
 On a Mac, `scripts/dev-mac.sh` runs the `mac` profile instead: ollama on the
 host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
@@ -98,6 +111,20 @@ check. Small local models embellish, and a prompt can only supply facts it has.
 Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
 where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
 It hangs off the agent's policy, beside `model`.
+
+**Do not set it to "none" while working on anything that calls a tool.** The
+saving is real and so is the damage: a model with nowhere to think uses its
+output as the scratchpad instead. gemma4 with thinking off answers a tool
+result with one token, so the turn ends on the tool and the reader is told
+nothing; it also writes its whole reply before acting, which is how a time it
+had not looked up yet ends up in the answer. qwen3.5 with thinking off reaches
+for `load_tools` on input that needs no tools at all -- a call being the only
+place it can put a thought. At "low" both behave. A day went into chasing
+these as model bugs before the override that caused them turned up in
+`setting_overrides`, so check there first when a model starts acting stupid.
+
+The default is "low" for this reason (`api::settings`), and an override in the
+database outranks it.
 
 ## Tunables
 
