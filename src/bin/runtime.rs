@@ -139,8 +139,26 @@ async fn main() {
     })
     .spawn(health.shutdown_signal());
 
-    // Everything a turn needs is in place: storage answered, the puller is
-    // asking. Now the pod is ready.
+    // The host and the component are generated from the same interface at
+    // different times -- the host when this binary was compiled, the guest
+    // when the wasm beside it was built -- and a pair that disagree fails
+    // every turn in the linker rather than anything visible at startup. So it
+    // is asked here, where the answer is a pod that never becomes ready
+    // instead of a person whose message failed.
+    //
+    // Fatal rather than warned about: a runtime that cannot run the component
+    // it was given has nothing to offer, and one that took work anyway would
+    // fail every turn it claimed while looking healthy.
+    if let Err(e) = state.runner.verify(&state.agent_module) {
+        tracing::error!(
+            error = %e,
+            "this build cannot link its agent component; refusing to take work"
+        );
+        std::process::exit(1);
+    }
+
+    // Everything a turn needs is in place: storage answered, the component
+    // links, the puller is asking. Now the pod is ready.
     health.set_ready(true);
     tracing::info!("ready to take work");
     serving.await.unwrap();

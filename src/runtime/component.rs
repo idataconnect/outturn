@@ -1405,6 +1405,34 @@ impl AgentRunner {
         Ok(component)
     }
 
+    /// Checks that this host can link this component, before taking any work.
+    ///
+    /// Every import the guest declares has to have an implementation in the
+    /// linker, and the two are generated from `wit/agent.wit` at different
+    /// times: the host when this binary was compiled, the guest when
+    /// `assets/agent_default.wasm` was built. Ship a pair that disagree and
+    /// every turn dies with "component imports instance `outturn:agent/host`,
+    /// but a matching implementation was not found in the linker" -- one turn
+    /// at a time, in a worker log, with nothing to say which half is wrong or
+    /// that anything is wrong with the deployment at all.
+    ///
+    /// Asked once at startup instead, where it is a pod that fails to become
+    /// ready rather than a user whose message failed. `artifact_guard` covers
+    /// the same ground in the repository, comparing the committed interface
+    /// against the one the component was built from; this covers what it
+    /// cannot see, which is the binary doing the linking.
+    ///
+    /// Compiling is most of the cost and the result is cached, so the first
+    /// turn finds the component ready rather than paying for it again.
+    pub fn verify(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        let component = self.component_for(bytes)?;
+        // Type-checks every import against the linker without a store or any
+        // host state: this asks whether the two halves fit, not whether a turn
+        // would succeed.
+        self.linker.instantiate_pre(&component)?;
+        Ok(())
+    }
+
     pub async fn run(
         &self,
         component_bytes: &[u8],
@@ -1674,6 +1702,41 @@ mod artifact_guard {
              \x20 cp wit/agent.wit assets/agent_default.wit\n\
              `cargo component build` regenerates src/bindings.rs on the way, so it \
              covers both."
+        );
+    }
+
+    /// This host must be able to link the component committed beside it.
+    ///
+    /// The test above compares two files in the repository. This asks the
+    /// question they cannot: whether the host compiled from *this* source
+    /// satisfies every import the committed guest declares. They are generated
+    /// from one interface at different times, and a pair that disagree fails
+    /// every turn in the linker -- which is a long way from here, and looks
+    /// like a model problem rather than a build one.
+    ///
+    /// The runtime asks the same thing at startup, against the component it
+    /// was actually given, and refuses to become ready if the answer is no.
+    #[test]
+    fn this_host_can_link_the_committed_component() {
+        let bytes = std::fs::read("assets/agent_default.wasm").expect("component fixture");
+        let runner = super::AgentRunner::new().expect("runner");
+        runner
+            .verify(&bytes)
+            .expect("the committed component must link against this host");
+    }
+
+    /// And it must refuse a component it cannot satisfy.
+    ///
+    /// A check that only ever passes is not a check. Bytes that are not a
+    /// component at all stand in for the mismatch: what matters is that
+    /// `verify` reports a problem rather than returning cheerfully, since the
+    /// startup path treats a pass as permission to take work.
+    #[test]
+    fn a_component_it_cannot_link_is_refused() {
+        let runner = super::AgentRunner::new().expect("runner");
+        assert!(
+            runner.verify(b"not a component at all").is_err(),
+            "verify must reject what it cannot link"
         );
     }
 }
