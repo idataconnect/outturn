@@ -277,6 +277,14 @@ pub trait ChatStore: Send + Sync {
     async fn clear_stop(&self, session_id: Uuid) -> Result<Option<Stopped>, ChatError>;
 
     /// Why this session is stopped, if it is.
+    /// Why this session is latched, if it is.
+    ///
+    /// The reason belongs to the stop that took the latch, not to whatever
+    /// hold covers the session now -- a later hold did not stop anything, and
+    /// telling a reader its reason contradicts the transcript, the latch and
+    /// the marker the next turn will carry. `stop_session` preserves the first
+    /// by refusing to write where `stopped_at` is set, and callers announcing
+    /// a refusal read it from here rather than from the current verdict.
     async fn stopped_reason(&self, session_id: Uuid) -> Result<Option<String>, ChatError>;
 
     /// Discards a job's placeholder, for a turn that will never be retried.

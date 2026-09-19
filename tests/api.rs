@@ -2790,6 +2790,93 @@ async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
     assert_eq!(latched.as_deref(), Some("monthly spend cap reached"));
 }
 
+/// A held turn says so, as a hold rather than as a failure.
+///
+/// The refusal happens before a placeholder exists, so with no event the
+/// message sits in the transcript with no reply and no indication, and the
+/// thread view cannot read `/v1/inhibitors` to work out why. `chat.held`
+/// rather than `chat.error`: a failure is retried and a stop is not, and the
+/// browser's error path files the turn under failures and discards the reply
+/// bubble -- a reader shown that for a deliberate pause is told the system
+/// broke. See docs/inhibitors.md.
+#[tokio::test]
+async fn a_held_turn_is_announced_as_held_rather_than_as_a_failure() {
+    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    inhibitors
+        .take(TakeInhibitor {
+            scope: Scope::Workspace { workspace_id: acme },
+            strength: Strength::Stopped,
+            reason: "monthly spend cap reached".into(),
+            held_by: "billing-bot".into(),
+        })
+        .await
+        .expect("take");
+
+    let session_id = h.session_with_a_message(&admin, agent_id, "hello").await;
+
+    // The runtime is offered the work and finds none, which is where the
+    // refusal happens.
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "select kind from events where session_id = $1 order by id",
+    )
+    .bind(session_id)
+    .fetch_all(&h.db.pool)
+    .await
+    .expect("events");
+
+    assert!(
+        kinds.iter().any(|k| k == "chat.held"),
+        "a held turn was never announced: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|k| k == "chat.error"),
+        "a deliberate hold was announced as a failure: {kinds:?}"
+    );
+
+    // And it carries the latch's own reason, not merely "stopped".
+    let held: serde_json::Value = sqlx::query_scalar(
+        "select payload from events where session_id = $1 and kind = 'chat.held' order by id limit 1",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("held event");
+    assert!(
+        held["message"].as_str().unwrap_or("").contains("spend cap"),
+        "the hold did not say why: {held}"
+    );
+    assert_eq!(
+        held["resumable"],
+        serde_json::json!(false),
+        "a stop was announced as resuming by itself: {held}"
+    );
+}
+
 /// Releasing the hold does not resume anything; a person has to.
 ///
 /// This is what makes it a kill switch rather than a pause with a harsher

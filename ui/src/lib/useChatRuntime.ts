@@ -246,6 +246,11 @@ export function useChatRuntime(
    *  stopping. */
   const [stopping, setStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** Why this conversation is not running, when something is holding it.
+   *  Separate from `error` because a hold is not a failure: the turn was not
+   *  lost, it was declined, and the reply the reader is waiting for arrives
+   *  when the hold lifts or when they say something again. */
+  const [held, setHeld] = useState<{ message: string; resumable: boolean } | null>(null)
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
   /** Replies known to be starting over, until their first delta. */
@@ -479,6 +484,21 @@ export function useChatRuntime(
             setStopping(false)
           }
 
+          // A hold, before the failure check: the turn did not run, and the
+          // placeholder is left alone because nothing was discarded
+          // server-side. The reader is told what is holding it, not that
+          // something broke.
+          const holding = result.events.find((e) => e.kind === 'chat.held')
+          if (holding) {
+            const { message, resumable } = holding.payload as {
+              message: string
+              resumable: boolean
+            }
+            setHeld({ message, resumable })
+            setIsRunning(false)
+            setStopping(false)
+          }
+
           const failed = result.events.find((e) => e.kind === 'chat.error')
           if (failed) {
             const { message, message_id } = failed.payload as {
@@ -528,6 +548,7 @@ export function useChatRuntime(
       const text = references ? `${part.text}\n\n${references}`.trim() : part.text
 
       setError(null)
+      setHeld(null)
       setIsRunning(true)
       try {
         // The POST returns the stored user message; the reply arrives later
@@ -629,7 +650,7 @@ export function useChatRuntime(
   })
 
   return useMemo(
-    () => ({ runtime, error, isRunning, stopping }),
-    [runtime, error, isRunning, stopping],
+    () => ({ runtime, error, held, isRunning, stopping }),
+    [runtime, error, held, isRunning, stopping],
   )
 }

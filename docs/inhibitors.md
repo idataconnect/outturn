@@ -22,7 +22,15 @@ whoever reads the stopped session releases the hold they were shown and finds it
 still stopped.
 
 The latch is `agent_sessions.stopped_at` and `stopped_reason`, cleared by a
-prompt carrying a real `user_id`.
+prompt carrying a real `user_id` **whose turn then goes on to run**. Both halves
+matter. A person nudging a conversation that is still held does not lift the
+latch: it is read, the holds are evaluated, and only a `Proceed` clears it.
+Clearing it first and re-taking it when the verdict comes back stopped would
+work -- `stop_session` refuses to write where `stopped_at` is already set -- but
+only by accident of ordering, and it did not: the clear made the column null, so
+the re-take stamped `now()` with the current reason. A conversation held for
+three weeks that somebody nudged daily reported being stopped a minute ago, and
+`Stopped.at` exists precisely to say otherwise.
 
 Two authorities decide who may hold what. `agents:inhibit` stops one agent and
 is held by operators as well as admins -- whoever builds agents is the right
@@ -52,9 +60,27 @@ say what stopped it rather than looking like a provider that hung up.
 Still to come: suspension -- which currently refuses a turn like a stop but
 without latching, because nothing takes a suspended hold until human-in-the-loop
 does. A suspended turn needs no marker: it pauses where the conversation is
-consistent and resumes from there, so there is no fragment to explain. What it
-may need is something for a reader looking at a paused conversation, which is a
-question for the panel rather than the prompt.
+consistent and resumes from there, so there is no fragment to explain.
+
+A reader looking at a paused conversation is told, and by its own event. A
+refused turn is declined before a placeholder exists, so without one the message
+sits in the transcript with no reply and no indication, and the thread view
+cannot read `/v1/inhibitors` to work out why. The event is `chat.held`, carrying
+the reason and a `resumable` flag -- true for a suspension, which runs again of
+its own accord when the hold lifts, false for a stop, which waits for a person.
+
+Not `chat.error`, for the reason the *Cut mid-turn* section gives below: a
+failure and a stop are not the same thing, a failure is retried and a stop is
+not, and the browser's error path files the turn under failures and discards the
+reply bubble. A reader shown that for a deliberate pause is told the system
+broke. And only when a person is waiting -- a turn with no `user_id` is nobody's
+pending question, and an announcement for one explains nothing anybody can act
+on.
+
+When a session was already latched, what is announced is the reason on the
+latch, not the hold that happens to cover it today. Otherwise a session stopped
+by one incident and later covered by a second reports the second, while the
+transcript, the latch and the next turn's marker all narrate the first.
 
 `decide` is a function rather than anything swappable on purpose: there is one
 correct answer and every call path has to get it. A join that could differ

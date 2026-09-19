@@ -89,6 +89,16 @@ export type ChatEvent =
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
   /** The turn failed. `message_id` names the user message it was answering. */
   | { id: string; kind: 'chat.error'; payload: { message: string; message_id?: string } }
+  /** The turn did not run because something is holding it. Not an error: a
+   *  failure is retried and a stop is not, and a reader shown an error for a
+   *  deliberate pause is told the system broke. `resumable` is true when the
+   *  turn runs again of its own accord once the hold lifts, and false when a
+   *  person has to say something to restart the conversation. */
+  | {
+      id: string
+      kind: 'chat.held'
+      payload: { message: string; message_id?: string; resumable: boolean }
+    }
   /** A user message was taken into a turn already running, and will be
    *  answered inside that reply rather than getting one of its own. */
   | {

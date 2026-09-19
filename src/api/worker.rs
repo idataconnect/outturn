@@ -391,6 +391,53 @@ impl Worker {
     }
 
 
+    /// Says that a turn was held, to whoever has the conversation open.
+    ///
+    /// `chat.held` rather than `chat.error`, because a failure and a stop are
+    /// not the same thing and this codebase does not let them look alike (see
+    /// docs/inhibitors.md). A failure is retried and a stop is not; a reader
+    /// shown an error for a deliberate hold is told the system broke when
+    /// somebody decided it should wait. The browser's error path also discards
+    /// the placeholder bubble and files the turn under failures, which is the
+    /// wrong account of a conversation that is merely paused.
+    ///
+    /// Separate from `abandon_payload`, which also discards a placeholder: a
+    /// turn refused by a hold is refused before one is claimed, so there is
+    /// nothing to discard and the only thing owed is the telling. Best effort,
+    /// because a refusal that could not be announced is still a refusal and
+    /// failing the job over it would retry work that is meant not to run.
+    async fn announce_hold(&self, payload: &ChatTurnPayload, why: &str, resumable: bool) {
+        self.announce(
+            payload,
+            "chat.held",
+            serde_json::json!({
+                "message": why,
+                "message_id": payload.message_id,
+                // Whether anything the reader does will start it again. A stop
+                // latches and waits for a person; a suspension lifts when the
+                // hold does.
+                "resumable": resumable,
+            }),
+        )
+        .await;
+    }
+
+    /// One way for this tier to tell a conversation's readers something.
+    ///
+    /// Best effort by design: an event that could not be written has not
+    /// broken the turn it was about, and failing the job to retry the telling
+    /// would re-run work that already happened.
+    async fn announce(&self, payload: &ChatTurnPayload, kind: &str, body: serde_json::Value) {
+        let _ = events::append(
+            &self.pool,
+            payload.workspace_id,
+            Some(payload.session_id),
+            kind,
+            body,
+        )
+        .await;
+    }
+
     /// Reads a turn's progress and records it as it arrives.
     ///
     /// Takes a stream of bytes rather than a response, because the same events
@@ -786,19 +833,31 @@ impl Worker {
     > {
         use super::inhibitor::Verdict;
 
-        // What this turn is picking up from, where it is picking up at all.
-        let mut restarting_from: Option<super::chat::Stopped> = None;
-
         // A stopped session stays stopped until a person says something. Not
         // until the hold is released: releasing a kill switch must not resume
         // fifty conversations that were killed while it was on.
-        if self
+        //
+        // Read rather than cleared. Whether the latch lifts depends on the
+        // verdict below, and clearing it first loses what it was holding:
+        // `stop_session` keeps the first stop's reason and time by refusing to
+        // write where `stopped_at` is already set, so a latch cleared here and
+        // re-taken below comes back stamped `now()` with the current reason.
+        // A person nudging a conversation held for three weeks would restart
+        // the clock every time, and `Stopped.at` exists precisely to say how
+        // long it has really been.
+        // Kept, not just counted: if this turn is refused too, what the reader
+        // is told has to be what the latch actually says. The current hold may
+        // be a different one that arrived later, and announcing its reason
+        // while the transcript, the latch and the next turn's marker all
+        // narrate the first is three accounts of one pause.
+        let latched = self
             .chat
             .stopped_reason(payload.session_id)
             .await
-            .map_err(|e| anyhow::anyhow!("stopped: {e}"))?
-            .is_some()
-        {
+            .map_err(|e| anyhow::anyhow!("stopped: {e}"))?;
+        let was_stopped = latched.is_some();
+
+        if was_stopped {
             // `user_id` is null for anything the platform produced, so the
             // agent cannot clear its own latch and neither can a steer it
             // provoked.
@@ -810,12 +869,6 @@ impl Worker {
                 );
                 return Ok(Err(Ok(None)));
             }
-            restarting_from = self
-                .chat
-                .clear_stop(payload.session_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("clear stop: {e}"))?;
-            tracing::info!(session_id = %payload.session_id, "a person restarted a stopped session");
         }
 
         let holds = self
@@ -826,16 +879,52 @@ impl Worker {
         let decision = super::inhibitor::decide(holds);
 
         match decision.verdict {
-            Verdict::Proceed => Ok(Ok(restarting_from)),
+            Verdict::Proceed => {
+                // The hold is off and a person asked, so the latch lifts here
+                // and nowhere else. What it was holding becomes what this turn
+                // is picking up from.
+                let restarting_from = if was_stopped {
+                    let cleared = self
+                        .chat
+                        .clear_stop(payload.session_id)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("clear stop: {e}"))?;
+                    tracing::info!(
+                        session_id = %payload.session_id,
+                        "a person restarted a stopped session"
+                    );
+                    cleared
+                } else {
+                    None
+                };
+                Ok(Ok(restarting_from))
+            }
             Verdict::Stopped => {
                 // Said in the transcript as well as latched: the next turn
                 // reads this history, and a reply that simply stops is one the
                 // model apologises for or tries to finish.
+                //
+                // A no-op when the session was already stopped, which is what
+                // keeps the original reason and time.
                 let why = decision.why();
                 self.chat
                     .stop_session(payload.session_id, &why)
                     .await
                     .map_err(|e| anyhow::anyhow!("stop session: {e}"))?;
+                // Told to whoever is watching. This refusal happens before a
+                // placeholder exists, so without an event the message sits in
+                // the transcript with no reply and no indication -- and the
+                // thread view cannot read `/v1/inhibitors` to work out why on
+                // its own.
+                //
+                // Only when a person is waiting. A platform-produced turn --
+                // no `user_id` -- is nobody's pending question, and an error
+                // banner for a turn the reader never asked for explains
+                // nothing they can act on.
+                if payload.user_id.is_some() {
+                    self.announce_hold(payload, latched.as_deref().unwrap_or(&why), false)
+                        .await;
+                }
                 tracing::info!(
                     session_id = %payload.session_id,
                     workspace_id = %payload.workspace_id,
@@ -848,10 +937,16 @@ impl Worker {
             // human-in-the-loop. Until then it is treated as a stop without the
             // latch: the turn does not run, and the next one re-evaluates.
             Verdict::Suspended => {
+                let why = decision.why();
                 tracing::info!(
                     session_id = %payload.session_id,
                     "a turn was suspended before it ran"
                 );
+                // Resumable: a suspension takes no latch, so the next turn
+                // re-evaluates and runs the moment the hold lifts.
+                if payload.user_id.is_some() {
+                    self.announce_hold(payload, &why, true).await;
+                }
                 Ok(Err(Ok(None)))
             }
         }

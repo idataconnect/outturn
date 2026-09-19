@@ -45,7 +45,7 @@ export default function Chat() {
   /** Filled by the composer; read by the runtime as a message is sent. */
   const takeAttachments = useRef<(() => string) | null>(null)
 
-  const { runtime, error: chatError, stopping } = useChatRuntime(
+  const { runtime, error: chatError, held, stopping } = useChatRuntime(
     active,
     (title) => {
       if (!active) return
@@ -327,6 +327,21 @@ export default function Chat() {
             role="alert"
           >
             {shown}
+          </p>
+        )}
+        {/* A hold reads as a pause, not a fault: nothing was lost and nothing
+            is being retried. `status` rather than `alert` for the same reason
+            -- a screen reader should hear this as the state of the
+            conversation, not as something going wrong. */}
+        {held && !shown && (
+          <p
+            className="px-6 py-2 text-sm text-amber-700 dark:text-amber-400 border-b border-surface-200 dark:border-surface-800"
+            role="status"
+          >
+            {held.message}
+            {held.resumable
+              ? ' \u2014 this will carry on by itself once the hold is lifted.'
+              : ' \u2014 send a message to start the conversation again once the hold is lifted.'}
           </p>
         )}
         <div className="flex-1 min-h-0">
