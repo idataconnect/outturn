@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM rust:1 AS builder
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
 # Cargo validates every [[test]] path when parsing the manifest, even for a
 # binary-only build and even for targets behind a feature nobody asked for.
