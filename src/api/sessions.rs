@@ -45,20 +45,53 @@ pub async fn list_sessions(
     ))
 }
 
-/// Whether this caller may read somebody's conversation.
+/// Whether having started a conversation is enough on its own.
 ///
-/// Their own always, whoever else may not: `agent_sessions.user_id` records who
-/// started it, so using an agent and seeing your own history is one permission
-/// and reading everybody's is another.
-async fn readable(
+/// `agent_sessions.user_id` records who started it, and for most of what can
+/// be done to a conversation that settles it: your own history is yours to
+/// read, rename and delete whoever else is shut out, and stopping a turn is
+/// never the dangerous direction.
+///
+/// Sending is the exception, and it is not a detail. A narrowing says which
+/// agents a person may use, and a person who keeps an old thread open keeps
+/// using one -- its tools, its skills, the workspace's allowance -- for as
+/// long as they like. Refusing new sessions while leaving old ones live
+/// narrows the roster and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// Started it, so it is theirs.
+    Suffices,
+    /// Started it, and that is not the question being asked.
+    Insufficient,
+}
+
+/// Loads a conversation and proves the caller may act on it, together.
+///
+/// One function rather than a lookup and a check, because the check was opt-in
+/// before and four handlers did not opt in: narrowing held on reads and not on
+/// rename, delete, send or cancel. A handler that cannot get the session
+/// without naming the authority it is acting under cannot forget the authority,
+/// and the next write endpoint inherits the guard rather than having to
+/// remember it.
+///
+/// A write is narrowed wherever its read is. Holding `sessions:delete`
+/// workspace-wide while narrowed to the support agent has to mean the
+/// accounting agent's conversations cannot be deleted either -- otherwise the
+/// narrowing hides conversations it leaves fully writable to whoever has the
+/// id, and ids travel in URLs.
+async fn session_for(
     state: &ApiState,
     claims: &crate::auth::SessionClaims,
-    session: &AgentSession,
-) -> Result<(), ApiError> {
-    if session.user_id == Some(claims.subject) {
-        return Ok(());
+    id: Uuid,
+    authority: Authority,
+    ownership: Ownership,
+) -> Result<AgentSession, ApiError> {
+    let session = state.chat.get_session(claims.workspace_id, id).await?;
+    if ownership == Ownership::Suffices && session.user_id == Some(claims.subject) {
+        return Ok(session);
     }
-    super::router::require_for_agent(state, claims, Authority::SessionsRead, session.agent_id).await
+    super::router::require_for_agent(state, claims, authority, session.agent_id).await?;
+    Ok(session)
 }
 
 /// Starting a session is how a user gets a fresh context: history is per
@@ -113,8 +146,14 @@ pub async fn get_messages(
     // workspace-scoped. It also has to happen before the cursor is used: a
     // cursor names a message, and reading one from another workspace's session
     // must fail on the session rather than on the row it points at.
-    let session = state.chat.get_session(claims.workspace_id, id).await?;
-    readable(&state, &claims, &session).await?;
+    let _session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsRead,
+        Ownership::Suffices,
+    )
+    .await?;
 
     let limit = query
         .limit
@@ -147,6 +186,17 @@ pub async fn rename_session(
     if title.chars().count() > super::naming::MAX_TITLE_CHARS {
         return Err((StatusCode::BAD_REQUEST, "title is too long".into()));
     }
+    // Read before written, for the agent it belongs to: the rename itself is
+    // scoped to the workspace and would otherwise land on any session in it.
+    let _existing = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsUpdate,
+        Ownership::Suffices,
+    )
+    .await?;
+
     let session = state.chat.rename_session(claims.workspace_id, id, title).await?;
     super::naming::announce(&state.pool, &session).await;
     Ok(Json(session))
@@ -158,6 +208,15 @@ pub async fn delete_session(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsDelete).await?;
+    let _session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsDelete,
+        Ownership::Suffices,
+    )
+    .await?;
+
     state.chat.delete_session(claims.workspace_id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -194,7 +253,16 @@ pub async fn send_message(
         return Err((StatusCode::BAD_REQUEST, "message must not be empty".into()));
     }
 
-    let session = state.chat.get_session(claims.workspace_id, id).await?;
+    // `Insufficient`: having started this thread is not permission to keep
+    // talking to an agent somebody has since narrowed away.
+    let session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsCreate,
+        Ownership::Insufficient,
+    )
+    .await?;
 
     let message = state
         .chat
@@ -310,8 +378,22 @@ pub async fn cancel_turn(
     let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
 
     // Proves the session belongs to this workspace before anything is looked
-    // up by it, so a job id cannot be reached through somebody else's session.
-    let _ = state.chat.get_session(claims.workspace_id, id).await?;
+    // up by it, so a job id cannot be reached through somebody else's session,
+    // and narrowed the same way sending is: stopping somebody else's turn is
+    // acting on their conversation.
+    //
+    // `Suffices` unlike sending, though. Stopping is the safe direction: a
+    // person narrowed away from an agent can no longer start turns on an old
+    // thread, and refusing to let them stop one already running would leave
+    // them watching something they cannot reach spend the allowance.
+    let _session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsCreate,
+        Ownership::Suffices,
+    )
+    .await?;
 
     let Some(job_id) = jobs::live_turn_for_session(&state.pool, claims.workspace_id, id)
         .await

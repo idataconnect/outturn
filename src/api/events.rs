@@ -46,6 +46,13 @@ pub async fn poll(
 
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_LIMIT);
 
+    // The same narrowing the session list and the message read already apply.
+    // Without it a person scoped to one agent is refused the transcript and
+    // then served the same words here as they are streamed -- the feed is the
+    // conversation, arriving a little earlier.
+    let reach = super::router::reach_of(&state, &claims).await?;
+    let visible = events::Visible::of(&reach, claims.subject);
+
     // Events are read against the token's workspace, never a caller-supplied one,
     // so a cursor cannot be used to reach across workspaces.
     let found = events::wait_for(
@@ -57,11 +64,27 @@ pub async fn poll(
         limit,
         POLL_TIMEOUT,
         Arc::clone(&state.shutdown).notified_owned(),
+        visible.as_ref(),
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let cursor = found.last().map(|e| e.id).unwrap_or(query.after);
+    // Over what was filtered out as well as what came back. A narrowed caller
+    // whose window held nothing for them would otherwise be handed their own
+    // cursor back and re-poll from it forever, rescanning a span that only
+    // grows -- so the cursor moves to the end of the window that was examined,
+    // which is bounded by the same limit the read used and therefore skips
+    // nothing that has yet to arrive.
+    let cursor = match found.last() {
+        Some(last) => last.id,
+        None if visible.is_some() => {
+            events::watermark(&state.pool, claims.workspace_id, query.session_id, query.after, limit)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .unwrap_or(query.after)
+        }
+        None => query.after,
+    };
 
     Ok(Json(PollResponse {
         events: found,

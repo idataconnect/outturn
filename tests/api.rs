@@ -261,6 +261,29 @@ impl Harness {
         cookie.expect("login must set a session cookie")
     }
 
+    /// A session with one message in it, so the feed has something to carry.
+    async fn session_with_a_message(&self, token: &str, agent: Uuid, text: &str) -> Uuid {
+        let (_, body) = self
+            .post(
+                "/v1/agent-sessions",
+                Some(token),
+                &format!(r#"{{"agent_id":"{agent}","title":"t"}}"#),
+            )
+            .await;
+        let id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        self.post(
+            &format!("/v1/agent-sessions/{id}/messages"),
+            Some(token),
+            &serde_json::json!({ "content": text }).to_string(),
+        )
+        .await;
+        id
+    }
+
     async fn make_workspace(&self, name: &str, slug: &str) -> Uuid {
         let id = self.make_bare_workspace(name, slug).await;
         // As the API does on creation: a workspace with no roles is one nobody
@@ -3614,4 +3637,276 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
     let (_, body) = h.get("/v1/scopes", Some(&admin)).await;
     let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("scopes");
     assert!(rows.is_empty(), "a cleared scope was still listed: {body}");
+}
+
+/// Narrowing holds on writes, not only on reads.
+///
+/// `scope::is_narrowed` names all four session authorities, and the module doc
+/// says a write is narrowed wherever its read is -- but only the reads went
+/// through `require_for_agent`, so somebody narrowed to one agent could delete,
+/// rename, post into and stop another agent's conversations. Session ids travel
+/// in URLs, so "they would have to guess the id" was never the guarantee.
+#[tokio::test]
+async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
+    use outturn::api::scope::ScopeStore;
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let owner = h
+        .login_as("owner@acme.example", None, Some((acme, "admin")))
+        .await;
+    let narrowed = h
+        .login_as("narrowed@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let mut ids = Vec::new();
+    for slug in ["accounting", "support"] {
+        let (_, body) = h
+            .post(
+                "/v1/agents",
+                Some(&owner),
+                &format!(r#"{{"name":"{slug}","slug":"{slug}","system_prompt":"x"}}"#),
+            )
+            .await;
+        ids.push(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        );
+    }
+    let (accounting, support) = (ids[0], ids[1]);
+
+    // Somebody else's conversation, with the agent the narrowing excludes.
+    // Theirs rather than the caller's, because a person's own session is their
+    // own whichever agent it is with -- that exemption is deliberate, and
+    // testing against it would prove nothing.
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&owner),
+            &format!(r#"{{"agent_id":"{support}","title":"theirs"}}"#),
+        )
+        .await;
+    let theirs: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-sessions/{theirs}/messages"),
+            Some(&owner),
+            r#"{"content":"something private"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "owner could not post: {body}");
+
+    // And one of the caller's own, so the feed below has something to return
+    // rather than parking for the full long-poll timeout.
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&narrowed),
+            &format!(r#"{{"agent_id":"{accounting}","title":"mine"}}"#),
+        )
+        .await;
+    let mine: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    h.post(
+        &format!("/v1/agent-sessions/{mine}/messages"),
+        Some(&narrowed),
+        r#"{"content":"mine"}"#,
+    )
+    .await;
+
+    // And one of the caller's own with the agent they are about to lose,
+    // started while they still could.
+    let mine_with_support = h.session_with_a_message(&narrowed, support, "started early").await;
+
+    let me: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("narrowed@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the account that logged in");
+    h.scopes.set(acme, me, &[accounting]).await.expect("set scope");
+
+    // The read was already refused. Stated here so a regression that loosens
+    // it fails beside the writes rather than silently.
+    let (status, _) = h
+        .get(&format!("/v1/agent-sessions/{theirs}/messages"), Some(&narrowed))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the read stopped being narrowed");
+
+    let (status, body) = h
+        .send(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/agent-sessions/{theirs}"))
+                .header("authorization", format!("Bearer {narrowed}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"renamed by somebody else"}"#))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "rename was not narrowed: {body}");
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-sessions/{theirs}/messages"),
+            Some(&narrowed),
+            r#"{"content":"posting into a conversation I cannot read"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "send was not narrowed: {body}");
+
+    let (status, body) = h
+        .post(&format!("/v1/agent-sessions/{theirs}/cancel"), Some(&narrowed), "")
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "cancel was not narrowed: {body}");
+
+    let (status, body) = h
+        .send(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/agent-sessions/{theirs}"))
+                .header("authorization", format!("Bearer {narrowed}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "delete was not narrowed: {body}");
+
+    // The conversation is still there, and still named what its owner named it.
+    let (status, body) = h
+        .get(&format!("/v1/agent-sessions/{theirs}/messages"), Some(&owner))
+        .await;
+    assert_eq!(status, StatusCode::OK, "the owner lost their session: {body}");
+
+    // Sending into their own session with the excluded agent is refused too.
+    // Having started a thread is not permission to keep using an agent
+    // somebody has since narrowed away: the tools, the skills and the
+    // workspace's allowance are all still reachable through it, and an
+    // exemption here would narrow the roster and nothing else.
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-sessions/{mine_with_support}/messages"),
+            Some(&narrowed),
+            r#"{"content":"still talking to the agent I lost"}"#,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an old thread kept an excluded agent reachable: {body}"
+    );
+
+    // Reading and stopping that same thread are still theirs. Stopping is the
+    // safe direction, and refusing it would leave somebody watching an agent
+    // they cannot reach spend the allowance.
+    let (status, _) = h
+        .get(
+            &format!("/v1/agent-sessions/{mine_with_support}/messages"),
+            Some(&narrowed),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "their own history stopped being theirs");
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{mine_with_support}/cancel"),
+            Some(&narrowed),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "stopping their own turn was refused");
+}
+
+/// The event feed is narrowed the same way the transcript is.
+///
+/// The feed carries the conversation as it is written -- the same words, a
+/// little earlier -- so a narrowing that stopped at the transcript would
+/// refuse the history and stream the present. See docs/authorities.md.
+#[tokio::test]
+async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
+    use outturn::api::scope::ScopeStore;
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let owner = h
+        .login_as("owner@acme.example", None, Some((acme, "admin")))
+        .await;
+    let narrowed = h
+        .login_as("narrowed@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let mut ids = Vec::new();
+    for slug in ["accounting", "support"] {
+        let (_, body) = h
+            .post(
+                "/v1/agents",
+                Some(&owner),
+                &format!(r#"{{"name":"{slug}","slug":"{slug}","system_prompt":"x"}}"#),
+            )
+            .await;
+        ids.push(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        );
+    }
+    let (accounting, support) = (ids[0], ids[1]);
+
+    let theirs = h.session_with_a_message(&owner, support, "something private").await;
+    let mine = h.session_with_a_message(&narrowed, accounting, "mine").await;
+
+    let me: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("narrowed@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the account that logged in");
+    h.scopes.set(acme, me, &[accounting]).await.expect("set scope");
+
+    let (status, body) = h
+        .get(
+            "/v1/events?after=00000000-0000-0000-0000-000000000000&limit=500",
+            Some(&narrowed),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let feed: serde_json::Value = serde_json::from_str(&body).expect("events");
+    let events = feed["events"].as_array().expect("events array");
+    assert!(
+        events.iter().any(|e| e["session_id"] == serde_json::json!(mine.to_string())),
+        "the caller's own events were filtered out too: {body}"
+    );
+    assert!(
+        !events.iter().any(|e| e["session_id"] == serde_json::json!(theirs.to_string())),
+        "an agent the caller was never given streamed through the feed: {body}"
+    );
+
+    // The cursor moves over what was filtered out. Left where it was, the next
+    // poll rescans the same span and the one after a longer one -- a busy
+    // agent the caller cannot see turning an idle reader into a scan of the
+    // day's events on every notification.
+    let cursor = feed["cursor"].as_str().expect("cursor");
+    let newest: Uuid = sqlx::query_scalar(
+        "select id from events where workspace_id = $1 order by id desc limit 1",
+    )
+    .bind(acme)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("newest event");
+    assert_eq!(
+        cursor,
+        newest.to_string(),
+        "the cursor stopped at the last visible event instead of the end of the window: {body}"
+    );
 }

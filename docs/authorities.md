@@ -76,10 +76,37 @@ never "this person may do Y".
 
 ## Narrowing an authority to some agents
 
-Half built. `user_agent_scopes` holds the grants, `ScopeStore` resolves and
-caches them, and `require_for_agent` is the guard. Starting a conversation is
-narrowed, reading one is narrowed with your own always readable, and the session
-listing filters rather than refusing.
+`user_agent_scopes` holds the grants, `ScopeStore` resolves and caches them, and
+`require_for_agent` is the guard. Starting a conversation is narrowed, and so is
+everything done to one afterwards: reading it, renaming it, deleting it, sending
+into it and stopping its turn. The session listing filters rather than refusing.
+
+A write is narrowed wherever its read is. The guard was opt-in per handler once,
+and four of them did not opt in -- so a person narrowed to the support agent was
+refused the accounting agent's transcripts and could still delete them, rename
+them and post into them, with nothing between them and it but knowing an id, and
+ids travel in URLs. `sessions::session_for` now loads the conversation and
+proves the authority together, so a handler cannot obtain the session without
+naming what it is acting under, and the next write endpoint inherits the guard
+instead of having to remember it.
+
+Having started a conversation settles most of what can be done to it: your own
+history is yours to read, rename, delete and stop. It does not settle sending.
+A narrowing says which agents a person may use, and somebody who keeps an old
+thread open keeps using one -- its tools, its skills, the workspace's allowance
+-- so an exemption there would narrow the roster and nothing else. Stopping a
+turn stays exempt because it is the safe direction: refusing it would leave
+somebody watching an agent they cannot reach spend the allowance.
+
+The event feed narrows too, and has to. `/v1/events` carries the conversation as
+it is written -- the same words the transcript endpoint serves, arriving a
+little earlier -- so a narrowing that stopped at the transcript would refuse the
+history and stream the present. The filter is applied inside the query rather
+than to the rows that come back: a page filtered afterwards can come back empty
+and read as "nothing yet", which for a long poll is a request that returns
+instantly and forever. A caller narrowed to nothing in a window is given a
+watermark instead, so their cursor still moves past what they could not see and
+the next poll does not rescan the same span.
 
 An agent's files narrow with its conversations -- a transcript says what was
 said and a file is what somebody uploaded, both being what the agent has done --

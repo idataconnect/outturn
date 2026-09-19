@@ -65,6 +65,7 @@ async fn events_return_immediately_when_already_present() {
         100,
         Duration::from_secs(5),
         std::future::pending(),
+        None,
     )
     .await
     .expect("wait");
@@ -101,6 +102,7 @@ async fn long_poll_wakes_on_notify() {
         100,
         Duration::from_secs(10),
         std::future::pending(),
+        None,
     )
     .await
     .expect("wait");
@@ -137,6 +139,7 @@ async fn long_poll_returns_empty_on_timeout() {
         100,
         Duration::from_secs(25),
         std::future::pending(),
+        None,
     )
     .await
     .expect("wait");
@@ -178,6 +181,7 @@ async fn shutdown_releases_parked_poll() {
         100,
         Duration::from_secs(30),
         async move { notify.notified().await },
+        None,
     )
     .await
     .expect("wait");
@@ -215,6 +219,7 @@ async fn session_scoped_poll_ignores_other_sessions() {
         100,
         Duration::from_millis(500),
         std::future::pending(),
+        None,
     )
     .await
     .expect("wait");
@@ -245,6 +250,7 @@ async fn cursor_advances_and_does_not_repeat() {
         100,
         Duration::from_millis(500),
         std::future::pending(),
+        None,
     )
     .await
     .expect("wait");
@@ -610,7 +616,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
 
     // The client polls from the cursor the transcript was read at. Nothing
     // behind it may come back, or the content would be appended to itself.
-    let replayed = events::since(pool, workspace, Some(session_id), history.cursor, 100)
+    let replayed = events::since(pool, workspace, Some(session_id), history.cursor, 100, None)
         .await
         .expect("since");
     assert!(
@@ -663,7 +669,7 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     .await
     .expect("delta");
 
-    let arrived = events::since(pool, workspace, Some(session_id), history.cursor, 100)
+    let arrived = events::since(pool, workspace, Some(session_id), history.cursor, 100, None)
         .await
         .expect("since");
     assert_eq!(arrived.len(), 1, "only what the content does not already cover");
@@ -2386,4 +2392,145 @@ async fn cancelling_says_what_it_actually_did() {
         "the request must outlive the call that made it, or the pod running \
          the turn never finds out"
     );
+}
+
+/// A narrowed caller is never shown another agent's events.
+///
+/// The feed carries the conversation as it is written, so a narrowing that
+/// stopped at the transcript would refuse the history and stream the present.
+/// Pinned at the store rather than only through the API because the filter is
+/// in the query -- and it is written out twice there, once for a session-scoped
+/// poll and once for a workspace-wide one, since `sqlx::query` takes a literal
+/// and the partial index on `(session_id, id)` is lost to an `or`-guard. Two
+/// copies that must agree; this is what says they do.
+#[tokio::test]
+async fn a_narrowed_caller_is_never_shown_another_agents_events() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let bus = EventBus::spawn(pool.clone());
+
+    let (mine, mine_agent, subject) = session_with_agent(pool, workspace).await;
+    let (theirs, theirs_agent, _) = session_with_agent(pool, workspace).await;
+
+    events::append(pool, workspace, Some(theirs), "chat.message", serde_json::json!({}))
+        .await
+        .expect("append");
+    let ours = events::append(pool, workspace, Some(mine), "chat.message", serde_json::json!({}))
+        .await
+        .expect("append");
+
+    let visible = events::Visible::of(
+        &outturn::api::scope::Reach::of([mine_agent].into_iter().collect()),
+        subject,
+    )
+    .expect("narrowed to one agent");
+
+    // Workspace-wide: the other agent's session is filtered out in the query.
+    let found = events::since(pool, workspace, None, Uuid::nil(), 100, Some(&visible))
+        .await
+        .expect("since");
+    assert_eq!(found.len(), 1, "a narrowing let another agent through: {found:?}");
+    assert_eq!(found[0].id, ours);
+
+    // Session-scoped at the same session: the other copy of the clause.
+    let found = events::wait_for(
+        pool,
+        &bus,
+        workspace,
+        Some(theirs),
+        Uuid::nil(),
+        100,
+        Duration::from_millis(300),
+        std::future::pending(),
+        Some(&visible),
+    )
+    .await
+    .expect("wait");
+    assert!(
+        found.is_empty(),
+        "the session-scoped copy of the filter disagreed with the workspace-wide one: {found:?}"
+    );
+
+    let _ = theirs_agent;
+    finish!(db);
+}
+
+/// A narrowed caller's cursor moves over events they cannot see.
+///
+/// The cursor is taken from what the caller was handed, so a window holding
+/// nothing for them used to leave it exactly where it was -- and the next poll
+/// rescanned the same span, and the one after a longer one. A busy agent they
+/// cannot see turned an idle reader into a scan of the day's events on every
+/// notification. The watermark is the end of the window that *was* examined,
+/// which is why it can move without skipping anything still to arrive.
+#[tokio::test]
+async fn a_watermark_moves_a_cursor_over_events_that_were_filtered_out() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    let (theirs, _, _) = session_with_agent(pool, workspace).await;
+
+    let mut last = Uuid::nil();
+    for _ in 0..3 {
+        last = events::append(pool, workspace, Some(theirs), "chat.delta", serde_json::json!({}))
+            .await
+            .expect("append");
+    }
+
+    let high = events::watermark(pool, workspace, None, Uuid::nil(), 100)
+        .await
+        .expect("watermark");
+    assert_eq!(high, Some(last), "the watermark did not reach the end of the window");
+
+    // Bounded by the same limit the read uses, so nothing later is skipped.
+    let first_only = events::watermark(pool, workspace, None, Uuid::nil(), 1)
+        .await
+        .expect("watermark");
+    assert!(
+        first_only.is_some() && first_only != Some(last),
+        "the watermark ran past the window it was asked about: {first_only:?}"
+    );
+
+    finish!(db);
+}
+
+/// A session belonging to a fresh agent, and who started it.
+async fn session_with_agent(
+    pool: &sqlx::PgPool,
+    workspace: Uuid,
+) -> (Uuid, Uuid, Uuid) {
+    let user_id = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, $2)")
+        .bind(user_id)
+        .bind("Test")
+        .execute(pool)
+        .await
+        .expect("user");
+
+    let agent_id = Uuid::now_v7();
+    sqlx::query("insert into agents (id, workspace_id, name, slug) values ($1, $2, $3, $4)")
+        .bind(agent_id)
+        .bind(workspace)
+        .bind("A")
+        .bind(format!("a-{}", agent_id.simple()))
+        .execute(pool)
+        .await
+        .expect("agent");
+
+    let store: std::sync::Arc<dyn outturn::api::chat::ChatStore> =
+        std::sync::Arc::new(outturn::api::chat::PostgresChatStore::new(pool.clone()));
+    let session = store
+        .create_session(
+            workspace,
+            user_id,
+            outturn::api::chat::CreateSession {
+                agent_id,
+                title: String::new(),
+                account: None,
+            },
+        )
+        .await
+        .expect("session");
+
+    (session.id, agent_id, user_id)
 }
