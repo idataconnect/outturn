@@ -110,9 +110,16 @@ required-features = ["integration-tests"]
 name = "queue_and_events"
 required-features = ["integration-tests"]
 
+# Drives the real component against a real gateway and whatever model it
+# routes to. `live-providers` rather than `integration-tests` for the reason
+# that flag exists: the gateway a developer has running may be pointed at a
+# paid provider, and running the suite is not consent to be billed for a model
+# writing out the numbers one to twenty. The fake-gateway suite asserts the
+# same three things -- deltas arrive, they are more than one, and they match
+# the final reply -- in under a second and against nobody's key.
 [[test]]
 name = "agent_component"
-required-features = ["integration-tests"]
+required-features = ["live-providers"]
 
 # Uses a scripted gateway rather than a live model, so it needs no services --
 # but it is the most expensive suite here, so it waits to be asked for.

@@ -1,11 +1,19 @@
-//! Runs the default agent component against a live gateway.
+//! Runs the default agent component against a live gateway and a real model.
 //!
-//! Built only under the integration-tests feature. Needs GATEWAY_URL and a
-//! reachable model:
+//! Behind `live-providers`, not `integration-tests`, because the gateway this
+//! reaches may be pointed at a provider that charges: the flag is the consent,
+//! and having services running is not the same sentence as being willing to
+//! pay for a model to write out the numbers one to twenty.
+//!
+//! What it adds over `agent_component_fake`, which asserts the same three
+//! things in under a second, is that the gateway is a real process and the
+//! model is a real one -- which is how the gemma4-against-llama3.1 streaming
+//! difference was found. Worth running before a release; not worth running on
+//! every push.
 //!
 //!   kubectl port-forward svc/outturn-gateway 18091:8081
 //!   GATEWAY_URL=http://localhost:18091 \\
-//!     cargo test --features integration-tests --test agent_component
+//!     cargo test --features live-providers --test agent_component
 
 use std::sync::{Arc, Mutex};
 
