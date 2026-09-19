@@ -20,3 +20,14 @@
 :root.dark {
   color-scheme: dark;
 }
+
+/*
+ * Half Tailwind's default spin. At 1s the loaders read as urgency -- something
+ * is wrong and it is hurrying -- when all they mean is that a reply is on its
+ * way. Set as the theme's animation token rather than as a duration on each
+ * `animate-spin`, so every spinner in the app already agrees and one added
+ * later is right without anybody remembering this.
+ */
+@theme {
+  --animate-spin: spin 2s linear infinite;
+}
