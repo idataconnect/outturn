@@ -1,4 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
+import type { ReactNode } from 'react'
 import { Check, LoaderCircle, TriangleAlert } from 'lucide-react'
 
 /**
@@ -49,7 +50,11 @@ function errorMessage(details: string): string {
  * The action reads in the present tense either way -- "Fetching..." -- so
  * the icon is what says whether that is happening or has happened.
  */
-export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
+export default function ToolCall({
+  toolName,
+  args,
+  children,
+}: ToolCallMessagePartProps & { children?: ReactNode }) {
   const action = typeof args?.action === 'string' ? args.action : ''
   const isError = args?.isError === true
   const pending = args?.pending === true && !isError
@@ -102,6 +107,8 @@ export default function ToolCall({ toolName, args }: ToolCallMessagePartProps) {
           ) : (
             <span className="font-mono text-surface-700 dark:text-surface-300">{toolName}</span>
           )}
+
+          {children}
 
           {isError && details && (
             <p className="mt-1 text-red-700 dark:text-red-300">{errorMessage(details)}</p>
