@@ -290,6 +290,19 @@ impl ChatStore for PostgresChatStore {
         before: Option<Uuid>,
         limit: i64,
     ) -> Result<History, ChatError> {
+        // Summaries are served, not hidden. The reader's complaint was never
+        // that a summary is here -- it is that an unmarked one reads as
+        // something the agent said to them. AGENTS.md is explicit that the
+        // mark is what fixes that, and for two reasons: "both so a reader can
+        // see what happened, and so the next compaction knows it is compacting
+        // a summary". Withholding it would leave a person unable to see that
+        // their conversation had been compacted at all, which is the quiet
+        // bound that document warns against twice.
+        //
+        // The mark travels in `metadata` and the client renders it as a
+        // summary. Filtering here also short-changed the page: the rows come
+        // back under a SQL `limit`, so dropping some after the fact returns
+        // fewer than asked for while `has_more` still counts them.
         self.read_history(session_id, before, Some(limit)).await
     }
 

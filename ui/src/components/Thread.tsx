@@ -124,7 +124,26 @@ function AssistantMessage() {
   const empty = useAuiState((s) =>
     s.message.content.every((part) => part.type === 'text' && part.text === ''),
   )
+  // A compaction summary, which the agent wrote about the conversation rather
+  // than said in it. Drawn across the width as a marked boundary instead of as
+  // a reply: everything above it is what the agent still remembers of what
+  // came before, and a reader who cannot see that their conversation was
+  // compacted cannot tell why it stopped referring to something.
+  const summary = useAuiState((s) => s.message.metadata.custom?.summary === true)
   if (empty) return null
+
+  if (summary) {
+    return (
+      <MessagePrimitive.Root className="flex justify-center">
+        <div className="w-full my-2 px-4 py-2 rounded-lg text-xs bg-surface-50 dark:bg-surface-900/60 border border-dashed border-surface-300 dark:border-surface-700 text-surface-600 dark:text-surface-400">
+          <p className="font-medium mb-1 uppercase tracking-wide text-[10px]">
+            Earlier messages, summarised
+          </p>
+          <MessagePrimitive.Parts components={{ Text: MarkdownText, Empty: Nothing }} />
+        </div>
+      </MessagePrimitive.Root>
+    )
+  }
 
   return (
     <MessagePrimitive.Root className="flex justify-start">

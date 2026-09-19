@@ -225,16 +225,52 @@ pub fn apply(conversation: Vec<Value>, summary: &str, through: usize) -> Vec<Val
     let mut out = Vec::with_capacity(conversation.len() - through + 1);
     out.push(serde_json::json!({
         "role": "assistant",
-        "parts": [{
-            "type": "text",
-            "text": format!(
-                "[summary of the earlier part of this conversation, which is no \
-                 longer visible]\n\n{summary}"
-            ),
-        }],
+        "parts": [{"type": "text", "text": framed(summary)}],
     }));
     out.extend(conversation.into_iter().skip(through));
     out
+}
+
+/// What a message's summary mark says it covers, if it carries one.
+///
+/// One reading of the mark, shared by everything that asks. Three places used
+/// to ask the question three ways -- key presence, a parsed uuid, an id
+/// compared against the newest mark -- and they disagreed on a mark that was
+/// present but unparseable: the reader hid such a message while the projection
+/// replayed it as ordinary speech, which is the summary both vanishing from
+/// the transcript and being answered by the agent as its own words.
+///
+/// Present-but-unreadable is treated as not a summary, deliberately. The
+/// alternative is hiding a message nobody can account for.
+pub fn mark_of(metadata: &Value) -> Option<uuid::Uuid> {
+    metadata
+        .get(SUMMARY_MARK)?
+        .as_str()?
+        .parse::<uuid::Uuid>()
+        .ok()
+}
+
+/// Whether this message is a summary at all, however its mark reads.
+///
+/// Broader than `mark_of`: a mark that is present but unreadable still means
+/// somebody wrote this as a summary, and the reader-facing transcript wants to
+/// know that even when the projection cannot act on it.
+pub fn is_summary(metadata: &Value) -> bool {
+    metadata.get(SUMMARY_MARK).is_some()
+}
+
+/// How a summary is labelled when it goes back to the model.
+///
+/// Shared by the turn that writes the summary and every turn that reads it
+/// back from storage, because the two producing different text would mean a
+/// conversation changed shape the moment it was reloaded. Without the label a
+/// summary replays as an ordinary thing the agent said, and an agent that
+/// reads its own summary as speech will answer it.
+pub fn framed(summary: &str) -> String {
+    format!(
+        "[summary of the earlier part of this conversation, which is no \
+         longer visible]\n\n{summary}"
+    )
 }
 
 #[cfg(test)]

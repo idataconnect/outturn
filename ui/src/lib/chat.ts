@@ -30,7 +30,15 @@ export type Message = {
   /** What the agent did on the way to this reply, and in what order it
    *  happened. `parts` is absent on messages stored before the order was
    *  kept; those are read as their text followed by their calls. */
-  metadata: { tool_calls?: ToolCallRecord[]; parts?: MessagePart[] }
+  metadata: {
+    tool_calls?: ToolCallRecord[]
+    parts?: MessagePart[]
+    /** Present when this message is a compaction summary standing in for the
+     *  conversation up to the id it names. Shown as a summary rather than as
+     *  something the agent said, so a reader can see that their conversation
+     *  was compacted and what it was replaced by. */
+    summary_through?: string
+  }
   /** How many deltas `content` already accounts for. */
   delta_next: number
   model: string | null

@@ -73,7 +73,25 @@ pub struct ChatTurnPayload {
 /// are not recovered; a turn that called tools three times replays as one
 /// batch. That is a faithful account of what was asked and answered, and a
 /// lossy one of when.
+/// The projection alone, for callers that do not need to name stored messages.
+#[cfg(test)]
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
+    projected_with_sources(messages).0
+}
+
+/// The projection, and which stored message each entry came from.
+///
+/// The sources exist because one stored message becomes up to three entries,
+/// so a position in the projection says nothing about a position in storage.
+/// Anything that has to name a stored message from a cut in the projection --
+/// which is what recording what a summary covers is -- has to be told rather
+/// than count.
+///
+/// Both halves come out of one walk. Computing them separately is how they
+/// come to disagree.
+fn projected_with_sources(
+    messages: &[super::chat::Message],
+) -> (Vec<serde_json::Value>, Vec<Uuid>) {
     // A stored summary stands in for everything it covers. The last one wins:
     // a later summary's range includes any earlier one, because each is
     // written from the projection the one before it produced.
@@ -83,26 +101,36 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
     // something is a bad turn rather than a bad archive.
     let covered = messages
         .iter()
-        .filter_map(|m| {
-            m.metadata
-                .get(super::chat::summarise::SUMMARY_MARK)
-                .and_then(|v| v.as_str())
-                .and_then(|id| id.parse::<Uuid>().ok())
-                .map(|through| (m.id, through))
-        })
+        .filter_map(|m| super::chat::summarise::mark_of(&m.metadata).map(|through| (m.id, through)))
         .next_back();
 
+    // The summary stands where what it replaced stood: in front of the tail
+    // that survived, not after it. Its id is minted when it is written, so it
+    // sorts after everything it covers *and* after the tail -- left in id
+    // order it arrives as the agent's most recent utterance, immediately
+    // before the new prompt, with the retained tail opening mid-conversation
+    // and nothing to say why. `summarise::apply` puts it at the front for the
+    // turn that writes it, and a conversation must not change shape the moment
+    // it is read back.
     let messages: Vec<&super::chat::Message> = match covered {
-        Some((summary_id, through)) => messages
-            .iter()
-            .filter(|m| m.id == summary_id || !(m.id <= through))
-            .collect(),
+        Some((summary_id, through)) => {
+            let mut out = Vec::with_capacity(messages.len());
+            out.extend(messages.iter().filter(|m| m.id == summary_id));
+            out.extend(
+                messages
+                    .iter()
+                    .filter(|m| m.id != summary_id && !(m.id <= through)),
+            );
+            out
+        }
         None => messages.iter().collect(),
     };
 
     let mut projected = Vec::with_capacity(messages.len());
+    let mut sources: Vec<Uuid> = Vec::with_capacity(messages.len());
 
     for message in messages {
+        let entries_before = projected.len();
         let calls: Vec<&serde_json::Value> = message
             .metadata
             .get("tool_calls")
@@ -132,10 +160,24 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
         };
 
         if calls.is_empty() {
+            // Every summary is labelled on the way out, not only the newest.
+            // An older one whose id sorts above the newest mark survives
+            // inside the retained tail, and unlabelled it replays as ordinary
+            // speech -- the agent reading its own summary as something it said
+            // and answering it, which is the failure `framed` exists to stop.
+            //
+            // Stored bare, because what is kept is what the model wrote and
+            // the label is how it is presented.
+            let text = if super::chat::summarise::is_summary(&message.metadata) {
+                super::chat::summarise::framed(&message.content)
+            } else {
+                message.content.clone()
+            };
             projected.push(serde_json::json!({
                 "role": message.role,
-                "parts": [{"type": "text", "text": message.content}],
+                "parts": [{"type": "text", "text": text}],
             }));
+            sources.extend(std::iter::repeat_n(message.id, projected.len() - entries_before));
             continue;
         }
 
@@ -206,9 +248,11 @@ fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
             }
         }
         flush(&mut open, &mut awaiting, &mut projected);
+        sources.extend(std::iter::repeat_n(message.id, projected.len() - entries_before));
     }
 
-    projected
+    debug_assert_eq!(projected.len(), sources.len(), "every entry came from somewhere");
+    (projected, sources)
 }
 
 /// The transcript as it stood when `prompt` was sent: nothing after it.
@@ -1102,7 +1146,12 @@ impl Worker {
             write_scopes: settings.write_scopes,
             read_scopes: settings.read_scopes,
             conversation: {
-                let projected = marked(project(&history), restarting_from.as_ref());
+                // Sources come from the unmarked projection: `marked` inserts
+                // its one entry immediately before the final message, which is
+                // past anything a summary cuts at, so the indices a cut uses
+                // mean the same in both.
+                let (projected, sources) = projected_with_sources(&history);
+                let projected = marked(projected, restarting_from.as_ref());
 
                 // Over budget is where compaction begins. A summary is tried
                 // first because it loses less: the early turns become a
@@ -1112,7 +1161,7 @@ impl Worker {
                 let projected = self
                     .summarised(
                         &projected,
-                        &history,
+                        &sources,
                         &system_prompt,
                         settings.context_budget,
                         payload.session_id,
@@ -1178,11 +1227,12 @@ impl Worker {
     async fn summarised(
         &self,
         conversation: &[serde_json::Value],
-        // What the conversation was projected from, so the summary can be
-        // stored against the last message it covers. The projection has no
+        // Which stored message each projected entry came from, so the summary
+        // can be stored against the last one it covers. The projection has no
         // ids in it -- it is what goes to the model -- and a summary that
-        // cannot say what it stands in for cannot be carried.
-        history: &[super::chat::Message],
+        // cannot say what it stands in for cannot be carried. Counting the two
+        // against each other is what went wrong before; this is told.
+        sources: &[uuid::Uuid],
         system_prompt: &str,
         budget: usize,
         session_id: uuid::Uuid,
@@ -1323,15 +1373,24 @@ impl Worker {
         // still done its job for this turn, and a failed write must not cost
         // the turn the user actually asked for.
         //
-        // Covered is everything before the tail that survived. Taken from the
-        // stored messages rather than from `through`, which indexes the
-        // projection -- and the projection may already have a summary standing
-        // where several messages were.
-        if let Some(through_id) = history
-            .len()
-            .checked_sub(summarise::TAIL_MESSAGES)
-            .and_then(|end| history.get(end.saturating_sub(1)))
-            .map(|m| m.id)
+        // Covered is the stored message the last summarised entry came from,
+        // which `sources` names outright. It used to be counted instead --
+        // `history.len() - TAIL_MESSAGES - 1` -- which assumed the projection
+        // and the stored rows were aligned from the end. They are not, and a
+        // stored summary breaks the alignment by exactly one: it is a single
+        // entry at the *front* of the projection while still being a row near
+        // the *end* of history, and the rows it hides are gone from one and
+        // present in the other. From the second summarisation round onward the
+        // count named a message the summary had never read, `project` then
+        // dropped it as covered, and every later mark sat above it -- one
+        // message silently out of context, permanently, per round.
+        //
+        // `through` indexes the marked projection, and `marked` inserts its
+        // one entry immediately before the final message, which is always
+        // after a cut that leaves `TAIL_MESSAGES` behind it. So indices below
+        // the cut mean the same thing in both, and the guard below is what
+        // says so rather than assuming it.
+        if let Some(through_id) = through.checked_sub(1).and_then(|last| sources.get(last)).copied()
         {
             self.store_summary(session_id, summary, through_id, model).await;
         }
@@ -1755,8 +1814,49 @@ mod projection_tests {
         let projected = project(&[first, second, summary, after]);
 
         assert_eq!(projected.len(), 2, "{projected:?}");
-        assert_eq!(projected[0]["parts"][0]["text"], "they discussed beginnings");
+        assert_eq!(
+            projected[0]["parts"][0]["text"],
+            super::super::chat::summarise::framed("they discussed beginnings")
+        );
         assert_eq!(projected[1]["parts"][0]["text"], "and then?");
+    }
+
+    /// A summary goes in front of the tail, whatever order it was stored in.
+    ///
+    /// The order this test uses is the only order storage ever produces: a
+    /// summary's id is minted when it is written, so it sorts after everything
+    /// it covers *and* after the tail that survived it. Read back in id order
+    /// it would arrive as the agent's most recent utterance, immediately
+    /// before the new prompt, with the tail opening mid-conversation and
+    /// nothing to say why.
+    ///
+    /// The tests above place it mid-list, which reads naturally and is a
+    /// position the insert order cannot produce -- so they agreed with the
+    /// live path by accident while the stored path disagreed.
+    #[test]
+    fn a_summary_stored_after_the_tail_still_projects_in_front_of_it() {
+        let first = message("user", "the long beginning", serde_json::json!({}));
+        let second = message("assistant", "a long answer", serde_json::json!({}));
+        let tail = message("user", "and then?", serde_json::json!({}));
+        // Written last, because that is when it was written.
+        let summary = message(
+            "assistant",
+            "they discussed beginnings",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+        );
+
+        let projected = project(&[first, second, tail, summary]);
+
+        assert_eq!(projected.len(), 2, "{projected:?}");
+        assert_eq!(
+            projected[0]["parts"][0]["text"],
+            super::super::chat::summarise::framed("they discussed beginnings"),
+            "the summary leads, and is labelled as one"
+        );
+        assert_eq!(
+            projected[1]["parts"][0]["text"], "and then?",
+            "the tail follows it"
+        );
     }
 
     /// The newest summary wins, and takes the older one with it.
@@ -1783,8 +1883,117 @@ mod projection_tests {
         let projected = project(&[first, older, middle, newer, after]);
 
         assert_eq!(projected.len(), 2, "{projected:?}");
-        assert_eq!(projected[0]["parts"][0]["text"], "a newer summary");
+        assert_eq!(
+            projected[0]["parts"][0]["text"],
+            super::super::chat::summarise::framed("a newer summary")
+        );
         assert_eq!(projected[1]["parts"][0]["text"], "and now?");
+    }
+
+    /// Any summary that reaches the model is labelled, not only the newest.
+    ///
+    /// Reached for defensively rather than because the writer produces it: in
+    /// practice a later summary always covers an earlier one, because the
+    /// earlier one leads the projection the later is written from, so it is
+    /// always the first thing the cut swallows. What this pins is the weaker
+    /// guarantee the labelling should rest on -- a summary that survives into
+    /// the tail for *any* reason is still presented as a summary. Bare, it
+    /// replays as ordinary speech, and the agent answers its own summary as
+    /// something it said.
+    ///
+    /// Constructed directly, with a newest mark that covers less than the one
+    /// before it. "The last one wins" permits that; nothing currently writes
+    /// it.
+    #[test]
+    fn any_summary_that_survives_into_the_tail_is_still_labelled() {
+        let first = message("user", "the long beginning", serde_json::json!({}));
+        let older = message(
+            "assistant",
+            "an older summary",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+        );
+        let middle = message("user", "more talk", serde_json::json!({}));
+        let newer = message(
+            "assistant",
+            "a newer summary",
+            // Deliberately covers only `first`, so `older` lands in the tail.
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+        );
+        let after = message("user", "and now?", serde_json::json!({}));
+
+        let projected = project(&[first, older, middle, newer, after]);
+
+        let texts: Vec<&str> = projected
+            .iter()
+            .map(|m| m["parts"][0]["text"].as_str().unwrap_or(""))
+            .collect();
+        assert!(
+            texts.contains(&super::super::chat::summarise::framed("an older summary").as_str()),
+            "a summary surviving in the tail replayed unlabelled: {texts:?}"
+        );
+    }
+
+    /// What a summary covers is named, not counted.
+    ///
+    /// The projection and the stored rows are not aligned from the end: a
+    /// stored summary is one entry at the front of the projection and one row
+    /// near the end of history, and the rows it hides are in one and not the
+    /// other. Counting `history.len() - TAIL - 1` therefore named a message
+    /// the summary had never read, which `project` then dropped as covered --
+    /// one message out of context permanently, per round, from the second
+    /// round onward.
+    #[test]
+    fn sources_name_the_stored_message_each_projected_entry_came_from() {
+        let first = message("user", "one", serde_json::json!({}));
+        let second = message("assistant", "two", serde_json::json!({}));
+        let third = message("user", "three", serde_json::json!({}));
+        let summary = message(
+            "assistant",
+            "the beginning, summarised",
+            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+        );
+        let ids = [first.id, second.id, third.id, summary.id];
+
+        let (projected, sources) = projected_with_sources(&[first, second, third, summary]);
+
+        assert_eq!(projected.len(), sources.len(), "an entry came from nowhere");
+        // The summary leads and is its own source; the tail follows and is its.
+        assert_eq!(sources[0], ids[3], "the summary did not name itself");
+        assert_eq!(sources[1], ids[2], "the tail did not name the message it came from");
+        assert!(
+            !sources.contains(&ids[0]) && !sources.contains(&ids[1]),
+            "a covered message was still projected"
+        );
+    }
+
+    /// One stored message becomes several entries, and each names it.
+    ///
+    /// This is why counting fails at all: a turn that called a tool projects
+    /// as the call, its result and the words after it -- three entries, one
+    /// row.
+    #[test]
+    fn a_turn_that_called_a_tool_names_one_source_per_entry() {
+        let calling = message(
+            "assistant",
+            "looking",
+            serde_json::json!({
+                "tool_calls": [call("c1", Some("{\"ok\":true}"))],
+                "parts": [
+                    {"type": "text", "text": "looking"},
+                    {"type": "call", "id": "c1"},
+                ],
+            }),
+        );
+        let id = calling.id;
+
+        let (projected, sources) = projected_with_sources(&[calling]);
+
+        assert!(projected.len() > 1, "the call did not expand: {projected:?}");
+        assert_eq!(projected.len(), sources.len());
+        assert!(
+            sources.iter().all(|s| *s == id),
+            "entries were attributed to a message they did not come from"
+        );
     }
 
     /// A latch lifted `ago_secs` ago, for the marker to describe.

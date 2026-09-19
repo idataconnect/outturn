@@ -145,7 +145,18 @@ export function annotate(
 const convertMessage = (message: Annotated): ThreadMessageLike => ({
   id: message.id,
   role: message.role === 'tool' ? 'assistant' : message.role,
-  metadata: { custom: { status: message.status ?? null } },
+  metadata: {
+    custom: {
+      status: message.status ?? null,
+      // A compaction summary is shown as one. It is stored as an assistant
+      // message because that is what it is -- a model wrote it -- but it was
+      // never said to the reader, and drawn as ordinary speech it reads as the
+      // agent summarising the conversation back at them unprompted. Marked
+      // here so the thread can draw it as the boundary it is: everything above
+      // it is what the agent now remembers of what came before.
+      summary: message.metadata.summary_through != null,
+    },
+  },
   content: parts(message),
 })
 

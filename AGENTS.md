@@ -490,7 +490,9 @@ together.
 
 ### Compaction
 
-Not built. The design, so it is not rediscovered:
+Built: `api::chat::summarise`, `worker::summarised` and `worker::store_summary`,
+under the `context_budget` setting, with the trim below it as the floor. The
+design, so it is not rediscovered:
 
 A transcript outlives any model's window, and the window is a property of the
 route rather than of the session — so a turn can arrive at a smaller context
@@ -532,6 +534,24 @@ replayed on every later turn, so its failure mode is quiet: a summary that
 misstates a decision becomes the record. Mark it as a summary in the
 transcript rather than folding it in as ordinary history — both so a reader can
 see what happened, and so the next compaction knows it is compacting a summary.
+
+The mark is `metadata.summary_through`, naming the last message the summary
+stands in for. It is what both halves of that sentence rest on, and each of them
+has already been got wrong once. Withholding summaries from the reader's page
+was tried and reverted: it left a person unable to see that their conversation
+had been compacted at all, which is the quiet bound this section warns against
+two paragraphs above. Serving them unmarked is the other failure — a paragraph
+summarising the reader's own conversation, presented as something the agent said
+to them. They are served, and the client draws them as the boundary they are.
+
+On the way *to* the model a summary is labelled too (`summarise::framed`), and
+every summary is, not only the newest: an older one can survive inside the
+retained tail, and unlabelled there the agent reads its own summary as something
+it said and answers it. What a summary covers is recorded from the projection's
+own account of which stored message each entry came from, never by counting the
+projection against the stored rows — they are not aligned, a stored summary
+breaks the alignment by exactly one, and counting silently dropped a message per
+round from every long session.
 
 Underneath all of it, a trim that cannot fail. No model call, so it works when
 the provider is down, the breaker is open, or the summary itself would not fit.
