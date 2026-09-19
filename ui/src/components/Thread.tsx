@@ -4,8 +4,10 @@ import { CircleSlash, CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square,
 import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 
+import { useMessageAge } from '../lib/useMessageAge'
 import type { MessageStatus } from '../lib/useChatRuntime'
 import MarkdownText, { UserMarkdownText } from './MarkdownText'
+import MessageAge from './MessageAge'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
 import { deleteFile, uploadPastedImage } from '../lib/chat'
@@ -101,11 +103,18 @@ function UserMessage() {
   const status = useAuiState(
     (s) => (s.message.metadata.custom?.status as MessageStatus | null | undefined) ?? null,
   )
+  const id = useAuiState((s) => s.message.id)
+  const { phrase, shown, handlers } = useMessageAge(id ?? '')
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
-      <div className="group user max-w-[75%] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white">
+      <div
+        {...handlers}
+        tabIndex={-1}
+        className="group user max-w-[75%] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
+      >
         <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
       </div>
+      <MessageAge phrase={phrase} shown={shown} align="right" />
       {status && <StatusLine status={status} />}
     </MessagePrimitive.Root>
   )
@@ -130,6 +139,10 @@ function AssistantMessage() {
   // came before, and a reader who cannot see that their conversation was
   // compacted cannot tell why it stopped referring to something.
   const summary = useAuiState((s) => s.message.metadata.custom?.summary === true)
+  const id = useAuiState((s) => s.message.id)
+  // Hooks run before the early returns below, so the age is wired up whether or
+  // not this particular message ends up drawn.
+  const { phrase, shown, handlers } = useMessageAge(id ?? '')
   if (empty) return null
 
   if (summary) {
@@ -146,8 +159,12 @@ function AssistantMessage() {
   }
 
   return (
-    <MessagePrimitive.Root className="flex justify-start">
-      <div className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100">
+    <MessagePrimitive.Root className="flex flex-col items-start">
+      <div
+        {...handlers}
+        tabIndex={-1}
+        className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100"
+      >
         {/* Tools show the verb the model wrote. A tool that shows more has a
             renderer in `toolRenderers` written for it specifically -- the
             fallback deliberately cannot, because whatever it did show would
@@ -160,6 +177,7 @@ function AssistantMessage() {
           }}
         />
       </div>
+      <MessageAge phrase={phrase} shown={shown} />
     </MessagePrimitive.Root>
   )
 }
