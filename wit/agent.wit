@@ -313,7 +313,8 @@ interface host {
     /// Names, matching the tools the guest exposes to the model; anything
     /// unrecognised is ignored, so a policy naming a tool this component does
     /// not have is harmless rather than fatal. An empty list defers
-    /// everything, which is the default.
+    /// everything, which is the default -- and is what the runtime sends
+    /// today, there being no policy yet that decides what to promote.
     ///
     /// Separate from `limits` because it is read once at the start of a turn,
     /// while `limits` is deliberately re-read every round to catch a stop

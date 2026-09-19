@@ -48,7 +48,8 @@ const LOAD_TOOLS: &str = "load_tools";
 /// Tools offered from the first round, without being asked for.
 ///
 /// The deployment's, not the component's: it comes from `host::eager_tools`,
-/// which the API fills from the agent's settings. A name here is offered
+/// and what the host puts there is the host's business -- today it sends
+/// nothing, so the default below is the whole of it. A name here is offered
 /// eagerly, a name absent is deferred, and nothing else decides it. Empty --
 /// the default -- defers everything, so every tool is reached through
 /// `load_tools`.
