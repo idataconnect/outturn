@@ -40,6 +40,10 @@ struct Harness {
     /// the platform's own credentials the way the platform does.
     minter: TokenMinter,
     roles: Arc<dyn outturn::api::role::RoleStore>,
+    /// The same instance the app holds. A second store would have a second
+    /// cache, and without the listener a test runs without, writing through
+    /// one would leave the other answering from before the write.
+    scopes: Arc<dyn outturn::api::scope::ScopeStore>,
 }
 
 /// What the test's pretend runtime presents to the work endpoints.
@@ -85,6 +89,12 @@ async fn harness() -> Harness {
         Arc::new(outturn::api::settings::PostgresSettingsStore::new(pool.clone()));
     let skills: Arc<dyn outturn::api::skill::SkillStore> =
         Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
+    // No invalidation listener: one per test would hold a connection each
+    // against a server the whole suite shares, and a test writing through this
+    // same instance clears the cache the app reads without needing one.
+    let scopes: Arc<dyn outturn::api::scope::ScopeStore> =
+        Arc::new(outturn::api::scope::PostgresScopeStore::new(pool.clone()));
+
     let state = Arc::new(ApiState::new(
         workspaces.clone(),
         users.clone(),
@@ -95,6 +105,7 @@ async fn harness() -> Harness {
         roles.clone(),
         usage.clone(),
         settings.clone(),
+        scopes.clone(),
         Some(Arc::new(outturn::runtime::storage::MemoryStorage::new())),
         validator,
         minter,
@@ -130,6 +141,7 @@ async fn harness() -> Harness {
         db,
         minter: test_minter,
         roles,
+        scopes,
     }
 }
 
@@ -3304,7 +3316,7 @@ async fn a_turn_that_finished_normally_does_not_latch() {
 /// talk to it. See docs/authorities.md.
 #[tokio::test]
 async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
-    use outturn::api::scope::{PostgresScopeStore, ScopeStore};
+    use outturn::api::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -3345,7 +3357,7 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
     }
 
     // Narrowed to accounting.
-    let scopes = PostgresScopeStore::new(h.db.pool.clone());
+    let scopes = &h.scopes;
     let me: Uuid = sqlx::query_scalar(
         "select user_id from user_identities where provider_subject = $1",
     )
@@ -3415,7 +3427,7 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
 /// read whoever else may not. See docs/authorities.md.
 #[tokio::test]
 async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
-    use outturn::api::scope::{PostgresScopeStore, ScopeStore};
+    use outturn::api::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -3478,7 +3490,7 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
     .fetch_one(&h.db.pool)
     .await
     .expect("the operator's account");
-    PostgresScopeStore::new(h.db.pool.clone())
+    h.scopes
         .set(acme, op_id, &[other])
         .await
         .expect("set scope");

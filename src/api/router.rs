@@ -72,6 +72,12 @@ impl ApiState {
         roles: Arc<dyn RoleStore>,
         usage: Arc<dyn super::usage::UsageStore>,
         settings: Arc<dyn super::settings::SettingsStore>,
+        // Passed in rather than built here, like the role store and for the
+        // same reason: its cache is only invalidated by the listener started
+        // beside it, and a second store built here would hold a second cache
+        // that nothing ever cleared. A test gets one without a listener, which
+        // is what keeps seventy of them from holding seventy connections.
+        scopes: Arc<dyn super::scope::ScopeStore>,
         storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
         auth: TokenValidator,
         minter: TokenMinter,
@@ -90,14 +96,7 @@ impl ApiState {
             roles,
             usage,
             settings,
-            // Built here rather than passed in: it needs only the pool, and a
-            // parameter for it would be one more thing every caller repeats.
-            scopes: {
-                let store = Arc::new(super::scope::PostgresScopeStore::new(pool.clone()));
-                store.spawn_invalidation();
-                store
-            },
-            
+            scopes,
             storage,
             auth,
             minter,

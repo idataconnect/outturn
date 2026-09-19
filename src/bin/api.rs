@@ -74,6 +74,12 @@ async fn main() {
     let role_store = PostgresRoleStore::new(pool.clone());
     role_store.spawn_invalidation();
     let roles: Arc<dyn RoleStore> = Arc::new(role_store);
+    // The same for agent scopes. The store handed to the state is the one the
+    // listener clears, which is the whole point: a second store would hold a
+    // second cache that nothing ever invalidated.
+    let scope_store = outturn::api::scope::PostgresScopeStore::new(pool.clone());
+    scope_store.spawn_invalidation();
+    let scopes: Arc<dyn outturn::api::scope::ScopeStore> = Arc::new(scope_store);
     let usage: Arc<dyn UsageStore> = Arc::new(PostgresUsageStore::new(pool.clone()));
     let settings: Arc<dyn SettingsStore> = Arc::new(PostgresSettingsStore::new(pool.clone()));
 
@@ -141,6 +147,7 @@ async fn main() {
         roles,
         usage.clone(),
         settings.clone(),
+        scopes,
         storage,
         validator,
         minter,
