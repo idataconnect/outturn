@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { fileUrl, isMarkdown, readPreview, type Preview } from '../lib/chat'
 import { ApiError } from '../lib/api'
 import { iconButton } from '../lib/buttons'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 /**
  * A look at one stored file, over the conversation.
@@ -60,51 +61,16 @@ export default function FilePreview({
     }
   }, [sessionId, path])
 
-  // Escape closes, and focus starts inside rather than wherever it was. A
-  // dialog that cannot be dismissed from the keyboard is one somebody is
-  // trapped in.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null
-    closeButton.current?.focus()
-
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        onClose()
-        return
-      }
-      if (event.key !== 'Tab') return
-      // Kept inside: tabbing out of a modal lands on a page that is not
-      // reachable by pointer, which is worse than nothing.
-      const focusable = dialog.current?.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )
-      if (!focusable || focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('keydown', onKey, true)
-      // Put back where it came from, so closing does not dump the caret at
-      // the top of the document.
-      opener?.focus?.()
-    }
-  }, [onClose])
+  // Focus starts on the close button rather than the first thing in the
+  // dialog, so Escape has a visible counterpart for a pointer user who tabbed
+  // in.
+  useFocusTrap(dialog, onClose, closeButton)
 
   const name = path.split('/').pop() ?? path
 
   return (
     // The backdrop closes on a click, which is a convenience for a pointer.
-    // Keyboard users have Escape, handled above, so this carries no key
+    // Keyboard users have Escape, handled by the focus trap, so this carries no key
     // handler of its own and nothing here is reachable by tab.
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4"

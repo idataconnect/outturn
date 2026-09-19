@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent } from 'react'
 import { OctagonX } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 /**
  * Asks why something is being stopped, then stops it.
@@ -28,40 +29,9 @@ export default function StopDialog({
   const field = useRef<HTMLTextAreaElement>(null)
   const titleId = useId()
 
-  // Escape closes, focus starts in the reason and stays inside, and goes back
-  // where it came from on close -- as in FilePreview.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null
-    field.current?.focus()
-
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        onClose()
-        return
-      }
-      if (event.key !== 'Tab') return
-      const focusable = dialog.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )
-      if (!focusable || focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('keydown', onKey, true)
-      opener?.focus?.()
-    }
-  }, [onClose])
+  // Focus starts in the reason rather than on a button, so typing can begin
+  // without a Tab.
+  useFocusTrap(dialog, onClose, field)
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
