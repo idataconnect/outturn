@@ -29,17 +29,40 @@ the default model. Loaded, the model takes 18-23GB. It was chosen on a 64GB
 M4; beside the cluster's VM, a 32GB machine will be tight.
 
 Then start the UI with `cd ui && npm run dev`, open http://localhost:3000, and
-sign in as `admin@outturn.local` / `outturn-dev`. To rebuild and redeploy
+sign in as `admin@outturn.local`. The password is this clone's own -- the
+script prints it the first time it generates one, and
+`scripts/dev-secrets.sh --print` shows it again. To rebuild and redeploy
 after a change:
 
 ```
 curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 ```
 
-On Linux, `skaffold dev` without a profile reaches ollama across the Docker
-bridge and uses qwen3.5. [AGENTS.md](AGENTS.md) covers both in more depth,
-including which models can be relied on to call a tool and why thinking is
-left on.
+On Linux, run `scripts/dev-secrets.sh` once, then `skaffold dev` without a
+profile: it reaches ollama across the Docker bridge and uses qwen3.5.
+[AGENTS.md](AGENTS.md) covers both in more depth, including which models can
+be relied on to call a tool and why thinking is left on.
+
+## Keys
+
+The local cluster's keys are generated per clone, never committed:
+
+```
+scripts/dev-secrets.sh           # generate if absent; scripts/dev-mac.sh does this for you
+scripts/dev-secrets.sh --print   # what the seeded admin signs in with
+scripts/dev-secrets.sh --force   # rotate, signing out existing sessions
+```
+
+They land in `k8s/overlays/local/dev-secrets.env`, which is gitignored and
+read by the overlay's `secretGenerator`. Delete it and run the script again to
+start over. If a build stops with `no such file or directory` for that path,
+it has not been generated yet.
+
+For a real deployment, `scripts/deploy-prod.sh` generates a token keypair and
+a Secret, asks for the things it cannot know, and refuses to proceed if the
+dev seed is enabled, if a key this repository once published appears, or if
+the signing keypair does not agree. It writes manifests and stops; applying
+them is left to you.
 
 ## Changing the agent interface
 
