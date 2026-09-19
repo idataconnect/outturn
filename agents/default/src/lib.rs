@@ -236,18 +236,18 @@ fn deferred_names(eager: &BTreeSet<String>) -> Vec<String> {
 /// saving, and these names were written to be read by a model: `create_archive`
 /// and `describe_image` say what they do. A tool whose name does not is a tool
 /// that needs renaming rather than annotating.
+///
+/// The instruction is one sentence for the same reason. An earlier version
+/// spent four on when not to call it and on not ending the turn after a load
+/// -- naming a failure and asking the model not to commit it, which is a
+/// weak way to prevent anything and was being paid for on every round.
 fn loader_tool(eager: &BTreeSet<String>) -> ToolDefinition {
     let names = deferred_names(eager);
     ToolDefinition {
         name: LOAD_TOOLS.to_string(),
         description: format!(
-            "Load the tools you need before using them. These tools exist but \
-             are not yet loaded: {}. Name the ones this turn needs and they \
-             become available immediately, for the rest of this turn -- then \
-             call them as usual. Load several at once rather than one at a \
-             time. Loading a tool does not use it, so this is never the last \
-             thing you do: the turn ends when you stop calling tools, so load, \
-             then act. If nothing here is relevant, do not call this at all.",
+            "Call load_tools with one or more tool names of these unloaded \
+             tools before using them: {}",
             names.join(", ")
         ),
         parameters: r#"{"type":"object","properties":{"names":{"type":"array","description":"The tools to load, by exact name.","items":{"type":"string"}},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Getting ready to unpack the archive."}},"required":["names","action"]}"#
@@ -272,6 +272,13 @@ fn offered_tools(eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> Vec<Too
     }
 
     offered
+}
+
+/// Whether a tool may be called this round.
+///
+/// The loader is always callable; everything else has to be eager or loaded.
+fn is_offered(name: &str, eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> bool {
+    name == LOAD_TOOLS || eager.contains(name) || loaded.contains(name)
 }
 
 /// Loads tools, reporting what was recognised.
@@ -808,7 +815,26 @@ fn run_tool(
     let args: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
 
-    let content = match call.name.as_str() {
+    // A tool that was not offered is not run, however well the call is formed.
+    //
+    // Models call tools they were never given. Asked to list files with only
+    // the loader on offer, gemma4 emitted `list_objects` carrying the loader's
+    // own arguments, and it worked -- that tool needs none, so the stray key
+    // was ignored. It then wrote a file with `content_bytes` and `object_name`,
+    // names it had never read, and reported success for a write that failed.
+    // Running a guess makes the deferral cosmetic: the prompt gets smaller
+    // while nothing is actually withheld.
+    //
+    // Refused rather than loaded on the model's behalf, because arguments
+    // written without the schema they are meant to satisfy are not worth
+    // honouring, and loading here would reward the guess.
+    let content = if !is_offered(&call.name, eager, loaded) {
+        serde_json::json!({
+            "error": format!("{} is not loaded. Call {LOAD_TOOLS} first.", call.name),
+        })
+        .to_string()
+    } else {
+        match call.name.as_str() {
         LOAD_TOOLS => load_tools(&args, eager, loaded),
         READ_OBJECT => read_object(&args),
         WRITE_OBJECT => write_object(&args),
@@ -834,6 +860,7 @@ fn run_tool(
         // Reported to the model rather than failing the turn: it can recover
         // by answering without the tool, where an error ends the conversation.
         other => format!(r#"{{"error":"no such tool: {other}"}}"#),
+        }
     };
 
     // The reader gets everything; the model gets what fits. Cutting it down

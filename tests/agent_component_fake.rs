@@ -34,6 +34,23 @@ fn runner() -> &'static AgentRunner {
     RUNNER.get_or_init(|| AgentRunner::new().expect("runner"))
 }
 
+/// Every tool the default agent exposes.
+///
+/// Listed here rather than derived because a test fixture that asked the
+/// component what it had would agree with it by construction, including about
+/// a tool that went missing.
+const ALL_TOOLS: &[&str] = &[
+    "read_object",
+    "describe_image",
+    "write_object",
+    "delete_object",
+    "list_objects",
+    "expand_archive",
+    "create_archive",
+    "fetch_url",
+    "get_current_time",
+];
+
 fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> RunOptions {
     RunOptions {
         session_id: Uuid::now_v7(),
@@ -62,9 +79,11 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // workspace gets.
         egress: Vec::new(),
         fuel: 10_000_000_000,
-        // Nothing eager, so a test sees the deferred path -- which is the
-        // default a deployment gets until it promotes something.
-        eager_tools: Vec::new(),
+        // Every tool offered outright, so a test about what a tool does can
+        // script the call and nothing else. A production deployment defers
+        // them all by default; the tests that are about deferral say so by
+        // clearing this.
+        eager_tools: ALL_TOOLS.iter().map(|n| n.to_string()).collect(),
     }
 }
 
@@ -239,6 +258,8 @@ async fn tool_names_are_offered_up_front_and_definitions_on_request() {
 
     let runner = runner();
     let mut options = options(&gateway, None);
+    // This test is about deferral, so nothing is offered outright.
+    options.eager_tools = Vec::new();
     options.timezone = Some("Australia/Brisbane".into());
 
     let reply = runner
@@ -347,6 +368,8 @@ async fn runs_a_tool_and_answers_with_its_result() {
 
     let runner = runner();
     let mut options = options(&gateway, None);
+    // This test is about deferral, so nothing is offered outright.
+    options.eager_tools = Vec::new();
     options.on_tool = Some(on_tool);
     options.timezone = Some("Australia/Brisbane".into());
 
@@ -1665,6 +1688,8 @@ async fn a_load_that_matched_nothing_is_an_error() {
 
     let runner = runner();
     let mut options = options(&gateway, None);
+    // This test is about deferral, so nothing is offered outright.
+    options.eager_tools = Vec::new();
     options.on_tool_result = Some(on_tool_result);
 
     runner
@@ -1685,5 +1710,89 @@ async fn a_load_that_matched_nothing_is_an_error() {
     assert!(
         content.contains("get_current_time"),
         "and what was available instead, got {content:?}"
+    );
+}
+
+/// A tool that was never loaded is refused rather than run.
+///
+/// Models call tools they were not given: gemma4 emitted `list_objects` with
+/// only the loader on offer, carrying the loader's own arguments, and it ran.
+/// Without this the deferral is cosmetic -- the prompt shrinks while nothing
+/// is withheld -- and the arguments come from a schema the model never read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_that_was_not_loaded_is_refused() {
+    // Asks for the clock directly, having loaded nothing.
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "Never mind.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+        })
+    };
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    // This test is about deferral, so nothing is offered outright.
+    options.eager_tools = Vec::new();
+    options.on_tool_result = Some(on_tool_result);
+
+    runner
+        .run(&component(), user("What day is it?"), String::new(), options)
+        .await
+        .expect("run");
+
+    let results = seen.lock().unwrap().clone();
+    let (content, is_error) = results.first().expect("the call was answered").clone();
+    assert!(is_error, "an unloaded tool should be refused, got {content:?}");
+    assert!(
+        content.contains("load_tools"),
+        "the refusal should name the way out, got {content:?}"
+    );
+    // And the clock must not have run: the refusal stands in for its answer.
+    assert!(
+        !content.contains("weekday"),
+        "the tool must not have run, got {content:?}"
+    );
+}
+
+/// An eager tool is callable without being loaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_eager_tool_needs_no_loading() {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "It is Saturday.".into(),
+    })
+    .await;
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    // What a deployment sets when a tool is worth offering outright.
+    options.eager_tools = vec!["get_current_time".into()];
+
+    let reply = runner
+        .run(&component(), user("What day is it?"), String::new(), options)
+        .await
+        .expect("run")
+        .0;
+
+    assert_eq!(reply, "It is Saturday.");
+    let requests = gateway.requests();
+    let offered: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .expect("tools were offered")
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(
+        offered.contains(&"get_current_time"),
+        "an eager tool is offered from the first round, got {offered:?}"
     );
 }
