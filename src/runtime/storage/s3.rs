@@ -267,6 +267,10 @@ impl StorageBackend for S3Storage {
     }
 
     async fn delete(&self, path: &str) -> Result<(), StorageError> {
+        // S3 answers a delete of a missing key with success, so without this
+        // a mistyped path is reported as a file removed. Racy against a
+        // concurrent delete, which only means both callers are told it went.
+        self.stat(path).await?;
         let key = self.key(path);
         self.bucket
             .delete_object(&key)
