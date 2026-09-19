@@ -9,9 +9,14 @@ import { describe, expect, it } from 'vitest'
 
 import Thread from './Thread'
 
-function Harness(props: { disabled?: boolean; focusRequest?: number; running?: boolean }) {
+function Harness(props: {
+  disabled?: boolean
+  focusRequest?: number
+  running?: boolean
+  messages?: ThreadMessageLike[]
+}) {
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
-    messages: [],
+    messages: props.messages ?? [],
     convertMessage: (message) => message,
     onNew: async () => {},
     isRunning: props.running,
@@ -34,7 +39,9 @@ function Harness(props: { disabled?: boolean; focusRequest?: number; running?: b
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <button type="button">elsewhere</button>
-      <Thread {...props} />
+      {/* `messages` is the harness's own, for the store above: passing it on
+          would put an unknown prop on the component under test. */}
+      <Thread disabled={props.disabled} focusRequest={props.focusRequest} />
     </AssistantRuntimeProvider>
   )
 }
@@ -120,5 +127,35 @@ describe('choosing between send and stop', () => {
 
     expect(send()).not.toBeInTheDocument()
     expect(stop()).toBeInTheDocument()
+  })
+})
+
+// The gap this covers is the one after some text has arrived and before the
+// turn ends -- a tool call being set up streams nothing, and the reply sits
+// there looking finished. The status under the prompt has stopped speaking for
+// it by then, because the reply exists.
+describe('saying a reply is still going', () => {
+  const working = () => screen.queryByRole('status', { name: 'Working' })
+  const reply = (status: ThreadMessageLike['status']): ThreadMessageLike[] => [
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'looking now' }], status },
+  ]
+
+  it('marks a reply whose turn is still running', () => {
+    render(<Harness running messages={reply({ type: 'running' })} />)
+
+    expect(working()).toBeInTheDocument()
+  })
+
+  it('drops the mark once the turn is complete', () => {
+    render(<Harness messages={reply({ type: 'complete', reason: 'stop' })} />)
+
+    expect(working()).not.toBeInTheDocument()
+  })
+
+  it('drops it on a turn that was stopped, which is not still going', () => {
+    render(<Harness messages={reply({ type: 'incomplete', reason: 'cancelled' })} />)
+
+    expect(working()).not.toBeInTheDocument()
   })
 })

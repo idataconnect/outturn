@@ -10,6 +10,7 @@ import MarkdownText, { UserMarkdownText } from './MarkdownText'
 import MessageAge from './MessageAge'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
+import Working from './Working'
 import { deleteFile, uploadPastedImage } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
@@ -139,6 +140,12 @@ function AssistantMessage() {
   // came before, and a reader who cannot see that their conversation was
   // compacted cannot tell why it stopped referring to something.
   const summary = useAuiState((s) => s.message.metadata.custom?.summary === true)
+  // Whether this reply's turn is still going. Said under the reply rather than
+  // under the prompt, because by now the reply exists: the gap this covers is
+  // the one after some text has arrived, where a tool call is being set up and
+  // nothing streams. `StatusLine`'s `waiting` has ended by then, and without
+  // this a half-finished reply is indistinguishable from a finished one.
+  const running = useAuiState((s) => s.message.status?.type === 'running')
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
   // not this particular message ends up drawn.
@@ -178,6 +185,7 @@ function AssistantMessage() {
         />
       </div>
       <MessageAge phrase={phrase} shown={shown} />
+      {running && <Working />}
     </MessagePrimitive.Root>
   )
 }
