@@ -64,7 +64,10 @@ prefix: the refresh cookie is `Path`-scoped to `/v1/session/refresh`, and a
 browser matches `Path` against the URL it requests, not the one a proxy
 forwards. A `/api` prefix means refresh silently never works.
 
-Local dev seeds `admin@outturn.local` / `outturn-dev`.
+Local dev seeds `admin@outturn.local`, with a password generated per clone
+into `k8s/overlays/local/dev-secrets.env` — `scripts/dev-secrets.sh --print`
+shows it. The keys live there too, gitignored and never committed; a build
+generates them if they are missing.
 
 ## Models
 
