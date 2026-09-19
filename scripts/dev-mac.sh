@@ -22,6 +22,11 @@ if [[ "${1:-}" == "--small" ]]; then
   shift
 fi
 
+# This clone's keys, if it has none yet. Silent when they already exist, and
+# before anything slow so a fresh clone is not told about a missing file after
+# an 18GB pull. The mac overlays build on ../local, so they read the same file.
+scripts/dev-secrets.sh
+
 ollama_url=http://localhost:11434
 
 # Read out of the overlay rather than repeated here, so the model the script
