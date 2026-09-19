@@ -277,6 +277,27 @@ impl GatewayState {
                             });
                         }
                     }
+                    // Returned as it stands, empty or not. Falling through to
+                    // the static providers here looks like resilience and is
+                    // the opposite: a route was configured and rejected, and
+                    // the static list is a *different vendor* with a different
+                    // model. A deployment confined to an in-cluster provider
+                    // whose host stops being allowed would quietly start
+                    // sending its prompts to a public API -- and a route whose
+                    // credential is momentarily missing would silently
+                    // downgrade the model mid-conversation. Refusing is the
+                    // answer that can be noticed and fixed; the fix for an
+                    // in-cluster route being skipped is to name its host in
+                    // OUTTURN_INTERNAL_HOSTS, which the warning above says.
+                    //
+                    // Falling through stays what it always was: for a traffic
+                    // type nobody configured, which is the `Ok(_)` arm below.
+                    if attempts.is_empty() {
+                        tracing::error!(
+                            traffic_type,
+                            "every configured route was rejected; this traffic type cannot be served"
+                        );
+                    }
                     return attempts;
                 }
                 Ok(_) => {}

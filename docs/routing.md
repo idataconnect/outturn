@@ -39,6 +39,17 @@ as they are needed -- `customer-service`, `summarise`, `compaction` -- and
 each is a row set, not code. Absent a row for a class, the gateway's static
 providers serve it, so a class costs nothing to introduce.
 
+Absent is not the same as rejected. A class whose rows all exist and are all
+turned down -- every base URL pointing inside the network with no operator
+having opened that host, or no credential held for any of them -- is refused
+rather than served by the static providers. A route was configured and declined,
+and the static list is a different vendor with a different model: a deployment
+confined to an in-cluster provider would otherwise begin sending its prompts to
+a public API without saying so, and a momentarily missing credential would
+silently downgrade the model mid-conversation. Refusing is what somebody
+notices; the fix for an in-cluster route being skipped is to name its host in
+`OUTTURN_INTERNAL_HOSTS`.
+
 A class may carry a **default priority** for jobs that arrive without one. It
 is a fallback, not a derivation: priority is a property of the trigger (is
 somebody waiting?), class is a property of the task (what is good enough?),
