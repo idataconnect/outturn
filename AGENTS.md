@@ -35,6 +35,13 @@ a vendor should not mean adding a file.
 
 ## Running it locally
 
+On a machine that has never run this, `.agents/skills/onboarding/SKILL.md`
+lists what has to be in place — the tools, a reachable cluster, the container
+daemon, ollama and its model — and the one trap worth knowing before it bites:
+skaffold decides whether to push images by guessing from the kube-context
+name, so a local cluster under an unfamiliar name means four images pushed to
+Docker Hub. It diagnoses and explains; it changes nothing.
+
 Start the cluster with the Control API open, so a build and deploy can be
 triggered without hitting Enter:
 

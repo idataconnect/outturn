@@ -1,6 +1,7 @@
 ---
 name: onboarding
 description: Check that this machine can build and run outturn, and explain how to fix what cannot. Covers skaffold, kubectl, a reachable cluster, the container daemon, the image-registry heuristic that decides whether images are pushed to Docker Hub, ollama and its model, and this clone's generated keys. Use when setting up outturn on a new machine, when `skaffold dev` fails before any pod starts, when images are being pushed somewhere unexpected, or on request — "onboard me", "check my setup", "why won't this run".
+compatibility: Reads the local filesystem and runs skaffold, kubectl, docker and curl. Reports only; changes nothing.
 ---
 
 # Onboarding
