@@ -47,22 +47,25 @@ export function elapsedPhrase(since: number, now: number = Date.now()): string {
   // wrong thing.
   if (seconds < 60) return 'Just now'
 
-  const units: [limit: number, seconds: number, name: string][] = [
-    [60, 60, 'minute'],
-    [24, 3600, 'hour'],
-    [7, 86400, 'day'],
-    // Four, not five: a month is 4.35 weeks, so a limit of five would report
-    // "4 weeks ago" for something the next row calls a month.
-    [4, 604800, 'week'],
-    [12, 2629800, 'month'],
-    [Number.POSITIVE_INFINITY, 31557600, 'year'],
+  // A row holds until the next row's unit has actually elapsed, rather than
+  // until a round count of its own. Hand-tuned limits have to agree with the
+  // next size or they leave a gap: four weeks is 28 days but a month is 30.44,
+  // so "four weeks, then months" floored 28 to 30-day-old messages to "0
+  // months ago". Deriving the handover means there is nothing to keep in sync.
+  const units: [seconds: number, name: string][] = [
+    [60, 'minute'],
+    [3600, 'hour'],
+    [86400, 'day'],
+    [604800, 'week'],
+    [2629800, 'month'],
+    [31557600, 'year'],
   ]
 
-  for (const [limit, size, name] of units) {
+  for (const [i, [size, name]] of units.entries()) {
+    const next = units[i + 1]
+    if (next && seconds >= next[0]) continue
     const count = Math.floor(seconds / size)
-    if (count < limit) {
-      return `${count} ${name}${count === 1 ? '' : 's'} ago`
-    }
+    return `${count} ${name}${count === 1 ? '' : 's'} ago`
   }
 
   return 'Just now'

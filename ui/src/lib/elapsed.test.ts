@@ -47,6 +47,18 @@ describe('saying how long ago that was', () => {
     expect(ago(31557600)).toBe('1 year ago')
   })
 
+  // A unit whose limit falls short of the next unit's size hands over a span
+  // that floors to zero -- "0 months ago" for a month-old message. Walk the
+  // handovers rather than the round numbers on either side of them.
+  it('never counts zero of a unit at a handover', () => {
+    for (const days of [27, 28, 29, 30, 31, 364, 365, 366]) {
+      expect(ago(86400 * days)).not.toMatch(/^0 /)
+    }
+    expect(ago(86400 * 28)).toBe('4 weeks ago')
+    expect(ago(86400 * 30)).toBe('4 weeks ago')
+    expect(ago(2629800)).toBe('1 month ago')
+  })
+
   it('singularises one and pluralises the rest', () => {
     expect(ago(60)).toBe('1 minute ago')
     expect(ago(120)).toBe('2 minutes ago')
