@@ -11,6 +11,16 @@ build:
       docker:
         dockerfile: Dockerfile
         target: api
+      # This clone's local keys, if it has none yet. On the first artifact
+      # only: the hook is cheap but not free, and one generation per build is
+      # enough. Silent once the file exists.
+      #
+      # Here rather than in a deploy hook because the overlay reads the file
+      # through a secretGenerator, and kustomize renders before any deploy
+      # hook runs -- a missing file has already failed the build by then.
+      hooks:
+        before:
+          - command: ["scripts/dev-secrets.sh"]
     - image: outturn-gateway
       docker:
         dockerfile: Dockerfile
