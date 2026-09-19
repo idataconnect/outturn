@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { Bot, OctagonX, Play, Plus, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
 import Holds from '../components/Holds'
+import StopDialog from '../components/StopDialog'
 import {
   coveringAgent,
   listInhibitors,
@@ -57,22 +58,16 @@ export default function Agents() {
     }
   }
 
-  /** Asks why, because a hold with no reason explains nothing to whoever finds it. */
-  async function onStop(what: 'workspace' | Agent) {
-    const subject = what === 'workspace' ? 'this whole workspace' : what.name
-    const reason = window.prompt(`Why is ${subject} being stopped?`)
-    if (reason === null) return
-    if (!reason.trim()) {
-      setError('a hold needs a reason')
-      return
-    }
-    try {
-      if (what === 'workspace') await stopWorkspace(reason)
-      else await stopAgent(what.id, reason)
-      await refresh()
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'failed to stop')
-    }
+  /** What the stop dialog is open for, if anything. */
+  const [stopping, setStopping] = useState<'workspace' | Agent | null>(null)
+  // Stable, so the dialog's focus handling is set up once rather than on
+  // every render of this page.
+  const closeStop = useCallback(() => setStopping(null), [])
+
+  async function stop(what: 'workspace' | Agent, reason: string) {
+    if (what === 'workspace') await stopWorkspace(reason)
+    else await stopAgent(what.id, reason)
+    await refresh()
   }
 
   async function onRelease(hold: Inhibitor) {
@@ -119,7 +114,7 @@ export default function Agents() {
         {canStopWorkspace && !held.some((i) => i.scope.level === 'workspace') && (
           <button
             type="button"
-            onClick={() => void onStop('workspace')}
+            onClick={() => setStopping('workspace')}
             className="flex items-center gap-2 px-4 py-2 rounded-md border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/40"
           >
             <OctagonX size={16} aria-hidden />
@@ -219,7 +214,7 @@ export default function Agents() {
                     </button>
                   ) : (
                     <button
-                      onClick={() => void onStop(agent)}
+                      onClick={() => setStopping(agent)}
                       aria-label={`Stop ${agent.name}`}
                       title="Stop this agent"
                       className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
@@ -241,6 +236,13 @@ export default function Agents() {
           </ul>
         )}
       </div>
+      {stopping && (
+        <StopDialog
+          subject={stopping === 'workspace' ? 'this whole workspace' : stopping.name}
+          onStop={(reason) => stop(stopping, reason)}
+          onClose={closeStop}
+        />
+      )}
     </div>
   )
 }
