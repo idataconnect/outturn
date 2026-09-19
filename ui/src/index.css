@@ -31,3 +31,54 @@
 @theme {
   --animate-spin: spin 2s linear infinite;
 }
+
+/*
+ * The working mark's colour travels between the two ends of the logo's own
+ * gradient -- the teal that carries interactive elements, and the orange the
+ * theme reserves for the mark itself. Both are read from the theme, so a
+ * deployment that replaces those tokens replaces this too.
+ *
+ * A CSS animation on `color` rather than SMIL, because SMIL animates
+ * presentation attributes and cannot read a custom property: the dots are
+ * filled with `currentColor` and inherit whatever this lands on. The two
+ * animations are independent -- the dots' own swell is SMIL, this is the
+ * colour underneath it -- and at 7s against their 1.2s the shift is slow
+ * enough to be felt rather than watched.
+ */
+@keyframes outturn-working-hue {
+  0%,
+  100% {
+    color: var(--color-brand-600);
+  }
+  50% {
+    color: var(--color-accent-500);
+  }
+}
+
+.working-hue {
+  animation: outturn-working-hue 7s ease-in-out infinite;
+}
+
+:root.dark .working-hue {
+  animation-name: outturn-working-hue-dark;
+}
+
+@keyframes outturn-working-hue-dark {
+  0%,
+  100% {
+    color: var(--color-brand-400);
+  }
+  50% {
+    color: var(--color-accent-400);
+  }
+}
+
+/*
+ * Someone who asked for less motion gets the mark without the travel: it
+ * still says a reply is coming, in one colour, with the dots holding still.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .working-hue {
+    animation: none;
+  }
+}

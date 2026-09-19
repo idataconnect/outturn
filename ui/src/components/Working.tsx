@@ -1,3 +1,5 @@
+import { useReducedMotion } from '../lib/useReducedMotion'
+
 /**
  * The mark a reply wears while its turn is still running.
  *
@@ -14,9 +16,18 @@
  * mid-sentence, not stuck.
  */
 export default function Working() {
+  // SMIL is not covered by `prefers-reduced-motion`, so the only way to
+  // honour it for the swell is not to draw the animation at all. The colour
+  // underneath is CSS and stops itself -- see index.css.
+  const reduced = useReducedMotion()
+
   return (
     <span
-      className="mt-1 inline-flex items-center text-brand-600 dark:text-brand-400"
+      // The colour is a class rather than a Tailwind text-* utility: it
+      // travels between the two ends of the logo's gradient, and the dots
+      // below are filled with `currentColor` so they follow it. Light and
+      // dark pick different stops -- see index.css.
+      className="working-hue mt-1 inline-flex items-center"
       title="Working"
       role="status"
       aria-label="Working"
@@ -29,29 +40,44 @@ export default function Working() {
             stylesheet that has none of its own, and nothing left behind if
             this component goes away. */}
         {[3, 13, 23].map((x, i) => (
-          <circle key={x} cx={x} cy={5} r={2} fill="currentColor" opacity={0.35}>
+          // Held at the swell's midpoint when movement is unwanted: three
+          // steady dots in the reply's colour still say something is coming,
+          // which is the whole job. Drawn at full strength rather than the
+          // resting 0.35, since nothing is going to brighten them.
+          <circle
+            key={x}
+            cx={x}
+            cy={5}
+            r={reduced ? 2.6 : 2}
+            fill="currentColor"
+            opacity={reduced ? 0.8 : 0.35}
+          >
             {/* `begin` staggers by a third of the cycle each, so the swell
                 arrives at each dot in turn and the row never goes fully dark. */}
-            <animate
-              attributeName="r"
-              values="2;3.4;2"
-              dur="1.2s"
-              begin={`${i * 0.4}s`}
-              repeatCount="indefinite"
-              calcMode="spline"
-              keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
-              keyTimes="0;0.5;1"
-            />
-            <animate
-              attributeName="opacity"
-              values="0.35;1;0.35"
-              dur="1.2s"
-              begin={`${i * 0.4}s`}
-              repeatCount="indefinite"
-              calcMode="spline"
-              keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
-              keyTimes="0;0.5;1"
-            />
+            {!reduced && (
+              <>
+                <animate
+                  attributeName="r"
+                  values="2;3.4;2"
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+                <animate
+                  attributeName="opacity"
+                  values="0.35;1;0.35"
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+              </>
+            )}
           </circle>
         ))}
       </svg>
