@@ -46,8 +46,11 @@ returns the same rows every time it is run.
 A session may carry an `account`: free text the workspace sets when opening the
 conversation, meaning whatever the workspace's business means by it -- an HOA, a
 customer number, a matter. The platform never interprets it. The ledger copies
-it onto every row the session produces, so a workspace can join its bill to its
-own records without the platform knowing what those records are.
+it onto every row the session produces -- the agent's own rounds, and the
+naming and compaction done on that session's behalf -- so a workspace can join
+its bill to its own records without the platform knowing what those records
+are. Those last two wrote a null for a while: spend a workspace could see on
+its bill and could not put against any of its customers.
 
 ## The platform workspace
 
@@ -116,7 +119,7 @@ nothing is lost between a dimension's slices.
 
 They do not all sum to the window's total, though, and the page does not
 pretend they do. A dimension whose column is nullable -- `account` most
-obviously, `agent_id` for the platform's own work -- has rows in no named
+obviously, `agent_id` for session naming -- has rows in no named
 slice, which arrive as a slice with a null key rather than as an invented
 label. Each panel's shares are therefore against its own dimension, not
 against the headline figure.
@@ -133,11 +136,17 @@ about model calls -- it says nothing about turns that never reached a model,
 which is worth remembering before it grows panels that look like they cover
 everything.
 
-The platform's own work -- naming a session, compacting a transcript -- carries
-no agent, because no agent asked for it. It appears as an unattributed slice,
-and the `traffic_type` cut beside it is what says what that work was; the agent
+Naming a session carries no agent, because it runs in its own worker for a
+session that need not have one yet. It appears as an unattributed slice, and
+the `traffic_type` cut beside it is what says what that work was; the agent
 count includes it as one more answer to "who answered", so the tile and the
 panel below it cannot disagree.
+
+Compaction is not in that category, though it was written as if it were.
+A summary is made of one agent's conversation, against that agent's system
+prompt, to fit that agent's context budget, inside a turn that agent is
+running -- so it bills to that agent. Unattributed, it became spend an operator
+could see and nobody could explain.
 
 Two things on it are design rather than decoration. Cache reads are drawn beside
 the daily stack rather than in it: on a transcript-heavy workload they run an

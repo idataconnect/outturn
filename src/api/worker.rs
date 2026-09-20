@@ -1166,6 +1166,7 @@ impl Worker {
                         settings.context_budget,
                         payload.session_id,
                         payload.workspace_id,
+                        payload.agent_id,
                         &model,
                     )
                     .await
@@ -1237,6 +1238,13 @@ impl Worker {
         budget: usize,
         session_id: uuid::Uuid,
         workspace_id: uuid::Uuid,
+        // Whose turn paid for it. A summary is the platform's own initiative in
+        // the sense that the user did not ask for one, but it is made of this
+        // agent's conversation, against this agent's system prompt, to fit this
+        // agent's context budget -- so the spend is the agent's and the ledger
+        // says so. Naming is the other case and stays unattributed: it runs in
+        // its own worker for a session that need not have an agent yet.
+        agent_id: uuid::Uuid,
         // The model this turn is routed to. The summary goes to the same one:
         // asking a different model would bill a route the turn is not using,
         // and a deployment whose default is unset or unroutable would fail
@@ -1405,16 +1413,28 @@ impl Worker {
             .as_ref()
             .and_then(|u| serde_json::to_value(u).ok());
         let counted = completion.usage.as_ref();
+        // The session's own label for whose conversation this is. Looked up
+        // rather than threaded through, because this is one call at the end of
+        // a compaction that usually does not happen; the turn path keeps its
+        // copy because it writes a row per round.
+        let account = self
+            .chat
+            .get_session(workspace_id, session_id)
+            .await
+            .ok()
+            .and_then(|s| s.account);
         if let Err(e) = self
             .usage
             .record(super::usage::RecordUsage {
                 workspace_id,
-                // No agent and no job: a summary is the platform's own work on
-                // behalf of a session, not a turn the agent ran.
-                agent_id: None,
+                // The agent whose turn this compacted, so the spend lands with
+                // the work that caused it rather than in an unattributed pile
+                // nobody can explain. No job id: the summary is not a job of
+                // its own, it is part of the turn already running.
+                agent_id: Some(agent_id),
                 session_id: Some(session_id),
                 user_id: None,
-                account: None,
+                account,
                 reply_id: None,
                 job_id: None,
                 round: 0,

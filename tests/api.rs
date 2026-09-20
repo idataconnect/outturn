@@ -1943,6 +1943,28 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     assert_eq!(summary["by_account"][0]["key"], "hoa-sunnyvale", "{body}");
     assert_eq!(summary["by_workspace"][0]["label"], "Acme", "the workspace was not named: {body}");
 
+    // Whose spend it was. A turn's own rounds bill to the agent that ran them,
+    // and both carry the session's account label -- which is what a workspace
+    // joins its bill to its own records by, so a row missing it is spend they
+    // cannot attribute to anybody.
+    let (_, body) = h.get("/v1/usage?limit=100", Some(&admin)).await;
+    let page: serde_json::Value = serde_json::from_str(&body).expect("page");
+    for entry in page["entries"].as_array().expect("entries") {
+        assert_eq!(
+            entry["account"], "hoa-sunnyvale",
+            "a row the session produced lost its account label: {entry}"
+        );
+        // Compaction bills to the agent whose turn it compacted: it is made of
+        // that agent's conversation, against that agent's prompt, to fit that
+        // agent's budget. Only session naming is genuinely nobody's agent.
+        if entry["traffic_type"] != "session-name" {
+            assert!(
+                !entry["agent_id"].is_null(),
+                "a row that was somebody's work was left unattributed: {entry}"
+            );
+        }
+    }
+
     // Scope is what widens a summary, and it is not this admin's to ask for.
     let (status, _) = h.get("/v1/usage/summary?scope=all", Some(&admin)).await;
     assert_eq!(

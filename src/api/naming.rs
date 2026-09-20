@@ -234,7 +234,11 @@ async fn run_one(
             agent_id: None,
             session_id: Some(session_id),
             user_id: None,
-            account: None,
+            // The session's account, though. Naming is the platform's work but
+            // it is done for somebody, and `account` is how a workspace splits
+            // its bill between its own customers -- a row without it is spend
+            // they cannot attribute, which is the whole job of the column.
+            account: session.account.clone(),
             reply_id: None,
             job_id: None,
             round: 0,
