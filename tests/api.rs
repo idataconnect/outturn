@@ -1954,15 +1954,15 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
             entry["account"], "hoa-sunnyvale",
             "a row the session produced lost its account label: {entry}"
         );
-        // Compaction bills to the agent whose turn it compacted: it is made of
-        // that agent's conversation, against that agent's prompt, to fit that
-        // agent's budget. Only session naming is genuinely nobody's agent.
-        if entry["traffic_type"] != "session-name" {
-            assert!(
-                !entry["agent_id"].is_null(),
-                "a row that was somebody's work was left unattributed: {entry}"
-            );
-        }
+        // Every row a session produced bills to that session's agent, whoever
+        // started the call. A session cannot exist without one, so a null here
+        // is spend nobody can explain rather than spend nobody owns -- and the
+        // platform's own work (naming, compaction) is still done for one
+        // agent's conversation.
+        assert!(
+            !entry["agent_id"].is_null(),
+            "a row a session produced was left unattributed: {entry}"
+        );
     }
 
     // Scope is what widens a summary, and it is not this admin's to ask for.

@@ -360,9 +360,12 @@ export default function Dashboard() {
               subtitle="Tokens, largest first"
               slices={summary.by_agent}
               empty="No agent answered in this window."
-              // Not a gap: naming a session runs before there is an agent to
-              // bill it to. The Work panel beside this one says what it was.
-              unattributed="The platform itself"
+              // A session cannot exist without an agent, and everything done
+              // for one -- including the platform's own naming and compaction
+              // -- bills to it. So a null here is a row that lost its
+              // attribution rather than one that never had any, and it should
+              // read as the anomaly it is.
+              unattributed="Missing an agent"
             />
             <Panel
               title="Accounts"

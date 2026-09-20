@@ -229,15 +229,22 @@ async fn run_one(
         &usage_store,
         crate::api::usage::RecordUsage {
             workspace_id: job.workspace_id,
-            // No agent and no job of the agent's: naming is the platform's own
-            // work on behalf of a session.
-            agent_id: None,
+            // The session's own agent. Naming is the platform's initiative --
+            // nobody asked for a title -- but it is done for one agent's
+            // conversation and the spend is that agent's, the same way
+            // compaction's is. A session cannot exist without an agent
+            // (`agent_sessions.agent_id` is not null), so there is always one
+            // to bill it to, and leaving it off only produced a row nobody
+            // could explain on a page that cuts spend by agent.
+            //
+            // No job id, though: the naming job is the platform's own queue
+            // entry, not a turn the agent was asked to run.
+            agent_id: Some(session.agent_id),
             session_id: Some(session_id),
             user_id: None,
-            // The session's account, though. Naming is the platform's work but
-            // it is done for somebody, and `account` is how a workspace splits
-            // its bill between its own customers -- a row without it is spend
-            // they cannot attribute, which is the whole job of the column.
+            // Likewise the account, which is how a workspace splits its bill
+            // between its own customers -- a row without it is spend they
+            // cannot attribute, which is the whole job of the column.
             account: session.account.clone(),
             reply_id: None,
             job_id: None,

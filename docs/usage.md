@@ -119,7 +119,7 @@ nothing is lost between a dimension's slices.
 
 They do not all sum to the window's total, though, and the page does not
 pretend they do. A dimension whose column is nullable -- `account` most
-obviously, `agent_id` for session naming -- has rows in no named
+obviously -- has rows in no named
 slice, which arrive as a slice with a null key rather than as an invented
 label. Each panel's shares are therefore against its own dimension, not
 against the headline figure.
@@ -136,17 +136,12 @@ about model calls -- it says nothing about turns that never reached a model,
 which is worth remembering before it grows panels that look like they cover
 everything.
 
-Naming a session carries no agent, because it runs in its own worker for a
-session that need not have one yet. It appears as an unattributed slice, and
-the `traffic_type` cut beside it is what says what that work was; the agent
-count includes it as one more answer to "who answered", so the tile and the
-panel below it cannot disagree.
-
-Compaction is not in that category, though it was written as if it were.
-A summary is made of one agent's conversation, against that agent's system
-prompt, to fit that agent's context budget, inside a turn that agent is
-running -- so it bills to that agent. Unattributed, it became spend an operator
-could see and nobody could explain.
+The platform's own work -- naming a session, compacting a transcript -- bills
+to the session's agent, because a session cannot exist without one and the work
+was done for that agent's conversation. It is the platform's initiative rather
+than the agent's, which is what `traffic_type` records; it is not nobody's
+spend. Both wrote a null for a while, and the result was tokens an operator
+could see on a page that cuts spend by agent and nobody could account for.
 
 Two things on it are design rather than decoration. Cache reads are drawn beside
 the daily stack rather than in it: on a transcript-heavy workload they run an

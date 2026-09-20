@@ -28,17 +28,17 @@ describe('UsageRanked', () => {
   })
 
   it('lets a panel name its own null, since each dimension means a different thing by it', () => {
-    // An agent panel's null is the platform naming a session -- work that ran
-    // before there was an agent to bill it to, not spend that went astray.
-    // Called "Not attributed" it read as a gap, which is what prompted this.
+    // An account's null is a session that carried no label -- an ordinary
+    // absence. An agent's null is an anomaly, since a session cannot exist
+    // without one. The same words cannot serve both.
     render(
       <UsageRanked
         empty="nothing"
-        unattributed="The platform itself"
+        unattributed="No account label"
         slices={[{ key: null, label: null, calls: 1, tokens: 10 }]}
       />,
     )
-    expect(screen.getByText('The platform itself')).toBeInTheDocument()
+    expect(screen.getByText('No account label')).toBeInTheDocument()
     expect(screen.queryByText('Not attributed')).not.toBeInTheDocument()
   })
 
