@@ -23,15 +23,14 @@
 //! a request both protocols reject, and the replacement says what it is. A
 //! stub that reads as real output is a lie the model will reason from.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// What a dropped tool result is replaced with.
 ///
 /// Addressed to the model, because the model is who reads it: it says the call
 /// happened, that the output is gone for reasons that are not about the tool,
 /// and that calling again is the way to get it back.
-const DROPPED: &str =
-    "{\"note\":\"this result was dropped to fit the conversation into the model's \
+const DROPPED: &str = "{\"note\":\"this result was dropped to fit the conversation into the model's \
      context. The tool ran and this is not an error. Call it again if you still \
      need what it returned.\"}";
 
@@ -269,7 +268,10 @@ mod tests {
         // case this is about: dropping the output, not the exchange.
         let (out, _) = to_fit(conversation, 700);
 
-        let stub = out.iter().find(|m| is_result(m)).expect("the result survives as a stub");
+        let stub = out
+            .iter()
+            .find(|m| is_result(m))
+            .expect("the result survives as a stub");
         let text = stub["parts"][0]["text"].as_str().unwrap();
         assert!(text.contains("dropped"), "{text}");
         assert!(text.contains("Call it again"), "{text}");
@@ -310,13 +312,18 @@ mod tests {
         for budget in (0..=full).step_by(97) {
             let (out, _) = to_fit(conversation.clone(), budget);
             for message in &out {
-                let Some(parts) = message["parts"].as_array() else { continue };
+                let Some(parts) = message["parts"].as_array() else {
+                    continue;
+                };
                 for part in parts {
-                    let Some(id) = part["call"]["id"].as_str() else { continue };
-                    let answered = out
-                        .iter()
-                        .any(|m| is_result(m) && m["tool_call_id"] == id);
-                    assert!(answered, "call {id} went unanswered at budget {budget}: {out:?}");
+                    let Some(id) = part["call"]["id"].as_str() else {
+                        continue;
+                    };
+                    let answered = out.iter().any(|m| is_result(m) && m["tool_call_id"] == id);
+                    assert!(
+                        answered,
+                        "call {id} went unanswered at budget {budget}: {out:?}"
+                    );
                 }
             }
         }
@@ -352,9 +359,11 @@ mod tests {
         for (index, message) in out.iter().enumerate() {
             if is_result(message) {
                 let has_call = out[..index].iter().any(|m| {
-                    m["parts"]
-                        .as_array()
-                        .is_some_and(|parts| parts.iter().any(|p| p["call"]["id"] == message["tool_call_id"]))
+                    m["parts"].as_array().is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|p| p["call"]["id"] == message["tool_call_id"])
+                    })
                 });
                 assert!(has_call, "a result outlived its call: {out:?}");
             }

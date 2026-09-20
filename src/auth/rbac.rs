@@ -193,7 +193,9 @@ impl Authority {
             Authority::SettingsRead => "See settings, including allowed hosts",
             Authority::SettingsUpdate => "Change settings, including allowed hosts",
             Authority::StorageWorkspaceRead => "Read files kept for the whole workspace",
-            Authority::StorageWorkspaceWrite => "Add and replace files kept for the whole workspace",
+            Authority::StorageWorkspaceWrite => {
+                "Add and replace files kept for the whole workspace"
+            }
             Authority::StorageAgentRead => "Read an agent's files",
             Authority::StorageAgentWrite => "Add and replace an agent's files",
             Authority::SkillsRead => "See skills, the workspace's own and the operator's",

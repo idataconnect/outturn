@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::auth::Role;
 
 use super::role::RoleStore;
-use super::workspace::{CreateWorkspace, WorkspaceStore};
 use super::user::{CreateUser, UserStore};
+use super::workspace::{CreateWorkspace, WorkspaceStore};
 
 /// Seeds a system admin and a starter workspace for local development.
 ///
@@ -24,8 +24,8 @@ pub async fn dev_seed(
         return Ok(());
     }
 
-    let email = std::env::var("OUTTURN_DEV_ADMIN_EMAIL")
-        .unwrap_or_else(|_| "admin@outturn.local".into());
+    let email =
+        std::env::var("OUTTURN_DEV_ADMIN_EMAIL").unwrap_or_else(|_| "admin@outturn.local".into());
     let password =
         std::env::var("OUTTURN_DEV_ADMIN_PASSWORD").unwrap_or_else(|_| "outturn-dev".into());
 

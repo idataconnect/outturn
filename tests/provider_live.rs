@@ -133,7 +133,10 @@ async fn collect(
                 reply.calls.push(ToolCall {
                     id: String::new(),
                     tool_type: "function".into(),
-                    function: FunctionCall { name: String::new(), arguments: String::new() },
+                    function: FunctionCall {
+                        name: String::new(),
+                        arguments: String::new(),
+                    },
                     provider_signature: None,
                 });
             }
@@ -182,7 +185,11 @@ async fn gemini_survives_a_tool_round_trip() {
     let model = "gemini-3.7-flash";
     let provider = gemini(model);
 
-    let mut request = ask(model, "What is the weather in San Francisco? Use the tool.", Some(vec![weather_tool()]));
+    let mut request = ask(
+        model,
+        "What is the weather in San Francisco? Use the tool.",
+        Some(vec![weather_tool()]),
+    );
     let first = collect(&provider, &request).await.expect("round one");
 
     assert!(!first.calls.is_empty(), "the model did not call the tool");
@@ -235,12 +242,17 @@ async fn gemini_signs_only_the_first_of_several_calls() {
         "Get the weather for San Francisco, London, and Tokyo. Call the tool once for each, all in one go.",
         Some(vec![weather_tool()]),
     );
-    let reply = collect(&provider, &request).await.expect("a parallel batch");
+    let reply = collect(&provider, &request)
+        .await
+        .expect("a parallel batch");
 
     if reply.calls.len() < 2 {
         // The model is free to answer one at a time; that is not a failure of
         // ours, and there is nothing to learn from the run.
-        eprintln!("the model made {} call(s); nothing to check", reply.calls.len());
+        eprintln!(
+            "the model made {} call(s); nothing to check",
+            reply.calls.len()
+        );
         return;
     }
 
@@ -290,7 +302,9 @@ async fn gemini_accepts_a_history_it_never_signed() {
         tool_calls: None,
         tool_call_id: Some("c1".into()),
     });
-    request.messages.push(user("Given that, what should I wear?"));
+    request
+        .messages
+        .push(user("Given that, what should I wear?"));
 
     let reply = collect(&provider, &request)
         .await
@@ -313,7 +327,11 @@ async fn gemini_reports_thinking_apart_from_the_answer() {
     let model = "gemini-3.7-flash";
     let provider = gemini(model);
 
-    let request = ask(model, "In one sentence: why does fog form in San Francisco?", None);
+    let request = ask(
+        model,
+        "In one sentence: why does fog form in San Francisco?",
+        None,
+    );
     let reply = collect(&provider, &request).await.expect("a reply");
 
     let usage = reply.usage.expect("no usage was reported at all");
@@ -323,7 +341,10 @@ async fn gemini_reports_thinking_apart_from_the_answer() {
     let raw = &usage.extra["gemini"];
     if let Some(thoughts) = raw["thoughtsTokenCount"].as_u64() {
         assert_eq!(
-            usage.completion_tokens_details.as_ref().map(|d| d.reasoning_tokens),
+            usage
+                .completion_tokens_details
+                .as_ref()
+                .map(|d| d.reasoning_tokens),
             Some(thoughts as u32),
             "thinking was reported but did not reach the canonical shape"
         );
@@ -348,7 +369,11 @@ async fn anthropic_reports_usage_as_it_goes() {
     let model = std::env::var("ANTHROPIC_MODEL").unwrap_or("claude-haiku-4-5-20251001".into());
     let provider = AnthropicProvider::new(ANTHROPIC_URL.into(), api_key);
 
-    let mut request = ask(&model, "In one sentence: why does fog form in San Francisco?", None);
+    let mut request = ask(
+        &model,
+        "In one sentence: why does fog form in San Francisco?",
+        None,
+    );
     request.max_tokens = Some(256);
 
     let reply = collect(&provider, &request).await.expect("a reply");
@@ -356,7 +381,10 @@ async fn anthropic_reports_usage_as_it_goes() {
     assert!(!reply.text.is_empty(), "no text came back");
 
     let usage = reply.usage.expect("no usage was reported");
-    assert!(usage.prompt_tokens > 0, "the input count was lost on the way");
+    assert!(
+        usage.prompt_tokens > 0,
+        "the input count was lost on the way"
+    );
     assert!(
         usage.completion_tokens > 1,
         "the output count is still the placeholder from message_start, so a \
@@ -403,7 +431,11 @@ async fn openai_sends_usage_after_the_finish() {
     let model = std::env::var("OPENAI_MODEL").unwrap_or("gpt-4o-mini".into());
     let provider = OpenAiProvider::new(base, Some(api_key));
 
-    let request = ask(&model, "In one sentence: why does fog form in San Francisco?", None);
+    let request = ask(
+        &model,
+        "In one sentence: why does fog form in San Francisco?",
+        None,
+    );
     let reply = collect(&provider, &request).await.expect("a reply");
 
     assert!(!reply.text.is_empty(), "no text came back");

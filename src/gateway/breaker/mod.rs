@@ -22,8 +22,8 @@
 
 pub mod policy;
 
-use sqlx::postgres::PgPool;
 use sqlx::Row;
+use sqlx::postgres::PgPool;
 
 /// Whether a call may be attempted.
 #[derive(Debug, PartialEq, Eq)]

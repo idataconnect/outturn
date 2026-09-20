@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::auth::Authority;
 
 use super::{
-    CreateRole, RoleError, RoleStore, RoleTemplate, UpdateRole, WorkspaceRole, validate_authorities,
-    validate_name,
+    CreateRole, RoleError, RoleStore, RoleTemplate, UpdateRole, WorkspaceRole,
+    validate_authorities, validate_name,
 };
 
 /// Postgres channel a role change is announced on. The payload is the workspace.
@@ -81,7 +81,12 @@ impl PostgresRoleStore {
     }
 
     async fn load(&self, workspace_id: Uuid) -> Result<Arc<WorkspaceMap>, RoleError> {
-        if let Some(found) = self.cache.lock().ok().and_then(|c| c.get(&workspace_id).cloned()) {
+        if let Some(found) = self
+            .cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&workspace_id).cloned())
+        {
             return Ok(found);
         }
         let rows = sqlx::query(
@@ -150,7 +155,10 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
-async fn listen(pool: &PgPool, cache: &Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>) -> Result<(), sqlx::Error> {
+async fn listen(
+    pool: &PgPool,
+    cache: &Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>,
+) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
     loop {
@@ -217,7 +225,11 @@ impl RoleStore for PostgresRoleStore {
         self.read(workspace_id, id).await
     }
 
-    async fn create(&self, workspace_id: Uuid, input: CreateRole) -> Result<WorkspaceRole, RoleError> {
+    async fn create(
+        &self,
+        workspace_id: Uuid,
+        input: CreateRole,
+    ) -> Result<WorkspaceRole, RoleError> {
         let name = validate_name(&input.name)?;
         let authorities = validate_authorities(&input.authorities)?;
         let id = Uuid::now_v7();
@@ -248,7 +260,12 @@ impl RoleStore for PostgresRoleStore {
         self.read(workspace_id, id).await
     }
 
-    async fn update(&self, workspace_id: Uuid, id: Uuid, input: UpdateRole) -> Result<WorkspaceRole, RoleError> {
+    async fn update(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        input: UpdateRole,
+    ) -> Result<WorkspaceRole, RoleError> {
         let name = input.name.as_deref().map(validate_name).transpose()?;
         let authorities = input
             .authorities
@@ -363,18 +380,16 @@ impl RoleStore for PostgresRoleStore {
             }
         }
 
-        Ok(order
-            .into_iter()
-            .filter_map(|n| built.remove(&n))
-            .collect())
+        Ok(order.into_iter().filter_map(|n| built.remove(&n)).collect())
     }
 
     async fn seed_defaults(&self, workspace_id: Uuid) -> Result<(), RoleError> {
-        let existing: i64 = sqlx::query_scalar("select count(*) from roles where workspace_id = $1")
-            .bind(workspace_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(internal)?;
+        let existing: i64 =
+            sqlx::query_scalar("select count(*) from roles where workspace_id = $1")
+                .bind(workspace_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
         if existing > 0 {
             return Ok(());
         }

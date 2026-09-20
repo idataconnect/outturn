@@ -46,7 +46,6 @@ pub trait WorkspaceStore: Send + Sync {
     async fn delete(&self, id: Uuid) -> Result<(), WorkspaceError>;
 }
 
-
 pub(super) fn validate(input: &CreateWorkspace) -> Result<(), WorkspaceError> {
     if input.name.trim().is_empty() {
         return Err(WorkspaceError::Invalid("name must not be empty".into()));

@@ -29,7 +29,10 @@ fn classify(e: S3Error) -> StorageError {
                 (_, "NoSuchBucket") => {
                     StorageError::Unavailable("the bucket does not exist".into())
                 }
-                (403, _) | (_, "AccessDenied") | (_, "InvalidAccessKeyId") | (_, "SignatureDoesNotMatch") => {
+                (403, _)
+                | (_, "AccessDenied")
+                | (_, "InvalidAccessKeyId")
+                | (_, "SignatureDoesNotMatch") => {
                     StorageError::Unavailable(format!("storage refused the credentials ({code})"))
                 }
                 (status, code) if status >= 500 => {
@@ -97,7 +100,10 @@ impl S3Storage {
             Ok(false) => {}
             Err(e) => return Err(classify(e)),
         }
-        tracing::info!(bucket = self.bucket.name(), "creating object storage bucket");
+        tracing::info!(
+            bucket = self.bucket.name(),
+            "creating object storage bucket"
+        );
         Bucket::create_with_path_style(
             &self.bucket.name(),
             self.bucket.region(),
@@ -117,12 +123,20 @@ impl S3Storage {
     /// Best effort: some S3-compatible stores do not do lifecycle, and a
     /// missing sweep is a growing bill rather than a broken agent.
     pub async fn ensure_session_lifecycle(&self, days: u32) -> Result<(), StorageError> {
-        use s3::serde_types::{BucketLifecycleConfiguration, Expiration, LifecycleFilter, LifecycleRule};
+        use s3::serde_types::{
+            BucketLifecycleConfiguration, Expiration, LifecycleFilter, LifecycleRule,
+        };
         let sweep = |id: &str, prefix: String| LifecycleRule {
             id: Some(id.into()),
             status: "Enabled".into(),
-            filter: Some(LifecycleFilter { prefix: Some(prefix), ..Default::default() }),
-            expiration: Some(Expiration { days: Some(days), ..Default::default() }),
+            filter: Some(LifecycleFilter {
+                prefix: Some(prefix),
+                ..Default::default()
+            }),
+            expiration: Some(Expiration {
+                days: Some(days),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let session = super::scope::Scope::Session.bucket_prefix().to_string();
@@ -130,7 +144,10 @@ impl S3Storage {
             sweep("sweep-session-files", session.clone()),
             // The text read out of session documents lives under its own
             // prefix and would otherwise outlive what it was read from.
-            sweep("sweep-session-text", crate::api::extract::text_key(&session)),
+            sweep(
+                "sweep-session-text",
+                crate::api::extract::text_key(&session),
+            ),
         ];
         self.bucket
             .put_bucket_lifecycle(BucketLifecycleConfiguration::new(rules))
@@ -150,12 +167,7 @@ impl S3Storage {
 
 #[async_trait]
 impl StorageBackend for S3Storage {
-    async fn read(
-        &self,
-        path: &str,
-        offset: u64,
-        len: u32,
-    ) -> Result<Vec<u8>, StorageError> {
+    async fn read(&self, path: &str, offset: u64, len: u32) -> Result<Vec<u8>, StorageError> {
         let key = self.key(path);
 
         if offset == 0 && len == u32::MAX {
@@ -179,12 +191,7 @@ impl StorageBackend for S3Storage {
         Ok(response.to_vec())
     }
 
-    async fn write(
-        &self,
-        path: &str,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<u64, StorageError> {
+    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, StorageError> {
         let key = self.key(path);
 
         if offset != 0 {
@@ -205,15 +212,9 @@ impl StorageBackend for S3Storage {
                 buf.resize(needed, 0);
             }
             buf[start..start + data.len()].copy_from_slice(data);
-            self.bucket
-                .put_object(&key, &buf)
-                .await
-                .map_err(classify)?;
+            self.bucket.put_object(&key, &buf).await.map_err(classify)?;
         } else {
-            self.bucket
-                .put_object(&key, data)
-                .await
-                .map_err(classify)?;
+            self.bucket.put_object(&key, data).await.map_err(classify)?;
         }
 
         Ok(data.len() as u64)
@@ -221,11 +222,7 @@ impl StorageBackend for S3Storage {
 
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {
         let key = self.key(path);
-        let (head, _code) = self
-            .bucket
-            .head_object(&key)
-            .await
-            .map_err(classify)?;
+        let (head, _code) = self.bucket.head_object(&key).await.map_err(classify)?;
 
         let size = head.content_length.unwrap_or(0) as u64;
 
@@ -272,10 +269,7 @@ impl StorageBackend for S3Storage {
         // concurrent delete, which only means both callers are told it went.
         self.stat(path).await?;
         let key = self.key(path);
-        self.bucket
-            .delete_object(&key)
-            .await
-            .map_err(classify)?;
+        self.bucket.delete_object(&key).await.map_err(classify)?;
         Ok(())
     }
 }

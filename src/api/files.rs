@@ -13,11 +13,11 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -84,7 +84,10 @@ async fn space_for(
     session_id: Uuid,
     authority: Authority,
 ) -> Result<Space, ApiError> {
-    let session = state.chat.get_session(claims.workspace_id, session_id).await?;
+    let session = state
+        .chat
+        .get_session(claims.workspace_id, session_id)
+        .await?;
     if session.user_id != Some(claims.subject) {
         super::router::require_for_agent(state, claims, authority, session.agent_id).await?;
     }
@@ -106,11 +109,16 @@ fn storage_failed(e: crate::runtime::storage::StorageError) -> ApiError {
     use crate::runtime::storage::StorageError;
     match e {
         StorageError::NotFound => (StatusCode::NOT_FOUND, "no such file".into()),
-        StorageError::PermissionDenied => (StatusCode::BAD_REQUEST, "that path is not allowed".into()),
+        StorageError::PermissionDenied => {
+            (StatusCode::BAD_REQUEST, "that path is not allowed".into())
+        }
         StorageError::Refused(m) => (StatusCode::BAD_REQUEST, m),
         StorageError::Unavailable(m) => {
             tracing::warn!(error = %m, "object storage failed serving a file request");
-            (StatusCode::SERVICE_UNAVAILABLE, "object storage is unavailable".into())
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "object storage is unavailable".into(),
+            )
         }
         StorageError::Io(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
     }
@@ -222,7 +230,10 @@ pub async fn download(
     let store = storage(&state)?;
 
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
-    let bytes = store.read(&key, 0, u32::MAX).await.map_err(storage_failed)?;
+    let bytes = store
+        .read(&key, 0, u32::MAX)
+        .await
+        .map_err(storage_failed)?;
     let name = path.rsplit('/').next().unwrap_or("file").replace('"', "");
 
     Ok((
@@ -361,8 +372,14 @@ mod tests {
         // The name comes from whoever uploaded it or whatever the agent wrote,
         // so it is a claim rather than a fact. Every decision here is made on
         // the bytes.
-        assert_eq!(previewable(b"just some prose"), Some("text/plain; charset=utf-8"));
-        assert_eq!(previewable(b"\x89PNG\r\n\x1a\n and so on"), Some("image/png"));
+        assert_eq!(
+            previewable(b"just some prose"),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(
+            previewable(b"\x89PNG\r\n\x1a\n and so on"),
+            Some("image/png")
+        );
         assert_eq!(previewable(b"\xff\xd8\xff\xe0 jpeg"), Some("image/jpeg"));
     }
 

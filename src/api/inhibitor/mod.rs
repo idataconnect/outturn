@@ -80,11 +80,19 @@ impl From<Strength> for Verdict {
 pub enum Scope {
     /// Everything this deployment runs.
     Platform,
-    Workspace { workspace_id: Uuid },
-    Agent { workspace_id: Uuid, agent_id: Uuid },
+    Workspace {
+        workspace_id: Uuid,
+    },
+    Agent {
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    },
     /// One conversation. Not a level settings has, because a hold on a single
     /// session is the ordinary shape of a turn waiting for somebody.
-    Session { workspace_id: Uuid, session_id: Uuid },
+    Session {
+        workspace_id: Uuid,
+        session_id: Uuid,
+    },
 }
 
 impl Scope {
@@ -173,7 +181,10 @@ pub fn decide(inhibitors: Vec<Inhibitor>) -> Decision {
         .map(|i| Verdict::from(i.strength))
         .max()
         .unwrap_or(Verdict::Proceed);
-    Decision { verdict, contributors: inhibitors }
+    Decision {
+        verdict,
+        contributors: inhibitors,
+    }
 }
 
 /// Taking a hold.
@@ -258,8 +269,14 @@ mod tests {
 
     #[test]
     fn one_hold_decides_alone() {
-        assert_eq!(decide(vec![held(Strength::Suspended)]).verdict, Verdict::Suspended);
-        assert_eq!(decide(vec![held(Strength::Stopped)]).verdict, Verdict::Stopped);
+        assert_eq!(
+            decide(vec![held(Strength::Suspended)]).verdict,
+            Verdict::Suspended
+        );
+        assert_eq!(
+            decide(vec![held(Strength::Stopped)]).verdict,
+            Verdict::Stopped
+        );
     }
 
     #[test]

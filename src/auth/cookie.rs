@@ -34,9 +34,7 @@ pub fn session_cookie(token: &str, max_age_secs: u64) -> HeaderValue {
 /// Clears the session cookie. Attributes must match those it was set with, or
 /// the browser keeps the original.
 pub fn clear_session_cookie() -> HeaderValue {
-    HeaderValue::from_static(
-        "outturn_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-    )
+    HeaderValue::from_static("outturn_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0")
 }
 
 /// Reads the session token from the Cookie header.

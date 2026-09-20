@@ -58,7 +58,10 @@ pub async fn through_gateway(
         .map_err(|e| {
             // Stripped, because this text reaches a model and a transcript: a
             // URL an agent composed can carry a credential in its query.
-            format!("the request did not complete: {}", strip_url(&e.to_string()))
+            format!(
+                "the request did not complete: {}",
+                strip_url(&e.to_string())
+            )
         })?;
 
     let status = response.status();

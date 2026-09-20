@@ -1,6 +1,6 @@
+mod postgres;
 pub mod summarise;
 pub mod trim;
-mod postgres;
 
 pub use postgres::PostgresChatStore;
 

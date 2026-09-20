@@ -210,7 +210,8 @@ pub trait SkillStore: Send + Sync {
         author: Uuid,
         input: NewVersion,
     ) -> Result<SkillVersion, SkillError>;
-    async fn versions(&self, workspace_id: Uuid, id: Uuid) -> Result<Vec<SkillVersion>, SkillError>;
+    async fn versions(&self, workspace_id: Uuid, id: Uuid)
+    -> Result<Vec<SkillVersion>, SkillError>;
     async fn version(
         &self,
         workspace_id: Uuid,
@@ -228,11 +229,19 @@ pub trait SkillStore: Send + Sync {
     ) -> Result<Skill, SkillError>;
     /// Withdraws a skill without deleting it, so bindings that exist keep
     /// working and the record of what ran stays whole.
-    async fn retire(&self, workspace_id: Uuid, id: Uuid, retired: bool)
-    -> Result<Skill, SkillError>;
+    async fn retire(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        retired: bool,
+    ) -> Result<Skill, SkillError>;
     async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), SkillError>;
 
-    async fn bindings(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Vec<Binding>, SkillError>;
+    async fn bindings(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Vec<Binding>, SkillError>;
     /// Replaces the whole list, because that is what the editor edits.
     async fn set_bindings(
         &self,
@@ -270,11 +279,8 @@ pub trait SkillStore: Send + Sync {
 
     /// Records what a reply was composed from, which is what an eval reads and
     /// what an audit asks for.
-    async fn record_turn(
-        &self,
-        reply_id: Uuid,
-        skills: &[ResolvedSkill],
-    ) -> Result<(), SkillError>;
+    async fn record_turn(&self, reply_id: Uuid, skills: &[ResolvedSkill])
+    -> Result<(), SkillError>;
 }
 
 pub(super) fn validate_slug(slug: &str) -> Result<(), SkillError> {
@@ -422,12 +428,20 @@ mod tests {
     /// is the platform's rather than the model's guess.
     #[test]
     fn a_turn_is_told_what_is_serving_it() {
-        let composed = compose_as("outturn", "You are a helpful assistant.", &[], "qwen3.8:27b-mlx");
+        let composed = compose_as(
+            "outturn",
+            "You are a helpful assistant.",
+            &[],
+            "qwen3.8:27b-mlx",
+        );
         assert!(composed.contains("qwen3.8:27b-mlx"), "{composed}");
         assert!(composed.contains("outturn"), "{composed}");
         assert!(composed.contains(env!("CARGO_PKG_VERSION")), "{composed}");
         // And the agent's own prose is still there, after it.
-        assert!(composed.ends_with("You are a helpful assistant."), "{composed}");
+        assert!(
+            composed.ends_with("You are a helpful assistant."),
+            "{composed}"
+        );
     }
 
     /// The preamble leads; the workspace's prose follows.
@@ -440,7 +454,9 @@ mod tests {
     #[test]
     fn the_platform_speaks_before_the_workspace_does() {
         let composed = compose_as("outturn", "You are a pirate.", &[], "gemma4");
-        let preamble_at = composed.find("You are an agent running on").expect("preamble");
+        let preamble_at = composed
+            .find("You are an agent running on")
+            .expect("preamble");
         let prompt_at = composed.find("You are a pirate.").expect("prompt");
         assert!(preamble_at < prompt_at, "{composed}");
     }
@@ -450,13 +466,20 @@ mod tests {
     fn an_empty_prompt_is_still_told_what_it_is() {
         let composed = compose_as("outturn", "", &[], "gemma4");
         assert!(composed.contains("gemma4"), "{composed}");
-        assert!(!composed.starts_with('\n'), "no leading blank: {composed:?}");
+        assert!(
+            !composed.starts_with('\n'),
+            "no leading blank: {composed:?}"
+        );
     }
 
     /// Skills keep their place, after the preamble and the agent's prose.
     #[test]
     fn the_preamble_does_not_displace_the_skills() {
-        let skills = vec![skill("Search", "Use the search API.", SkillKind::Standalone)];
+        let skills = vec![skill(
+            "Search",
+            "Use the search API.",
+            SkillKind::Standalone,
+        )];
         let composed = compose_as("outturn", "You are terse.", &skills, "gemma4");
         let prompt_at = composed.find("You are terse.").expect("prompt");
         let skills_at = composed.find("# Skills").expect("skills");
@@ -495,7 +518,10 @@ mod tests {
 
     #[test]
     fn a_skill_follows_the_prompt_under_its_own_heading() {
-        let out = compose("Be helpful.", &[skill("CRM", "Call v1.", SkillKind::Standalone)]);
+        let out = compose(
+            "Be helpful.",
+            &[skill("CRM", "Call v1.", SkillKind::Standalone)],
+        );
         assert_eq!(out, "Be helpful.\n\n# Skills\n\n## CRM\n\nCall v1.");
     }
 

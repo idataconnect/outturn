@@ -394,7 +394,9 @@ mod tests {
     }
 
     fn many(n: usize) -> Vec<EgressRule> {
-        (0..n).map(|i| rule(&format!("host{i}.example.com"))).collect()
+        (0..n)
+            .map(|i| rule(&format!("host{i}.example.com")))
+            .collect()
     }
 
     #[test]
@@ -463,7 +465,10 @@ mod tests {
         assert!(verify(mine, &root(mine, &set), &proof).is_ok());
         // The same rules, allowed by somebody else: every leaf differs, so the
         // path rebuilds to a root that is nobody's commitment.
-        assert_eq!(verify(yours, &root(yours, &set), &proof), Err(Invalid::Root));
+        assert_eq!(
+            verify(yours, &root(yours, &set), &proof),
+            Err(Invalid::Root)
+        );
         assert_eq!(verify(yours, &root(mine, &set), &proof), Err(Invalid::Root));
     }
 
@@ -510,7 +515,10 @@ mod tests {
         // somewhere else in the system and offered as "this workspace allows
         // nothing".
         assert_ne!(empty_root().0, <[u8; 32]>::from(Sha256::digest([])));
-        assert_ne!(empty_root(), root(Uuid::now_v7(), &rules(&["a.example.com"])));
+        assert_ne!(
+            empty_root(),
+            root(Uuid::now_v7(), &rules(&["a.example.com"]))
+        );
     }
 
     #[test]

@@ -201,7 +201,10 @@ pub async fn claim(
 
     tx.commit().await.map_err(internal)?;
 
-    Ok(rows.iter().map(|r| JobHandle { job: read_job(r) }).collect())
+    Ok(rows
+        .iter()
+        .map(|r| JobHandle { job: read_job(r) })
+        .collect())
 }
 
 /// Closes a job out as done.
@@ -438,14 +441,13 @@ pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Res
 /// another pod, and the first pod's report would otherwise be written over
 /// the second's.
 pub async fn holds_lease(pool: &PgPool, id: Uuid, token: Uuid) -> Result<bool, JobError> {
-    let held: Option<bool> = sqlx::query_scalar(
-        "select lease_token = $2 from jobs where id = $1 and state = 'running'",
-    )
-    .bind(id)
-    .bind(token)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+    let held: Option<bool> =
+        sqlx::query_scalar("select lease_token = $2 from jobs where id = $1 and state = 'running'")
+            .bind(id)
+            .bind(token)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal)?;
     Ok(held == Some(true))
 }
 

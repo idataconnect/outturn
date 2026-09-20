@@ -199,9 +199,7 @@ pub fn normalise_host(input: &str) -> Result<String, String> {
     let valid = labels.split('.').all(|label| {
         !label.is_empty()
             && label.len() <= 63
-            && label
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             && !label.starts_with('-')
             && !label.ends_with('-')
     });
@@ -471,10 +469,12 @@ mod tests {
         ];
         let found = rule_for(&rules, "api.example.com").expect("matched");
         assert_eq!(found.credential_env.as_deref(), Some("EXAMPLE_KEY"));
-        assert!(rule_for(&rules, "other.example.com")
-            .expect("matched")
-            .credential_env
-            .is_none());
+        assert!(
+            rule_for(&rules, "other.example.com")
+                .expect("matched")
+                .credential_env
+                .is_none()
+        );
     }
 
     #[test]
@@ -576,7 +576,9 @@ mod tests {
         // ::ffff:127.0.0.1 is loopback, and a check that looks only at the v6
         // rules waves it through.
         assert!(is_forbidden("::ffff:127.0.0.1".parse().expect("addr")));
-        assert!(is_forbidden("::ffff:169.254.169.254".parse().expect("addr")));
+        assert!(is_forbidden(
+            "::ffff:169.254.169.254".parse().expect("addr")
+        ));
     }
 
     #[test]
@@ -632,7 +634,13 @@ mod tests {
 
     #[test]
     fn the_platforms_own_headers_cannot_be_set_by_a_guest() {
-        for header in ["Authorization", "authorization", "COOKIE", "Host", "x-api-key"] {
+        for header in [
+            "Authorization",
+            "authorization",
+            "COOKIE",
+            "Host",
+            "x-api-key",
+        ] {
             assert!(check_header(header).is_err(), "{header} was allowed");
         }
         assert!(check_header("content-type").is_ok());

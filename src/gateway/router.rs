@@ -4,13 +4,13 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use futures::StreamExt;
 
-use crate::auth::{self, TokenValidator, SessionClaims};
+use crate::auth::{self, SessionClaims, TokenValidator};
 
 use super::breaker;
 use super::egress;
-use super::routing::{self};
 use super::llm::provider::{LlmProvider, ProviderError};
 use super::llm::types::ChatCompletionRequest;
+use super::routing::{self};
 
 pub struct GatewayState {
     providers: Vec<Arc<dyn LlmProvider>>,
@@ -119,11 +119,7 @@ impl GatewayState {
     /// the wrong way round for a spend cap and the right way round for an
     /// outage, and the turn-preparation check catches what this misses on the
     /// very next turn.
-    async fn held_for(
-        &self,
-        workspace_id: uuid::Uuid,
-        session_id: uuid::Uuid,
-    ) -> Option<String> {
+    async fn held_for(&self, workspace_id: uuid::Uuid, session_id: uuid::Uuid) -> Option<String> {
         let pool = self.health.as_ref()?;
         let held =
             match crate::api::inhibitor::postgres::covering_session(pool, workspace_id, session_id)
@@ -301,7 +297,9 @@ impl GatewayState {
                     return attempts;
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "could not read routes, using static providers"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read routes, using static providers")
+                }
             }
         }
 
@@ -390,15 +388,12 @@ pub(crate) fn authenticate(
     state: &GatewayState,
     headers: &axum::http::HeaderMap,
 ) -> Result<SessionClaims, (StatusCode, String)> {
-    let token = auth::extract_bearer(headers)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
-    let claims = state
-        .auth
-        .validate(token)
-        .map_err(|e| match e {
-            auth::AuthError::Forbidden => (StatusCode::FORBIDDEN, e.to_string()),
-            _ => (StatusCode::UNAUTHORIZED, e.to_string()),
-        })?;
+    let token =
+        auth::extract_bearer(headers).map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
+    let claims = state.auth.validate(token).map_err(|e| match e {
+        auth::AuthError::Forbidden => (StatusCode::FORBIDDEN, e.to_string()),
+        _ => (StatusCode::UNAUTHORIZED, e.to_string()),
+    })?;
     // The gateway has no role store and needs none: the only role a token it
     // accepts can carry is the platform's `turn`.
     claims

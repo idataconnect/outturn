@@ -470,7 +470,12 @@ mod tests {
 
         let mut platform = Health::new(Scope::Platform);
         for (i, c) in agents.iter().enumerate() {
-            platform = observe(platform, Observation::Undetermined, *c, after(t0(), i as i64));
+            platform = observe(
+                platform,
+                Observation::Undetermined,
+                *c,
+                after(t0(), i as i64),
+            );
         }
         assert_eq!(platform.state, State::Closed);
 
@@ -526,7 +531,10 @@ mod tests {
         }
 
         let due = health.probe_after.expect("scheduled");
-        assert_eq!(check(&health, due - chrono::Duration::seconds(1)), Verdict::Reject);
+        assert_eq!(
+            check(&health, due - chrono::Duration::seconds(1)),
+            Verdict::Reject
+        );
         assert_eq!(check(&health, due), Verdict::Probe);
     }
 
@@ -545,7 +553,10 @@ mod tests {
         assert_eq!(claimed.state, State::HalfOpen);
         assert_eq!(check(&claimed, due), Verdict::Reject);
         assert_eq!(
-            check(&claimed, due + chrono::Duration::seconds(PROBE_LEASE.as_secs() as i64)),
+            check(
+                &claimed,
+                due + chrono::Duration::seconds(PROBE_LEASE.as_secs() as i64)
+            ),
             Verdict::Probe,
             "a probe that never reported back must not hold the circuit forever"
         );

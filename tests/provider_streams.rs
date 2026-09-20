@@ -116,7 +116,10 @@ async fn anthropic_streams_text_and_keeps_both_halves_of_its_usage() {
         }
     }
 
-    assert!(chunks > 2, "a reply that arrived in one chunk did not stream");
+    assert!(
+        chunks > 2,
+        "a reply that arrived in one chunk did not stream"
+    );
     assert!(!text.is_empty(), "the reply had no text in it");
     assert_eq!(finish.as_deref(), Some("stop"));
 
@@ -181,7 +184,11 @@ async fn anthropic_streams_a_tool_call_in_fragments() {
     }
 
     assert_eq!(name.as_deref(), Some("get_current_time"));
-    assert_eq!(finish.as_deref(), Some("tool_calls"), "a tool call is not an ordinary stop");
+    assert_eq!(
+        finish.as_deref(),
+        Some("tool_calls"),
+        "a tool call is not an ordinary stop"
+    );
     assert!(
         serde_json::from_str::<serde_json::Value>(&arguments).is_ok(),
         "the fragments did not reassemble into valid json: {arguments:?}"
@@ -217,11 +224,18 @@ async fn gemini_streams_text_and_carries_usage_on_the_way() {
         if let Some(usage) = chunk.usage {
             chunks_with_usage += 1;
             last_prompt_tokens = usage.prompt_tokens;
-            last_cached = usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens).unwrap_or(0);
+            last_cached = usage
+                .prompt_tokens_details
+                .as_ref()
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0);
         }
     }
 
-    assert!(chunks > 2, "a reply that arrived in one chunk did not stream");
+    assert!(
+        chunks > 2,
+        "a reply that arrived in one chunk did not stream"
+    );
     assert!(!text.is_empty(), "the reply had no text in it");
     assert!(
         chunks_with_usage > 1,
@@ -248,7 +262,11 @@ async fn every_provider_answers_in_the_same_shape() {
         ),
         (
             "gemini",
-            Box::new(GeminiProvider::new(mock.base_url.clone(), "k".into(), "mock".into())),
+            Box::new(GeminiProvider::new(
+                mock.base_url.clone(),
+                "k".into(),
+                "mock".into(),
+            )),
         ),
     ];
 
@@ -286,6 +304,9 @@ async fn every_provider_answers_in_the_same_shape() {
             usage.prompt_tokens + cached > 0,
             "{name} accounted for none of the prompt, neither evaluated nor cached"
         );
-        assert!(usage.completion_tokens > 0, "{name} reported no completion tokens");
+        assert!(
+            usage.completion_tokens > 0,
+            "{name} reported no completion tokens"
+        );
     }
 }

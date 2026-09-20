@@ -114,8 +114,8 @@ pub fn boundary(conversation: &[Value]) -> Option<usize> {
     // Strictly greater: a conversation exactly the length of the tail would
     // summarise nothing, and asking a model for a summary of nothing spends a
     // call to produce a paragraph saying so.
-    let mut cut = (conversation.len() > TAIL_MESSAGES + 1)
-        .then(|| conversation.len() - TAIL_MESSAGES)?;
+    let mut cut =
+        (conversation.len() > TAIL_MESSAGES + 1).then(|| conversation.len() - TAIL_MESSAGES)?;
 
     while conversation.get(cut).is_some_and(super::trim::is_result) {
         cut += 1;
@@ -361,7 +361,10 @@ mod tests {
         // than of what matters.
         let out = request("never touch production", &[user("hello")]);
         assert_eq!(out[0].role, Role::System);
-        assert!(text_of(&out[0]).contains("never touch production"), "{out:?}");
+        assert!(
+            text_of(&out[0]).contains("never touch production"),
+            "{out:?}"
+        );
     }
 
     #[test]
@@ -381,7 +384,9 @@ mod tests {
         // rather than a summary.
         let out = request("", &[calling("fetch_url"), result("200 OK")]);
         assert!(out.iter().all(|m| m.role != Role::Tool), "{out:?}");
-        let mentioned = out.iter().any(|m| text_of(m).contains("result of a tool call"));
+        let mentioned = out
+            .iter()
+            .any(|m| text_of(m).contains("result of a tool call"));
         assert!(mentioned, "{out:?}");
     }
 
@@ -408,10 +413,12 @@ mod tests {
         let out = apply(conversation, "they discussed numbers", 2);
 
         assert_eq!(out.len(), 3);
-        assert!(out[0]["parts"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("they discussed numbers"));
+        assert!(
+            out[0]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("they discussed numbers")
+        );
         assert_eq!(out[1]["parts"][0]["text"], "three");
         assert_eq!(out[2]["parts"][0]["text"], "four");
     }

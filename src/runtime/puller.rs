@@ -129,10 +129,7 @@ impl Puller {
     }
 
     /// Asks for one turn and runs it. Returns whether there was work.
-    async fn take_one(
-        self: Arc<Self>,
-        permit: super::admission::Permit,
-    ) -> anyhow::Result<bool> {
+    async fn take_one(self: Arc<Self>, permit: super::admission::Permit) -> anyhow::Result<bool> {
         let response = self
             .http
             .post(format!("{}/v1/work", self.api_url))
@@ -248,7 +245,11 @@ impl Puller {
             // has always meant in practice: everything this agent can write,
             // plus the reads that were never restricted.
             read_scopes: if request.read_scopes.is_empty() {
-                vec!["session".to_string(), "agent".to_string(), "workspace".to_string()]
+                vec![
+                    "session".to_string(),
+                    "agent".to_string(),
+                    "workspace".to_string(),
+                ]
             } else {
                 request.read_scopes
             },

@@ -79,11 +79,9 @@ async fn template(url: &str) -> &'static str {
             // already asserted to be a test database, and the error from it
             // already existing is the expected case and is discarded.
             let named = database_name(url);
-            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                "create database \"{named}\""
-            )))
-            .execute(&admin)
-            .await;
+            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("create database \"{named}\"")))
+                .execute(&admin)
+                .await;
 
             // Once per test binary, before anything is created. Here rather
             // than in `TestDb::new` because it is about other runs' leavings,
@@ -111,7 +109,9 @@ async fn template(url: &str) -> &'static str {
                 .connect(&with_database(url, &name))
                 .await
                 .expect("connect to the template");
-            outturn::db::migrate(&pool).await.expect("migrate the template");
+            outturn::db::migrate(&pool)
+                .await
+                .expect("migrate the template");
             pool.close().await;
 
             name
@@ -216,19 +216,18 @@ async fn claim(admin: &PgPool, name: &str) -> sqlx::pool::PoolConnection<sqlx::P
 /// lock proves the owner is gone, because a live owner still holds it;
 /// failing to take it means somebody is using that database right now.
 async fn sweep(admin: &PgPool) {
-    let names: Vec<String> = match sqlx::query_scalar(
-        "select datname from pg_database where datname like 't\\_%'",
-    )
-    .fetch_all(admin)
-    .await
-    {
-        Ok(names) => names,
-        // A sweep that cannot list is not a reason to fail the run.
-        Err(e) => {
-            eprintln!("could not list test databases to sweep: {e}");
-            return;
-        }
-    };
+    let names: Vec<String> =
+        match sqlx::query_scalar("select datname from pg_database where datname like 't\\_%'")
+            .fetch_all(admin)
+            .await
+        {
+            Ok(names) => names,
+            // A sweep that cannot list is not a reason to fail the run.
+            Err(e) => {
+                eprintln!("could not list test databases to sweep: {e}");
+                return;
+            }
+        };
 
     let mut dropped = 0;
     for name in names {
@@ -325,7 +324,12 @@ impl TestDb {
             .await
             .expect("connect");
 
-        Self { pool, name, admin, _claim: claim }
+        Self {
+            pool,
+            name,
+            admin,
+            _claim: claim,
+        }
     }
 
     /// Drops the database. Called explicitly so a failing test leaves its data

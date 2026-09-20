@@ -108,7 +108,9 @@ impl std::fmt::Display for ProviderError {
 /// about what a payload is. One sends fragments of a single shape and stops at
 /// a sentinel; another sends a sequence of differently-typed events and stops
 /// by ending. What they share is exactly this framing, and no more.
-pub fn sse_payloads<S>(stream: S) -> impl futures::Stream<Item = Result<serde_json::Value, ProviderError>>
+pub fn sse_payloads<S>(
+    stream: S,
+) -> impl futures::Stream<Item = Result<serde_json::Value, ProviderError>>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, ProviderError>>,
 {

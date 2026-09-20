@@ -84,8 +84,17 @@ pub struct RoleTemplate {
 pub trait RoleStore: Send + Sync {
     async fn list(&self, workspace_id: Uuid) -> Result<Vec<WorkspaceRole>, RoleError>;
     async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<WorkspaceRole, RoleError>;
-    async fn create(&self, workspace_id: Uuid, input: CreateRole) -> Result<WorkspaceRole, RoleError>;
-    async fn update(&self, workspace_id: Uuid, id: Uuid, input: UpdateRole) -> Result<WorkspaceRole, RoleError>;
+    async fn create(
+        &self,
+        workspace_id: Uuid,
+        input: CreateRole,
+    ) -> Result<WorkspaceRole, RoleError>;
+    async fn update(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        input: UpdateRole,
+    ) -> Result<WorkspaceRole, RoleError>;
     async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), RoleError>;
 
     /// The authorities that follow from holding these roles in this workspace.
@@ -140,7 +149,9 @@ pub fn validate_name(name: &str) -> Result<String, RoleError> {
         return Err(RoleError::Invalid("a role needs a name".into()));
     }
     if name.len() > 64 {
-        return Err(RoleError::Invalid("a role name can be at most 64 characters".into()));
+        return Err(RoleError::Invalid(
+            "a role name can be at most 64 characters".into(),
+        ));
     }
     if crate::auth::rbac::is_platform_role_name(name) {
         return Err(RoleError::Invalid(format!(

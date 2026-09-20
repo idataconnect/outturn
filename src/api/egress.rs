@@ -95,7 +95,11 @@ pub async fn list(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<Rule>, RuleEr
     Ok(rows.iter().map(read_rule).collect())
 }
 
-pub async fn create(pool: &PgPool, workspace_id: Uuid, input: CreateRule) -> Result<Rule, RuleError> {
+pub async fn create(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    input: CreateRule,
+) -> Result<Rule, RuleError> {
     let host = crate::runtime::egress::normalise_host(&input.host).map_err(RuleError::Invalid)?;
 
     // A header without a variable would attach nothing; a variable without a

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::component::{
-    AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
-    ToolSink, UsageSink, WriteSink,
+    AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink, ToolSink,
+    UsageSink, WriteSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -292,4 +292,3 @@ pub fn sinks_for(
 
     (progress, on_tool, on_tool_result, on_usage, on_write)
 }
-

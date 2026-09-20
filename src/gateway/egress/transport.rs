@@ -158,8 +158,8 @@ impl EgressTransport for Direct {
             use futures::StreamExt;
             let mut chunks = response.bytes_stream();
             while let Some(chunk) = chunks.next().await {
-                let chunk = chunk
-                    .map_err(|e| TransportError::Incomplete(strip_url(&e.to_string())))?;
+                let chunk =
+                    chunk.map_err(|e| TransportError::Incomplete(strip_url(&e.to_string())))?;
                 body.extend_from_slice(&chunk);
                 if body.len() > request.body_limit {
                     truncated = true;

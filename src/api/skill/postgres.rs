@@ -299,13 +299,14 @@ impl SkillStore for PostgresSkillStore {
     ) -> Result<SkillVersion, SkillError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
-        let skill = sqlx::query("select base_skill_id from skills where workspace_id = $1 and id = $2")
-            .bind(workspace_id)
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(internal)?
-            .ok_or(SkillError::NotFound)?;
+        let skill =
+            sqlx::query("select base_skill_id from skills where workspace_id = $1 and id = $2")
+                .bind(workspace_id)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(internal)?
+                .ok_or(SkillError::NotFound)?;
 
         // An override's every version records the base it was written against,
         // so a later edit of the base can be reported against this one rather
@@ -355,7 +356,11 @@ impl SkillStore for PostgresSkillStore {
         Ok(version)
     }
 
-    async fn versions(&self, workspace_id: Uuid, id: Uuid) -> Result<Vec<SkillVersion>, SkillError> {
+    async fn versions(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+    ) -> Result<Vec<SkillVersion>, SkillError> {
         self.get(workspace_id, id).await?;
         let rows = sqlx::query(
             "select id, skill_id, ordinal, body, note, based_on_version_id, created_by, created_at \
@@ -481,7 +486,11 @@ impl SkillStore for PostgresSkillStore {
         Ok(())
     }
 
-    async fn bindings(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Vec<Binding>, SkillError> {
+    async fn bindings(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Vec<Binding>, SkillError> {
         let rows = sqlx::query(
             "select skill_id, version_id, position from agent_skills \
              where workspace_id = $1 and agent_id = $2 order by position",

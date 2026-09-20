@@ -247,7 +247,11 @@ async fn completions_stream(
             ndjson(lines)
         }
 
-        Behavior::TextThenSteer { first, steer, reply } => {
+        Behavior::TextThenSteer {
+            first,
+            steer,
+            reply,
+        } => {
             let text = if call_number > 1 { reply } else { first };
             let mut lines: Vec<String> = chunk_text(&text)
                 .iter()

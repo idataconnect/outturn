@@ -25,9 +25,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -104,15 +104,19 @@ pub async fn take(
 
     let deadline = tokio::time::Instant::now() + WORK_POLL_TIMEOUT;
     loop {
-        let claimed = jobs::claim(&state.pool, &[super::worker::CHAT_TURN], 1, jobs::DEFAULT_LEASE)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let claimed = jobs::claim(
+            &state.pool,
+            &[super::worker::CHAT_TURN],
+            1,
+            jobs::DEFAULT_LEASE,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         if let Some(handle) = claimed.into_iter().next() {
             let payload: super::worker::ChatTurnPayload =
-                serde_json::from_value(handle.job.payload.clone()).map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}"))
-                })?;
+                serde_json::from_value(handle.job.payload.clone())
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}")))?;
 
             // Released rather than dropped. A claimed job whose handler
             // returns early is a row left `running` that nothing will ever
@@ -146,7 +150,8 @@ pub async fn take(
                 // it interrupted. The job is done rather than abandoned, and
                 // the runtime is not troubled with it.
                 Ok(None) => {
-                    let _ = jobs::complete(&state.pool, handle.job.id, handle.job.lease_token).await;
+                    let _ =
+                        jobs::complete(&state.pool, handle.job.id, handle.job.lease_token).await;
                     continue;
                 }
                 Ok(Some(request)) => {
@@ -156,22 +161,22 @@ pub async fn take(
                         payload.workspace_id,
                         request.egress_commitment,
                     ) {
-                            Ok(token) => token,
-                            Err(e) => {
-                                // The placeholder is already written and
-                                // announced, so this turn has to go back where
-                                // a retry can find it rather than be dropped.
-                                let _ = jobs::release(
-                                    &state.pool,
-                                    handle.job.id,
-                                    Duration::from_secs(1),
-                                    jobs::MAX_RELEASES,
-                                    Some(lease_token),
-                                )
-                                .await;
-                                return Err(e);
-                            }
-                        };
+                        Ok(token) => token,
+                        Err(e) => {
+                            // The placeholder is already written and
+                            // announced, so this turn has to go back where
+                            // a retry can find it rather than be dropped.
+                            let _ = jobs::release(
+                                &state.pool,
+                                handle.job.id,
+                                Duration::from_secs(1),
+                                jobs::MAX_RELEASES,
+                                Some(lease_token),
+                            )
+                            .await;
+                            return Err(e);
+                        }
+                    };
                     tracing::debug!(
                         job_id = %handle.job.id,
                         session_id = %payload.session_id,

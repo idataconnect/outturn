@@ -1,6 +1,6 @@
 pub mod memory;
-pub mod scope;
 pub mod s3;
+pub mod scope;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,19 +14,9 @@ pub struct FileMetadata {
 
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
-    async fn read(
-        &self,
-        path: &str,
-        offset: u64,
-        len: u32,
-    ) -> Result<Vec<u8>, StorageError>;
+    async fn read(&self, path: &str, offset: u64, len: u32) -> Result<Vec<u8>, StorageError>;
 
-    async fn write(
-        &self,
-        path: &str,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<u64, StorageError>;
+    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, StorageError>;
 
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError>;
 

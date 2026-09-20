@@ -104,13 +104,8 @@ pub async fn create_session(
     let claims = authenticate(&state, &headers)?;
     // Which agent decides it: talking to the accounting agent and talking to
     // the support agent are separate permissions where somebody said so.
-    super::router::require_for_agent(
-        &state,
-        &claims,
-        Authority::SessionsCreate,
-        input.agent_id,
-    )
-    .await?;
+    super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
+        .await?;
     let session = state
         .chat
         .create_session(claims.workspace_id, claims.subject, input)
@@ -197,7 +192,10 @@ pub async fn rename_session(
     )
     .await?;
 
-    let session = state.chat.rename_session(claims.workspace_id, id, title).await?;
+    let session = state
+        .chat
+        .rename_session(claims.workspace_id, id, title)
+        .await?;
     super::naming::announce(&state.pool, &session).await;
     Ok(Json(session))
 }
@@ -351,9 +349,15 @@ async fn enqueue_turn(
     .await
     .map_err(|e| e.to_string())?;
 
-    events::append_on(&mut tx, workspace_id, Some(session_id), "chat.message", event)
-        .await
-        .map_err(|e| e.to_string())?;
+    events::append_on(
+        &mut tx,
+        workspace_id,
+        Some(session_id),
+        "chat.message",
+        event,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())
 }
@@ -402,7 +406,9 @@ pub async fn cancel_turn(
         // Nothing in flight. Not an error: the turn finished while the button
         // was being pressed, which is a race a person cannot avoid and should
         // not be scolded for.
-        return Ok(Json(serde_json::json!({ "stopped": false, "state": "nothing_running" })));
+        return Ok(Json(
+            serde_json::json!({ "stopped": false, "state": "nothing_running" }),
+        ));
     };
 
     let outcome = jobs::request_cancel(&state.pool, job_id)
@@ -430,5 +436,7 @@ pub async fn cancel_turn(
         .ok();
     }
 
-    Ok(Json(serde_json::json!({ "stopped": stopped, "state": described })))
+    Ok(Json(
+        serde_json::json!({ "stopped": stopped, "state": described }),
+    ))
 }

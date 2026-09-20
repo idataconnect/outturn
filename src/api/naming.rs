@@ -21,7 +21,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::auth::TokenMinter;
-use crate::gateway::llm::types::{ChatCompletionRequest, ChatCompletionResponse, Message, MessageContent, Role};
+use crate::gateway::llm::types::{
+    ChatCompletionRequest, ChatCompletionResponse, Message, MessageContent, Role,
+};
 use crate::{events, jobs};
 
 use super::chat::{AgentSession, ChatStore};
@@ -160,8 +162,16 @@ async fn run_one(
         return Ok(());
     }
 
-    let history = chat.messages(session_id).await.map_err(|e| anyhow::anyhow!("messages: {e}"))?;
-    let transcript = transcript(history.messages.iter().map(|m| (m.role.as_str(), m.content.as_str())));
+    let history = chat
+        .messages(session_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("messages: {e}"))?;
+    let transcript = transcript(
+        history
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str())),
+    );
     if transcript.is_empty() {
         return Ok(());
     }
@@ -170,12 +180,28 @@ async fn run_one(
     // egress rules, so the commitment it mints is the same empty one every
     // workspace with no rules gets -- there is nothing here for the gateway
     // to check against.
-    let token = minter.mint_turn(session_id, job.workspace_id, crate::egress::commit::empty_root())?;
+    let token = minter.mint_turn(
+        session_id,
+        job.workspace_id,
+        crate::egress::commit::empty_root(),
+    )?;
     let request = ChatCompletionRequest {
         model: model.to_string(),
         messages: vec![
-            Message { role: Role::System, content: MessageContent::Text(INSTRUCTION.into()), name: None, tool_calls: None, tool_call_id: None },
-            Message { role: Role::User, content: MessageContent::Text(transcript), name: None, tool_calls: None, tool_call_id: None },
+            Message {
+                role: Role::System,
+                content: MessageContent::Text(INSTRUCTION.into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text(transcript),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
         ],
         temperature: Some(0.2),
         max_tokens: Some(32),
@@ -332,7 +358,12 @@ fn transcript<'a>(messages: impl Iterator<Item = (&'a str, &'a str)>) -> String 
         let line = format!("{role}: {content}\n");
         if out.len() + line.len() > TRANSCRIPT_CHARS {
             let room = TRANSCRIPT_CHARS.saturating_sub(out.len());
-            let cut = line.char_indices().map(|(i, _)| i).take_while(|i| *i <= room).last().unwrap_or(0);
+            let cut = line
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|i| *i <= room)
+                .last()
+                .unwrap_or(0);
             out.push_str(&line[..cut]);
             break;
         }
@@ -357,7 +388,13 @@ fn tidy(raw: &str) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    Some(t.chars().take(MAX_TITLE_CHARS).collect::<String>().trim_end().to_string())
+    Some(
+        t.chars()
+            .take(MAX_TITLE_CHARS)
+            .collect::<String>()
+            .trim_end()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -366,9 +403,18 @@ mod tests {
 
     #[test]
     fn tidy_strips_dressing() {
-        assert_eq!(tidy("\"Quarterly Revenue Question\""), Some("Quarterly Revenue Question".into()));
-        assert_eq!(tidy("Title: Weather in Reykjavik."), Some("Weather in Reykjavik".into()));
-        assert_eq!(tidy("**Invoice Archive Review**\nMore words"), Some("Invoice Archive Review".into()));
+        assert_eq!(
+            tidy("\"Quarterly Revenue Question\""),
+            Some("Quarterly Revenue Question".into())
+        );
+        assert_eq!(
+            tidy("Title: Weather in Reykjavik."),
+            Some("Weather in Reykjavik".into())
+        );
+        assert_eq!(
+            tidy("**Invoice Archive Review**\nMore words"),
+            Some("Invoice Archive Review".into())
+        );
         assert_eq!(tidy("  \n  "), None);
         assert_eq!(tidy("\"\""), None);
     }
@@ -382,7 +428,13 @@ mod tests {
     #[test]
     fn transcript_keeps_speech_and_drops_the_rest() {
         let t = transcript(
-            [("user", "hello"), ("assistant", ""), ("tool", "{}"), ("assistant", "hi there")].into_iter(),
+            [
+                ("user", "hello"),
+                ("assistant", ""),
+                ("tool", "{}"),
+                ("assistant", "hi there"),
+            ]
+            .into_iter(),
         );
         assert_eq!(t, "user: hello\nassistant: hi there\n");
     }

@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::auth::{Role, password};
 
 use super::{
-    CreateUser, Identity, PROVIDER_PASSWORD, WorkspaceMembership, User, UserError, UserStore, validate,
+    CreateUser, Identity, PROVIDER_PASSWORD, User, UserError, UserStore, WorkspaceMembership,
+    validate,
 };
 
 pub struct PostgresUserStore {
@@ -142,12 +143,13 @@ impl UserStore for PostgresUserStore {
         if name.is_empty() {
             return Err(UserError::Invalid("display name must not be empty".into()));
         }
-        let updated = sqlx::query("update users set display_name = $2, updated_at = now() where id = $1")
-            .bind(id)
-            .bind(name)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
+        let updated =
+            sqlx::query("update users set display_name = $2, updated_at = now() where id = $1")
+                .bind(id)
+                .bind(name)
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
         if updated.rows_affected() == 0 {
             return Err(UserError::NotFound);
         }
@@ -172,7 +174,8 @@ impl UserStore for PostgresUserStore {
 
     async fn create(&self, input: CreateUser) -> Result<User, UserError> {
         validate(&input)?;
-        let hash = password::hash(&input.password).map_err(|e| UserError::Internal(e.to_string()))?;
+        let hash =
+            password::hash(&input.password).map_err(|e| UserError::Internal(e.to_string()))?;
         let email = normalize_email(&input.email);
         let user_id = Uuid::now_v7();
 
@@ -254,7 +257,10 @@ impl UserStore for PostgresUserStore {
     async fn memberships(&self, user_id: Uuid) -> Result<Vec<WorkspaceMembership>, UserError> {
         // A system admin may sign in to any workspace, so every workspace is listed
         // even where no explicit grant row exists.
-        let is_system_admin = self.system_roles(user_id).await?.contains(&Role::SystemAdmin);
+        let is_system_admin = self
+            .system_roles(user_id)
+            .await?
+            .contains(&Role::SystemAdmin);
 
         let sql = if is_system_admin {
             "select t.id, t.name, t.slug, \
@@ -290,7 +296,11 @@ impl UserStore for PostgresUserStore {
             .collect())
     }
 
-    async fn roles_for_workspace(&self, user_id: Uuid, workspace_id: Uuid) -> Result<Vec<String>, UserError> {
+    async fn roles_for_workspace(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<Vec<String>, UserError> {
         let mut roles: Vec<String> = sqlx::query_scalar(
             "select r.name from user_workspace_roles g \
              join roles r on r.workspace_id = g.workspace_id and r.id = g.role_id \
@@ -436,7 +446,9 @@ impl UserStore for PostgresUserStore {
             .await
             .map_err(internal)?;
             if !exists {
-                return Err(UserError::Invalid(format!("this workspace has no role named {role}")));
+                return Err(UserError::Invalid(format!(
+                    "this workspace has no role named {role}"
+                )));
             }
         }
         Ok(())

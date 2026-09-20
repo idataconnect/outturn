@@ -102,7 +102,10 @@ impl LlmProvider for GeminiProvider {
             // Without `alt=sse` the streaming endpoint answers with a JSON
             // array delivered in pieces, which is not a framing anything else
             // here understands.
-            .post(format!("{}?alt=sse", self.url(&model, "streamGenerateContent")))
+            .post(format!(
+                "{}?alt=sse",
+                self.url(&model, "streamGenerateContent")
+            ))
             .header("x-goog-api-key", &self.api_key)
             .json(&body)
             .send()

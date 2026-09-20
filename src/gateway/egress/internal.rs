@@ -44,7 +44,10 @@ impl Internal {
     /// and says so in a log line.
     pub fn parse(raw: &str) -> Self {
         let mut entries = Vec::new();
-        for token in raw.split([',', ' ', '\t', '\n']).filter(|t| !t.trim().is_empty()) {
+        for token in raw
+            .split([',', ' ', '\t', '\n'])
+            .filter(|t| !t.trim().is_empty())
+        {
             match Entry::parse(token.trim()) {
                 Some(entry) => entries.push(entry),
                 None => tracing::warn!(
@@ -105,22 +108,33 @@ impl Entry {
                 "" => None,
                 p => Some(p.strip_prefix(':')?.parse().ok()?),
             };
-            return (!host.is_empty()).then(|| Entry { host: host.to_string(), port });
+            return (!host.is_empty()).then(|| Entry {
+                host: host.to_string(),
+                port,
+            });
         }
 
         // An unbracketed v6 literal has several colons and no port; anything
         // else with one colon has a port after it.
         if raw.matches(':').count() > 1 {
-            return (!raw.is_empty()).then(|| Entry { host: raw.to_string(), port: None });
+            return (!raw.is_empty()).then(|| Entry {
+                host: raw.to_string(),
+                port: None,
+            });
         }
 
         match raw.split_once(':') {
             Some((host, port)) => {
                 let port: u16 = port.parse().ok()?;
-                (!host.is_empty() && port != 0)
-                    .then(|| Entry { host: host.to_string(), port: Some(port) })
+                (!host.is_empty() && port != 0).then(|| Entry {
+                    host: host.to_string(),
+                    port: Some(port),
+                })
             }
-            None => (!raw.is_empty()).then(|| Entry { host: raw.to_string(), port: None }),
+            None => (!raw.is_empty()).then(|| Entry {
+                host: raw.to_string(),
+                port: None,
+            }),
         }
     }
 }
@@ -216,12 +230,18 @@ mod tests {
     #[test]
     fn every_address_behind_a_name_has_to_be_covered() {
         let list = Internal::parse("many.internal:8080");
-        let ok = ["10.0.0.1:8080".parse().unwrap(), "10.0.0.2:8080".parse().unwrap()];
+        let ok = [
+            "10.0.0.1:8080".parse().unwrap(),
+            "10.0.0.2:8080".parse().unwrap(),
+        ];
         assert!(list.allows_resolved("many.internal", &ok));
 
         // One address on a port nobody opened is enough to refuse the lot:
         // the connection could be made to any of them.
-        let mixed = ["10.0.0.1:8080".parse().unwrap(), "10.0.0.2:5432".parse().unwrap()];
+        let mixed = [
+            "10.0.0.1:8080".parse().unwrap(),
+            "10.0.0.2:5432".parse().unwrap(),
+        ];
         assert!(!list.allows_resolved("many.internal", &mixed));
 
         assert!(!list.allows_resolved("many.internal", &[]));

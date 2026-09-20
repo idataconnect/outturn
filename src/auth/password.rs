@@ -1,5 +1,5 @@
-use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PasswordError {

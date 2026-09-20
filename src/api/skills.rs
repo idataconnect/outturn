@@ -10,9 +10,7 @@ use uuid::Uuid;
 use crate::auth::Authority;
 
 use super::router::{ApiError, ApiState, authorize};
-use super::skill::{
-    Binding, CreateSkill, ForkSkill, NewVersion, Skill, SkillVersion, UpdateSkill,
-};
+use super::skill::{Binding, CreateSkill, ForkSkill, NewVersion, Skill, SkillVersion, UpdateSkill};
 
 /// The workspace's own skills and the operator's, which it may override.
 pub async fn list_skills(
@@ -251,7 +249,10 @@ pub async fn create_platform_skill(
 ) -> Result<(StatusCode, Json<Skill>), ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
-    let skill = state.skills.create(workspace, claims.subject, input).await?;
+    let skill = state
+        .skills
+        .create(workspace, claims.subject, input)
+        .await?;
     tracing::info!(actor = %claims.subject, skill_id = %skill.id, "platform skill created");
     Ok((StatusCode::CREATED, Json(skill)))
 }
@@ -299,5 +300,7 @@ pub async fn retire_platform_skill(
 ) -> Result<Json<Skill>, ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
-    Ok(Json(state.skills.retire(workspace, id, input.retired).await?))
+    Ok(Json(
+        state.skills.retire(workspace, id, input.retired).await?,
+    ))
 }

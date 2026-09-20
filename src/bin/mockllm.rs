@@ -49,8 +49,7 @@ use tokio::sync::Mutex;
 /// Nothing enforces anything with it. It is there so a transcript served by a
 /// fixture can be told apart from one served by a model, months later, by
 /// somebody who does not know this service exists.
-const MOCK_HEADER: axum::http::HeaderName =
-    axum::http::HeaderName::from_static("x-outturn-mock");
+const MOCK_HEADER: axum::http::HeaderName = axum::http::HeaderName::from_static("x-outturn-mock");
 
 /// What that header says. One string, because all three protocols say it.
 const MOCK_NOTE: &str = "outturn-mockllm: generated, not inferred";
@@ -68,9 +67,9 @@ const TOOL_ARGUMENTS: &str = r#"{"action":"pretending to work"}"#;
 /// is measuring two things. The words are ordinary enough that a transcript
 /// remains readable when someone opens one to see what happened.
 const FILLER: &[&str] = &[
-    "the", "tide", "moves", "slowly", "across", "flat", "stone", "and", "leaves",
-    "small", "pools", "behind", "each", "holds", "a", "little", "world", "that",
-    "waits", "for", "water", "to", "return", "again", "before", "dusk",
+    "the", "tide", "moves", "slowly", "across", "flat", "stone", "and", "leaves", "small", "pools",
+    "behind", "each", "holds", "a", "little", "world", "that", "waits", "for", "water", "to",
+    "return", "again", "before", "dusk",
 ];
 
 #[derive(Clone)]
@@ -100,7 +99,10 @@ struct Config {
 impl Config {
     fn from_env() -> Self {
         fn num<T: std::str::FromStr>(name: &str, default: T) -> T {
-            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
         }
         Self {
             ttft: Duration::from_millis(num("MOCK_TTFT_MS", 40)),
@@ -190,7 +192,10 @@ fn prompt_lines(messages: &[Message]) -> Vec<String> {
                 "{}|{}|{}|{}",
                 m.role,
                 m.content.as_deref().unwrap_or(""),
-                m.tool_calls.as_ref().map(|t| t.to_string()).unwrap_or_default(),
+                m.tool_calls
+                    .as_ref()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
                 m.tool_call_id.as_deref().unwrap_or("")
             )
         })
@@ -255,7 +260,11 @@ struct StreamGuard {
 
 impl StreamGuard {
     fn new(state: &Arc<AppState>) -> Self {
-        Self { metrics: Arc::clone(state), sent: 0, done: false }
+        Self {
+            metrics: Arc::clone(state),
+            sent: 0,
+            done: false,
+        }
     }
 }
 
@@ -264,7 +273,10 @@ impl Drop for StreamGuard {
         if self.done {
             return;
         }
-        self.metrics.metrics.abandoned.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .metrics
+            .abandoned
+            .fetch_add(1, Ordering::Relaxed);
         self.metrics
             .metrics
             .abandoned_tokens
@@ -302,7 +314,13 @@ impl Turn {
         self.text
             .split(' ')
             .enumerate()
-            .map(|(i, w)| if i == 0 { w.to_string() } else { format!(" {w}") })
+            .map(|(i, w)| {
+                if i == 0 {
+                    w.to_string()
+                } else {
+                    format!(" {w}")
+                }
+            })
             .collect()
     }
 }
@@ -328,7 +346,10 @@ async fn plan(
     let cached = {
         let key = session_key(&lines);
         let mut seen = state.seen.lock().await;
-        let cached = seen.get(&key).map(|prev| common_prefix(prev, &lines)).unwrap_or(0);
+        let cached = seen
+            .get(&key)
+            .map(|prev| common_prefix(prev, &lines))
+            .unwrap_or(0);
         seen.insert(key, lines.clone());
         cached
     };
@@ -345,10 +366,16 @@ async fn plan(
         m.tool_calls.fetch_add(1, Ordering::Relaxed);
     }
 
-    let completion_tokens = if wants_tool { 12 } else { state.config.reply_tokens };
-    m.prompt_tokens.fetch_add(prompt_tokens as u64, Ordering::Relaxed);
+    let completion_tokens = if wants_tool {
+        12
+    } else {
+        state.config.reply_tokens
+    };
+    m.prompt_tokens
+        .fetch_add(prompt_tokens as u64, Ordering::Relaxed);
     m.cached_tokens.fetch_add(cached as u64, Ordering::Relaxed);
-    m.completion_tokens.fetch_add(completion_tokens as u64, Ordering::Relaxed);
+    m.completion_tokens
+        .fetch_add(completion_tokens as u64, Ordering::Relaxed);
 
     tokio::time::sleep(state.config.ttft).await;
 
@@ -358,7 +385,11 @@ async fn plan(
         completion_tokens,
         tool,
         // A tool call answers with no prose, so the filler is not generated.
-        text: if wants_tool { String::new() } else { filler(completion_tokens) },
+        text: if wants_tool {
+            String::new()
+        } else {
+            filler(completion_tokens)
+        },
     })
 }
 
@@ -450,26 +481,29 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
             }),
             None => serde_json::json!({ "role": "assistant", "content": turn.text }),
         };
-        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
-            "id": "mock",
-            "object": "chat.completion",
-            // Required by the response the gateway decodes into, and its
-            // absence is why a non-streaming call here failed to parse while
-            // the streamed path was fine: the summariser is the only caller
-            // that does not stream, so nothing exercised this until it existed.
-            "created": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            "model": req.model,
-            "choices": [{
-                "index": 0,
-                "message": message,
-                "finish_reason": if turn.tool.is_some() { "tool_calls" } else { "stop" },
-            }],
-            "usage": usage,
-        })))
-        .into_response();
+        return (
+            [(MOCK_HEADER, MOCK_NOTE)],
+            Json(serde_json::json!({
+                "id": "mock",
+                "object": "chat.completion",
+                // Required by the response the gateway decodes into, and its
+                // absence is why a non-streaming call here failed to parse while
+                // the streamed path was fine: the summariser is the only caller
+                // that does not stream, so nothing exercised this until it existed.
+                "created": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                "model": req.model,
+                "choices": [{
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": if turn.tool.is_some() { "tool_calls" } else { "stop" },
+                }],
+                "usage": usage,
+            })),
+        )
+            .into_response();
     }
 
     let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
@@ -637,7 +671,11 @@ async fn anthropic_messages(
     // worst kind of wrong, so both directions exist here to be tested.
     let input_tokens = turn.prompt_tokens;
     let cache_read = turn.cached_tokens;
-    let stop_reason = if turn.tool.is_some() { "tool_use" } else { "end_turn" };
+    let stop_reason = if turn.tool.is_some() {
+        "tool_use"
+    } else {
+        "end_turn"
+    };
 
     if !req.stream {
         let content = match &turn.tool {
@@ -649,21 +687,24 @@ async fn anthropic_messages(
             }]),
             None => serde_json::json!([{ "type": "text", "text": turn.text }]),
         };
-        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
-            "id": "msg_mock",
-            "type": "message",
-            "role": "assistant",
-            "model": req.model,
-            "content": content,
-            "stop_reason": stop_reason,
-            "usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": turn.completion_tokens,
-                "cache_read_input_tokens": cache_read,
-                "cache_creation_input_tokens": 0,
-            },
-        })))
-        .into_response();
+        return (
+            [(MOCK_HEADER, MOCK_NOTE)],
+            Json(serde_json::json!({
+                "id": "msg_mock",
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": content,
+                "stop_reason": stop_reason,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": turn.completion_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": 0,
+                },
+            })),
+        )
+            .into_response();
     }
 
     let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
@@ -840,7 +881,11 @@ async fn gemini_generate(
     axum::extract::Path(model_and_method): axum::extract::Path<String>,
     Json(req): Json<GeminiRequest>,
 ) -> Response {
-    let method = model_and_method.rsplit(':').next().unwrap_or_default().to_string();
+    let method = model_and_method
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     log_body(&state, "gemini", &req);
     if let Some(refusal) = refuse_or_hang(&state).await {
         return refusal;
@@ -869,15 +914,18 @@ async fn gemini_generate(
     let finish = "STOP";
 
     if !method.starts_with("streamGenerateContent") {
-        return ([(MOCK_HEADER, MOCK_NOTE)], Json(serde_json::json!({
-            "candidates": [{
-                "content": { "role": "model", "parts": [part] },
-                "finishReason": finish,
-                "index": 0,
-            }],
-            "usageMetadata": gemini_usage(&turn, turn.completion_tokens),
-        })))
-        .into_response();
+        return (
+            [(MOCK_HEADER, MOCK_NOTE)],
+            Json(serde_json::json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [part] },
+                    "finishReason": finish,
+                    "index": 0,
+                }],
+                "usageMetadata": gemini_usage(&turn, turn.completion_tokens),
+            })),
+        )
+            .into_response();
     }
 
     let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
@@ -991,16 +1039,27 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Json<Report> {
         cold_prompts: m.cold_prompts.load(Ordering::Relaxed),
         abandoned: m.abandoned.load(Ordering::Relaxed),
         abandoned_tokens: m.abandoned_tokens.load(Ordering::Relaxed),
-        cache_hit_rate: if prompt == 0 { 0.0 } else { cached as f64 / prompt as f64 },
+        cache_hit_rate: if prompt == 0 {
+            0.0
+        } else {
+            cached as f64 / prompt as f64
+        },
     })
 }
 
 async fn reset(State(state): State<Arc<AppState>>) -> StatusCode {
     let m = &state.metrics;
     for c in [
-        &m.requests, &m.dropped, &m.hung, &m.tool_calls, &m.prompt_tokens,
-        &m.cached_tokens, &m.completion_tokens, &m.cold_prompts,
-        &m.abandoned, &m.abandoned_tokens,
+        &m.requests,
+        &m.dropped,
+        &m.hung,
+        &m.tool_calls,
+        &m.prompt_tokens,
+        &m.cached_tokens,
+        &m.completion_tokens,
+        &m.cold_prompts,
+        &m.abandoned,
+        &m.abandoned_tokens,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -1043,8 +1102,13 @@ async fn main() {
 
     // Fixed in the cluster, where the service's address is what finds it, but
     // chosen by the caller under test so two tests can run at once.
-    let port: u16 = std::env::var("MOCK_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8083);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
+    let port: u16 = std::env::var("MOCK_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8083);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+        .await
+        .expect("bind");
     tracing::info!(port, "listening");
     axum::serve(listener, app).await.expect("serve");
 }
@@ -1133,7 +1197,11 @@ mod tests {
     fn rewording_an_earlier_turn_is_noticed() {
         // The failure the test above is guarding against, so that test cannot
         // pass by measuring nothing.
-        let before = prompt_lines(&[msg("system", "be helpful"), msg("user", "hello"), msg("assistant", "hi")]);
+        let before = prompt_lines(&[
+            msg("system", "be helpful"),
+            msg("user", "hello"),
+            msg("assistant", "hi"),
+        ]);
         let after = prompt_lines(&[
             msg("system", "be helpful"),
             msg("user", "hello"),
@@ -1192,13 +1260,22 @@ mod tests {
             .and_then(|t| serde_json::from_str(t).ok())
             .expect("a data: line of json");
 
-        assert_eq!(json["usage"]["output_tokens"], 7, "usage belongs at the top level");
+        assert_eq!(
+            json["usage"]["output_tokens"], 7,
+            "usage belongs at the top level"
+        );
         assert!(
             json["delta"]["usage"].is_null(),
             "usage under delta is where a reader looks and finds nothing"
         );
-        assert_eq!(json["delta"]["stop_reason"], "end_turn", "but stop_reason is under delta");
-        assert!(text.starts_with("event: message_delta\n"), "the event is named twice");
+        assert_eq!(
+            json["delta"]["stop_reason"], "end_turn",
+            "but stop_reason is under delta"
+        );
+        assert!(
+            text.starts_with("event: message_delta\n"),
+            "the event is named twice"
+        );
     }
 
     /// The two protocols count cache tokens in opposite directions, which is
@@ -1230,7 +1307,11 @@ mod tests {
         // to get the size of the prompt.
         let input = turn.prompt_tokens;
         let cache_read = turn.cached_tokens;
-        assert_eq!(input + cache_read, 100, "adding is what recovers the whole prompt");
+        assert_eq!(
+            input + cache_read,
+            100,
+            "adding is what recovers the whole prompt"
+        );
     }
 
     /// Everything above is a unit on a shape. This serves the three protocols
@@ -1256,7 +1337,9 @@ mod tests {
             .route("/v1/messages", post(anthropic_messages))
             .route("/v1beta/models/{model}", post(gemini_generate))
             .with_state(Arc::clone(&state));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
         (format!("http://{addr}"), state)
@@ -1307,7 +1390,9 @@ mod tests {
              show the case where stopping at the finish loses it"
         );
         assert!(
-            chunks[usage]["choices"].as_array().is_some_and(|c| c.is_empty()),
+            chunks[usage]["choices"]
+                .as_array()
+                .is_some_and(|c| c.is_empty()),
             "the usage chunk carries no choices"
         );
     }
@@ -1332,9 +1417,15 @@ mod tests {
             .expect("body");
 
         let events = payloads(&body);
-        let start = events.iter().find(|e| e["type"] == "message_start").expect("message_start");
+        let start = events
+            .iter()
+            .find(|e| e["type"] == "message_start")
+            .expect("message_start");
         assert!(
-            start["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0) > 0,
+            start["message"]["usage"]["input_tokens"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
             "the input side is known before a single token of output"
         );
         assert_eq!(
@@ -1343,12 +1434,18 @@ mod tests {
              final bills one token for every stream stopped before the delta"
         );
 
-        let delta = events.iter().find(|e| e["type"] == "message_delta").expect("message_delta");
+        let delta = events
+            .iter()
+            .find(|e| e["type"] == "message_delta")
+            .expect("message_delta");
         assert!(
             delta["usage"]["output_tokens"].as_u64().unwrap_or(0) > 1,
             "the real output count arrives at the top level of message_delta"
         );
-        assert!(delta["delta"]["usage"].is_null(), "and not underneath delta");
+        assert!(
+            delta["delta"]["usage"].is_null(),
+            "and not underneath delta"
+        );
     }
 
     /// Gemini repeats a running total, so an interrupted stream has usage on
@@ -1369,9 +1466,14 @@ mod tests {
             .expect("body");
 
         let chunks = payloads(&body);
-        assert!(chunks.len() > 1, "a stream of one chunk proves nothing about repetition");
         assert!(
-            chunks.iter().all(|c| c["usageMetadata"]["totalTokenCount"].as_u64().is_some()),
+            chunks.len() > 1,
+            "a stream of one chunk proves nothing about repetition"
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c["usageMetadata"]["totalTokenCount"].as_u64().is_some()),
             "every chunk carries the running total, which is what survives a stop"
         );
 
@@ -1409,7 +1511,10 @@ mod tests {
 
         // Read to the end: the server should see a stream that finished.
         let whole = ask(base.clone()).await.text().await.expect("body");
-        assert!(whole.contains("[DONE]"), "the first stream should run to its end");
+        assert!(
+            whole.contains("[DONE]"),
+            "the first stream should run to its end"
+        );
         assert_eq!(
             state.metrics.abandoned.load(Ordering::Relaxed),
             0,

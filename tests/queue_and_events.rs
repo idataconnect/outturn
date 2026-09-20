@@ -53,11 +53,18 @@ async fn events_return_immediately_when_already_present() {
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    events::append(pool, workspace, None, "test.one", serde_json::json!({"n": 1}))
-        .await
-        .expect("append");
+    events::append(
+        pool,
+        workspace,
+        None,
+        "test.one",
+        serde_json::json!({"n": 1}),
+    )
+    .await
+    .expect("append");
 
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         None,
@@ -94,7 +101,8 @@ async fn long_poll_wakes_on_notify() {
     });
 
     let start = std::time::Instant::now();
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         None,
@@ -131,7 +139,8 @@ async fn long_poll_returns_empty_on_timeout() {
     // With time virtual, a realistic 25 second poll times out instantly rather
     // than being shortened to keep the suite fast.
     let started = tokio::time::Instant::now();
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         None,
@@ -173,7 +182,8 @@ async fn shutdown_releases_parked_poll() {
     });
 
     let started = std::time::Instant::now();
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         None,
@@ -207,11 +217,18 @@ async fn session_scoped_poll_ignores_other_sessions() {
     let mine = Uuid::now_v7();
     let theirs = Uuid::now_v7();
 
-    events::append(pool, workspace, Some(theirs), "other", serde_json::json!({}))
-        .await
-        .expect("append");
+    events::append(
+        pool,
+        workspace,
+        Some(theirs),
+        "other",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("append");
 
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         Some(mine),
@@ -242,7 +259,8 @@ async fn cursor_advances_and_does_not_repeat() {
         .await
         .expect("append");
 
-    let found = events::wait_for(pool,
+    let found = events::wait_for(
+        pool,
         &bus,
         workspace,
         None,
@@ -267,9 +285,17 @@ async fn concurrent_workers_claim_disjoint_jobs() {
     let pool = &db.pool;
 
     for i in 0..10 {
-        jobs::enqueue(pool, workspace, "test.work", serde_json::json!({"i": i}), None, None, jobs::PRIORITY_BACKGROUND)
-            .await
-            .expect("enqueue");
+        jobs::enqueue(
+            pool,
+            workspace,
+            "test.work",
+            serde_json::json!({"i": i}),
+            None,
+            None,
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
     }
 
     // Two workers claiming at once must not receive the same job.
@@ -295,9 +321,17 @@ async fn concurrent_workers_claim_disjoint_jobs() {
 async fn claimed_job_is_not_reclaimed_while_leased() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.lease", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.lease",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     let first = jobs::claim(pool, &["test.lease"], 10, Duration::from_secs(60))
         .await
@@ -316,9 +350,17 @@ async fn claimed_job_is_not_reclaimed_while_leased() {
 async fn abandoned_lease_is_reaped_and_retried() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.reap", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.reap",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     // A zero lease is already expired: stands in for a crashed worker.
     let claimed = jobs::claim(pool, &["test.reap"], 10, Duration::from_secs(0))
@@ -342,9 +384,17 @@ async fn abandoned_lease_is_reaped_and_retried() {
 async fn job_fails_permanently_after_max_attempts() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    let id = jobs::enqueue(pool, workspace, "test.fail", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    let id = jobs::enqueue(
+        pool,
+        workspace,
+        "test.fail",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     // Default max_attempts is 3.
     for _ in 0..3 {
@@ -376,7 +426,8 @@ async fn job_fails_permanently_after_max_attempts() {
 async fn delayed_job_is_not_claimable_yet() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool,
+    jobs::enqueue(
+        pool,
         workspace,
         "test.delay",
         serde_json::json!({}),
@@ -401,9 +452,17 @@ async fn enqueue_rolls_back_with_its_transaction() {
     let pool = &db.pool;
 
     let mut tx = pool.begin().await.expect("begin");
-    jobs::enqueue(&mut *tx, workspace, "test.tx", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        &mut *tx,
+        workspace,
+        "test.tx",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
     tx.rollback().await.expect("rollback");
 
     let claimed = jobs::claim(pool, &["test.tx"], 10, jobs::DEFAULT_LEASE)
@@ -418,9 +477,17 @@ async fn enqueue_rolls_back_with_its_transaction() {
 async fn heartbeat_keeps_a_long_job_from_being_reaped() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.slow", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.slow",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     // A short lease stands in for work that outlives its original claim: a
     // local model generating a long reply has been measured at ~2 minutes
@@ -462,9 +529,17 @@ async fn heartbeat_keeps_a_long_job_from_being_reaped() {
 async fn extend_lease_reports_when_the_job_was_taken_away() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.lost", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.lost",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     let claimed = jobs::claim(pool, &["test.lost"], 10, Duration::from_secs(0))
         .await
@@ -580,7 +655,15 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     let (session_id, store) = streamed_session(pool, workspace).await;
 
     let reply = store
-        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("reply");
 
@@ -598,7 +681,14 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     }
     let full = fragments.concat();
     store
-        .set_message_content(reply.id, &full, None, None, Default::default(), serde_json::json!({}))
+        .set_message_content(
+            reply.id,
+            &full,
+            None,
+            None,
+            Default::default(),
+            serde_json::json!({}),
+        )
         .await
         .expect("finalise");
 
@@ -609,8 +699,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
     // the answer, and the deltas are pruned in time -- so nothing is
     // outstanding. What matters is below: none may be replayed either.
     assert_eq!(
-        history.messages[0].delta_next,
-        0,
+        history.messages[0].delta_next, 0,
         "a finished reply has no deltas still to come"
     );
 
@@ -638,7 +727,15 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     // Created empty and streamed into; content is not stored until the turn
     // ends, so the transcript must assemble it from the deltas so far.
     let reply = store
-        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("reply");
 
@@ -672,7 +769,11 @@ async fn transcript_mid_stream_returns_partial_content_and_resumes() {
     let arrived = events::since(pool, workspace, Some(session_id), history.cursor, 100, None)
         .await
         .expect("since");
-    assert_eq!(arrived.len(), 1, "only what the content does not already cover");
+    assert_eq!(
+        arrived.len(),
+        1,
+        "only what the content does not already cover"
+    );
     assert_eq!(arrived[0].payload["idx"], 2);
 
     let resumed = format!(
@@ -702,13 +803,29 @@ async fn paged_read_still_assembles_a_streaming_reply() {
     // History the page will exclude, so the window has a real floor.
     for n in 0..6 {
         store
-            .append_message(session_id, "user", &format!("old{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("old{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
 
     let reply = store
-        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("reply");
 
@@ -729,12 +846,27 @@ async fn paged_read_still_assembles_a_streaming_reply() {
     // from the wrong end would now clip its deltas instead of coincidentally
     // keeping them.
     store
-        .set_message_content(reply.id, "Still arriving.", None, None, Default::default(), serde_json::json!({}))
+        .set_message_content(
+            reply.id,
+            "Still arriving.",
+            None,
+            None,
+            Default::default(),
+            serde_json::json!({}),
+        )
         .await
         .expect("finalise");
 
     let second = store
-        .append_message(session_id, "assistant", "", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("second reply");
     events::append(
@@ -748,7 +880,10 @@ async fn paged_read_still_assembles_a_streaming_reply() {
     .expect("delta");
 
     // A page small enough to leave the older messages behind.
-    let page = store.messages_page(session_id, None, 3).await.expect("page");
+    let page = store
+        .messages_page(session_id, None, 3)
+        .await
+        .expect("page");
     assert!(page.has_more, "the older messages are behind this page");
 
     let streaming = page
@@ -772,12 +907,23 @@ async fn transcript_page_takes_the_newest_and_reports_more() {
 
     for n in 0..10 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("m{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
 
-    let page = store.messages_page(session_id, None, 4).await.expect("page");
+    let page = store
+        .messages_page(session_id, None, 4)
+        .await
+        .expect("page");
     let contents: Vec<&str> = page.messages.iter().map(|m| m.content.as_str()).collect();
     // Newest four, still oldest-first within the page: a reader appends this
     // to the bottom of the thread, not in reverse.
@@ -795,7 +941,15 @@ async fn transcript_pages_back_without_gaps_or_repeats() {
 
     for n in 0..10 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("m{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
@@ -803,16 +957,21 @@ async fn transcript_pages_back_without_gaps_or_repeats() {
     let mut seen: Vec<String> = Vec::new();
     let mut before = None;
     loop {
-        let page = store.messages_page(session_id, before, 3).await.expect("page");
-        let mut batch: Vec<String> =
-            page.messages.iter().map(|m| m.content.clone()).collect();
+        let page = store
+            .messages_page(session_id, before, 3)
+            .await
+            .expect("page");
+        let mut batch: Vec<String> = page.messages.iter().map(|m| m.content.clone()).collect();
         batch.extend(seen);
         seen = batch;
         if !page.has_more {
             break;
         }
         before = page.messages.first().map(|m| m.id);
-        assert!(before.is_some(), "has_more with an empty page would not terminate");
+        assert!(
+            before.is_some(),
+            "has_more with an empty page would not terminate"
+        );
     }
 
     assert_eq!(
@@ -832,15 +991,29 @@ async fn transcript_exact_page_knows_it_is_the_last() {
 
     for n in 0..4 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("m{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
 
     // Exactly as many messages as the limit: full, and yet nothing behind it.
-    let page = store.messages_page(session_id, None, 4).await.expect("page");
+    let page = store
+        .messages_page(session_id, None, 4)
+        .await
+        .expect("page");
     assert_eq!(page.messages.len(), 4);
-    assert!(!page.has_more, "a full page on the boundary is still the last");
+    assert!(
+        !page.has_more,
+        "a full page on the boundary is still the last"
+    );
 }
 
 /// The whole-transcript read is what a turn is built from, and keeps its
@@ -853,14 +1026,25 @@ async fn full_transcript_is_unpaged() {
 
     for n in 0..7 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("m{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
 
     let all = store.messages(session_id).await.expect("history");
     assert_eq!(all.messages.len(), 7);
-    assert!(!all.has_more, "nothing is held back from the whole transcript");
+    assert!(
+        !all.has_more,
+        "nothing is held back from the whole transcript"
+    );
 }
 
 /// Messages read back in the order they were appended, ordered by their
@@ -873,13 +1057,25 @@ async fn transcript_orders_by_uuidv7_key() {
 
     for n in 0..5 {
         store
-            .append_message(session_id, "user", &format!("m{n}"), None, Default::default(), Default::default(), None)
+            .append_message(
+                session_id,
+                "user",
+                &format!("m{n}"),
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
             .await
             .expect("append");
     }
 
     let history = store.messages(session_id).await.expect("history");
-    let contents: Vec<&str> = history.messages.iter().map(|m| m.content.as_str()).collect();
+    let contents: Vec<&str> = history
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
     assert_eq!(contents, ["m0", "m1", "m2", "m3", "m4"]);
 
     let ids: Vec<Uuid> = history.messages.iter().map(|m| m.id).collect();
@@ -904,7 +1100,15 @@ async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
     let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
-        .append_message(session_id, "user", "hello", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "hello",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("prompt");
 
@@ -956,7 +1160,15 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
     let (session_id, store) = streamed_session(pool, workspace).await;
 
     let first_prompt = store
-        .append_message(session_id, "user", "one", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "one",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("first prompt");
     // A real turn enqueues its job alongside the message, which is what marks
@@ -967,7 +1179,9 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
         "chat.turn",
         serde_json::json!({ "message_id": first_prompt.id }),
         None,
-        None, jobs::PRIORITY_BACKGROUND)
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
     .await
     .expect("first job");
     let first_reply = store
@@ -977,7 +1191,15 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
 
     // The second message arrives while the first turn is still generating.
     let second_prompt = store
-        .append_message(session_id, "user", "two", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "two",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("second prompt");
     let second_reply = store
@@ -1011,7 +1233,15 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
     let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
-        .append_message(session_id, "user", "list my files", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "list my files",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("prompt");
 
@@ -1027,11 +1257,18 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
     )
     .await
     .expect("enqueue");
-    let claimed = jobs::claim(pool, &["chat.turn"], 1, jobs::DEFAULT_LEASE).await.expect("claim");
-    jobs::complete(pool, job, claimed[0].job.lease_token).await.expect("complete");
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    jobs::complete(pool, job, claimed[0].job.lease_token)
+        .await
+        .expect("complete");
 
     // And the reply it left is a tool call with no prose after it.
-    let reply = store.claim_placeholder(prompt.id, session_id).await.expect("reply");
+    let reply = store
+        .claim_placeholder(prompt.id, session_id)
+        .await
+        .expect("reply");
     store
         .set_message_content(
             reply.message.id,
@@ -1045,7 +1282,15 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
         .expect("finalise");
 
     store
-        .append_message(session_id, "user", "hello?", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "hello?",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("a finished turn's tool-only reply must not block the session");
 
@@ -1059,7 +1304,15 @@ async fn an_abandoned_reply_refuses_further_messages() {
     let (session_id, store) = streamed_session(pool, workspace).await;
 
     let prompt = store
-        .append_message(session_id, "user", "hello", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "hello",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("prompt");
     // No job was ever enqueued for this prompt, so nothing is filling the
@@ -1070,7 +1323,15 @@ async fn an_abandoned_reply_refuses_further_messages() {
         .expect("reply");
 
     let refused = store
-        .append_message(session_id, "user", "anyone there?", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "anyone there?",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await;
 
     assert!(
@@ -1080,12 +1341,17 @@ async fn an_abandoned_reply_refuses_further_messages() {
 
     // Discarding it unwedges the session, which is what a permanently failed
     // turn does.
+    store.discard_placeholder(prompt.id).await.expect("discard");
     store
-        .discard_placeholder(prompt.id)
-        .await
-        .expect("discard");
-    store
-        .append_message(session_id, "user", "anyone there?", None, Default::default(), Default::default(), None)
+        .append_message(
+            session_id,
+            "user",
+            "anyone there?",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
         .await
         .expect("the session is writable again");
 
@@ -1094,8 +1360,8 @@ async fn an_abandoned_reply_refuses_further_messages() {
 
 // -- Provider circuit breaker --------------------------------------------------
 
-use outturn::gateway::breaker::{self, Verdict};
 use outturn::gateway::breaker::policy::{Caller, Observation};
+use outturn::gateway::breaker::{self, Verdict};
 
 /// These circuits are the platform's own, which is what `None` means: one
 /// circuit for everybody, because the credential and the rate limit behind it
@@ -1147,7 +1413,10 @@ async fn the_circuit_opens_after_repeated_failures() {
     // A single failure is often a blip or a bad request, so it must not stop
     // every replica from calling the provider.
     unreachable(pool, &endpoint).await;
-    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Allow);
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Allow
+    );
 
     for _ in 0..4 {
         unreachable(pool, &endpoint).await;
@@ -1176,11 +1445,13 @@ async fn only_one_replica_claims_the_probe() {
         unreachable(pool, &endpoint).await;
     }
     // Bring the probe forward rather than waiting out the backoff.
-    sqlx::query("update provider_health set probe_after = now() - interval '1 second' where endpoint = $1")
-        .bind(&endpoint)
-        .execute(pool)
-        .await
-        .expect("age the circuit");
+    sqlx::query(
+        "update provider_health set probe_after = now() - interval '1 second' where endpoint = $1",
+    )
+    .bind(&endpoint)
+    .execute(pool)
+    .await
+    .expect("age the circuit");
 
     // Ten replicas reach the breaker at once.
     let mut checks = Vec::new();
@@ -1205,10 +1476,16 @@ async fn a_success_closes_the_circuit() {
     for _ in 0..5 {
         unreachable(pool, &endpoint).await;
     }
-    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Reject);
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Reject
+    );
 
     succeeded(pool, &endpoint).await;
-    assert_eq!(breaker::check(pool, &endpoint, PLATFORM).await, Verdict::Allow);
+    assert_eq!(
+        breaker::check(pool, &endpoint, PLATFORM).await,
+        Verdict::Allow
+    );
 
     // The count resets too, so an old outage does not shorten the fuse on the
     // next unrelated one.
@@ -1338,9 +1615,14 @@ async fn what_a_provider_error_is_evidence_of() {
 
     // The provider answered correctly and the request was wrong, or it is
     // alive and pushing back. Neither says anything about its health.
-    assert_eq!(evidence(&ProviderError::RateLimited), Observation::NotEvidence);
     assert_eq!(
-        evidence(&ProviderError::Upstream("400: model does not support tools".into())),
+        evidence(&ProviderError::RateLimited),
+        Observation::NotEvidence
+    );
+    assert_eq!(
+        evidence(&ProviderError::Upstream(
+            "400: model does not support tools".into()
+        )),
         Observation::NotEvidence
     );
     assert_eq!(
@@ -1350,14 +1632,19 @@ async fn what_a_provider_error_is_evidence_of() {
 
     // Nothing about one caller's request explains not being there at all, so
     // one caller reporting it is enough to open a circuit.
-    assert_eq!(evidence(&ProviderError::Unavailable), Observation::Unreachable);
+    assert_eq!(
+        evidence(&ProviderError::Unavailable),
+        Observation::Unreachable
+    );
 
     // It answered and it failed. From one caller that is indistinguishable
     // from a request that provoked it, so it waits for company rather than
     // counting on its own -- this is the case that used to take a provider
     // away from everybody because one agent kept sending something bad.
     assert_eq!(
-        evidence(&ProviderError::Upstream("503: upstream connect error".into())),
+        evidence(&ProviderError::Upstream(
+            "503: upstream connect error".into()
+        )),
         Observation::Undetermined
     );
     assert_eq!(
@@ -1368,7 +1655,9 @@ async fn what_a_provider_error_is_evidence_of() {
     // failing to answer rather than refusing. Both are failures; both still
     // want breadth before they mean an outage.
     assert_eq!(
-        evidence(&ProviderError::Upstream("error sending request for url".into())),
+        evidence(&ProviderError::Upstream(
+            "error sending request for url".into()
+        )),
         Observation::Undetermined
     );
     assert_eq!(
@@ -1435,10 +1724,22 @@ async fn workspace_routes_replace_the_system_defaults() {
     let inherited = routing::routes_for(pool, workspace, "assistant")
         .await
         .expect("routes");
-    assert_eq!(inherited.len(), 1, "a workspace with no routes uses the defaults");
+    assert_eq!(
+        inherited.len(),
+        1,
+        "a workspace with no routes uses the defaults"
+    );
     assert_eq!(inherited[0].model, "default");
 
-    add_route(pool, Some(workspace), "assistant", 10, "http://theirs", "theirs").await;
+    add_route(
+        pool,
+        Some(workspace),
+        "assistant",
+        10,
+        "http://theirs",
+        "theirs",
+    )
+    .await;
     let own = routing::routes_for(pool, workspace, "assistant")
         .await
         .expect("routes");
@@ -1458,13 +1759,22 @@ async fn traffic_types_route_separately() {
     add_route(pool, None, "assistant", 10, "http://good", "expensive").await;
     add_route(pool, None, "title", 10, "http://cheap", "small").await;
 
-    let assistant = routing::routes_for(pool, workspace, "assistant").await.expect("a");
-    let title = routing::routes_for(pool, workspace, "title").await.expect("t");
-    let unknown = routing::routes_for(pool, workspace, "nothing-here").await.expect("u");
+    let assistant = routing::routes_for(pool, workspace, "assistant")
+        .await
+        .expect("a");
+    let title = routing::routes_for(pool, workspace, "title")
+        .await
+        .expect("t");
+    let unknown = routing::routes_for(pool, workspace, "nothing-here")
+        .await
+        .expect("u");
 
     assert_eq!(assistant[0].model, "expensive");
     assert_eq!(title[0].model, "small");
-    assert!(unknown.is_empty(), "an unrouted type falls back to static providers");
+    assert!(
+        unknown.is_empty(),
+        "an unrouted type falls back to static providers"
+    );
 
     finish!(db);
 }
@@ -1479,7 +1789,9 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
     add_route(pool, None, "assistant", 10, "http://primary", "a").await;
     add_route(pool, None, "assistant", 20, "http://fallback", "b").await;
 
-    let routes = routing::routes_for(pool, workspace, "assistant").await.expect("routes");
+    let routes = routing::routes_for(pool, workspace, "assistant")
+        .await
+        .expect("routes");
     for _ in 0..5 {
         unreachable(pool, &routes[0].endpoint()).await;
     }
@@ -1491,7 +1803,11 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
         }
     }
 
-    assert_eq!(usable, ["b"], "the failed destination drops out of the list");
+    assert_eq!(
+        usable,
+        ["b"],
+        "the failed destination drops out of the list"
+    );
 
     finish!(db);
 }
@@ -1516,7 +1832,9 @@ async fn work_sharing_a_key_does_not_run_concurrently() {
             "test.serial",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session), jobs::PRIORITY_BACKGROUND)
+            Some(&session),
+            jobs::PRIORITY_BACKGROUND,
+        )
         .await
         .expect("enqueue");
     }
@@ -1531,14 +1849,23 @@ async fn work_sharing_a_key_does_not_run_concurrently() {
     let second = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    assert!(second.is_empty(), "the session is busy, so nothing is claimable");
+    assert!(
+        second.is_empty(),
+        "the session is busy, so nothing is claimable"
+    );
 
     // Once the turn finishes, the next is available.
-    jobs::complete(pool, first[0].job.id, None).await.expect("complete");
+    jobs::complete(pool, first[0].job.id, None)
+        .await
+        .expect("complete");
     let third = jobs::claim(pool, &["test.serial"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    assert_eq!(third.len(), 1, "the queue resumes when the session frees up");
+    assert_eq!(
+        third.len(),
+        1,
+        "the queue resumes when the session frees up"
+    );
 
     finish!(db);
 }
@@ -1560,9 +1887,17 @@ async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
 
     // The busy session: one turn taken, one waiting behind it.
     for i in 0..2 {
-        jobs::enqueue(pool, workspace, "test.hol", serde_json::json!({ "i": i }), None, Some(&busy), jobs::PRIORITY_REALTIME)
-            .await
-            .expect("enqueue");
+        jobs::enqueue(
+            pool,
+            workspace,
+            "test.hol",
+            serde_json::json!({ "i": i }),
+            None,
+            Some(&busy),
+            jobs::PRIORITY_REALTIME,
+        )
+        .await
+        .expect("enqueue");
     }
     let running = jobs::claim(pool, &["test.hol"], 1, jobs::DEFAULT_LEASE)
         .await
@@ -1570,9 +1905,17 @@ async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
     assert_eq!(running.len(), 1);
 
     // Another session, queued after the busy one's second turn.
-    let waiting = jobs::enqueue(pool, workspace, "test.hol", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_REALTIME)
-        .await
-        .expect("enqueue");
+    let waiting = jobs::enqueue(
+        pool,
+        workspace,
+        "test.hol",
+        serde_json::json!({}),
+        None,
+        Some(&other),
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
 
     let claimed = jobs::claim(pool, &["test.hol"], 1, jobs::DEFAULT_LEASE)
         .await
@@ -1600,7 +1943,9 @@ async fn different_keys_still_run_in_parallel() {
             "test.parallel",
             serde_json::json!({}),
             None,
-            Some(&session), jobs::PRIORITY_BACKGROUND)
+            Some(&session),
+            jobs::PRIORITY_BACKGROUND,
+        )
         .await
         .expect("enqueue");
     }
@@ -1620,15 +1965,27 @@ async fn unkeyed_work_is_not_serialised() {
     let pool = &db.pool;
 
     for i in 0..4 {
-        jobs::enqueue(pool, workspace, "test.unkeyed", serde_json::json!({ "i": i }), None, None, jobs::PRIORITY_BACKGROUND)
-            .await
-            .expect("enqueue");
+        jobs::enqueue(
+            pool,
+            workspace,
+            "test.unkeyed",
+            serde_json::json!({ "i": i }),
+            None,
+            None,
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
     }
 
     let claimed = jobs::claim(pool, &["test.unkeyed"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    assert_eq!(claimed.len(), 4, "nothing without a key should be held back");
+    assert_eq!(
+        claimed.len(),
+        4,
+        "nothing without a key should be held back"
+    );
 
     finish!(db);
 }
@@ -1650,7 +2007,9 @@ async fn racing_claimers_cannot_both_take_one_key() {
             "test.race",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session), jobs::PRIORITY_BACKGROUND)
+            Some(&session),
+            jobs::PRIORITY_BACKGROUND,
+        )
         .await
         .expect("enqueue");
     }
@@ -1696,9 +2055,17 @@ async fn racing_claimers_cannot_both_take_one_key() {
 async fn a_released_job_is_not_held_to_have_tried() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.release", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.release",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     let claimed = jobs::claim(pool, &["test.release"], 10, jobs::DEFAULT_LEASE)
         .await
@@ -1706,9 +2073,15 @@ async fn a_released_job_is_not_held_to_have_tried() {
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].job.attempts, 1, "claiming counts an attempt");
 
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), jobs::MAX_RELEASES, None)
-        .await
-        .expect("release");
+    jobs::release(
+        pool,
+        claimed[0].job.id,
+        Duration::from_secs(0),
+        jobs::MAX_RELEASES,
+        None,
+    )
+    .await
+    .expect("release");
 
     let (state, attempts): (String, i32) =
         sqlx::query_as("select state, attempts from jobs where id = $1")
@@ -1716,7 +2089,10 @@ async fn a_released_job_is_not_held_to_have_tried() {
             .fetch_one(pool)
             .await
             .expect("read job");
-    assert_eq!(state, "pending", "a released job did not return to the queue");
+    assert_eq!(
+        state, "pending",
+        "a released job did not return to the queue"
+    );
     assert_eq!(
         attempts, 0,
         "a job that never ran was charged an attempt, so a busy cluster \
@@ -1735,23 +2111,40 @@ async fn a_released_job_is_not_held_to_have_tried() {
 async fn a_released_job_waits_before_it_is_offered_again() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.backoff", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.backoff",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     let claimed = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    jobs::release(pool, claimed[0].job.id, Duration::from_secs(60), jobs::MAX_RELEASES, None)
-        .await
-        .expect("release");
+    jobs::release(
+        pool,
+        claimed[0].job.id,
+        Duration::from_secs(60),
+        jobs::MAX_RELEASES,
+        None,
+    )
+    .await
+    .expect("release");
 
     // Otherwise a cluster with no room spends itself claiming and releasing
     // the same work as fast as it can.
     let again = jobs::claim(pool, &["test.backoff"], 10, jobs::DEFAULT_LEASE)
         .await
         .expect("claim");
-    assert!(again.is_empty(), "a released job was offered again immediately");
+    assert!(
+        again.is_empty(),
+        "a released job was offered again immediately"
+    );
 
     finish!(db);
 }
@@ -1760,9 +2153,17 @@ async fn a_released_job_waits_before_it_is_offered_again() {
 async fn only_a_running_job_can_be_released() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.norun", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.norun",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     let pending: uuid::Uuid = sqlx::query_scalar("select id from jobs where kind = $1")
         .bind("test.norun")
@@ -1773,9 +2174,15 @@ async fn only_a_running_job_can_be_released() {
     // A release that could touch a pending job would let a late reply from an
     // abandoned turn give back an attempt that a live claimer is spending.
     assert!(
-        jobs::release(pool, pending, Duration::from_secs(0), jobs::MAX_RELEASES, None)
-            .await
-            .is_err(),
+        jobs::release(
+            pool,
+            pending,
+            Duration::from_secs(0),
+            jobs::MAX_RELEASES,
+            None
+        )
+        .await
+        .is_err(),
         "a job that was never claimed was released"
     );
 
@@ -1798,21 +2205,39 @@ async fn the_backlog_counts_work_that_could_actually_start() {
             "chat.turn",
             serde_json::json!({ "i": i }),
             None,
-            Some(&session), jobs::PRIORITY_BACKGROUND)
+            Some(&session),
+            jobs::PRIORITY_BACKGROUND,
+        )
         .await
         .expect("enqueue");
     }
     // Two more sessions, and two jobs with nothing to serialise on.
     for _ in 0..2 {
         let other = Uuid::now_v7().to_string();
-        jobs::enqueue(pool, workspace, "chat.turn", serde_json::json!({}), None, Some(&other), jobs::PRIORITY_BACKGROUND)
-            .await
-            .expect("enqueue");
+        jobs::enqueue(
+            pool,
+            workspace,
+            "chat.turn",
+            serde_json::json!({}),
+            None,
+            Some(&other),
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
     }
     for _ in 0..2 {
-        jobs::enqueue(pool, workspace, "chat.turn", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-            .await
-            .expect("enqueue");
+        jobs::enqueue(
+            pool,
+            workspace,
+            "chat.turn",
+            serde_json::json!({}),
+            None,
+            None,
+            jobs::PRIORITY_BACKGROUND,
+        )
+        .await
+        .expect("enqueue");
     }
 
     let backlog = || async {
@@ -1825,7 +2250,11 @@ async fn the_backlog_counts_work_that_could_actually_start() {
     };
 
     // Three serialised keys plus two unconstrained jobs.
-    assert_eq!(backlog().await, 5, "the backlog counted rows rather than work");
+    assert_eq!(
+        backlog().await,
+        5,
+        "the backlog counted rows rather than work"
+    );
 
     // The number the autoscaler reads has to be the number a fleet with enough
     // room could start, or it scales towards pods that would sit idle.
@@ -1852,9 +2281,17 @@ async fn the_backlog_counts_work_that_could_actually_start() {
 async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.noroom", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.noroom",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     // Small budget so the test states the rule rather than the constant.
     let budget = 3;
@@ -1865,9 +2302,15 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
             .expect("claim");
         assert_eq!(claimed.len(), 1, "a released job must come back round");
         outcomes.push(
-            jobs::release(pool, claimed[0].job.id, Duration::from_secs(0), budget, None)
-                .await
-                .expect("release"),
+            jobs::release(
+                pool,
+                claimed[0].job.id,
+                Duration::from_secs(0),
+                budget,
+                None,
+            )
+            .await
+            .expect("release"),
         );
     }
 
@@ -1908,9 +2351,17 @@ async fn a_job_nowhere_will_run_eventually_fails_rather_than_spinning() {
 async fn a_stale_heartbeat_cannot_renew_a_claim_someone_else_holds() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
-    jobs::enqueue(pool, workspace, "test.stolen", serde_json::json!({}), None, None, jobs::PRIORITY_BACKGROUND)
-        .await
-        .expect("enqueue");
+    jobs::enqueue(
+        pool,
+        workspace,
+        "test.stolen",
+        serde_json::json!({}),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
 
     // The first holder's claim, with a lease short enough to lapse.
     let first = jobs::claim(pool, &["test.stolen"], 10, Duration::from_secs(0))
@@ -1986,7 +2437,10 @@ async fn a_turn_reports_against_its_reply_not_its_prompt() {
         .await
         .expect("placeholder");
 
-    assert_ne!(placeholder.message.id, prompt.id, "a reply is its own message");
+    assert_ne!(
+        placeholder.message.id, prompt.id,
+        "a reply is its own message"
+    );
 
     // What a runtime reports lands on the reply.
     chat.set_message_content(
@@ -2101,7 +2555,10 @@ async fn the_pod_count_leads_the_queue_rather_than_following_it() {
     };
 
     let idle = pods().await;
-    assert!(idle >= 2, "an idle cluster should still hold a floor, got {idle}");
+    assert!(
+        idle >= 2,
+        "an idle cluster should still hold a floor, got {idle}"
+    );
 
     // Conversations somebody is in raise it before any work is queued, which
     // is the half of the estimate that leads rather than follows.
@@ -2253,7 +2710,9 @@ async fn a_cancelled_turn_is_not_revived_by_the_reaper() {
     .expect("enqueue");
 
     // Claimed with a lease that has already lapsed, as a lost pod leaves it.
-    jobs::claim(pool, &["chat.turn"], 1, Duration::ZERO).await.expect("claim");
+    jobs::claim(pool, &["chat.turn"], 1, Duration::ZERO)
+        .await
+        .expect("claim");
     jobs::request_cancel(pool, job_id).await.expect("cancel");
 
     jobs::reap_abandoned(pool).await.expect("reap");
@@ -2284,7 +2743,13 @@ async fn stopping_a_session_finds_the_turn_that_is_running() {
     let payload = serde_json::json!({ "session_id": session_id });
 
     let running = jobs::enqueue(
-        pool, workspace_id, "chat.turn", payload.clone(), None, None, jobs::PRIORITY_REALTIME,
+        pool,
+        workspace_id,
+        "chat.turn",
+        payload.clone(),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
     )
     .await
     .expect("enqueue the first");
@@ -2294,11 +2759,20 @@ async fn stopping_a_session_finds_the_turn_that_is_running() {
 
     // Queued behind it, and therefore newer.
     let queued = jobs::enqueue(
-        pool, workspace_id, "chat.turn", payload, None, None, jobs::PRIORITY_REALTIME,
+        pool,
+        workspace_id,
+        "chat.turn",
+        payload,
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
     )
     .await
     .expect("enqueue the second");
-    assert!(queued > running, "the queued turn should sort after the running one");
+    assert!(
+        queued > running,
+        "the queued turn should sort after the running one"
+    );
 
     let found = jobs::live_turn_for_session(pool, workspace_id, session_id)
         .await
@@ -2320,12 +2794,24 @@ async fn with_nothing_running_the_oldest_queued_turn_is_found() {
     let session_id = Uuid::now_v7();
     let payload = serde_json::json!({ "session_id": session_id });
     let first = jobs::enqueue(
-        pool, workspace_id, "chat.turn", payload.clone(), None, None, jobs::PRIORITY_REALTIME,
+        pool,
+        workspace_id,
+        "chat.turn",
+        payload.clone(),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
     )
     .await
     .expect("enqueue");
     jobs::enqueue(
-        pool, workspace_id, "chat.turn", payload, None, None, jobs::PRIORITY_REALTIME,
+        pool,
+        workspace_id,
+        "chat.turn",
+        payload,
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
     )
     .await
     .expect("enqueue");
@@ -2334,7 +2820,10 @@ async fn with_nothing_running_the_oldest_queued_turn_is_found() {
         .await
         .expect("look up")
         .expect("a live turn");
-    assert_eq!(found, first, "the turn at the front of the queue is the one being waited on");
+    assert_eq!(
+        found, first,
+        "the turn at the front of the queue is the one being waited on"
+    );
 }
 
 /// A pending turn is over at once; a running one is asked and keeps running.
@@ -2412,12 +2901,24 @@ async fn a_narrowed_caller_is_never_shown_another_agents_events() {
     let (mine, mine_agent, subject) = session_with_agent(pool, workspace).await;
     let (theirs, theirs_agent, _) = session_with_agent(pool, workspace).await;
 
-    events::append(pool, workspace, Some(theirs), "chat.message", serde_json::json!({}))
-        .await
-        .expect("append");
-    let ours = events::append(pool, workspace, Some(mine), "chat.message", serde_json::json!({}))
-        .await
-        .expect("append");
+    events::append(
+        pool,
+        workspace,
+        Some(theirs),
+        "chat.message",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("append");
+    let ours = events::append(
+        pool,
+        workspace,
+        Some(mine),
+        "chat.message",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("append");
 
     let visible = events::Visible::of(
         &outturn::api::scope::Reach::of([mine_agent].into_iter().collect()),
@@ -2429,7 +2930,11 @@ async fn a_narrowed_caller_is_never_shown_another_agents_events() {
     let found = events::since(pool, workspace, None, Uuid::nil(), 100, Some(&visible))
         .await
         .expect("since");
-    assert_eq!(found.len(), 1, "a narrowing let another agent through: {found:?}");
+    assert_eq!(
+        found.len(),
+        1,
+        "a narrowing let another agent through: {found:?}"
+    );
     assert_eq!(found[0].id, ours);
 
     // Session-scoped at the same session: the other copy of the clause.
@@ -2472,15 +2977,25 @@ async fn a_watermark_moves_a_cursor_over_events_that_were_filtered_out() {
 
     let mut last = Uuid::nil();
     for _ in 0..3 {
-        last = events::append(pool, workspace, Some(theirs), "chat.delta", serde_json::json!({}))
-            .await
-            .expect("append");
+        last = events::append(
+            pool,
+            workspace,
+            Some(theirs),
+            "chat.delta",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("append");
     }
 
     let high = events::watermark(pool, workspace, None, Uuid::nil(), 100)
         .await
         .expect("watermark");
-    assert_eq!(high, Some(last), "the watermark did not reach the end of the window");
+    assert_eq!(
+        high,
+        Some(last),
+        "the watermark did not reach the end of the window"
+    );
 
     // Bounded by the same limit the read uses, so nothing later is skipped.
     let first_only = events::watermark(pool, workspace, None, Uuid::nil(), 1)
@@ -2495,10 +3010,7 @@ async fn a_watermark_moves_a_cursor_over_events_that_were_filtered_out() {
 }
 
 /// A session belonging to a fresh agent, and who started it.
-async fn session_with_agent(
-    pool: &sqlx::PgPool,
-    workspace: Uuid,
-) -> (Uuid, Uuid, Uuid) {
+async fn session_with_agent(pool: &sqlx::PgPool, workspace: Uuid) -> (Uuid, Uuid, Uuid) {
     let user_id = Uuid::now_v7();
     sqlx::query("insert into users (id, display_name) values ($1, $2)")
         .bind(user_id)

@@ -239,8 +239,18 @@ mod tests {
 
     #[test]
     fn other_ways_out_are_refused_too() {
-        for attempt in ["/etc/passwd", "", "   ", "/", "session/reports\\q3.csv", "session/q3\0.csv"] {
-            assert!(resolve(&space(), attempt).is_err(), "{attempt:?} should be refused");
+        for attempt in [
+            "/etc/passwd",
+            "",
+            "   ",
+            "/",
+            "session/reports\\q3.csv",
+            "session/q3\0.csv",
+        ] {
+            assert!(
+                resolve(&space(), attempt).is_err(),
+                "{attempt:?} should be refused"
+            );
         }
     }
 
@@ -264,7 +274,11 @@ mod tests {
     #[test]
     fn a_workspace_cannot_reach_another_by_naming_it() {
         let s = space();
-        let resolved = resolve(&s, "workspace/workspaces/00000000-0000-0000-0000-000000000000/x").unwrap();
+        let resolved = resolve(
+            &s,
+            "workspace/workspaces/00000000-0000-0000-0000-000000000000/x",
+        )
+        .unwrap();
         assert!(resolved.starts_with(&root_for(&s, Scope::Workspace)));
     }
 

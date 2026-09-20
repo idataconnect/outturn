@@ -38,10 +38,20 @@ pub enum Owner {
 pub enum Kind {
     /// A number in a range, or null meaning "let the provider decide" where
     /// `nullable` is set.
-    Number { min: f64, max: f64, step: f64, nullable: bool },
-    Integer { min: i64, max: i64 },
+    Number {
+        min: f64,
+        max: f64,
+        step: f64,
+        nullable: bool,
+    },
+    Integer {
+        min: i64,
+        max: i64,
+    },
     /// One of a fixed set of strings.
-    Choice { options: &'static [&'static str] },
+    Choice {
+        options: &'static [&'static str],
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,7 +73,12 @@ pub fn catalogue() -> Vec<Setting> {
             description: "How much the model varies its wording. Lower is more \
                           predictable, which suits agents that follow procedures; \
                           higher is more varied. Unset leaves it to the provider.",
-            kind: Kind::Number { min: 0.0, max: 2.0, step: 0.1, nullable: true },
+            kind: Kind::Number {
+                min: 0.0,
+                max: 2.0,
+                step: 0.1,
+                nullable: true,
+            },
             default: serde_json::Value::Null,
             owner: Owner::WorkspaceOverridable,
         },
@@ -75,7 +90,9 @@ pub fn catalogue() -> Vec<Setting> {
                           cheapest but not safe on every model: gemma4 with thinking \
                           off answers a tool result with nothing at all, so the turn \
                           ends on the tool and the reader is told nothing.",
-            kind: Kind::Choice { options: &["none", "low", "medium", "high"] },
+            kind: Kind::Choice {
+                options: &["none", "low", "medium", "high"],
+            },
             // Low rather than none. Measured on gemma4 after a file listing:
             // none gives an empty reply (1 completion token); low gives the
             // one-line summary for 60. The silence is what the reader sees.
@@ -93,7 +110,9 @@ pub fn catalogue() -> Vec<Setting> {
             description: "What an agent may do under agent/, the files it keeps between \
                           conversations. Session files are always read/write; they are \
                           the agent's scratch space.",
-            kind: Kind::Choice { options: &["none", "read", "read_write"] },
+            kind: Kind::Choice {
+                options: &["none", "read", "read_write"],
+            },
             default: serde_json::json!("read_write"),
             owner: Owner::WorkspaceOverridable,
         },
@@ -105,7 +124,9 @@ pub fn catalogue() -> Vec<Setting> {
                           agent into overwriting shared reference material should find \
                           it cannot, and an agent with no business reading that \
                           material at all can be given none.",
-            kind: Kind::Choice { options: &["none", "read", "read_write"] },
+            kind: Kind::Choice {
+                options: &["none", "read", "read_write"],
+            },
             default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
         },
@@ -115,7 +136,10 @@ pub fn catalogue() -> Vec<Setting> {
             description: "How many times one turn may call the model before it is \
                           stopped. A runaway guard, not a budget: what costs money is \
                           tokens. Zero means no limit.",
-            kind: Kind::Integer { min: 0, max: 10_000 },
+            kind: Kind::Integer {
+                min: 0,
+                max: 10_000,
+            },
             default: serde_json::json!(100),
             owner: Owner::WorkspaceOverridable,
         },
@@ -134,7 +158,10 @@ pub fn catalogue() -> Vec<Setting> {
             // this default is about 130k tokens against a 200k window --
             // conservative on purpose, since being wrong costs headroom while
             // the alternative costs the turn.
-            kind: Kind::Integer { min: 1_000, max: 100_000_000 },
+            kind: Kind::Integer {
+                min: 1_000,
+                max: 100_000_000,
+            },
             default: serde_json::json!(400_000),
             owner: Owner::WorkspaceOverridable,
         },
@@ -222,7 +249,12 @@ pub trait SettingsStore: Send + Sync {
     async fn view(&self, level: Level) -> Result<Vec<Effective>, SettingsError>;
     /// Turns the override on at `level` with `value`, validated against the
     /// catalogue. The caller has already decided the level may.
-    async fn set(&self, level: Level, key: &str, value: serde_json::Value) -> Result<(), SettingsError>;
+    async fn set(
+        &self,
+        level: Level,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), SettingsError>;
     /// Turns the override off at `level`.
     async fn clear(&self, level: Level, key: &str) -> Result<(), SettingsError>;
     /// The values a turn of `agent_id` in `workspace_id` runs with.
@@ -232,17 +264,22 @@ pub trait SettingsStore: Send + Sync {
 /// Checks a value against a setting's kind.
 pub fn validate(setting: &Setting, value: &serde_json::Value) -> Result<(), SettingsError> {
     match &setting.kind {
-        Kind::Number { min, max, nullable, .. } => {
+        Kind::Number {
+            min, max, nullable, ..
+        } => {
             if value.is_null() {
                 return if *nullable {
                     Ok(())
                 } else {
-                    Err(SettingsError::Invalid(format!("{} needs a number", setting.label)))
+                    Err(SettingsError::Invalid(format!(
+                        "{} needs a number",
+                        setting.label
+                    )))
                 };
             }
-            let n = value
-                .as_f64()
-                .ok_or_else(|| SettingsError::Invalid(format!("{} needs a number", setting.label)))?;
+            let n = value.as_f64().ok_or_else(|| {
+                SettingsError::Invalid(format!("{} needs a number", setting.label))
+            })?;
             if n < *min || n > *max {
                 return Err(SettingsError::Invalid(format!(
                     "{} must be between {min} and {max}",
@@ -252,9 +289,9 @@ pub fn validate(setting: &Setting, value: &serde_json::Value) -> Result<(), Sett
             Ok(())
         }
         Kind::Integer { min, max } => {
-            let n = value
-                .as_i64()
-                .ok_or_else(|| SettingsError::Invalid(format!("{} needs a whole number", setting.label)))?;
+            let n = value.as_i64().ok_or_else(|| {
+                SettingsError::Invalid(format!("{} needs a whole number", setting.label))
+            })?;
             if n < *min || n > *max {
                 return Err(SettingsError::Invalid(format!(
                     "{} must be between {min} and {max}",
@@ -264,9 +301,13 @@ pub fn validate(setting: &Setting, value: &serde_json::Value) -> Result<(), Sett
             Ok(())
         }
         Kind::Choice { options } => {
-            let s = value
-                .as_str()
-                .ok_or_else(|| SettingsError::Invalid(format!("{} needs one of {}", setting.label, options.join(", "))))?;
+            let s = value.as_str().ok_or_else(|| {
+                SettingsError::Invalid(format!(
+                    "{} needs one of {}",
+                    setting.label,
+                    options.join(", ")
+                ))
+            })?;
             if !options.contains(&s) {
                 return Err(SettingsError::Invalid(format!(
                     "{} must be one of {}",
@@ -294,7 +335,10 @@ mod tests {
     fn values_outside_a_kind_are_refused() {
         let t = find("temperature").expect("temperature");
         assert!(validate(&t, &serde_json::json!(0.5)).is_ok());
-        assert!(validate(&t, &serde_json::Value::Null).is_ok(), "temperature may be unset");
+        assert!(
+            validate(&t, &serde_json::Value::Null).is_ok(),
+            "temperature may be unset"
+        );
         assert!(validate(&t, &serde_json::json!(3.0)).is_err());
         assert!(validate(&t, &serde_json::json!("hot")).is_err());
 
@@ -341,8 +385,8 @@ mod wire_tests {
         // Temperature is nullable, and unset is a real choice meaning "leave
         // it to the provider". So null on the wire has to mean that, which is
         // why absence is what says there is no row.
-        let json = serde_json::to_value(effective(Some(serde_json::Value::Null)))
-            .expect("serialises");
+        let json =
+            serde_json::to_value(effective(Some(serde_json::Value::Null))).expect("serialises");
         assert!(
             json.get("override_value").is_some(),
             "an override to null vanished: {json}"
@@ -352,8 +396,8 @@ mod wire_tests {
 
     #[test]
     fn an_ordinary_override_is_sent_as_its_value() {
-        let json = serde_json::to_value(effective(Some(serde_json::json!(0.7))))
-            .expect("serialises");
+        let json =
+            serde_json::to_value(effective(Some(serde_json::json!(0.7)))).expect("serialises");
         assert_eq!(json["override_value"], 0.7);
     }
 }

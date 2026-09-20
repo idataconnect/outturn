@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
-use axum::{Json, extract::State, http::{StatusCode, header}};
+use axum::{
+    Json,
+    extract::State,
+    http::{StatusCode, header},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -9,7 +13,7 @@ use crate::auth;
 
 use super::router::{ApiError, ApiState};
 use super::session::{IssuedRefresh, REFRESH_LIFETIME_SECS, SessionError};
-use super::user::{WorkspaceMembership, UserError};
+use super::user::{UserError, WorkspaceMembership};
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -89,7 +93,10 @@ pub async fn login(
         return Err((StatusCode::FORBIDDEN, "no access to that workspace".into()));
     }
 
-    let roles = state.users.roles_for_workspace(user.id, workspace_id).await?;
+    let roles = state
+        .users
+        .roles_for_workspace(user.id, workspace_id)
+        .await?;
     if roles.is_empty() {
         return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
@@ -224,7 +231,10 @@ pub async fn select_workspace(
     let user = state.users.get(claims.subject).await?;
 
     let workspaces = state.users.memberships(user.id).await?;
-    if !workspaces.iter().any(|t| t.workspace_id == request.workspace_id) {
+    if !workspaces
+        .iter()
+        .any(|t| t.workspace_id == request.workspace_id)
+    {
         return Err((StatusCode::FORBIDDEN, "no access to that workspace".into()));
     }
 

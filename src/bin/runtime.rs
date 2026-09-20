@@ -133,8 +133,7 @@ async fn main() {
         storage: state.storage.clone(),
         gateway_url: state.gateway_url.clone(),
         admission: Arc::clone(&state.admission),
-        default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
-            .unwrap_or_else(|_| "llama3.1".into()),
+        default_model: std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into()),
         idle_timeout: outturn::http_client::IDLE_TIMEOUT,
     })
     .spawn(health.shutdown_signal());

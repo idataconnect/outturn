@@ -33,12 +33,14 @@ fn read_scope(row: &PgRow) -> Result<Scope, InhibitorError> {
     match (level.as_str(), workspace_id, agent_id, session_id) {
         ("platform", None, None, None) => Ok(Scope::Platform),
         ("workspace", Some(workspace_id), None, None) => Ok(Scope::Workspace { workspace_id }),
-        ("agent", Some(workspace_id), Some(agent_id), None) => {
-            Ok(Scope::Agent { workspace_id, agent_id })
-        }
-        ("session", Some(workspace_id), None, Some(session_id)) => {
-            Ok(Scope::Session { workspace_id, session_id })
-        }
+        ("agent", Some(workspace_id), Some(agent_id), None) => Ok(Scope::Agent {
+            workspace_id,
+            agent_id,
+        }),
+        ("session", Some(workspace_id), None, Some(session_id)) => Ok(Scope::Session {
+            workspace_id,
+            session_id,
+        }),
         _ => Err(InhibitorError::Internal(format!(
             "an inhibitor row says {level} but does not carry that level's columns"
         ))),
@@ -50,7 +52,9 @@ fn read(row: &PgRow) -> Result<Inhibitor, InhibitorError> {
     Ok(Inhibitor {
         id: row.get("id"),
         scope: read_scope(row)?,
-        strength: strength.parse::<Strength>().map_err(InhibitorError::Internal)?,
+        strength: strength
+            .parse::<Strength>()
+            .map_err(InhibitorError::Internal)?,
         reason: row.get("reason"),
         held_by: row.get("held_by"),
         created_at: row.get("created_at"),
@@ -62,12 +66,14 @@ fn columns(scope: &Scope) -> (&'static str, Option<Uuid>, Option<Uuid>, Option<U
     match *scope {
         Scope::Platform => ("platform", None, None, None),
         Scope::Workspace { workspace_id } => ("workspace", Some(workspace_id), None, None),
-        Scope::Agent { workspace_id, agent_id } => {
-            ("agent", Some(workspace_id), Some(agent_id), None)
-        }
-        Scope::Session { workspace_id, session_id } => {
-            ("session", Some(workspace_id), None, Some(session_id))
-        }
+        Scope::Agent {
+            workspace_id,
+            agent_id,
+        } => ("agent", Some(workspace_id), Some(agent_id), None),
+        Scope::Session {
+            workspace_id,
+            session_id,
+        } => ("session", Some(workspace_id), None, Some(session_id)),
     }
 }
 
@@ -131,10 +137,14 @@ impl InhibitorStore for PostgresInhibitorStore {
             // Refused rather than defaulted: a hold whose reason is blank is
             // one nobody can act on, and the person looking at a stopped
             // conversation is owed better than an empty string.
-            return Err(InhibitorError::Invalid("an inhibitor needs a reason".into()));
+            return Err(InhibitorError::Invalid(
+                "an inhibitor needs a reason".into(),
+            ));
         }
         if input.held_by.trim().is_empty() {
-            return Err(InhibitorError::Invalid("an inhibitor needs a holder".into()));
+            return Err(InhibitorError::Invalid(
+                "an inhibitor needs a holder".into(),
+            ));
         }
 
         let (level, workspace_id, agent_id, session_id) = columns(&input.scope);

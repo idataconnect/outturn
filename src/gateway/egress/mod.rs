@@ -31,9 +31,9 @@ pub mod transport;
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::egress::commit;
@@ -120,8 +120,8 @@ pub async fn fetch(
     // Matched against the vouched rules rather than the sent ones: the host
     // has to be allowed by a rule the API committed to, and the rule that
     // matches is the one whose credential travels.
-    let (host, rule) = rules::check_url(&vouched, &url)
-        .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+    let (host, rule) =
+        rules::check_url(&vouched, &url).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
 
     // A credential travels only where it cannot be read on the way. A
     // workspace that configured a key for a host did not consent to it going
@@ -163,9 +163,12 @@ pub async fn fetch(
     let mut outgoing = reqwest::header::HeaderMap::new();
     for (name, value) in &request.headers {
         rules::check_header(name).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
-        let name: reqwest::header::HeaderName = name
-            .parse()
-            .map_err(|_| (StatusCode::BAD_REQUEST, format!("{name} is not a header name")))?;
+        let name: reqwest::header::HeaderName = name.parse().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("{name} is not a header name"),
+            )
+        })?;
         let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
@@ -298,7 +301,9 @@ mod tests {
         let real = vec![rule("api.example.com")];
         let committed = commit::root(workspace, &real);
 
-        let proof = commit::Proof::WholeSet { rules: real.clone() };
+        let proof = commit::Proof::WholeSet {
+            rules: real.clone(),
+        };
         let vouched = commit::verify(workspace, &committed, &proof).expect("verifies");
 
         let allowed = reqwest::Url::parse("https://api.example.com/things").expect("url");
@@ -325,7 +330,9 @@ mod tests {
             .await
             .expect_err("an address inside the cluster must be refused");
         assert!(
-            refused.to_string().contains("cannot be reached from an agent"),
+            refused
+                .to_string()
+                .contains("cannot be reached from an agent"),
             "{refused}"
         );
     }
@@ -337,11 +344,14 @@ mod tests {
     /// choosing, which is the leak the whole credential design is about.
     #[test]
     fn a_guest_cannot_set_the_headers_this_tier_owns() {
-        for header in ["Authorization", "authorization", "COOKIE", "Host", "x-api-key"] {
-            assert!(
-                rules::check_header(header).is_err(),
-                "{header} was allowed"
-            );
+        for header in [
+            "Authorization",
+            "authorization",
+            "COOKIE",
+            "Host",
+            "x-api-key",
+        ] {
+            assert!(rules::check_header(header).is_err(), "{header} was allowed");
         }
         assert!(rules::check_header("content-type").is_ok());
     }
@@ -353,10 +363,7 @@ mod tests {
         let paid = with_credential("api.stripe.com", "authorization", "STRIPE_KEY");
         let free = rule("docs.example.com");
 
-        assert_eq!(
-            credential_for(&paid),
-            Some(("authorization", "STRIPE_KEY"))
-        );
+        assert_eq!(credential_for(&paid), Some(("authorization", "STRIPE_KEY")));
         assert_eq!(credential_for(&free), None);
     }
 }

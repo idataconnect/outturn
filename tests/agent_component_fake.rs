@@ -120,7 +120,11 @@ async fn streams_deltas_and_returns_the_whole_reply() {
     assert_eq!(reply, "one two three four");
 
     let seen = deltas.lock().unwrap();
-    assert!(seen.len() > 1, "expected several deltas, got {}", seen.len());
+    assert!(
+        seen.len() > 1,
+        "expected several deltas, got {}",
+        seen.len()
+    );
     // The browser renders deltas as they arrive and keeps the final message,
     // so a mismatch would show one thing during generation and another after.
     assert_eq!(seen.concat(), reply);
@@ -221,7 +225,12 @@ async fn an_empty_conversation_is_refused_without_calling_the_model() {
     let runner = runner();
 
     let result = runner
-        .run(&component(), Vec::new(), "system only".into(), options(&gateway, None))
+        .run(
+            &component(),
+            Vec::new(),
+            "system only".into(),
+            options(&gateway, None),
+        )
         .await;
 
     assert!(result.is_err(), "nothing to respond to should be an error");
@@ -359,11 +368,13 @@ async fn runs_a_tool_and_answers_with_its_result() {
     let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let on_tool = {
         let seen = Arc::clone(&seen);
-        Arc::new(move |activity: &outturn::runtime::component::ToolActivity| {
-            seen.lock()
-                .unwrap()
-                .push((activity.name.clone(), activity.action.clone()));
-        })
+        Arc::new(
+            move |activity: &outturn::runtime::component::ToolActivity| {
+                seen.lock()
+                    .unwrap()
+                    .push((activity.name.clone(), activity.action.clone()));
+            },
+        )
     };
 
     let runner = runner();
@@ -392,7 +403,10 @@ async fn runs_a_tool_and_answers_with_its_result() {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            ("load_tools".to_string(), "Getting the tools ready".to_string()),
+            (
+                "load_tools".to_string(),
+                "Getting the tools ready".to_string()
+            ),
             (
                 "get_current_time".to_string(),
                 "Checking today's date".to_string()
@@ -623,14 +637,22 @@ async fn a_truncated_reply_does_not_get_its_tools_run() {
     options.max_tool_rounds = 2;
 
     let _ = runner
-        .run(&component(), user("What time is it?"), String::new(), options)
+        .run(
+            &component(),
+            user("What time is it?"),
+            String::new(),
+            options,
+        )
         .await;
 
     // The second request carries the refusal rather than a clock reading, so
     // the model learns its call was dropped instead of acting on a result it
     // never asked for.
     let requests = gateway.requests();
-    assert!(requests.len() >= 2, "the turn should continue after refusing");
+    assert!(
+        requests.len() >= 2,
+        "the turn should continue after refusing"
+    );
     let tool_result = requests[1]["messages"]
         .as_array()
         .expect("messages")
@@ -727,7 +749,12 @@ async fn rounds_are_separated_before_the_second_begins_not_after() {
     };
 
     let reply = runner()
-        .run(&component(), user("one"), String::new(), options(&gateway, Some(sink)))
+        .run(
+            &component(),
+            user("one"),
+            String::new(),
+            options(&gateway, Some(sink)),
+        )
         .await
         .expect("run")
         .0;
@@ -756,7 +783,9 @@ async fn the_turns_temperature_reaches_the_model() {
         .expect("run");
 
     let requests = gateway.requests();
-    let sent = requests[0]["temperature"].as_f64().expect("temperature was not sent");
+    let sent = requests[0]["temperature"]
+        .as_f64()
+        .expect("temperature was not sent");
     assert!((sent - 0.1).abs() < 1e-6, "sent {sent}");
 }
 
@@ -796,7 +825,6 @@ async fn each_model_call_reports_its_own_cost() {
         "two rounds should have reported two costs, in order"
     );
 }
-
 
 /// What a turn spent is counted by the host, across every round.
 ///
@@ -872,7 +900,12 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
     options.on_tool_result = Some(on_tool_result);
 
     runner
-        .run(&component(), user("What day is it?"), String::new(), options)
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -898,12 +931,24 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
-    let ours = scope::Space { workspace_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
-    let theirs = scope::Space { workspace_id: Uuid::now_v7(), agent_id: Uuid::now_v7(), session_id: Uuid::now_v7() };
+    let ours = scope::Space {
+        workspace_id: Uuid::now_v7(),
+        agent_id: Uuid::now_v7(),
+        session_id: Uuid::now_v7(),
+    };
+    let theirs = scope::Space {
+        workspace_id: Uuid::now_v7(),
+        agent_id: Uuid::now_v7(),
+        session_id: Uuid::now_v7(),
+    };
 
     // Somebody else's object, which our agent must not be able to reach.
     store
-        .write(&scope::resolve(&theirs, "workspace/secrets.txt").unwrap(), 0, b"not yours")
+        .write(
+            &scope::resolve(&theirs, "workspace/secrets.txt").unwrap(),
+            0,
+            b"not yours",
+        )
         .await
         .expect("seed");
 
@@ -928,7 +973,11 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
 
     // It landed under our agent's prefix, not at the path the guest named.
     let written = store
-        .read(&scope::resolve(&ours, "agent/notes/hello.txt").unwrap(), 0, u32::MAX)
+        .read(
+            &scope::resolve(&ours, "agent/notes/hello.txt").unwrap(),
+            0,
+            u32::MAX,
+        )
         .await
         .expect("the agent's own file");
     assert_eq!(written, b"written by the agent");
@@ -939,7 +988,11 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
         "a path climbing out of the space must be refused"
     );
     let theirs_still = store
-        .read(&scope::resolve(&theirs, "workspace/secrets.txt").unwrap(), 0, u32::MAX)
+        .read(
+            &scope::resolve(&theirs, "workspace/secrets.txt").unwrap(),
+            0,
+            u32::MAX,
+        )
         .await
         .expect("still there");
     assert_eq!(theirs_still, b"not yours");
@@ -991,7 +1044,9 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "write_object".into(),
-        arguments: r#"{"path":"workspace/pricing.csv","content":"cheap","action":"Updating prices"}"#.into(),
+        arguments:
+            r#"{"path":"workspace/pricing.csv","content":"cheap","action":"Updating prices"}"#
+                .into(),
         reply: "Refused.".into(),
     })
     .await;
@@ -1006,13 +1061,22 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
     };
 
     runner()
-        .run(&component(), user("Update pricing."), String::new(), options)
+        .run(
+            &component(),
+            user("Update pricing."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
     assert!(
         store
-            .read(&scope::resolve(&space, "workspace/pricing.csv").unwrap(), 0, u32::MAX)
+            .read(
+                &scope::resolve(&space, "workspace/pricing.csv").unwrap(),
+                0,
+                u32::MAX
+            )
             .await
             .is_err(),
         "the write to workspace scope went through"
@@ -1027,7 +1091,10 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
         .as_str()
         .expect("content")
         .to_string();
-    assert!(result.contains("session/"), "the refusal should say where to write instead: {result}");
+    assert!(
+        result.contains("session/"),
+        "the refusal should say where to write instead: {result}"
+    );
 }
 
 /// Deleting removes the object, rather than leaving an empty one behind.
@@ -1057,10 +1124,18 @@ async fn deleting_removes_the_object_rather_than_emptying_it() {
         session_id: options.session_id,
     };
     let key = scope::resolve(&space, "session/recipe.pdf").unwrap();
-    store.write(&key, 0, b"%PDF-1.4 banana bread").await.expect("seed");
+    store
+        .write(&key, 0, b"%PDF-1.4 banana bread")
+        .await
+        .expect("seed");
 
     runner
-        .run(&component(), user("Please delete that file now."), String::new(), options)
+        .run(
+            &component(),
+            user("Please delete that file now."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1068,7 +1143,10 @@ async fn deleting_removes_the_object_rather_than_emptying_it() {
         store.stat(&key).await.is_err(),
         "the object is still there after a delete"
     );
-    let listed = store.list(&scope::root_for(&space, scope::Scope::Session)).await.expect("list");
+    let listed = store
+        .list(&scope::root_for(&space, scope::Scope::Session))
+        .await
+        .expect("list");
     assert!(
         listed.is_empty(),
         "a deleted file must not go on listing, at any size: {listed:?}"
@@ -1103,11 +1181,19 @@ async fn deleting_outside_the_allowed_scopes_is_refused() {
     store.write(&key, 0, b"not cheap").await.expect("seed");
 
     runner()
-        .run(&component(), user("Delete the price list."), String::new(), options)
+        .run(
+            &component(),
+            user("Delete the price list."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
-    assert!(store.stat(&key).await.is_ok(), "the refused delete went through anyway");
+    assert!(
+        store.stat(&key).await.is_ok(),
+        "the refused delete went through anyway"
+    );
 }
 
 /// Deleting nothing is an error, not a quiet success.
@@ -1128,7 +1214,12 @@ async fn deleting_a_path_that_names_nothing_says_so() {
     options.storage = Some(Arc::new(MemoryStorage::new()));
 
     runner()
-        .run(&component(), user("Delete the draft."), String::new(), options)
+        .run(
+            &component(),
+            user("Delete the draft."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1180,7 +1271,11 @@ async fn a_large_file_is_read_from_both_ends() {
     }
     log.push_str("LAST LINE: everything caught fire\n");
     store
-        .write(&scope::resolve(&space, "session/app.log").unwrap(), 0, log.as_bytes())
+        .write(
+            &scope::resolve(&space, "session/app.log").unwrap(),
+            0,
+            log.as_bytes(),
+        )
         .await
         .expect("seed");
 
@@ -1393,12 +1488,21 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     }
     doc.push_str("LAST LINE: 終わり\n");
     store
-        .write(&scope::resolve(&space, "session/doc.txt").unwrap(), 0, doc.as_bytes())
+        .write(
+            &scope::resolve(&space, "session/doc.txt").unwrap(),
+            0,
+            doc.as_bytes(),
+        )
         .await
         .expect("seed");
 
     runner
-        .run(&component(), user("What does it say?"), String::new(), options)
+        .run(
+            &component(),
+            user("What does it say?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1523,12 +1627,21 @@ async fn a_scope_it_may_not_read_is_refused() {
     };
     // There to be read, so the refusal is the permission and not a miss.
     store
-        .write(&scope::resolve(&space, "workspace/salaries.csv").unwrap(), 0, b"secret")
+        .write(
+            &scope::resolve(&space, "workspace/salaries.csv").unwrap(),
+            0,
+            b"secret",
+        )
         .await
         .expect("seed");
 
     runner()
-        .run(&component(), user("Read the salaries."), String::new(), options)
+        .run(
+            &component(),
+            user("Read the salaries."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1579,16 +1692,29 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
         session_id: options.session_id,
     };
     store
-        .write(&scope::resolve(&space, "workspace/severance.csv").unwrap(), 0, b"x")
+        .write(
+            &scope::resolve(&space, "workspace/severance.csv").unwrap(),
+            0,
+            b"x",
+        )
         .await
         .expect("seed");
     store
-        .write(&scope::resolve(&space, "session/notes.txt").unwrap(), 0, b"y")
+        .write(
+            &scope::resolve(&space, "session/notes.txt").unwrap(),
+            0,
+            b"y",
+        )
         .await
         .expect("seed");
 
     runner()
-        .run(&component(), user("What files are there?"), String::new(), options)
+        .run(
+            &component(),
+            user("What files are there?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1638,12 +1764,21 @@ async fn listing_a_scope_it_may_not_read_is_refused() {
         session_id: options.session_id,
     };
     store
-        .write(&scope::resolve(&space, "workspace/severance.csv").unwrap(), 0, b"x")
+        .write(
+            &scope::resolve(&space, "workspace/severance.csv").unwrap(),
+            0,
+            b"x",
+        )
         .await
         .expect("seed");
 
     runner()
-        .run(&component(), user("List the shared files."), String::new(), options)
+        .run(
+            &component(),
+            user("List the shared files."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1682,7 +1817,9 @@ async fn a_load_that_matched_nothing_is_an_error() {
     let on_tool_result = {
         let seen = Arc::clone(&seen);
         Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
-            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+            seen.lock()
+                .unwrap()
+                .push((outcome.content.clone(), outcome.is_error));
         })
     };
 
@@ -1693,7 +1830,12 @@ async fn a_load_that_matched_nothing_is_an_error() {
     options.on_tool_result = Some(on_tool_result);
 
     runner
-        .run(&component(), user("What day is it?"), String::new(), options)
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
@@ -1733,7 +1875,9 @@ async fn a_tool_that_was_not_loaded_is_refused() {
     let on_tool_result = {
         let seen = Arc::clone(&seen);
         Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
-            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+            seen.lock()
+                .unwrap()
+                .push((outcome.content.clone(), outcome.is_error));
         })
     };
 
@@ -1744,13 +1888,21 @@ async fn a_tool_that_was_not_loaded_is_refused() {
     options.on_tool_result = Some(on_tool_result);
 
     runner
-        .run(&component(), user("What day is it?"), String::new(), options)
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
     let results = seen.lock().unwrap().clone();
     let (content, is_error) = results.first().expect("the call was answered").clone();
-    assert!(is_error, "an unloaded tool should be refused, got {content:?}");
+    assert!(
+        is_error,
+        "an unloaded tool should be refused, got {content:?}"
+    );
     assert!(
         content.contains("load_tools"),
         "the refusal should name the way out, got {content:?}"
@@ -1785,7 +1937,9 @@ async fn a_tool_loaded_on_an_earlier_turn_stays_loaded() {
     let on_tool_result = {
         let seen = Arc::clone(&seen);
         Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
-            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+            seen.lock()
+                .unwrap()
+                .push((outcome.content.clone(), outcome.is_error));
         })
     };
 
@@ -1864,7 +2018,12 @@ async fn an_eager_tool_needs_no_loading() {
     options.eager_tools = vec!["get_current_time".into()];
 
     let reply = runner
-        .run(&component(), user("What day is it?"), String::new(), options)
+        .run(
+            &component(),
+            user("What day is it?"),
+            String::new(),
+            options,
+        )
         .await
         .expect("run")
         .0;

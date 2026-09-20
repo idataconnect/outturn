@@ -32,7 +32,11 @@ fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
     // No egress rules are exercised by this suite, so the empty commitment is
     // what a real turn for a workspace with none would carry too.
     minter
-        .mint_turn(session_id, workspace_id, outturn::egress::commit::empty_root())
+        .mint_turn(
+            session_id,
+            workspace_id,
+            outturn::egress::commit::empty_root(),
+        )
         .expect("mint")
 }
 
@@ -82,7 +86,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_tool: None,
                 on_tool_result: None,
                 on_usage: None,
-        on_write: None,
+                on_write: None,
                 storage: None,
                 workspace_id,
                 agent_id: Uuid::now_v7(),

@@ -150,7 +150,9 @@ pub fn anthropic_to_openai(
             match block["type"].as_str() {
                 Some("text") => {
                     if let Some(t) = block["text"].as_str() {
-                        parts.push(Part::Text { text: t.to_string() });
+                        parts.push(Part::Text {
+                            text: t.to_string(),
+                        });
                     }
                 }
                 Some("tool_use") => {
@@ -283,7 +285,11 @@ mod order_tests {
                 Part::ToolCall { .. } => "call",
             })
             .collect();
-        assert_eq!(shape, ["text", "call", "text", "call"], "order lost: {parts:?}");
+        assert_eq!(
+            shape,
+            ["text", "call", "text", "call"],
+            "order lost: {parts:?}"
+        );
 
         match (&parts[0], &parts[1]) {
             (Part::Text { text }, Part::ToolCall { call }) => {
@@ -336,10 +342,22 @@ mod order_tests {
             ]
         });
 
-        let parts = anthropic_to_openai(&resp).expect("translate").choices[0].parts.clone();
+        let parts = anthropic_to_openai(&resp).expect("translate").choices[0]
+            .parts
+            .clone();
         assert_eq!(parts.len(), 3, "{parts:?}");
-        assert_eq!(parts[0], Part::Text { text: "before".into() });
-        assert_eq!(parts[2], Part::Text { text: "after".into() });
+        assert_eq!(
+            parts[0],
+            Part::Text {
+                text: "before".into()
+            }
+        );
+        assert_eq!(
+            parts[2],
+            Part::Text {
+                text: "after".into()
+            }
+        );
     }
 }
 
@@ -688,7 +706,11 @@ mod stream_tests {
     fn the_opening_output_count_is_a_placeholder_and_is_replaced() {
         let mut s = AnthropicStream::new();
         s.event(&start(100, 1));
-        assert_eq!(s.usage().output_tokens, Some(1), "taken, for want of anything better");
+        assert_eq!(
+            s.usage().output_tokens,
+            Some(1),
+            "taken, for want of anything better"
+        );
 
         s.event(&event(serde_json::json!({
             "type": "message_delta",
@@ -718,7 +740,10 @@ mod stream_tests {
         })));
 
         let usage = s.usage().to_usage();
-        assert_eq!(usage.prompt_tokens, 1000, "the input count survived the later event");
+        assert_eq!(
+            usage.prompt_tokens, 1000,
+            "the input count survived the later event"
+        );
         assert_eq!(usage.completion_tokens, 25);
     }
 
@@ -740,7 +765,10 @@ mod stream_tests {
         })));
         // and then nothing: no message_delta, no message_stop.
 
-        assert!(s.usage().known(), "a cut stream knows something and should say so");
+        assert!(
+            s.usage().known(),
+            "a cut stream knows something and should say so"
+        );
         assert_eq!(s.usage().to_usage().prompt_tokens, 500);
     }
 
@@ -764,11 +792,18 @@ mod stream_tests {
         })));
 
         let usage = s.usage().to_usage();
-        assert_eq!(usage.prompt_tokens, 80, "input_tokens already excludes the cache");
+        assert_eq!(
+            usage.prompt_tokens, 80,
+            "input_tokens already excludes the cache"
+        );
         let details = usage.prompt_tokens_details.expect("cache detail");
         assert_eq!(details.cached_tokens, 20);
         assert_eq!(details.cache_creation_tokens, 5);
-        assert_eq!(usage.total_tokens, 80 + 1 + 20 + 5, "all four make the total");
+        assert_eq!(
+            usage.total_tokens,
+            80 + 1 + 20 + 5,
+            "all four make the total"
+        );
     }
 
     /// Tool calls are numbered in the order they open, which is not the block
@@ -788,8 +823,15 @@ mod stream_tests {
             })))
             .expect("a tool call opens a chunk");
 
-        let call = &chunk.choices[0].delta.tool_calls.as_ref().expect("tool calls")[0];
-        assert_eq!(call.index, 0, "the first tool call, though it is the second block");
+        let call = &chunk.choices[0]
+            .delta
+            .tool_calls
+            .as_ref()
+            .expect("tool calls")[0];
+        assert_eq!(
+            call.index, 0,
+            "the first tool call, though it is the second block"
+        );
         assert_eq!(call.id.as_deref(), Some("toolu_1"));
         assert_eq!(
             call.function.as_ref().and_then(|f| f.name.as_deref()),
@@ -843,7 +885,10 @@ mod stream_tests {
             assert_eq!(call.index, 0, "fragments correlate by index");
             assert!(call.id.is_none(), "only the opening chunk names the call");
             assembled.push_str(
-                call.function.as_ref().and_then(|f| f.arguments.as_deref()).unwrap_or_default(),
+                call.function
+                    .as_ref()
+                    .and_then(|f| f.arguments.as_deref())
+                    .unwrap_or_default(),
             );
         }
 
@@ -860,7 +905,11 @@ mod stream_tests {
         assert_eq!(finish_reason_of("tool_use"), "tool_calls");
         assert_eq!(finish_reason_of("max_tokens"), "length");
         assert_eq!(finish_reason_of("refusal"), "content_filter");
-        assert_eq!(finish_reason_of("something_new"), "stop", "an unknown reason is not an error");
+        assert_eq!(
+            finish_reason_of("something_new"),
+            "stop",
+            "an unknown reason is not an error"
+        );
     }
 
     /// Events that carry nothing the OpenAI shape can hold produce nothing.
@@ -870,7 +919,8 @@ mod stream_tests {
         s.event(&start(10, 1));
         for kind in ["ping", "message_stop", "content_block_stop"] {
             assert!(
-                s.event(&event(serde_json::json!({ "type": kind, "index": 0 }))).is_none(),
+                s.event(&event(serde_json::json!({ "type": kind, "index": 0 })))
+                    .is_none(),
                 "{kind} should not become an empty chunk a reader has to parse"
             );
         }
@@ -878,7 +928,6 @@ mod stream_tests {
 }
 
 // Gemini -----------------------------------------------------------------
-
 
 /// How much of a flattened tool exchange is put in front of a model.
 ///
@@ -1314,7 +1363,11 @@ impl GeminiStream {
         let mut content: Option<String> = None;
         let mut tool_calls: Vec<ToolCallDelta> = Vec::new();
 
-        for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
+        for part in candidate["content"]["parts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
             if let Some(text) = part["text"].as_str() {
                 content.get_or_insert_with(String::new).push_str(text);
                 // Kept whenever it is offered and never unset by a later part
@@ -1392,20 +1445,28 @@ impl GeminiStream {
 }
 
 /// Convert a whole Gemini response into the canonical shape.
-pub fn gemini_to_openai(resp: &serde_json::Value) -> Result<ChatCompletionResponse, TranslateError> {
+pub fn gemini_to_openai(
+    resp: &serde_json::Value,
+) -> Result<ChatCompletionResponse, TranslateError> {
     let candidate = &resp["candidates"][0];
 
     let mut text = String::new();
     let mut parts: Vec<Part> = Vec::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
-    for part in candidate["content"]["parts"].as_array().into_iter().flatten() {
+    for part in candidate["content"]["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
         if let Some(t) = part["text"].as_str() {
             if !text.is_empty() {
                 text.push('\n');
             }
             text.push_str(t);
-            parts.push(Part::Text { text: t.to_string() });
+            parts.push(Part::Text {
+                text: t.to_string(),
+            });
         }
         if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
             let tool_call = ToolCall {
@@ -1424,7 +1485,9 @@ pub fn gemini_to_openai(resp: &serde_json::Value) -> Result<ChatCompletionRespon
                 // Rides the same part as the call, and is required back.
                 provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
             };
-            parts.push(Part::ToolCall { call: tool_call.clone() });
+            parts.push(Part::ToolCall {
+                call: tool_call.clone(),
+            });
             tool_calls.push(tool_call);
         }
     }
@@ -1437,7 +1500,10 @@ pub fn gemini_to_openai(resp: &serde_json::Value) -> Result<ChatCompletionRespon
         id: "gemini".to_string(),
         object: "chat.completion".to_string(),
         created: 0,
-        model: resp["modelVersion"].as_str().unwrap_or_default().to_string(),
+        model: resp["modelVersion"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         choices: vec![Choice {
             index: 0,
             message: Message {
@@ -1500,7 +1566,10 @@ mod gemini_tests {
 
         assert_eq!(usage.completion_tokens, 20, "the answer is the answer");
         assert_eq!(
-            usage.completion_tokens_details.expect("reasoning detail").reasoning_tokens,
+            usage
+                .completion_tokens_details
+                .expect("reasoning detail")
+                .reasoning_tokens,
             300,
             "thinking is counted, and counted apart"
         );
@@ -1520,7 +1589,10 @@ mod gemini_tests {
         .expect("usage");
 
         let raw = &usage.extra["gemini"];
-        assert_eq!(raw["somethingNewGoogleAdded"], 7, "a dimension we do not model survived");
+        assert_eq!(
+            raw["somethingNewGoogleAdded"], 7,
+            "a dimension we do not model survived"
+        );
     }
 
     /// Gemini says STOP for a function call as much as for prose, so what the
@@ -1551,7 +1623,10 @@ mod gemini_tests {
 
         let usage = s.usage().expect("a cut stream still knows what it saw");
         assert_eq!(usage.prompt_tokens, 100);
-        assert_eq!(usage.completion_tokens, 2, "the running total as of the cut");
+        assert_eq!(
+            usage.completion_tokens, 2,
+            "the running total as of the cut"
+        );
     }
 
     /// Gemini sends finished argument objects rather than partial JSON, so a
@@ -1572,8 +1647,17 @@ mod gemini_tests {
             .expect("a function call becomes a chunk");
 
         let call = &chunk.choices[0].delta.tool_calls.as_ref().expect("calls")[0];
-        assert_eq!(call.function.as_ref().unwrap().name.as_deref(), Some("lookup"));
-        let arguments = call.function.as_ref().unwrap().arguments.as_deref().unwrap();
+        assert_eq!(
+            call.function.as_ref().unwrap().name.as_deref(),
+            Some("lookup")
+        );
+        let arguments = call
+            .function
+            .as_ref()
+            .unwrap()
+            .arguments
+            .as_deref()
+            .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(arguments).expect("valid json")["city"],
             "San Francisco"
@@ -1606,9 +1690,15 @@ mod gemini_tests {
 
         let usage = gemini_usage(&real).expect("usage");
         assert_eq!(usage.prompt_tokens, 16);
-        assert_eq!(usage.completion_tokens, 50, "the answer, without the thinking");
         assert_eq!(
-            usage.completion_tokens_details.expect("reasoning").reasoning_tokens,
+            usage.completion_tokens, 50,
+            "the answer, without the thinking"
+        );
+        assert_eq!(
+            usage
+                .completion_tokens_details
+                .expect("reasoning")
+                .reasoning_tokens,
             28,
             "thinking is billed at output rates and is counted apart"
         );
@@ -1687,7 +1777,11 @@ mod gemini_tests {
              signature onto it is accepted by the API and silently bills the \
              previous turn's reasoning again for every copy"
         );
-        assert_eq!(calls[0].id.as_deref(), Some("call_1"), "the provider's own id, not one we invented");
+        assert_eq!(
+            calls[0].id.as_deref(),
+            Some("call_1"),
+            "the provider's own id, not one we invented"
+        );
         assert_eq!(calls[2].id.as_deref(), Some("call_3"));
     }
 
@@ -1703,13 +1797,20 @@ mod gemini_tests {
     fn a_text_block_is_signed_at_its_end_by_a_part_with_no_text() {
         let mut s = GeminiStream::new("gemini-3.7-flash".into());
 
-        for word in ["San Francisco's fog ", "forms when warm air ", "meets cold water."] {
+        for word in [
+            "San Francisco's fog ",
+            "forms when warm air ",
+            "meets cold water.",
+        ] {
             let chunk = s.event(&serde_json::json!({
                 "candidates": [{ "content": { "parts": [{ "text": word }] }, "index": 0 }],
             }));
             assert!(chunk.is_some(), "a part with words in it is forwarded");
         }
-        assert!(s.text_signature().is_none(), "nothing has signed anything yet");
+        assert!(
+            s.text_signature().is_none(),
+            "nothing has signed anything yet"
+        );
 
         // The last chunk: a signature, and no text at all.
         s.event(&serde_json::json!({
@@ -1758,11 +1859,22 @@ mod gemini_tests {
     fn a_models_version_is_read_from_its_name() {
         assert_eq!(gemini_major_version("gemini-3.7-flash"), Some(3));
         assert_eq!(gemini_major_version("gemini-2.5-flash"), Some(2));
-        assert_eq!(gemini_major_version("gemini-10-flash"), Some(10), "two digits, not one");
-        assert_eq!(gemini_major_version("gemma-4-31b-it"), None, "a different family");
+        assert_eq!(
+            gemini_major_version("gemini-10-flash"),
+            Some(10),
+            "two digits, not one"
+        );
+        assert_eq!(
+            gemini_major_version("gemma-4-31b-it"),
+            None,
+            "a different family"
+        );
 
         assert!(gemini_wants_call_ids("gemini-3.7-flash"));
-        assert!(gemini_wants_call_ids("gemini-4-flash"), "newer than three is also newer");
+        assert!(
+            gemini_wants_call_ids("gemini-4-flash"),
+            "newer than three is also newer"
+        );
         assert!(!gemini_wants_call_ids("gemini-2.5-flash"));
         assert!(
             !gemini_wants_call_ids("my-gemini-30-tune"),
@@ -1777,7 +1889,10 @@ mod gemini_tests {
         let call = ToolCall {
             id: "call_538131".into(),
             tool_type: "function".into(),
-            function: FunctionCall { name: "get_weather".into(), arguments: r#"{"city":"SF"}"#.into() },
+            function: FunctionCall {
+                name: "get_weather".into(),
+                arguments: r#"{"city":"SF"}"#.into(),
+            },
             provider_signature: Some("c2ln".into()),
         };
         let messages = vec![
@@ -1808,8 +1923,14 @@ mod gemini_tests {
         };
 
         let newer = openai_to_gemini_for(&request, "gemini-3.7-flash").expect("translate");
-        assert_eq!(newer["contents"][0]["parts"][0]["functionCall"]["id"], "call_538131");
-        assert_eq!(newer["contents"][1]["parts"][0]["functionResponse"]["id"], "call_538131");
+        assert_eq!(
+            newer["contents"][0]["parts"][0]["functionCall"]["id"],
+            "call_538131"
+        );
+        assert_eq!(
+            newer["contents"][1]["parts"][0]["functionResponse"]["id"],
+            "call_538131"
+        );
         assert_eq!(
             newer["contents"][0]["parts"][0]["thoughtSignature"], "c2ln",
             "the signature goes back on the call it came with, or the round is refused"
@@ -1879,7 +2000,10 @@ mod gemini_tests {
             !json.contains("functionResponse"),
             "and a response to a call the model was never shown answers nothing"
         );
-        assert!(json.contains("get_weather"), "what was asked for is still said");
+        assert!(
+            json.contains("get_weather"),
+            "what was asked for is still said"
+        );
         assert!(json.contains("62F and foggy"), "and so is what came back");
         assert!(
             !json.contains("skip_thought_signature_validator"),
@@ -1896,10 +2020,16 @@ mod gemini_tests {
         let result = format!("BEGINNING{}END", "x".repeat(MAX_FLATTENED_BYTES * 2));
         let rendered = flatten_tool_exchange("q", "{}", &result);
 
-        assert!(rendered.len() < MAX_FLATTENED_BYTES + 256, "the budget is a budget");
+        assert!(
+            rendered.len() < MAX_FLATTENED_BYTES + 256,
+            "the budget is a budget"
+        );
         assert!(rendered.contains("BEGINNING"), "the start says what it is");
         assert!(rendered.contains("END"), "the end is often the answer");
-        assert!(rendered.contains("elided"), "and the cut is admitted, with its size");
+        assert!(
+            rendered.contains("elided"),
+            "and the cut is admitted, with its size"
+        );
     }
 
     /// Cutting through a multi-byte character would panic.
@@ -1939,8 +2069,7 @@ mod gemini_tests {
         assert_eq!(reduced["type"], "object");
         assert_eq!(reduced["properties"]["url"]["type"], "string");
         assert_eq!(
-            reduced["properties"]["headers"]["description"],
-            "Extra headers, as a flat object.",
+            reduced["properties"]["headers"]["description"], "Extra headers, as a flat object.",
             "stripping went further than the keywords it was meant to remove"
         );
         assert_eq!(reduced["required"][0], "url");

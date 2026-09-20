@@ -3,7 +3,10 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::{AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Placeholder, Usage};
+use super::{
+    AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Placeholder,
+    Usage,
+};
 
 pub struct PostgresChatStore {
     pool: PgPool,
@@ -117,7 +120,10 @@ impl PostgresChatStore {
         // cursor is safe -- and avoids a second query racing a message that
         // arrives between the two. Nothing read means nothing older either:
         // `more` has no window to compare against.
-        let cursor = rows.first().map(|r| r.get("cursor")).unwrap_or_else(Uuid::nil);
+        let cursor = rows
+            .first()
+            .map(|r| r.get("cursor"))
+            .unwrap_or_else(Uuid::nil);
         let has_more = rows.first().map(|r| r.get("has_more")).unwrap_or(false);
 
         Ok(History {
@@ -193,7 +199,13 @@ impl ChatStore for PostgresChatStore {
         .bind(input.agent_id)
         .bind(user_id)
         .bind(input.title.trim())
-        .bind(input.account.as_deref().map(str::trim).filter(|a| !a.is_empty()))
+        .bind(
+            input
+                .account
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| !a.is_empty()),
+        )
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
@@ -256,13 +268,12 @@ impl ChatStore for PostgresChatStore {
     }
 
     async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError> {
-        let result =
-            sqlx::query("delete from agent_sessions where workspace_id = $1 and id = $2")
-                .bind(workspace_id)
-                .bind(session_id)
-                .execute(&self.pool)
-                .await
-                .map_err(internal)?;
+        let result = sqlx::query("delete from agent_sessions where workspace_id = $1 and id = $2")
+            .bind(workspace_id)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
 
         if result.rows_affected() == 0 {
             return Err(ChatError::NotFound);

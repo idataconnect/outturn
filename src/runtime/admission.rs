@@ -94,8 +94,7 @@ impl CgroupMemory {
             return None;
         }
         let current = Self::read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes")?;
-        let stat =
-            std::fs::read_to_string("/sys/fs/cgroup/memory/memory.stat").unwrap_or_default();
+        let stat = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.stat").unwrap_or_default();
         // v1 reports per-cgroup and hierarchical counters side by side; the
         // hierarchical one is what the limit applies to.
         let inactive_file = Self::stat(&stat, "total_inactive_file").unwrap_or(0);
@@ -114,7 +113,9 @@ impl CgroupMemory {
 
 impl MemoryProbe for CgroupMemory {
     fn available_bytes(&self) -> Option<u64> {
-        Self::cgroup_v2().or_else(Self::cgroup_v1).or_else(Self::host)
+        Self::cgroup_v2()
+            .or_else(Self::cgroup_v1)
+            .or_else(Self::host)
     }
 }
 
@@ -245,12 +246,13 @@ impl Admission {
     /// Takes a slot, or says why not. Never waits: a caller that would queue
     /// here is holding a turn this pod cannot serve, and somewhere else can.
     pub fn try_admit(&self) -> Result<Permit, Refusal> {
-        let permit = Arc::clone(&self.slots)
-            .try_acquire_owned()
-            .map_err(|_| Refusal::AtCapacity {
-                in_flight: self.limit,
-                limit: self.limit,
-            })?;
+        let permit =
+            Arc::clone(&self.slots)
+                .try_acquire_owned()
+                .map_err(|_| Refusal::AtCapacity {
+                    in_flight: self.limit,
+                    limit: self.limit,
+                })?;
 
         // Checked after the slot is taken, so the count below is what memory
         // would be shared with -- and so an idle pod is never refused.
@@ -331,7 +333,10 @@ mod tests {
 
         drop(first);
         assert_eq!(a.in_flight(), 1);
-        assert!(a.try_admit().is_ok(), "a finished turn did not free its slot");
+        assert!(
+            a.try_admit().is_ok(),
+            "a finished turn did not free its slot"
+        );
     }
 
     #[test]
@@ -409,7 +414,6 @@ mod tests {
         let _first = a.try_admit().expect("admitted");
         assert!(a.try_admit().is_ok(), "an unreadable probe refused work");
     }
-
 
     /// A turn is charged before it has cost anything.
     ///

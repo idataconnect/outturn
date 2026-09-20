@@ -84,7 +84,14 @@ impl SessionStore for PostgresSessionStore {
     ) -> Result<IssuedRefresh, SessionError> {
         // A login starts its own family, so revoking one compromised session
         // does not disturb the user's other devices.
-        insert(&self.pool, user_id, workspace_id, Uuid::now_v7(), user_agent).await
+        insert(
+            &self.pool,
+            user_id,
+            workspace_id,
+            Uuid::now_v7(),
+            user_agent,
+        )
+        .await
     }
 
     async fn rotate(
@@ -113,13 +120,12 @@ impl SessionStore for PostgresSessionStore {
             // second is a replay: the legitimate holder or an attacker has
             // a stale copy, and there is no way to tell which, so the whole
             // family goes.
-            let family: Option<Uuid> = sqlx::query_scalar(
-                "select family_id from refresh_tokens where token_hash = $1",
-            )
-            .bind(hash_token(token))
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal)?;
+            let family: Option<Uuid> =
+                sqlx::query_scalar("select family_id from refresh_tokens where token_hash = $1")
+                    .bind(hash_token(token))
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(internal)?;
 
             let Some(family_id) = family else {
                 return Err(SessionError::Invalid);

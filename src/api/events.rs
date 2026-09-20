@@ -77,12 +77,16 @@ pub async fn poll(
     // nothing that has yet to arrive.
     let cursor = match found.last() {
         Some(last) => last.id,
-        None if visible.is_some() => {
-            events::watermark(&state.pool, claims.workspace_id, query.session_id, query.after, limit)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .unwrap_or(query.after)
-        }
+        None if visible.is_some() => events::watermark(
+            &state.pool,
+            claims.workspace_id,
+            query.session_id,
+            query.after,
+            limit,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or(query.after),
         None => query.after,
     };
 

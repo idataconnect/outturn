@@ -53,10 +53,7 @@ impl EventBus {
     }
 }
 
-async fn listen_loop(
-    pool: &PgPool,
-    tx: &broadcast::Sender<EventHint>,
-) -> Result<(), sqlx::Error> {
+async fn listen_loop(pool: &PgPool, tx: &broadcast::Sender<EventHint>) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
     tracing::info!(channel = CHANNEL, "listening for events");

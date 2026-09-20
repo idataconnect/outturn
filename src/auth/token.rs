@@ -141,7 +141,9 @@ impl TokenMinter {
 
     /// The public half of `seed`, for a validator to be built from.
     pub fn public_key_of(seed_bytes: &[u8; 32]) -> [u8; 32] {
-        SigningKey::from_bytes(seed_bytes).verifying_key().to_bytes()
+        SigningKey::from_bytes(seed_bytes)
+            .verifying_key()
+            .to_bytes()
     }
 
     /// Reads `OUTTURN_TOKEN_SECRET`, and refuses to start without it.
@@ -237,7 +239,8 @@ impl TokenMinter {
             .add_additional(WORKSPACE, workspace_id.to_string())
             .map_err(internal)?;
 
-        let scp_json = serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
+        let scp_json =
+            serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
         claims.add_additional(SCOPE, scp_json).map_err(internal)?;
 
         // Added only where it means something. A token that cannot authorise a
@@ -251,7 +254,9 @@ impl TokenMinter {
         // `kid` is a registered footer claim, so it goes in through the
         // paserk path rather than as an arbitrary key.
         let mut footer = Footer::new();
-        footer.parse_string(&format!("{{\"{KEY_ID}\":{}}}", serde_json::json!(self.kid))).map_err(internal)?;
+        footer
+            .parse_string(&format!("{{\"{KEY_ID}\":{}}}", serde_json::json!(self.kid)))
+            .map_err(internal)?;
 
         public::sign(&self.secret_key, &claims, Some(&footer), None).map_err(internal)
     }
@@ -299,7 +304,8 @@ impl TokenValidator {
     }
 
     pub fn validate(&self, token: &str) -> Result<SessionClaims, AuthError> {
-        let untrusted = UntrustedToken::<Public, V4>::try_from(token).map_err(|_| AuthError::Invalid)?;
+        let untrusted =
+            UntrustedToken::<Public, V4>::try_from(token).map_err(|_| AuthError::Invalid)?;
 
         // The footer is unauthenticated until the signature is checked, so it
         // only chooses which key to try; it cannot make a bad token good.
@@ -320,11 +326,12 @@ impl TokenValidator {
         let mut rules = ClaimsValidationRules::new();
         rules.validate_audience_with(self.audience);
 
-        let trusted =
-            public::verify(public_key, &untrusted, &rules, Some(&footer), None).map_err(|e| match e {
+        let trusted = public::verify(public_key, &untrusted, &rules, Some(&footer), None).map_err(
+            |e| match e {
                 PasetoError::ClaimValidation(ClaimValidationError::Exp) => AuthError::Expired,
                 _ => AuthError::Invalid,
-            })?;
+            },
+        )?;
 
         let parsed: serde_json::Value =
             serde_json::from_str(trusted.payload()).map_err(|_| AuthError::Invalid)?;
@@ -433,7 +440,8 @@ impl RuntimeKey {
 
 fn hex_to_bytes(hex: &str) -> Result<[u8; 32], AuthError> {
     let hex = hex.trim();
-    let bytes = hex::decode(hex).map_err(|e| AuthError::Internal(format!("key is not hex: {e}")))?;
+    let bytes =
+        hex::decode(hex).map_err(|e| AuthError::Internal(format!("key is not hex: {e}")))?;
     bytes.try_into().map_err(|_| {
         AuthError::Internal(format!(
             "expected a 32-byte key as 64 hex chars, got {} chars",
@@ -493,7 +501,10 @@ mod tests {
 
     fn pair() -> (TokenMinter, [u8; 32]) {
         let seed = [7u8; 32];
-        (TokenMinter::new(&seed).expect("minter"), TokenMinter::public_key_of(&seed))
+        (
+            TokenMinter::new(&seed).expect("minter"),
+            TokenMinter::public_key_of(&seed),
+        )
     }
 
     #[test]
@@ -545,7 +556,8 @@ mod tests {
         let new_public = TokenMinter::public_key_of(&new_seed);
 
         let only_old = TokenValidator::new(&old_public, AUDIENCE_API).expect("validator");
-        let both = TokenValidator::with_keys(&[old_public, new_public], AUDIENCE_API).expect("validator");
+        let both =
+            TokenValidator::with_keys(&[old_public, new_public], AUDIENCE_API).expect("validator");
 
         let signed_new = new
             .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
@@ -646,7 +658,10 @@ mod tests {
 
         let mut footer = Footer::new();
         footer
-            .parse_string(&format!("{{\"{KEY_ID}\":{}}}", serde_json::json!(minter.kid)))
+            .parse_string(&format!(
+                "{{\"{KEY_ID}\":{}}}",
+                serde_json::json!(minter.kid)
+            ))
             .expect("footer");
         let token = public::sign(&minter.secret_key, &claims, Some(&footer), None).expect("sign");
 
@@ -689,6 +704,9 @@ mod tests {
         assert!(key.accepts("0123456789abcdef0123456789abcdef"));
         assert!(!key.accepts("0123456789abcdef0123456789abcdeg"));
         assert!(!key.accepts("0123456789abcdef0123456789abcde"));
-        assert!(RuntimeKey::new("short").is_err(), "a short key was accepted");
+        assert!(
+            RuntimeKey::new("short").is_err(),
+            "a short key was accepted"
+        );
     }
 }

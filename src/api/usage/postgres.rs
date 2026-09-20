@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use sqlx::Row;
 use sqlx::AssertSqlSafe;
+use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
@@ -388,12 +388,20 @@ impl UsageStore for PostgresUsageStore {
             })
             .collect();
 
-        let by_workspace = self.slice(workspace_id, from, to, Dimension::Workspace).await?;
+        let by_workspace = self
+            .slice(workspace_id, from, to, Dimension::Workspace)
+            .await?;
         let by_model = self.slice(workspace_id, from, to, Dimension::Model).await?;
         let by_agent = self.slice(workspace_id, from, to, Dimension::Agent).await?;
-        let by_account = self.slice(workspace_id, from, to, Dimension::Account).await?;
-        let by_source = self.slice(workspace_id, from, to, Dimension::Source).await?;
-        let by_traffic = self.slice(workspace_id, from, to, Dimension::Traffic).await?;
+        let by_account = self
+            .slice(workspace_id, from, to, Dimension::Account)
+            .await?;
+        let by_source = self
+            .slice(workspace_id, from, to, Dimension::Source)
+            .await?;
+        let by_traffic = self
+            .slice(workspace_id, from, to, Dimension::Traffic)
+            .await?;
 
         Ok(UsageSummary {
             from,

@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
-use outturn::api::user::{CreateUser, PostgresUserStore, UserStore};
 use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::session::{PostgresSessionStore, SessionStore};
+use outturn::api::user::{CreateUser, PostgresUserStore, UserStore};
+use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
 use outturn::api::{ApiState, routes};
 use outturn::auth::{Role, TokenMinter, TokenValidator};
 use serde_json::Value;
@@ -67,7 +67,10 @@ async fn harness() -> Harness {
     let test_minter = TokenMinter::new(&seed).expect("minter");
     let public_bytes = {
         use ed25519_dalek::SigningKey;
-        SigningKey::from_bytes(&seed).verifying_key().to_bytes().to_vec()
+        SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes()
+            .to_vec()
     };
     let validator = TokenValidator::new(
         &public_bytes.try_into().expect("32-byte key"),
@@ -85,8 +88,9 @@ async fn harness() -> Harness {
         Arc::new(outturn::api::role::PostgresRoleStore::new(pool.clone()));
     let usage: Arc<dyn outturn::api::usage::UsageStore> =
         Arc::new(outturn::api::usage::PostgresUsageStore::new(pool.clone()));
-    let settings: Arc<dyn outturn::api::settings::SettingsStore> =
-        Arc::new(outturn::api::settings::PostgresSettingsStore::new(pool.clone()));
+    let settings: Arc<dyn outturn::api::settings::SettingsStore> = Arc::new(
+        outturn::api::settings::PostgresSettingsStore::new(pool.clone()),
+    );
     let skills: Arc<dyn outturn::api::skill::SkillStore> =
         Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
     // No invalidation listener: one per test would hold a connection each
@@ -124,7 +128,9 @@ async fn harness() -> Harness {
         chat: chat.clone(),
         usage: usage.clone(),
         settings: settings.clone(),
-        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(pool.clone())),
+        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+            pool.clone(),
+        )),
         // No gateway, so no summarising: the trim underneath carries the
         // whole of what these tests exercise.
         minter: None,
@@ -371,12 +377,19 @@ async fn system_admin_sees_all_workspaces_and_manages_them() {
 
     // No explicit grant in either workspace — system admin still reaches them.
     let token = h
-        .login_as("admin@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "admin@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (status, body) = h.get("/v1/workspaces", Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert!(body.contains("Acme") && body.contains("Globex"), "body: {body}");
+    assert!(
+        body.contains("Acme") && body.contains("Globex"),
+        "body: {body}"
+    );
 
     let (status, body) = h
         .post(
@@ -458,7 +471,11 @@ async fn a_workspace_admin_sees_only_their_own_workspaces_users() {
 
     // A system administrator still sees everyone.
     let root = h
-        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
     let (status, body) = h.get("/v1/users", Some(&root)).await;
     assert_eq!(status, StatusCode::OK);
@@ -522,7 +539,11 @@ async fn workspace_switch_remints_for_new_workspace() {
     let globex = h.make_workspace("Globex", "globex").await;
 
     let token = h
-        .login_as("admin@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "admin@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let req = Request::builder()
@@ -543,7 +564,10 @@ async fn workspace_switch_remints_for_new_workspace() {
     let (status, body) = h.get("/v1/session", Some(&new_token)).await;
     assert_eq!(status, StatusCode::OK);
     let session: Value = serde_json::from_str(&body).expect("json");
-    assert_eq!(session["workspace_id"].as_str().unwrap(), globex.to_string());
+    assert_eq!(
+        session["workspace_id"].as_str().unwrap(),
+        globex.to_string()
+    );
 
     finish!(h);
 }
@@ -798,7 +822,10 @@ async fn session_cookie_is_httponly_and_samesite() {
         .await
         .expect("body");
     let body = String::from_utf8_lossy(&bytes);
-    assert!(!body.contains("\"token\""), "token must not be in the body: {body}");
+    assert!(
+        !body.contains("\"token\""),
+        "token must not be in the body: {body}"
+    );
 
     finish!(h);
 }
@@ -1173,7 +1200,11 @@ async fn system_admin_sees_only_the_workspace_they_are_scoped_to() {
     // Scoped to Acme: system_admin is not a licence to see every workspace at
     // once, it is the ability to mint a token for any of them.
     let token = h
-        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (status, body) = h.get("/v1/agents", Some(&token)).await;
@@ -1252,7 +1283,7 @@ async fn slugs_are_unique_per_workspace_not_globally() {
         slug: "support".into(),
         description: String::new(),
         system_prompt: String::new(),
-                policy: None,
+        policy: None,
     };
 
     h.agents.create(acme, make()).await.expect("acme");
@@ -1261,7 +1292,10 @@ async fn slugs_are_unique_per_workspace_not_globally() {
 
     // But not twice within one workspace.
     let dup = h.agents.create(acme, make()).await;
-    assert!(dup.is_err(), "duplicate slug within a workspace must be refused");
+    assert!(
+        dup.is_err(),
+        "duplicate slug within a workspace must be refused"
+    );
 
     finish!(h);
 }
@@ -1301,7 +1335,10 @@ async fn partial_update_leaves_other_fields_intact() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("Renamed"), "body: {body}");
     assert!(body.contains("keep me"), "description must survive: {body}");
-    assert!(body.contains("keep this too"), "prompt must survive: {body}");
+    assert!(
+        body.contains("keep this too"),
+        "prompt must survive: {body}"
+    );
 
     finish!(h);
 }
@@ -1475,10 +1512,18 @@ async fn no_workspace_role_can_take_work() {
 
     // And a system administrator is a person, not the tier that runs turns.
     let sysadmin = h
-        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
     let (status, body) = h.post("/v1/work", Some(&sysadmin), "{}").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a system admin took work: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a system admin took work: {body}"
+    );
 
     let (status, _) = h.post("/v1/work", None, "{}").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1532,7 +1577,10 @@ async fn asking_for_work_when_there_is_none_says_so() {
 
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert_eq!(body, "null", "an idle cluster should answer null, got {body}");
+    assert_eq!(
+        body, "null",
+        "an idle cluster should answer null, got {body}"
+    );
 }
 
 /// A message absorbed by an attempt that was lost is offered to the retry.
@@ -1558,7 +1606,10 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
         .post(
             "/v1/agent-sessions",
             Some(&admin),
-            &format!(r#"{{"agent_id":"{}","title":""}}"#, agent["id"].as_str().expect("id")),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
@@ -1578,9 +1629,20 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
-    let job: Uuid = assignment["job_id"].as_str().expect("job").parse().expect("uuid");
-    let lease = assignment["lease_token"].as_str().expect("lease").to_string();
-    let reply: Uuid = assignment["reply_id"].as_str().expect("reply").parse().expect("uuid");
+    let job: Uuid = assignment["job_id"]
+        .as_str()
+        .expect("job")
+        .parse()
+        .expect("uuid");
+    let lease = assignment["lease_token"]
+        .as_str()
+        .expect("lease")
+        .to_string();
+    let reply: Uuid = assignment["reply_id"]
+        .as_str()
+        .expect("reply")
+        .parse()
+        .expect("uuid");
 
     // A second message arrives mid-turn and the gateway hands it over.
     let (status, _) = h
@@ -1594,7 +1656,11 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
     let taken = outturn::gateway::routing::take_pending(&h.db.pool, session_id, reply)
         .await
         .expect("take");
-    assert_eq!(taken.len(), 1, "the steer should have been handed over once");
+    assert_eq!(
+        taken.len(),
+        1,
+        "the steer should have been handed over once"
+    );
 
     // The runtime dies without reporting, and hands the turn back.
     let req = Request::builder()
@@ -1612,7 +1678,10 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let retry: serde_json::Value = serde_json::from_str(&body).expect("assignment");
-    assert_eq!(retry["job_id"], assignment["job_id"], "the retry should be the same job");
+    assert_eq!(
+        retry["job_id"], assignment["job_id"],
+        "the retry should be the same job"
+    );
 
     let again = outturn::gateway::routing::take_pending(&h.db.pool, session_id, reply)
         .await
@@ -1663,7 +1732,9 @@ async fn a_workspace_can_define_a_role_and_it_works_at_once() {
         .uri(format!("/v1/roles/{}", role["id"].as_str().expect("id")))
         .header("authorization", format!("Bearer {admin}"))
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"authorities":["agents:read","agents:create","sessions:read"]}"#))
+        .body(Body::from(
+            r#"{"authorities":["agents:read","agents:create","sessions:read"]}"#,
+        ))
         .expect("request");
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -1696,15 +1767,31 @@ async fn a_role_cannot_reach_past_the_platform_or_its_editor() {
             r#"{"name":"overlord","authorities":["workspaces:create"]}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a workspace role took workspaces:create: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a workspace role took workspaces:create: {body}"
+    );
     let (status, body) = h
-        .post("/v1/roles", Some(&admin), r#"{"name":"taker","authorities":["work:take"]}"#)
+        .post(
+            "/v1/roles",
+            Some(&admin),
+            r#"{"name":"taker","authorities":["work:take"]}"#,
+        )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a workspace role took work:take: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a workspace role took work:take: {body}"
+    );
 
     // A platform role's name cannot be reused.
     let (status, _) = h
-        .post("/v1/roles", Some(&admin), r#"{"name":"system_admin","authorities":[]}"#)
+        .post(
+            "/v1/roles",
+            Some(&admin),
+            r#"{"name":"system_admin","authorities":[]}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -1755,12 +1842,19 @@ async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
 
     let req = Request::builder()
         .method("DELETE")
-        .uri(format!("/v1/roles/{}", admin_role["id"].as_str().expect("id")))
+        .uri(format!(
+            "/v1/roles/{}",
+            admin_role["id"].as_str().expect("id")
+        ))
         .header("authorization", format!("Bearer {admin}"))
         .body(Body::empty())
         .expect("request");
     let (status, body) = h.send(req).await;
-    assert_eq!(status, StatusCode::CONFLICT, "a held role was deleted: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a held role was deleted: {body}"
+    );
 
     let (status, body) = h
         .post(
@@ -1769,7 +1863,11 @@ async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
             r#"{"email":"x@acme.example","display_name":"X","password":"correct-horse","role":"wizard"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a role that does not exist was granted: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a role that does not exist was granted: {body}"
+    );
 
     finish!(h);
 }
@@ -1802,7 +1900,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     let session: serde_json::Value = serde_json::from_str(&body).expect("session");
-    assert_eq!(session["account"], "hoa-sunnyvale", "the account was not stored: {body}");
+    assert_eq!(
+        session["account"], "hoa-sunnyvale",
+        "the account was not stored: {body}"
+    );
     let session_id = session["id"].as_str().expect("id");
 
     let (status, _) = h
@@ -1870,8 +1971,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     // What the provider said, verbatim, beside what was normalised from it.
     assert_eq!(page["entries"][0]["service_tier"], "priority");
     assert_eq!(
-        page["entries"][0]["provider_usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
-        7,
+        page["entries"][0]["provider_usage"]["cache_creation"]["ephemeral_1h_input_tokens"], 7,
         "the raw usage object was not kept: {body}"
     );
     let next = page["next"].as_str().expect("cursor");
@@ -1880,7 +1980,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .get(&format!("/v1/usage?limit=1&after={next}"), Some(&admin))
         .await;
     let page: serde_json::Value = serde_json::from_str(&body).expect("page");
-    assert!(page["next"].is_null(), "the ledger should be exhausted: {body}");
+    assert!(
+        page["next"].is_null(),
+        "the ledger should be exhausted: {body}"
+    );
 
     // Another workspace's ledger is not this admin's to read.
     let globex = h.make_workspace("Globex", "globex").await;
@@ -1894,7 +1997,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let (status, body) = h.get("/v1/usage/summary", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let summary: serde_json::Value = serde_json::from_str(&body).expect("summary");
-    assert_eq!(summary["totals"]["calls"], 2, "both rounds should be counted: {body}");
+    assert_eq!(
+        summary["totals"]["calls"], 2,
+        "both rounds should be counted: {body}"
+    );
     assert_eq!(summary["totals"]["prompt_tokens"], 30);
     assert_eq!(summary["totals"]["completion_tokens"], 7);
     assert_eq!(summary["totals"]["sessions"], 1);
@@ -1903,7 +2009,11 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     // on -- a chart drawn from a series that skips them draws an idle day as no
     // day at all.
     let daily = summary["daily"].as_array().expect("daily");
-    assert_eq!(daily.len(), 30, "the default window is 30 days of buckets: {body}");
+    assert_eq!(
+        daily.len(),
+        30,
+        "the default window is 30 days of buckets: {body}"
+    );
     // The last bucket is today's, whole rather than cut off at the moment of
     // the call, which is why the window ends at the next midnight.
     assert_eq!(
@@ -1938,10 +2048,19 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     // was opened with.
     let by_model = summary["by_model"].as_array().expect("by_model");
     assert_eq!(by_model.len(), 2, "two models answered: {body}");
-    let models: Vec<&str> = by_model.iter().map(|m| m["key"].as_str().expect("key")).collect();
-    assert!(models.contains(&"qwen") && models.contains(&"claude-sonnet-5"), "{body}");
+    let models: Vec<&str> = by_model
+        .iter()
+        .map(|m| m["key"].as_str().expect("key"))
+        .collect();
+    assert!(
+        models.contains(&"qwen") && models.contains(&"claude-sonnet-5"),
+        "{body}"
+    );
     assert_eq!(summary["by_account"][0]["key"], "hoa-sunnyvale", "{body}");
-    assert_eq!(summary["by_workspace"][0]["label"], "Acme", "the workspace was not named: {body}");
+    assert_eq!(
+        summary["by_workspace"][0]["label"], "Acme",
+        "the workspace was not named: {body}"
+    );
 
     // Whose spend it was. A turn's own rounds bill to the agent that ran them,
     // and both carry the session's account label -- which is what a workspace
@@ -1975,7 +2094,11 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
 
     // The operator may. Globex has no rows, so the platform total is still Acme's.
     let root = h
-        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
     let (status, body) = h.get("/v1/usage/summary?scope=all", Some(&root)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -1984,7 +2107,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
 
     // A window that does not close is refused rather than guessed at.
     let (status, _) = h
-        .get("/v1/usage/summary?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z", Some(&admin))
+        .get(
+            "/v1/usage/summary?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z",
+            Some(&admin),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -2000,7 +2126,11 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let root = h
-        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
     let admin = h
         .login_as("admin@acme.example", None, Some((acme, "admin")))
@@ -2010,7 +2140,10 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
     let (status, body) = h.get("/v1/settings", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
-    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .expect("effort");
     // Low rather than none: thinking off leaves a tool turn silent on some
     // models, so the catalogue default was raised.
     assert_eq!(effort["value"], "low");
@@ -2027,26 +2160,47 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
             .expect("request")
     };
     let (status, _) = h
-        .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &root, r#"{"value":"low"}"#))
+        .send(req(
+            "PUT",
+            "/v1/platform/settings/reasoning_effort".into(),
+            &root,
+            r#"{"value":"low"}"#,
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     // A workspace admin may not.
     let (status, _) = h
-        .send(req("PUT", "/v1/platform/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
+        .send(req(
+            "PUT",
+            "/v1/platform/settings/reasoning_effort".into(),
+            &admin,
+            r#"{"value":"high"}"#,
+        ))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // The workspace now inherits it.
     let (_, body) = h.get("/v1/settings", Some(&admin)).await;
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
-    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .expect("effort");
     assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "operator");
-    assert!(effort["override_value"].is_null(), "no row at the workspace level yet");
+    assert!(
+        effort["override_value"].is_null(),
+        "no row at the workspace level yet"
+    );
 
     // The workspace overrides; an agent inherits the workspace's value.
     let (status, _) = h
-        .send(req("PUT", "/v1/settings/reasoning_effort".into(), &admin, r#"{"value":"high"}"#))
+        .send(req(
+            "PUT",
+            "/v1/settings/reasoning_effort".into(),
+            &admin,
+            r#"{"value":"high"}"#,
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, body) = h
@@ -2054,27 +2208,47 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
         .await;
     let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
     let agent_id = agent["id"].as_str().expect("id");
-    let (_, body) = h.get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin)).await;
+    let (_, body) = h
+        .get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin))
+        .await;
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
-    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .expect("effort");
     assert_eq!(effort["value"], "high");
     assert_eq!(effort["source"], "workspace");
     assert_eq!(effort["inherited"], "high");
 
     // Bad values are refused by the catalogue, not stored.
     let (status, body) = h
-        .send(req("PUT", format!("/v1/agents/{agent_id}/settings/temperature"), &admin, r#"{"value":9}"#))
+        .send(req(
+            "PUT",
+            format!("/v1/agents/{agent_id}/settings/temperature"),
+            &admin,
+            r#"{"value":9}"#,
+        ))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
 
     // Clearing the workspace's override falls back to the operator's value.
     let (status, _) = h
-        .send(req("DELETE", "/v1/settings/reasoning_effort".into(), &admin, ""))
+        .send(req(
+            "DELETE",
+            "/v1/settings/reasoning_effort".into(),
+            &admin,
+            "",
+        ))
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, body) = h.get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin)).await;
+    let (_, body) = h
+        .get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin))
+        .await;
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
-    let effort = view.iter().find(|s| s["key"] == "reasoning_effort").expect("effort");
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .expect("effort");
     assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "operator");
 
@@ -2104,7 +2278,10 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
         .post(
             "/v1/agent-sessions",
             Some(&admin),
-            &format!(r#"{{"agent_id":"{}","title":""}}"#, agent["id"].as_str().expect("id")),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
         )
         .await;
     let session: serde_json::Value = serde_json::from_str(&body).expect("session");
@@ -2124,10 +2301,16 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     // agent would use.
     let (status, body) = h.send(put(&admin, "session/report.txt", "quarterly")).await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
-    assert!(body.contains(r#""path":"session/report.txt""#), "body: {body}");
+    assert!(
+        body.contains(r#""path":"session/report.txt""#),
+        "body: {body}"
+    );
 
     let (status, body) = h
-        .get(&format!("/v1/agent-sessions/{session_id}/files"), Some(&admin))
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/files"),
+            Some(&admin),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("session/report.txt"), "body: {body}");
@@ -2145,14 +2328,24 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     // A viewer may read the conversation's files but not add to the
     // workspace's; the admin may.
     let (status, body) = h.send(put(&viewer, "workspace/pricing.csv", "x")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote workspace files: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a viewer wrote workspace files: {body}"
+    );
     let (status, body) = h.send(put(&viewer, "session/mine.txt", "x")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer wrote session files without sessions:create: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a viewer wrote session files without sessions:create: {body}"
+    );
     let (status, body) = h.send(put(&admin, "workspace/pricing.csv", "x")).await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
 
     // Traversal in an upload path is refused, not repaired.
-    let (status, _) = h.send(put(&admin, "session/../workspace/oops.txt", "x")).await;
+    let (status, _) = h
+        .send(put(&admin, "session/../workspace/oops.txt", "x"))
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     finish!(h);
@@ -2171,7 +2364,11 @@ async fn only_the_runtime_key_takes_work() {
 
     let wrong = "not-the-key-not-the-key-not-the-key-no";
     let (status, body) = h.post("/v1/work", Some(wrong), "{}").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "a wrong key was accepted: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a wrong key was accepted: {body}"
+    );
 
     let turn = h
         .minter
@@ -2185,7 +2382,11 @@ async fn only_the_runtime_key_takes_work() {
     );
 
     let (status, body) = h.post("/v1/work", Some(&h.runtime_token(acme)), "{}").await;
-    assert_eq!(status, StatusCode::OK, "the runtime key was refused: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the runtime key was refused: {body}"
+    );
 }
 
 /// An agent's policy can be set when it is created, not only afterwards.
@@ -2219,7 +2420,11 @@ async fn an_agent_can_be_created_with_a_policy() {
     // And an agent created without one still gets a usable empty policy
     // rather than null, which the turn path reads with `.get`.
     let (status, body) = h
-        .post("/v1/agents", Some(&token), r#"{"name":"Plain","slug":"plain"}"#)
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Plain","slug":"plain"}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert!(body.contains(r#""policy":{}"#), "body: {body}");
@@ -2237,7 +2442,11 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
     let h = harness().await;
     let acme = h.make_workspace("Acme", "acme").await;
     let operator = h
-        .login_as("op@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (status, body) = h
@@ -2247,16 +2456,25 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
             r#"{"slug":"crm","name":"CRM","body":"Call the v1 endpoint."}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "operator could not ship a skill: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "operator could not ship a skill: {body}"
+    );
     let shipped: serde_json::Value = serde_json::from_str(&body).expect("json");
     let skill_id = shipped["id"].as_str().expect("id").to_string();
 
     // A workspace admin, who is not the operator.
-    let admin = h.login_as("admin@acme.example", None, Some((acme, "admin"))).await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
 
     let (status, body) = h.get("/v1/skills", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("\"crm\""), "the operator's skill was not visible: {body}");
+    assert!(
+        body.contains("\"crm\""),
+        "the operator's skill was not visible: {body}"
+    );
 
     // Editing it is not forbidden but absent: the workspace's own id is what
     // the write matches on, so there is nothing there to change.
@@ -2268,7 +2486,11 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
         .body(Body::from(r#"{"name":"Ours now"}"#))
         .unwrap();
     let (status, _) = h.send(req).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a workspace edited the operator's skill");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a workspace edited the operator's skill"
+    );
 
     // And the platform route is closed to them.
     let (status, _) = h
@@ -2278,7 +2500,11 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
             r#"{"slug":"sneaky","name":"Sneaky","body":"x"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a workspace shipped a platform skill");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a workspace shipped a platform skill"
+    );
 }
 
 /// An override composes after the prose it speaks about, and applies wherever
@@ -2288,7 +2514,11 @@ async fn an_override_composes_after_its_base_and_needs_no_binding() {
     let h = harness().await;
     let acme = h.make_workspace("Acme", "acme").await;
     let operator = h
-        .login_as("op2@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "op2@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (_, body) = h
@@ -2315,7 +2545,11 @@ async fn an_override_composes_after_its_base_and_needs_no_binding() {
 
     // An agent binds the base alone.
     let (_, body) = h
-        .post("/v1/agents", Some(&operator), r#"{"name":"Helper","slug":"helper"}"#)
+        .post(
+            "/v1/agents",
+            Some(&operator),
+            r#"{"name":"Helper","slug":"helper"}"#,
+        )
         .await;
     let agent: serde_json::Value = serde_json::from_str(&body).expect("json");
     let agent_id = agent["id"].as_str().expect("id").to_string();
@@ -2336,9 +2570,16 @@ async fn an_override_composes_after_its_base_and_needs_no_binding() {
         .await
         .expect("resolve");
 
-    assert_eq!(composed.len(), 2, "expected base and override: {composed:?}");
+    assert_eq!(
+        composed.len(),
+        2,
+        "expected base and override: {composed:?}"
+    );
     assert_eq!(composed[0].body, "Call the v1 endpoint.");
-    assert_eq!(composed[1].body, "Our region is on v2.", "the override must come last");
+    assert_eq!(
+        composed[1].body, "Our region is on v2.",
+        "the override must come last"
+    );
 }
 
 /// An override is not a thing an agent is given on its own.
@@ -2347,11 +2588,19 @@ async fn an_override_cannot_be_bound_by_itself() {
     let h = harness().await;
     let acme = h.make_workspace("Acme", "acme").await;
     let operator = h
-        .login_as("op3@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "op3@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (_, body) = h
-        .post("/v1/skills", Some(&operator), r#"{"slug":"base","name":"Base","body":"b"}"#)
+        .post(
+            "/v1/skills",
+            Some(&operator),
+            r#"{"slug":"base","name":"Base","body":"b"}"#,
+        )
         .await;
     let base_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
         .as_str()
@@ -2377,7 +2626,11 @@ async fn an_override_cannot_be_bound_by_itself() {
             &format!(r#"{{"slug":"ov2","name":"Ov2","body":"o2","base_skill_id":"{base_id}"}}"#),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a second override was allowed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a second override was allowed: {body}"
+    );
 
     let (_, body) = h
         .post("/v1/agents", Some(&operator), r#"{"name":"H","slug":"h"}"#)
@@ -2395,7 +2648,11 @@ async fn an_override_cannot_be_bound_by_itself() {
         .body(Body::from(format!(r#"[{{"skill_id":"{override_id}"}}]"#)))
         .unwrap();
     let (status, body) = h.send(req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "an override was bound directly: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an override was bound directly: {body}"
+    );
 }
 
 /// When the operator edits a skill, an override written against the old version
@@ -2405,7 +2662,11 @@ async fn editing_a_base_marks_the_overrides_written_against_it() {
     let h = harness().await;
     let acme = h.make_workspace("Acme", "acme").await;
     let operator = h
-        .login_as("op4@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "op4@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (_, body) = h
@@ -2424,7 +2685,9 @@ async fn editing_a_base_marks_the_overrides_written_against_it() {
         .post(
             "/v1/skills",
             Some(&operator),
-            &format!(r#"{{"slug":"ours","name":"Ours","body":"stay on v1","base_skill_id":"{base_id}"}}"#),
+            &format!(
+                r#"{{"slug":"ours","name":"Ours","body":"stay on v1","base_skill_id":"{base_id}"}}"#
+            ),
         )
         .await;
     let override_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
@@ -2432,9 +2695,14 @@ async fn editing_a_base_marks_the_overrides_written_against_it() {
         .unwrap()
         .to_string();
 
-    let (_, body) = h.get(&format!("/v1/skills/{override_id}"), Some(&operator)).await;
+    let (_, body) = h
+        .get(&format!("/v1/skills/{override_id}"), Some(&operator))
+        .await;
     let before: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(before["base_moved"], false, "fresh override reported as stale");
+    assert_eq!(
+        before["base_moved"], false,
+        "fresh override reported as stale"
+    );
 
     // The operator ships a new version of the base.
     let (status, body) = h
@@ -2446,7 +2714,9 @@ async fn editing_a_base_marks_the_overrides_written_against_it() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "publish refused: {body}");
 
-    let (_, body) = h.get(&format!("/v1/skills/{override_id}"), Some(&operator)).await;
+    let (_, body) = h
+        .get(&format!("/v1/skills/{override_id}"), Some(&operator))
+        .await;
     let after: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         after["base_moved"], true,
@@ -2460,10 +2730,16 @@ async fn editing_a_base_marks_the_overrides_written_against_it() {
 async fn a_rollback_appends_rather_than_moving_backwards() {
     let h = harness().await;
     let acme = h.make_workspace("Acme", "acme").await;
-    let admin = h.login_as("a@acme.example", None, Some((acme, "admin"))).await;
+    let admin = h
+        .login_as("a@acme.example", None, Some((acme, "admin")))
+        .await;
 
     let (_, body) = h
-        .post("/v1/skills", Some(&admin), r#"{"slug":"s","name":"S","body":"one"}"#)
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"s","name":"S","body":"one"}"#,
+        )
         .await;
     let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
         .as_str()
@@ -2484,15 +2760,23 @@ async fn a_rollback_appends_rather_than_moving_backwards() {
     )
     .await;
 
-    let (_, body) = h.get(&format!("/v1/skills/{id}/versions"), Some(&admin)).await;
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions"), Some(&admin))
+        .await;
     let versions: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
     assert_eq!(versions.len(), 3, "a rollback lost history: {body}");
     assert_eq!(versions[0]["ordinal"], 3, "newest first");
-    assert_eq!(versions[0]["body"], "one", "the rollback did not carry the old body");
+    assert_eq!(
+        versions[0]["body"], "one",
+        "the rollback did not carry the old body"
+    );
 
     let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
     let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(skill["ordinal"], 3, "the live version is the newest, not the oldest");
+    assert_eq!(
+        skill["ordinal"], 3,
+        "the live version is the newest, not the oldest"
+    );
 }
 
 /// A turn is given its skills, and what it was given is written down.
@@ -2506,7 +2790,11 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let operator = h
-        .login_as("op5@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .login_as(
+            "op5@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
         .await;
 
     let (_, body) = h
@@ -2585,21 +2873,42 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
     // The platform's preamble leads, and the agent's own prompt follows it --
     // see `platform_preamble`. Ordering is what matters here, so the prompt is
     // located rather than required to come first.
-    let own_at = prompt.find("Be brief.").expect("the agent's own prompt went missing");
-    let base_at = prompt.find("Call the v1 endpoint.").expect("base prose missing");
-    assert!(own_at < base_at, "the agent's prompt should lead its skills:\n{prompt}");
-    let over_at = prompt.find("Our region is on v2.").expect("override prose missing");
-    assert!(base_at < over_at, "the override did not come last:\n{prompt}");
+    let own_at = prompt
+        .find("Be brief.")
+        .expect("the agent's own prompt went missing");
+    let base_at = prompt
+        .find("Call the v1 endpoint.")
+        .expect("base prose missing");
+    assert!(
+        own_at < base_at,
+        "the agent's prompt should lead its skills:\n{prompt}"
+    );
+    let over_at = prompt
+        .find("Our region is on v2.")
+        .expect("override prose missing");
+    assert!(
+        base_at < over_at,
+        "the override did not come last:\n{prompt}"
+    );
 
     // And the turn knows what it was built from, before it has even run.
-    let reply: Uuid = assignment["reply_id"].as_str().expect("reply").parse().unwrap();
-    let recorded: Vec<(Uuid, i32)> =
-        sqlx::query_as("select skill_id, position from turn_skills where reply_id = $1 order by position")
-            .bind(reply)
-            .fetch_all(&h.db.pool)
-            .await
-            .expect("turn_skills");
-    assert_eq!(recorded.len(), 2, "the turn did not record both skills: {recorded:?}");
+    let reply: Uuid = assignment["reply_id"]
+        .as_str()
+        .expect("reply")
+        .parse()
+        .unwrap();
+    let recorded: Vec<(Uuid, i32)> = sqlx::query_as(
+        "select skill_id, position from turn_skills where reply_id = $1 order by position",
+    )
+    .bind(reply)
+    .fetch_all(&h.db.pool)
+    .await
+    .expect("turn_skills");
+    assert_eq!(
+        recorded.len(),
+        2,
+        "the turn did not record both skills: {recorded:?}"
+    );
     assert_eq!(
         recorded[0].0.to_string(),
         base_id,
@@ -2626,7 +2935,10 @@ async fn seeded_role_templates_are_all_honourable() {
 
     for (template, raw) in &rows {
         let parsed = outturn::auth::Authority::parse(raw);
-        assert!(parsed.is_some(), "{template} names {raw}, which is not an authority");
+        assert!(
+            parsed.is_some(),
+            "{template} names {raw}, which is not an authority"
+        );
         assert!(
             parsed.unwrap().workspace_assignable(),
             "{template} bundles {raw}, which is reserved to the platform"
@@ -2634,8 +2946,18 @@ async fn seeded_role_templates_are_all_honourable() {
     }
 
     // And what the store hands back is what a new workspace actually gets.
-    let names: Vec<String> = h.roles.templates().await.expect("templates").into_iter().map(|t| t.name).collect();
-    assert!(names.contains(&"admin".to_string()), "no admin template: {names:?}");
+    let names: Vec<String> = h
+        .roles
+        .templates()
+        .await
+        .expect("templates")
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(
+        names.contains(&"admin".to_string()),
+        "no admin template: {names:?}"
+    );
 }
 
 /// A skill that reaches somewhere the workspace has not allowed cannot be bound.
@@ -2647,7 +2969,9 @@ async fn seeded_role_templates_are_all_honourable() {
 async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
-    let admin = h.login_as("wx@acme.example", None, Some((acme, "admin"))).await;
+    let admin = h
+        .login_as("wx@acme.example", None, Some((acme, "admin")))
+        .await;
 
     let (_, body) = h
         .post(
@@ -2661,8 +2985,14 @@ async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
     let skill_id = skill["id"].as_str().expect("id").to_string();
 
     // The URL is reduced to a host, the same way a hand-written rule is.
-    assert_eq!(skill["hosts"][0], "api.open-meteo.com", "not normalised: {body}");
-    assert_eq!(skill["unmet_hosts"][0], "api.open-meteo.com", "should be unmet: {body}");
+    assert_eq!(
+        skill["hosts"][0], "api.open-meteo.com",
+        "not normalised: {body}"
+    );
+    assert_eq!(
+        skill["unmet_hosts"][0], "api.open-meteo.com",
+        "should be unmet: {body}"
+    );
 
     let (_, body) = h
         .post("/v1/agents", Some(&admin), r#"{"name":"W","slug":"w"}"#)
@@ -2693,7 +3023,11 @@ async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
 
     // Approving opens it, and reports what it opened.
     let (status, body) = h
-        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&admin), "")
+        .post(
+            &format!("/v1/skills/{skill_id}/hosts/approve"),
+            Some(&admin),
+            "",
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "approve failed: {body}");
     assert!(body.contains("api.open-meteo.com"), "body: {body}");
@@ -2701,15 +3035,24 @@ async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
     let (status, body) = h
         .send(bind(&admin, format!(r#"[{{"skill_id":"{skill_id}"}}]"#)))
         .await;
-    assert_eq!(status, StatusCode::OK, "still refused after approval: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "still refused after approval: {body}"
+    );
 
     // And the rule remembers which skill asked for it.
-    let from: Option<Uuid> =
-        sqlx::query_scalar("select from_skill_id from egress_rules where host = 'api.open-meteo.com'")
-            .fetch_one(&h.db.pool)
-            .await
-            .expect("rule");
-    assert_eq!(from.map(|u| u.to_string()), Some(skill_id), "provenance not recorded");
+    let from: Option<Uuid> = sqlx::query_scalar(
+        "select from_skill_id from egress_rules where host = 'api.open-meteo.com'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("rule");
+    assert_eq!(
+        from.map(|u| u.to_string()),
+        Some(skill_id),
+        "provenance not recorded"
+    );
 }
 
 /// Authoring a skill is not consent to what it reaches.
@@ -2721,7 +3064,9 @@ async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
 async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
-    let operator = h.login_as("op9@acme.example", None, Some((acme, "operator"))).await;
+    let operator = h
+        .login_as("op9@acme.example", None, Some((acme, "operator")))
+        .await;
 
     let (status, body) = h
         .post(
@@ -2730,7 +3075,11 @@ async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
             r#"{"slug":"weather","name":"Weather","body":"x","hosts":["api.open-meteo.com"]}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "an operator may write a skill: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an operator may write a skill: {body}"
+    );
     let skill_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
         .as_str()
         .unwrap()
@@ -2738,7 +3087,11 @@ async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
 
     // But not open what it names.
     let (status, body) = h
-        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&operator), "")
+        .post(
+            &format!("/v1/skills/{skill_id}/hosts/approve"),
+            Some(&operator),
+            "",
+        )
         .await;
     assert_eq!(
         status,
@@ -2747,9 +3100,15 @@ async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
     );
 
     // An admin, who may write the rule by hand, may approve it.
-    let admin = h.login_as("ad9@acme.example", None, Some((acme, "admin"))).await;
+    let admin = h
+        .login_as("ad9@acme.example", None, Some((acme, "admin")))
+        .await;
     let (status, _) = h
-        .post(&format!("/v1/skills/{skill_id}/hosts/approve"), Some(&admin), "")
+        .post(
+            &format!("/v1/skills/{skill_id}/hosts/approve"),
+            Some(&admin),
+            "",
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -2759,7 +3118,9 @@ async fn writing_a_skill_does_not_grant_the_network_access_it_names() {
 async fn only_a_new_host_asks_for_approval_again() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
-    let admin = h.login_as("rv@acme.example", None, Some((acme, "admin"))).await;
+    let admin = h
+        .login_as("rv@acme.example", None, Some((acme, "admin")))
+        .await;
 
     let (_, body) = h
         .post(
@@ -2772,7 +3133,8 @@ async fn only_a_new_host_asks_for_approval_again() {
         .as_str()
         .unwrap()
         .to_string();
-    h.post(&format!("/v1/skills/{id}/hosts/approve"), Some(&admin), "").await;
+    h.post(&format!("/v1/skills/{id}/hosts/approve"), Some(&admin), "")
+        .await;
 
     // Reworded, same hosts: nothing to approve.
     h.post(
@@ -2800,7 +3162,11 @@ async fn only_a_new_host_asks_for_approval_again() {
     let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
     let after: serde_json::Value = serde_json::from_str(&body).unwrap();
     let unmet = after["unmet_hosts"].as_array().unwrap();
-    assert_eq!(unmet.len(), 1, "should ask about the new host alone: {body}");
+    assert_eq!(
+        unmet.len(),
+        1,
+        "should ask about the new host alone: {body}"
+    );
     assert_eq!(unmet[0], "api.example.com");
 }
 
@@ -2874,7 +3240,10 @@ async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
     // told why, because it is not the tier that decides.
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert_eq!(body, "null", "work was handed out while a kill switch was on: {body}");
+    assert_eq!(
+        body, "null",
+        "work was handed out while a kill switch was on: {body}"
+    );
 
     // And the session says why, so the next turn does not read an unexplained
     // silence.
@@ -2940,13 +3309,12 @@ async fn a_held_turn_is_announced_as_held_rather_than_as_a_failure() {
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
 
-    let kinds: Vec<String> = sqlx::query_scalar(
-        "select kind from events where session_id = $1 order by id",
-    )
-    .bind(session_id)
-    .fetch_all(&h.db.pool)
-    .await
-    .expect("events");
+    let kinds: Vec<String> =
+        sqlx::query_scalar("select kind from events where session_id = $1 order by id")
+            .bind(session_id)
+            .fetch_all(&h.db.pool)
+            .await
+            .expect("events");
 
     assert!(
         kinds.iter().any(|k| k == "chat.held"),
@@ -3057,7 +3425,11 @@ async fn a_released_kill_switch_does_not_resume_by_itself() {
         .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
-    assert_eq!(status, StatusCode::OK, "a person could not restart it: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a person could not restart it: {body}"
+    );
 }
 
 /// Stopping an org and stopping one agent are different powers.
@@ -3095,11 +3467,19 @@ async fn stopping_an_org_needs_more_than_stopping_an_agent() {
             r#"{"reason":"looping on the same tool"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "an operator could not stop an agent: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an operator could not stop an agent: {body}"
+    );
 
     // But not the whole workspace.
     let (status, body) = h
-        .post("/v1/workspace/stop", Some(&operator), r#"{"reason":"nope"}"#)
+        .post(
+            "/v1/workspace/stop",
+            Some(&operator),
+            r#"{"reason":"nope"}"#,
+        )
         .await;
     assert_eq!(
         status,
@@ -3109,9 +3489,17 @@ async fn stopping_an_org_needs_more_than_stopping_an_agent() {
 
     // An admin may.
     let (status, body) = h
-        .post("/v1/workspace/stop", Some(&admin), r#"{"reason":"spend cap"}"#)
+        .post(
+            "/v1/workspace/stop",
+            Some(&admin),
+            r#"{"reason":"spend cap"}"#,
+        )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "an admin could not stop the workspace: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an admin could not stop the workspace: {body}"
+    );
 
     // Both show up, with their reasons, to anyone who can see agents.
     let (status, body) = h.get("/v1/inhibitors", Some(&operator)).await;
@@ -3155,7 +3543,11 @@ async fn a_hold_without_a_reason_is_refused() {
     let (status, body) = h
         .post("/v1/workspace/stop", Some(&admin), r#"{"reason":"   "}"#)
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a blank reason was accepted: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a blank reason was accepted: {body}"
+    );
 }
 
 /// The gateway's check sees every level, and reports the strongest.
@@ -3213,15 +3605,25 @@ async fn the_gateway_sees_a_hold_at_any_level() {
     // An agent hold, which the gateway can only find through the session.
     inhibitors
         .take(TakeInhibitor {
-            scope: Scope::Agent { workspace_id: acme, agent_id },
+            scope: Scope::Agent {
+                workspace_id: acme,
+                agent_id,
+            },
             strength: Strength::Suspended,
             reason: "waiting on somebody".into(),
             held_by: "tester".into(),
         })
         .await
         .expect("take");
-    let decision = decide(covering_session(&h.db.pool, acme, session_id).await.expect("query"));
-    assert_eq!(decision.verdict, outturn::api::inhibitor::Verdict::Suspended);
+    let decision = decide(
+        covering_session(&h.db.pool, acme, session_id)
+            .await
+            .expect("query"),
+    );
+    assert_eq!(
+        decision.verdict,
+        outturn::api::inhibitor::Verdict::Suspended
+    );
 
     // A stop anywhere outranks it, and its reason is the one reported.
     inhibitors
@@ -3233,7 +3635,11 @@ async fn the_gateway_sees_a_hold_at_any_level() {
         })
         .await
         .expect("take");
-    let decision = decide(covering_session(&h.db.pool, acme, session_id).await.expect("query"));
+    let decision = decide(
+        covering_session(&h.db.pool, acme, session_id)
+            .await
+            .expect("query"),
+    );
     assert_eq!(decision.verdict, outturn::api::inhibitor::Verdict::Stopped);
     // The deciding hold's reason, and only it: the suspended one is not what
     // stopped this, so naming it would send somebody to release the wrong hold.
@@ -3422,8 +3828,7 @@ async fn a_held_turn_that_then_failed_still_latches() {
 
     // The stream was cut by a hold, and then the guest fell over while tidying
     // up -- so what the runtime reports is a failure carrying the reason.
-    let stream =
-        r#"{"kind":"failed","message":"guest trapped","held":"runaway turn"}"#;
+    let stream = r#"{"kind":"failed","message":"guest trapped","held":"runaway turn"}"#;
     let req = Request::builder()
         .method("POST")
         .uri(format!("/v1/work/{job}/events"))
@@ -3434,7 +3839,11 @@ async fn a_held_turn_that_then_failed_still_latches() {
     let (status, _) = h.send(req).await;
     // The turn failed, so the report is not a success -- but the latch is
     // written regardless, which is the point.
-    assert_ne!(status, StatusCode::OK, "a failed turn reported as succeeding");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a failed turn reported as succeeding"
+    );
 
     let latched: Option<String> = sqlx::query_scalar(
         "select stopped_reason from agent_sessions where id = $1 and stopped_at is not null",
@@ -3562,19 +3971,25 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
                 &format!(r#"{{"agent_id":"{agent}","title":"t"}}"#),
             )
             .await;
-        assert_eq!(status, StatusCode::CREATED, "unnarrowed access refused: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "unnarrowed access refused: {body}"
+        );
     }
 
     // Narrowed to accounting.
     let scopes = &h.scopes;
-    let me: Uuid = sqlx::query_scalar(
-        "select user_id from user_identities where provider_subject = $1",
-    )
-    .bind("admin@acme.example")
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("the account that logged in");
-    scopes.set(acme, me, &[accounting]).await.expect("set scope");
+    let me: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("admin@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the account that logged in");
+    scopes
+        .set(acme, me, &[accounting])
+        .await
+        .expect("set scope");
 
     let (status, body) = h
         .post(
@@ -3583,7 +3998,11 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
             &format!(r#"{{"agent_id":"{accounting}","title":"t"}}"#),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "the named agent was refused: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the named agent was refused: {body}"
+    );
 
     let (status, body) = h
         .post(
@@ -3624,7 +4043,10 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(restored, "clearing the scope never restored access within a second");
+    assert!(
+        restored,
+        "clearing the scope never restored access within a second"
+    );
 }
 
 /// An agent's files are narrowed with its conversations, and your own are
@@ -3672,7 +4094,9 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
     let put = |token: &str, session: &str, bytes: &str| {
         Request::builder()
             .method("PUT")
-            .uri(format!("/v1/agent-sessions/{session}/files/session/note.txt"))
+            .uri(format!(
+                "/v1/agent-sessions/{session}/files/session/note.txt"
+            ))
             .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/octet-stream")
             .body(Body::from(bytes.to_string()))
@@ -3692,13 +4116,12 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
         .unwrap()
         .parse()
         .unwrap();
-    let op_id: Uuid = sqlx::query_scalar(
-        "select user_id from user_identities where provider_subject = $1",
-    )
-    .bind("op@acme.example")
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("the operator's account");
+    let op_id: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("op@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the operator's account");
     h.scopes
         .set(acme, op_id, &[other])
         .await
@@ -3724,7 +4147,11 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
             Some(&operator),
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "their own files were withheld: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "their own files were withheld: {body}"
+    );
     assert_eq!(body, "mine");
 
     // And the admin, narrowed by nobody, still reads both.
@@ -3735,7 +4162,11 @@ async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
                 Some(&admin),
             )
             .await;
-        assert_eq!(status, StatusCode::OK, "an unnarrowed reader was refused: {body}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an unnarrowed reader was refused: {body}"
+        );
     }
 }
 
@@ -3759,13 +4190,12 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
         .as_str()
         .unwrap()
         .to_string();
-    let op_id: Uuid = sqlx::query_scalar(
-        "select user_id from user_identities where provider_subject = $1",
-    )
-    .bind("op@acme.example")
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("the operator's account");
+    let op_id: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("op@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the operator's account");
 
     let put = |token: &str, user: Uuid, body: String| {
         Request::builder()
@@ -3779,14 +4209,30 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
 
     // An operator builds agents; deciding who may reach them is not theirs.
     let (status, body) = h
-        .send(put(&operator, op_id, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .send(put(
+            &operator,
+            op_id,
+            format!(r#"{{"agents":["{agent_id}"]}}"#),
+        ))
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "an operator narrowed somebody: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an operator narrowed somebody: {body}"
+    );
 
     let (status, body) = h
-        .send(put(&admin, op_id, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .send(put(
+            &admin,
+            op_id,
+            format!(r#"{{"agents":["{agent_id}"]}}"#),
+        ))
         .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "an admin could not narrow: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "an admin could not narrow: {body}"
+    );
 
     // It reads back, and only the narrowed are listed.
     let (status, body) = h.get("/v1/scopes", Some(&admin)).await;
@@ -3799,7 +4245,11 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
     // Somebody outside the workspace cannot be narrowed into it.
     let stranger = Uuid::now_v7();
     let (status, body) = h
-        .send(put(&admin, stranger, format!(r#"{{"agents":["{agent_id}"]}}"#)))
+        .send(put(
+            &admin,
+            stranger,
+            format!(r#"{{"agents":["{agent_id}"]}}"#),
+        ))
         .await;
     assert_eq!(
         status,
@@ -3809,7 +4259,11 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
 
     // An agent in no workspace of theirs is refused rather than stored.
     let (status, body) = h
-        .send(put(&admin, op_id, format!(r#"{{"agents":["{}"]}}"#, Uuid::now_v7())))
+        .send(put(
+            &admin,
+            op_id,
+            format!(r#"{{"agents":["{}"]}}"#, Uuid::now_v7()),
+        ))
         .await;
     assert_eq!(
         status,
@@ -3818,7 +4272,9 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
     );
 
     // And clearing it empties the listing.
-    let (status, _) = h.send(put(&admin, op_id, r#"{"agents":[]}"#.to_string())).await;
+    let (status, _) = h
+        .send(put(&admin, op_id, r#"{"agents":[]}"#.to_string()))
+        .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, body) = h.get("/v1/scopes", Some(&admin)).await;
     let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("scopes");
@@ -3912,7 +4368,9 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
 
     // And one of the caller's own with the agent they are about to lose,
     // started while they still could.
-    let mine_with_support = h.session_with_a_message(&narrowed, support, "started early").await;
+    let mine_with_support = h
+        .session_with_a_message(&narrowed, support, "started early")
+        .await;
 
     let me: Uuid =
         sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
@@ -3920,14 +4378,24 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
             .fetch_one(&h.db.pool)
             .await
             .expect("the account that logged in");
-    h.scopes.set(acme, me, &[accounting]).await.expect("set scope");
+    h.scopes
+        .set(acme, me, &[accounting])
+        .await
+        .expect("set scope");
 
     // The read was already refused. Stated here so a regression that loosens
     // it fails beside the writes rather than silently.
     let (status, _) = h
-        .get(&format!("/v1/agent-sessions/{theirs}/messages"), Some(&narrowed))
+        .get(
+            &format!("/v1/agent-sessions/{theirs}/messages"),
+            Some(&narrowed),
+        )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "the read stopped being narrowed");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the read stopped being narrowed"
+    );
 
     let (status, body) = h
         .send(
@@ -3940,7 +4408,11 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
                 .unwrap(),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "rename was not narrowed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "rename was not narrowed: {body}"
+    );
 
     let (status, body) = h
         .post(
@@ -3949,12 +4421,24 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
             r#"{"content":"posting into a conversation I cannot read"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "send was not narrowed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "send was not narrowed: {body}"
+    );
 
     let (status, body) = h
-        .post(&format!("/v1/agent-sessions/{theirs}/cancel"), Some(&narrowed), "")
+        .post(
+            &format!("/v1/agent-sessions/{theirs}/cancel"),
+            Some(&narrowed),
+            "",
+        )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "cancel was not narrowed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "cancel was not narrowed: {body}"
+    );
 
     let (status, body) = h
         .send(
@@ -3966,13 +4450,24 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
                 .unwrap(),
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "delete was not narrowed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "delete was not narrowed: {body}"
+    );
 
     // The conversation is still there, and still named what its owner named it.
     let (status, body) = h
-        .get(&format!("/v1/agent-sessions/{theirs}/messages"), Some(&owner))
+        .get(
+            &format!("/v1/agent-sessions/{theirs}/messages"),
+            Some(&owner),
+        )
         .await;
-    assert_eq!(status, StatusCode::OK, "the owner lost their session: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the owner lost their session: {body}"
+    );
 
     // Sending into their own session with the excluded agent is refused too.
     // Having started a thread is not permission to keep using an agent
@@ -4001,7 +4496,11 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
             Some(&narrowed),
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "their own history stopped being theirs");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "their own history stopped being theirs"
+    );
     let (status, _) = h
         .post(
             &format!("/v1/agent-sessions/{mine_with_support}/cancel"),
@@ -4009,7 +4508,11 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
             "",
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "stopping their own turn was refused");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "stopping their own turn was refused"
+    );
 }
 
 /// The event feed is narrowed the same way the transcript is.
@@ -4049,8 +4552,12 @@ async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
     }
     let (accounting, support) = (ids[0], ids[1]);
 
-    let theirs = h.session_with_a_message(&owner, support, "something private").await;
-    let mine = h.session_with_a_message(&narrowed, accounting, "mine").await;
+    let theirs = h
+        .session_with_a_message(&owner, support, "something private")
+        .await;
+    let mine = h
+        .session_with_a_message(&narrowed, accounting, "mine")
+        .await;
 
     let me: Uuid =
         sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
@@ -4058,7 +4565,10 @@ async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
             .fetch_one(&h.db.pool)
             .await
             .expect("the account that logged in");
-    h.scopes.set(acme, me, &[accounting]).await.expect("set scope");
+    h.scopes
+        .set(acme, me, &[accounting])
+        .await
+        .expect("set scope");
 
     let (status, body) = h
         .get(
@@ -4070,11 +4580,15 @@ async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
     let feed: serde_json::Value = serde_json::from_str(&body).expect("events");
     let events = feed["events"].as_array().expect("events array");
     assert!(
-        events.iter().any(|e| e["session_id"] == serde_json::json!(mine.to_string())),
+        events
+            .iter()
+            .any(|e| e["session_id"] == serde_json::json!(mine.to_string())),
         "the caller's own events were filtered out too: {body}"
     );
     assert!(
-        !events.iter().any(|e| e["session_id"] == serde_json::json!(theirs.to_string())),
+        !events
+            .iter()
+            .any(|e| e["session_id"] == serde_json::json!(theirs.to_string())),
         "an agent the caller was never given streamed through the feed: {body}"
     );
 

@@ -32,12 +32,7 @@ impl Default for MemoryStorage {
 
 #[async_trait]
 impl StorageBackend for MemoryStorage {
-    async fn read(
-        &self,
-        path: &str,
-        offset: u64,
-        len: u32,
-    ) -> Result<Vec<u8>, StorageError> {
+    async fn read(&self, path: &str, offset: u64, len: u32) -> Result<Vec<u8>, StorageError> {
         let files = self.files.read().await;
         let data = files.get(path).ok_or(StorageError::NotFound)?;
         let start = offset as usize;
@@ -48,12 +43,7 @@ impl StorageBackend for MemoryStorage {
         Ok(data[start..end].to_vec())
     }
 
-    async fn write(
-        &self,
-        path: &str,
-        offset: u64,
-        data: &[u8],
-    ) -> Result<u64, StorageError> {
+    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, StorageError> {
         let mut files = self.files.write().await;
         let file = files.entry(path.to_string()).or_default();
         let start = offset as usize;

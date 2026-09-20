@@ -75,17 +75,21 @@ impl PostgresScopeStore {
     }
 
     async fn load(&self, workspace_id: Uuid) -> Result<Arc<WorkspaceMap>, ScopeError> {
-        if let Some(found) = self.cache.lock().ok().and_then(|c| c.get(&workspace_id).cloned()) {
+        if let Some(found) = self
+            .cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&workspace_id).cloned())
+        {
             return Ok(found);
         }
 
-        let rows = sqlx::query(
-            "select user_id, agent_id from user_agent_scopes where workspace_id = $1",
-        )
-        .bind(workspace_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
+        let rows =
+            sqlx::query("select user_id, agent_id from user_agent_scopes where workspace_id = $1")
+                .bind(workspace_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
 
         let mut map: WorkspaceMap = HashMap::new();
         for row in &rows {
@@ -170,7 +174,10 @@ impl ScopeStore for PostgresScopeStore {
     }
 }
 
-async fn listen(pool: &PgPool, cache: &Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>) -> Result<(), sqlx::Error> {
+async fn listen(
+    pool: &PgPool,
+    cache: &Mutex<HashMap<Uuid, Arc<WorkspaceMap>>>,
+) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
     loop {

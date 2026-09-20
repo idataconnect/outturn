@@ -1,7 +1,7 @@
 pub mod breaker;
 pub mod llm;
-pub mod routing;
 mod router;
+pub mod routing;
 
 pub mod egress;
 

@@ -303,7 +303,10 @@ mod tests {
     #[test]
     fn documents_are_extractable_and_text_is_not() {
         assert!(is_extractable("report.pdf"));
-        assert!(is_extractable("Notes.DOCX"), "extensions are not case-sensitive");
+        assert!(
+            is_extractable("Notes.DOCX"),
+            "extensions are not case-sensitive"
+        );
         assert!(is_extractable("deck.pptx"));
         // Already words: extracting it would produce what it already is.
         assert!(!is_extractable("notes.md"));
@@ -318,6 +321,9 @@ mod tests {
         let key = "sessions/w/a/s/report.pdf";
         let text = text_key(key);
         assert_eq!(text, "extracted/sessions/w/a/s/report.pdf");
-        assert!(!text.starts_with("sessions/"), "a listing would show it: {text}");
+        assert!(
+            !text.starts_with("sessions/"),
+            "a listing would show it: {text}"
+        );
     }
 }

@@ -59,7 +59,9 @@ pub fn routes(health: Health) -> Router {
 
 pub async fn shutdown_signal(health: Health) {
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install ctrl+c handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl+c handler");
     };
 
     let terminate = async {

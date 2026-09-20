@@ -30,7 +30,10 @@ fn address(level: Level) -> (Uuid, Uuid) {
     match level {
         Level::Operator => (PLATFORM_WORKSPACE, Uuid::nil()),
         Level::Workspace(t) => (t, Uuid::nil()),
-        Level::Agent { workspace_id, agent_id } => (workspace_id, agent_id),
+        Level::Agent {
+            workspace_id,
+            agent_id,
+        } => (workspace_id, agent_id),
     }
 }
 
@@ -47,24 +50,45 @@ impl PostgresSettingsStore {
         .map_err(internal)?;
         Ok(rows
             .iter()
-            .map(|r| (r.get::<String, _>("key"), r.get::<serde_json::Value, _>("value")))
+            .map(|r| {
+                (
+                    r.get::<String, _>("key"),
+                    r.get::<serde_json::Value, _>("value"),
+                )
+            })
             .collect())
     }
 
     /// The levels above `level`, nearest first, and then `level` itself.
     async fn chain(&self, level: Level) -> Result<Vec<(super::Source, Rows)>, SettingsError> {
         let mut out = Vec::new();
-        out.push((super::Source::Operator, self.rows_at(Level::Operator).await?));
+        out.push((
+            super::Source::Operator,
+            self.rows_at(Level::Operator).await?,
+        ));
         match level {
             Level::Operator => {}
             Level::Workspace(t) => {
-                out.push((super::Source::Workspace, self.rows_at(Level::Workspace(t)).await?));
+                out.push((
+                    super::Source::Workspace,
+                    self.rows_at(Level::Workspace(t)).await?,
+                ));
             }
-            Level::Agent { workspace_id, agent_id } => {
-                out.push((super::Source::Workspace, self.rows_at(Level::Workspace(workspace_id)).await?));
+            Level::Agent {
+                workspace_id,
+                agent_id,
+            } => {
+                out.push((
+                    super::Source::Workspace,
+                    self.rows_at(Level::Workspace(workspace_id)).await?,
+                ));
                 out.push((
                     super::Source::Agent,
-                    self.rows_at(Level::Agent { workspace_id, agent_id }).await?,
+                    self.rows_at(Level::Agent {
+                        workspace_id,
+                        agent_id,
+                    })
+                    .await?,
                 ));
             }
         }
@@ -73,7 +97,11 @@ impl PostgresSettingsStore {
 }
 
 /// Walks the chain for one key: the last level that has a row wins.
-fn walk(chain: &[(super::Source, Rows)], key: &str, default: &serde_json::Value) -> (serde_json::Value, super::Source) {
+fn walk(
+    chain: &[(super::Source, Rows)],
+    key: &str,
+    default: &serde_json::Value,
+) -> (serde_json::Value, super::Source) {
     let mut value = default.clone();
     let mut source = super::Source::Default;
     for (level, rows) in chain {
@@ -108,7 +136,12 @@ impl SettingsStore for PostgresSettingsStore {
             .collect())
     }
 
-    async fn set(&self, level: Level, key: &str, value: serde_json::Value) -> Result<(), SettingsError> {
+    async fn set(
+        &self,
+        level: Level,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), SettingsError> {
         let setting = find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
         validate(&setting, &value)?;
         let (workspace_id, agent_id) = address(level);
@@ -144,7 +177,12 @@ impl SettingsStore for PostgresSettingsStore {
     }
 
     async fn resolve(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError> {
-        let chain = self.chain(Level::Agent { workspace_id, agent_id }).await?;
+        let chain = self
+            .chain(Level::Agent {
+                workspace_id,
+                agent_id,
+            })
+            .await?;
         let get = |key: &str| {
             let setting = find(key).expect("catalogue key");
             walk(&chain, key, &setting.default).0
@@ -172,9 +210,10 @@ impl SettingsStore for PostgresSettingsStore {
             // could not hold a thought for the length of a turn.
             write_scopes: {
                 let mut scopes = vec!["session".to_string()];
-                for (key, scope) in
-                    [("agent_file_access", "agent"), ("workspace_file_access", "workspace")]
-                {
+                for (key, scope) in [
+                    ("agent_file_access", "agent"),
+                    ("workspace_file_access", "workspace"),
+                ] {
                     if get(key).as_str() == Some("read_write") {
                         scopes.push(scope.to_string());
                     }
@@ -183,9 +222,10 @@ impl SettingsStore for PostgresSettingsStore {
             },
             read_scopes: {
                 let mut scopes = vec!["session".to_string()];
-                for (key, scope) in
-                    [("agent_file_access", "agent"), ("workspace_file_access", "workspace")]
-                {
+                for (key, scope) in [
+                    ("agent_file_access", "agent"),
+                    ("workspace_file_access", "workspace"),
+                ] {
                     // Read or read/write, so writing always implies reading.
                     if matches!(get(key).as_str(), Some("read") | Some("read_write")) {
                         scopes.push(scope.to_string());

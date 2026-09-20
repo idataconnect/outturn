@@ -6,28 +6,28 @@ use tokio::net::TcpListener;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
-use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
 use outturn::api::agent::{AgentStore, PostgresAgentStore};
 use outturn::api::chat::{ChatStore, PostgresChatStore};
 use outturn::api::role::{PostgresRoleStore, RoleStore};
-use outturn::api::usage::{PostgresUsageStore, UsageStore};
-use outturn::api::settings::{PostgresSettingsStore, SettingsStore};
-use outturn::runtime::storage::{S3Storage, StorageBackend};
-use outturn::api::worker::Worker;
 use outturn::api::session::{PostgresSessionStore, SessionStore};
+use outturn::api::settings::{PostgresSettingsStore, SettingsStore};
+use outturn::api::usage::{PostgresUsageStore, UsageStore};
 use outturn::api::user::{PostgresUserStore, UserStore};
+use outturn::api::worker::Worker;
+use outturn::api::workspace::{PostgresWorkspaceStore, WorkspaceStore};
 use outturn::api::{self, ApiState, seed};
 use outturn::auth::{TokenMinter, TokenValidator};
 use outturn::db;
 use outturn::events::EventBus;
 use outturn::lifecycle::{self, Health};
+use outturn::runtime::storage::{S3Storage, StorageBackend};
 
 /// Credentialed requests cannot use a wildcard origin, so allowed origins are
 /// listed explicitly. OUTTURN_CORS_ORIGINS is a comma-separated list; the
 /// default covers the Vite dev server.
 fn cors() -> CorsLayer {
-    let origins = std::env::var("OUTTURN_CORS_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000".into());
+    let origins =
+        std::env::var("OUTTURN_CORS_ORIGINS").unwrap_or_else(|_| "http://localhost:3000".into());
 
     let parsed: Vec<_> = origins
         .split(',')
@@ -123,7 +123,9 @@ async fn main() {
     let skills: Arc<dyn outturn::api::skill::SkillStore> =
         Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
 
-    seed::dev_seed(&users, &workspaces, &roles).await.expect("dev seed");
+    seed::dev_seed(&users, &workspaces, &roles)
+        .await
+        .expect("dev seed");
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
     let minter = TokenMinter::from_env().expect("token minter");
@@ -167,7 +169,9 @@ async fn main() {
         chat: chat.clone(),
         usage,
         settings,
-        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(pool.clone())),
+        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+            pool.clone(),
+        )),
         // A summary is a model call, so it needs both a way to reach the
         // gateway and a token to present. Either missing means the trim
         // does the work alone, which is what it is for.
@@ -181,6 +185,12 @@ async fn main() {
     // returned to the queue by this rather than by the pod that vanished.
     Arc::clone(&worker).spawn_reaper(health.shutdown_signal());
 
+    // Turns that start because the clock said so. Runs in this tier rather
+    // than the runtime, because it creates work rather than doing it -- and it
+    // is safe in more than one pod: a due schedule is taken with `for update
+    // skip locked`, so two loops ticking together cannot both fire it.
+    tokio::spawn(outturn::api::schedule::worker::run(pool.clone()));
+
     // Documents become readable in the background, where they are configured
     // to. Absent OUTTURN_TIKA_URL this logs once and does nothing further.
     if let Some(store) = storage_for_extraction.clone() {
@@ -189,7 +199,12 @@ async fn main() {
     // Unnamed conversations are given a title after their first turn, by a
     // model reached through the gateway. Absent OUTTURN_GATEWAY_URL this
     // logs once and sessions stay "New Session" until somebody names them.
-    outturn::api::naming::spawn(pool.clone(), chat.clone(), namer_minter, health.shutdown_signal());
+    outturn::api::naming::spawn(
+        pool.clone(),
+        chat.clone(),
+        namer_minter,
+        health.shutdown_signal(),
+    );
     state.set_worker(worker);
 
     let app = Router::new()

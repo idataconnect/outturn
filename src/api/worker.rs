@@ -5,17 +5,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-
 use crate::events;
 use crate::jobs;
 use crate::runtime::router::ExecuteEvent;
 
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
-
-
-
-
 
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";
@@ -177,7 +172,10 @@ fn projected_with_sources(
                 "role": message.role,
                 "parts": [{"type": "text", "text": text}],
             }));
-            sources.extend(std::iter::repeat_n(message.id, projected.len() - entries_before));
+            sources.extend(std::iter::repeat_n(
+                message.id,
+                projected.len() - entries_before,
+            ));
             continue;
         }
 
@@ -191,8 +189,8 @@ fn projected_with_sources(
         let mut awaiting: Vec<&serde_json::Value> = Vec::new();
 
         let flush = |open: &mut Vec<serde_json::Value>,
-                         awaiting: &mut Vec<&serde_json::Value>,
-                         out: &mut Vec<serde_json::Value>| {
+                     awaiting: &mut Vec<&serde_json::Value>,
+                     out: &mut Vec<serde_json::Value>| {
             if !open.is_empty() {
                 out.push(serde_json::json!({
                     "role": "assistant",
@@ -248,10 +246,17 @@ fn projected_with_sources(
             }
         }
         flush(&mut open, &mut awaiting, &mut projected);
-        sources.extend(std::iter::repeat_n(message.id, projected.len() - entries_before));
+        sources.extend(std::iter::repeat_n(
+            message.id,
+            projected.len() - entries_before,
+        ));
     }
 
-    debug_assert_eq!(projected.len(), sources.len(), "every entry came from somewhere");
+    debug_assert_eq!(
+        projected.len(),
+        sources.len(),
+        "every entry came from somewhere"
+    );
     (projected, sources)
 }
 
@@ -304,11 +309,11 @@ fn marked(
         .and_then(|i| projected.get(i))
         .is_some_and(|m| {
             m["role"] == "assistant"
-                && m["parts"]
-                    .as_array()
-                    .is_some_and(|parts| parts.iter().any(|p| {
+                && m["parts"].as_array().is_some_and(|parts| {
+                    parts.iter().any(|p| {
                         p["type"] == "text" && !p["text"].as_str().unwrap_or("").trim().is_empty()
-                    }))
+                    })
+                })
         });
 
     // How long it was stopped for, always. An agent told only that it was
@@ -404,11 +409,7 @@ pub struct Worker {
     pub gateway_url: Option<String>,
 }
 
-
 impl Worker {
-
-
-
     /// Gives up on a turn: clears the reply nothing will fill, and says so.
     ///
     /// An empty reply left behind wedges the session against further messages,
@@ -433,7 +434,6 @@ impl Worker {
         )
         .await;
     }
-
 
     /// Says that a turn was held, to whoever has the conversation open.
     ///
@@ -1136,8 +1136,7 @@ impl Worker {
         // Composed before the conversation is built, because a summary is
         // written against it: what the agent was told to do is what decides
         // which parts of a conversation mattered.
-        let system_prompt =
-            super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
+        let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
 
         Ok(Some(crate::runtime::router::ExecuteRequest {
             session_id: payload.session_id,
@@ -1176,10 +1175,8 @@ impl Worker {
                 // save, this drops -- and when there is no model to ask, or
                 // the summary itself would not fit, this is the whole of what
                 // happens.
-                let (projected, trimmed) = super::chat::trim::to_fit(
-                    projected,
-                    settings.context_budget,
-                );
+                let (projected, trimmed) =
+                    super::chat::trim::to_fit(projected, settings.context_budget);
                 if !trimmed.is_empty() {
                     // Said out loud: a turn that quietly lost half its history
                     // is one nobody can explain afterwards, and these numbers
@@ -1288,7 +1285,11 @@ impl Worker {
         // account for. No egress commitment, because summarising reaches
         // nothing but the model.
         let token = minter
-            .mint_turn(session_id, workspace_id, crate::egress::commit::empty_root())
+            .mint_turn(
+                session_id,
+                workspace_id,
+                crate::egress::commit::empty_root(),
+            )
             .ok()?;
 
         let response = reqwest::Client::new()
@@ -1333,17 +1334,20 @@ impl Worker {
         };
         // Both shapes, because a provider may answer with either and a summary
         // silently skipped is one that was paid for and thrown away.
-        let summary = completion.choices.first().map(|c| match &c.message.content {
-            MessageContent::Text(t) => t.clone(),
-            MessageContent::Parts(parts) => parts
-                .iter()
-                .filter_map(|p| match p {
-                    ContentPart::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        });
+        let summary = completion
+            .choices
+            .first()
+            .map(|c| match &c.message.content {
+                MessageContent::Text(t) => t.clone(),
+                MessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
         let Some(summary) = summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
             tracing::warn!("the summary came back empty; the trim will carry the conversation");
             return None;
@@ -1365,7 +1369,9 @@ impl Worker {
         // A summary larger than what it replaced is one that helped nobody,
         // and sending it would be worse than the trim alone.
         if super::chat::trim::total_cost(&replaced) >= super::chat::trim::total_cost(conversation) {
-            tracing::warn!("the summary was no smaller than the conversation; keeping the original");
+            tracing::warn!(
+                "the summary was no smaller than the conversation; keeping the original"
+            );
             return None;
         }
 
@@ -1398,9 +1404,13 @@ impl Worker {
         // after a cut that leaves `TAIL_MESSAGES` behind it. So indices below
         // the cut mean the same thing in both, and the guard below is what
         // says so rather than assuming it.
-        if let Some(through_id) = through.checked_sub(1).and_then(|last| sources.get(last)).copied()
+        if let Some(through_id) = through
+            .checked_sub(1)
+            .and_then(|last| sources.get(last))
+            .copied()
         {
-            self.store_summary(session_id, summary, through_id, model).await;
+            self.store_summary(session_id, summary, through_id, model)
+                .await;
         }
 
         // A summary is a model call the user did not ask for and is billed
@@ -1592,7 +1602,9 @@ impl Worker {
                         // would take it back from whoever has it now.
                         Ok(false) => return,
                         Ok(true) => {}
-                        Err(e) => tracing::warn!(job_id = %job_id, error = %e, "lease renewal failed"),
+                        Err(e) => {
+                            tracing::warn!(job_id = %job_id, error = %e, "lease renewal failed")
+                        }
                     }
                 }
             })
@@ -1635,7 +1647,14 @@ impl Worker {
                     )
                     .await;
                 }
-                jobs::fail(&self.pool, job_id, &e.to_string(), Duration::from_secs(5), lease_token).await?;
+                jobs::fail(
+                    &self.pool,
+                    job_id,
+                    &e.to_string(),
+                    Duration::from_secs(5),
+                    lease_token,
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -1645,7 +1664,9 @@ impl Worker {
         // lease lapsed under a stall and this turn has been handed to another
         // pod, whose reply this must not overwrite.
         let still_ours = match lease_token {
-            Some(token) => jobs::extend_lease(&self.pool, job_id, jobs::DEFAULT_LEASE, token).await?,
+            Some(token) => {
+                jobs::extend_lease(&self.pool, job_id, jobs::DEFAULT_LEASE, token).await?
+            }
             None => false,
         };
         if !still_ours {
@@ -1705,12 +1726,15 @@ impl Worker {
         // A conversation that has had a turn and still has no name gets one
         // asked for. After the job is closed, so a namer that cannot be
         // queued costs nothing but its absence.
-        if let Ok(session) = self.chat.get_session(payload.workspace_id, payload.session_id).await {
+        if let Ok(session) = self
+            .chat
+            .get_session(payload.workspace_id, payload.session_id)
+            .await
+        {
             super::naming::enqueue_if_unnamed(&self.pool, &session).await;
         }
         Ok(())
     }
-
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.
@@ -1735,9 +1759,6 @@ fn model_for(policy: &serde_json::Value) -> String {
             std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into())
         })
 }
-
-
-
 
 #[cfg(test)]
 mod projection_tests {
@@ -1979,7 +2000,10 @@ mod projection_tests {
         assert_eq!(projected.len(), sources.len(), "an entry came from nowhere");
         // The summary leads and is its own source; the tail follows and is its.
         assert_eq!(sources[0], ids[3], "the summary did not name itself");
-        assert_eq!(sources[1], ids[2], "the tail did not name the message it came from");
+        assert_eq!(
+            sources[1], ids[2],
+            "the tail did not name the message it came from"
+        );
         assert!(
             !sources.contains(&ids[0]) && !sources.contains(&ids[1]),
             "a covered message was still projected"
@@ -2008,7 +2032,10 @@ mod projection_tests {
 
         let (projected, sources) = projected_with_sources(&[calling]);
 
-        assert!(projected.len() > 1, "the call did not expand: {projected:?}");
+        assert!(
+            projected.len() > 1,
+            "the call did not expand: {projected:?}"
+        );
         assert_eq!(projected.len(), sources.len());
         assert!(
             sources.iter().all(|s| *s == id),
@@ -2131,9 +2158,8 @@ mod projection_tests {
     /// An ordinary turn carries no marker at all.
     #[test]
     fn a_conversation_that_was_never_stopped_is_left_alone() {
-        let original = vec![
-            serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello"}]}),
-        ];
+        let original =
+            vec![serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "hello"}]})];
         assert_eq!(marked(original.clone(), None), original);
     }
 
@@ -2225,7 +2251,11 @@ mod projection_tests {
             "",
             serde_json::json!({ "tool_calls": [call("call_1", Some("ok"))] }),
         )]);
-        assert_eq!(projected.len(), 2, "an empty reply was sent: {projected:#?}");
+        assert_eq!(
+            projected.len(),
+            2,
+            "an empty reply was sent: {projected:#?}"
+        );
     }
 
     /// A turn that spoke, looked something up, then spoke again.

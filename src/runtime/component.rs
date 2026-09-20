@@ -19,8 +19,7 @@ wasmtime::component::bindgen!({
 
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
-    Message, ObjectInfo, ToolActivity,
-    ToolCall, ToolDefinition, ToolOutcome, Usage,
+    Message, ObjectInfo, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
 /// What a byte string is, when it is plainly not text -- or None when it may be.
@@ -37,7 +36,9 @@ pub(crate) fn describe_binary(bytes: &[u8]) -> Option<&'static str> {
         return Some("a zip archive; use expand_archive to unpack it");
     }
     if bytes.starts_with(b"%PDF") {
-        return Some("a PDF, and document extraction is not configured here, so its text cannot be read");
+        return Some(
+            "a PDF, and document extraction is not configured here, so its text cannot be read",
+        );
     }
     if bytes.starts_with(b"\x89PNG") {
         return Some("a PNG image");
@@ -278,12 +279,13 @@ impl AgentHost {
         // bytes to something else -- `describe_image` would otherwise let a
         // vision model read what the agent may not.
         self.may_read(path)?;
-        let resolved = crate::runtime::storage::scope::resolve(&self.space, path).map_err(|e| match e {
-            // Said in full: this is the one a model will hit, and the message
-            // tells it how to correct itself.
-            StorageError::Refused(m) => m,
-            _ => format!("path is not allowed: {path}"),
-        })?;
+        let resolved =
+            crate::runtime::storage::scope::resolve(&self.space, path).map_err(|e| match e {
+                // Said in full: this is the one a model will hit, and the message
+                // tells it how to correct itself.
+                StorageError::Refused(m) => m,
+                _ => format!("path is not allowed: {path}"),
+            })?;
         Ok((storage, resolved))
     }
 
@@ -340,7 +342,10 @@ impl<E: Into<anyhow::Error>> From<E> for HeldError {
     /// For the failures that happen before a guest exists to be held --
     /// instantiating, fuel, the component itself. Nothing had cut them.
     fn from(error: E) -> Self {
-        Self { held: None, error: error.into() }
+        Self {
+            held: None,
+            error: error.into(),
+        }
     }
 }
 
@@ -371,10 +376,7 @@ impl WasiView for AgentHost {
 }
 
 impl outturn::agent::host::Host for AgentHost {
-    async fn chat(
-        &mut self,
-        request: CompletionRequest,
-    ) -> Result<Completion, String> {
+    async fn chat(&mut self, request: CompletionRequest) -> Result<Completion, String> {
         // Counted before the call, not after: the limit is on what may be
         // spent, and a guest that ignores what `limits` told it is refused
         // here rather than politely asked again.
@@ -523,7 +525,10 @@ impl outturn::agent::host::Host for AgentHost {
                 round: self.rounds_used.saturating_sub(1),
                 endpoint: served.endpoint.clone().unwrap_or_default(),
                 model: served.model.clone().unwrap_or(model.clone()),
-                paid_by: served.paid_by.clone().unwrap_or_else(|| "operator".to_string()),
+                paid_by: served
+                    .paid_by
+                    .clone()
+                    .unwrap_or_else(|| "operator".to_string()),
                 usage: usage.clone(),
                 provider_usage: served.provider_usage.clone(),
                 service_tier: served.service_tier.clone(),
@@ -586,8 +591,8 @@ impl outturn::agent::host::Host for AgentHost {
         // again against the rules that verified, and a proof for a rule the
         // API never committed to verifies nowhere. Doing it here only saves
         // sending a workspace's whole rule list on every fetch.
-        let url = reqwest::Url::parse(&request.url)
-            .map_err(|e| format!("that URL is not one: {e}"))?;
+        let url =
+            reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
         let (_host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
         let proof = crate::egress::commit::prove(self.workspace_id, &self.egress, rule)
             .ok_or_else(|| {
@@ -766,12 +771,7 @@ impl outturn::agent::host::Host for AgentHost {
         Ok(bytes)
     }
 
-    async fn read_bytes(
-        &mut self,
-        path: String,
-        offset: u64,
-        len: u32,
-    ) -> Result<Vec<u8>, String> {
+    async fn read_bytes(&mut self, path: String, offset: u64, len: u32) -> Result<Vec<u8>, String> {
         // The object as stored: no extraction, no redirect. What read_object
         // does for a document is a convenience for reading; this is for the
         // callers that need the thing itself.
@@ -875,10 +875,12 @@ impl outturn::agent::host::Host for AgentHost {
             // gated the same: filtering only "everything I have" would have
             // left asking for the scope by name as the way round it.
             self.may_read(&prefix)?;
-            vec![scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
-                crate::runtime::storage::StorageError::Refused(m) => m,
-                other => other.to_string(),
-            })?]
+            vec![
+                scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
+                    crate::runtime::storage::StorageError::Refused(m) => m,
+                    other => other.to_string(),
+                })?,
+            ]
         };
 
         let mut out = Vec::new();
@@ -891,7 +893,9 @@ impl outturn::agent::host::Host for AgentHost {
             // The text of any documents under here, listed once rather than
             // stat'd one by one, so a listing costs two calls however many
             // files it holds.
-            let text: std::collections::HashMap<String, u64> = if crate::api::extract::tika_url().is_none() {
+            let text: std::collections::HashMap<String, u64> = if crate::api::extract::tika_url()
+                .is_none()
+            {
                 Default::default()
             } else {
                 storage
@@ -1193,16 +1197,20 @@ async fn stream_completion(
         }
     }
 
-    Ok((Completion {
-        // A call with no name is a fragment of something that never arrived;
-        // passing it on would have the guest dispatch on "".
-        parts: parts
-            .into_iter()
-            .filter(|p| !matches!(p, ContentPart::Call(c) if c.name.is_empty()))
-            .collect(),
-        finish_reason,
-        usage,
-    }, arrivals, served))
+    Ok((
+        Completion {
+            // A call with no name is a fragment of something that never arrived;
+            // passing it on would have the guest dispatch on "".
+            parts: parts
+                .into_iter()
+                .filter(|p| !matches!(p, ContentPart::Call(c) if c.name.is_empty()))
+                .collect(),
+            finish_reason,
+            usage,
+        },
+        arrivals,
+        served,
+    ))
 }
 
 /// Who answered a call, as far as the gateway said.
@@ -1221,7 +1229,6 @@ struct Served {
     provider_usage: Option<serde_json::Value>,
     service_tier: Option<String>,
 }
-
 
 /// Compiled components to keep, keyed by the bytes they came from.
 ///
@@ -1261,7 +1268,9 @@ struct CompiledEntry<T> {
 
 impl<T: Clone> CompiledCache<T> {
     fn new() -> Self {
-        Self { entries: Mutex::new(Vec::new()) }
+        Self {
+            entries: Mutex::new(Vec::new()),
+        }
     }
 
     fn get(&self, key: &[u8; 32]) -> Option<T> {
@@ -1616,7 +1625,11 @@ mod compiled_cache_tests {
         c.insert(key(200), 200);
 
         assert_eq!(c.get(&key(0)), Some(0), "a recently used entry was evicted");
-        assert_eq!(c.get(&key(1)), None, "the least recently used entry survived");
+        assert_eq!(
+            c.get(&key(1)),
+            None,
+            "the least recently used entry survived"
+        );
         assert_eq!(c.get(&key(200)), Some(200));
     }
 
@@ -1652,15 +1665,27 @@ mod binary_guard {
     #[test]
     fn text_is_not_described() {
         assert_eq!(describe_binary(b"invoice 7 paid in full"), None);
-        assert_eq!(describe_binary("caf\u{e9} \u{1f600}\n".as_bytes()), None, "utf-8 is text");
+        assert_eq!(
+            describe_binary("caf\u{e9} \u{1f600}\n".as_bytes()),
+            None,
+            "utf-8 is text"
+        );
         assert_eq!(describe_binary(b"a,b\r\n1,2\r\n"), None);
         assert_eq!(describe_binary(b""), None);
     }
 
     #[test]
     fn known_formats_are_named() {
-        assert!(describe_binary(b"PK\x03\x04rest").unwrap().contains("expand_archive"));
-        assert!(describe_binary(b"%PDF-1.4").unwrap().contains("not configured"));
+        assert!(
+            describe_binary(b"PK\x03\x04rest")
+                .unwrap()
+                .contains("expand_archive")
+        );
+        assert!(
+            describe_binary(b"%PDF-1.4")
+                .unwrap()
+                .contains("not configured")
+        );
         assert_eq!(describe_binary(b"\x89PNG\r\n"), Some("a PNG image"));
         assert_eq!(describe_binary(b"\xff\xd8\xff\xe0"), Some("a JPEG image"));
     }
@@ -1668,7 +1693,9 @@ mod binary_guard {
     #[test]
     fn a_nul_or_mostly_control_bytes_is_binary() {
         assert_eq!(describe_binary(b"abc\x00def"), Some("binary data"));
-        let noisy: Vec<u8> = (0..100u8).map(|i| if i % 2 == 0 { 0x01 } else { b'a' }).collect();
+        let noisy: Vec<u8> = (0..100u8)
+            .map(|i| if i % 2 == 0 { 0x01 } else { b'a' })
+            .collect();
         assert_eq!(describe_binary(&noisy), Some("binary data"));
     }
 }

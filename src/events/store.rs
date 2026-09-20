@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use sqlx::postgres::PgPool;
 use sqlx::Row;
+use sqlx::postgres::PgPool;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
