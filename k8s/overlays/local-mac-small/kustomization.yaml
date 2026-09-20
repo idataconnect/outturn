@@ -5,18 +5,11 @@ kind: Kustomization
 # by `scripts/dev-mac.sh --small`.
 #
 # Everything ../local-mac says about reaching ollama on the host still holds;
-# the only difference is which model answers. gemma4 is about 9.6GB loaded
-# against qwen3.8's 22GB, which is what makes a 32GB machine comfortable --
-# and on a 64GB one it leaves room for the cluster's VM, a browser and a build
-# at the same time, which qwen3.8 does not always.
-#
-# What is given up is not speed but reliability under one setting: with
-# `reasoning_effort` set to "none", gemma4 answers a tool result with nothing
-# at all, so a turn ends on the tool and the reader is told nothing. The
-# platform default is "low", which does not have that problem, so this is only
-# a trap for somebody who turns thinking off to save tokens. qwen3.8 keeps
-# answering either way, which is why it is the default where there is room for
-# it.
+# the only difference is which model answers. qwen3.5 is far smaller loaded
+# than qwen3.8's 22GB, which is what makes a 32GB machine comfortable -- and on
+# a 64GB one it leaves room for the cluster's VM, a browser and a build at the
+# same time, which qwen3.8 does not always.
+
 resources:
   - ../local-mac
 
@@ -33,7 +26,7 @@ patches:
               - name: api
                 env:
                   - name: OUTTURN_DEFAULT_MODEL
-                    value: "gemma4"
+                    value: "qwen3.5"
   - patch: |
       apiVersion: apps/v1
       kind: Deployment
@@ -46,4 +39,4 @@ patches:
               - name: runtime
                 env:
                   - name: OUTTURN_DEFAULT_MODEL
-                    value: "gemma4"
+                    value: "qwen3.5"

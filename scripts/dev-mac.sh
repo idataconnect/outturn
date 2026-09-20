@@ -2,7 +2,7 @@
 # Local development on a Mac: ollama on the host, the rest in the cluster.
 #
 #   scripts/dev-mac.sh            # checks ollama and the model, then skaffold dev -p mac
-#   scripts/dev-mac.sh --small    # gemma4 instead, for a Mac with less memory
+#   scripts/dev-mac.sh --small    # qwen3.5 instead, for a Mac with less memory
 #   scripts/dev-mac.sh -v info    # anything else is passed to skaffold
 #
 # Expects a cluster already running (Docker Desktop's Kubernetes, kind, or
