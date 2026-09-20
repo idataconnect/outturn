@@ -1,19 +1,15 @@
 # Working on outturn
 
-outturn is a multiworkspace agent platform: workspaces deploy agents that serve their
-own customers, with isolation, usage attribution and security boundaries built
-in rather than added later. Rust, Axum, Tokio, PostgreSQL, WASM sandboxing,
-Kubernetes. Apache-2.0, edition 2024.
-
-This file is for anyone — human or agent — picking the project up. It records
-what is true today, what is intended, and the traps that have already cost
-someone a night.
+outturn is a multiworkspace (multitenant) agent platform: workspaces deploy
+agents that serve their own customers, with isolation, usage attribution and
+security boundaries built in rather than added later. Rust, Axum, Tokio,
+PostgreSQL, WASM sandboxing, Kubernetes. Apache-2.0, edition 2024.
 
 ## The tiers
 
 Three binaries, deployed as three services:
 
-| binary | does |
+| binary | purpose |
 |---|---|
 | `api` | HTTP API, auth, transcripts, the job queue and its worker |
 | `gateway` | Talks to model providers, and makes an agent's outbound requests. Holds the credentials; nothing else does |
@@ -27,17 +23,21 @@ host asks the gateway, because the tier running workspace code is the wrong
 place to hold a credential or to decide what may be reached. A compromised
 agent can spend its session's allowance and nothing more.
 
-The gateway speaks *protocols*, not vendors. `provider/openai.rs` is the OpenAI
-chat-completions protocol, which ollama, Groq, OpenRouter and most others also
-speak — they differ in base URL and credential, which is configuration. Only
-Anthropic earns its own file, because its wire format genuinely differs. Adding
-a vendor should not mean adding a file.
+The gateway speaks *protocols*, not vendors. `src/gateway/llm/provider/openai.rs`
+is the OpenAI chat-completions protocol, which ollama, Groq, OpenRouter and most
+others also speak — they differ in base URL and credential, which is
+configuration. Two vendors earn their own file: Anthropic, because its wire
+format genuinely differs, and Gemini, because its OpenAI-compatible endpoint
+folds away the cached and thinking token counts the usage ledger is built from,
+so the native API is dialled and the translating done here. Adding a vendor
+should otherwise not mean adding a file.
 
 ## Running it locally
 
 On a machine that has never run this, `.agents/skills/onboarding/SKILL.md`
-lists what has to be in place — the tools, a reachable cluster, the container
-daemon, ollama and its model — and the one trap worth knowing before it bites:
+lists requirements — the tools, a reachable cluster, the container
+daemon, ollama (or compatible) and its model — and the one trap worth knowing
+before it bites:
 skaffold decides whether to push images by guessing from the kube-context
 name, so a local cluster under an unfamiliar name means four images pushed to
 Docker Hub. It diagnoses and explains; it changes nothing.
@@ -46,14 +46,23 @@ Start the cluster with the Control API open, so a build and deploy can be
 triggered without hitting Enter:
 
 ```bash
+scripts/dev.sh        # skaffold dev, Control API on :50052, nothing auto
+scripts/build.sh      # in another terminal: one build-and-deploy round
+```
+
+Which is this, with the traps below already handled:
+
+```bash
 skaffold dev --auto-build=false --auto-deploy=false --auto-sync=false --rpc-http-port=50052
 curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 ```
 
 Build and deploy must go in **one** request; a lone deploy can softlock the
-loop (skaffold #4886). `--trigger=manual` on its own does not work — it gates
-file watching, not the API. Check `buildState.autoTrigger` in `/v1/state`:
-`true` means `/v1/execute` returns `{}` and silently does nothing.
+loop (skaffold #4886), which is why `build.sh` offers no way to ask for one.
+`--trigger=manual` on its own does not work — it gates file watching, not the
+API. Check `buildState.autoTrigger` in `/v1/state`: `true` means `/v1/execute`
+returns `{}` and silently does nothing, which `build.sh` checks for rather than
+leaving you to wonder why a build changed nothing.
 
 Skaffold forwards 18080 (api), 18081 (gateway), 18082 (runtime) and 15432
 (postgres), and keeps them alive across redeploys. **Do not start your own
@@ -79,62 +88,16 @@ generates them if they are missing.
 ## Models
 
 Local development runs against ollama through the OpenAI protocol
-(`OPENAI_BASE_URL`, no key). **Use qwen3.5.** The agent offers tools on every
-turn, and a model whose template stops streaming when tools are present
-collapses a reply to three chunks — llama3.1 and mistral both do this, qwen3.5
-and gemma4 do not. It is per-model template behavior, not an ollama or gateway
-property. olmo-3 cannot do tools at all.
+(`OPENAI_BASE_URL`, no key). **Use qwen3.5.** It works well enough for most
+tasks, including tool use. It fits in an 8Gi card when using 8-bit quantized
+KV.
 
-qwen3.5 over gemma4, which this used to say, because gemma4 writes its whole
-reply before it acts. Asked to check the time and then report it, it produced
-the prose first — quoting a time from earlier in the session, which it had
-invented having not yet called the clock — and only then made the call. Handed
-the correct answer on the next round it replied with a single token rather
-than correcting itself. It also never called `load_tools` at all: offered the
-loader and the names, it guessed at schemas it had never read, calling
-`write_object` with `content_bytes` and `object_name`. qwen3.5 calls the
-loader unprompted and acts after it rather than before.
-
-Some of that was `reasoning_effort` rather than the model -- see below -- but
-not the guessing.
+Setting thinking to off will sometimes cause strange behavior around tool
+calling, such as increasing the number of pointless tool calls, and stopping
+the turn right after a tool call without continuing.
 
 On a Mac, `scripts/dev-mac.sh` runs the `mac` profile instead: ollama on the
 host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
-It passes both checks above -- it streams with tools offered, and unlike gemma4
-it still answers a tool result with thinking off.
-
-A local model does not know what it is, and will not say so. Asked what
-model it was, an agent claimed to be Claude; asked again after a change, it
-denied being qwen and named a product that does not exist, describing this
-platform's file scopes and tools accurately around the invented name. Neither
-was a prompt going wrong -- nothing told it what it was, so it wrote the
-likeliest continuation, and being challenged moved it rather than correcting
-it. Every turn's prompt now opens with the product, the version and the model
-actually serving it (`skill::compose_for_turn`), which is what a question about
-itself now finds. `OUTTURN_BRAND_NAME` is the deployer's own name for this
-tier, matching the UI's `VITE_BRAND_NAME`, which is compiled into the browser
-bundle and never reaches the API.
-
-That fixes identity and nothing else: the same reply invented HTTP headers to
-check. Small local models embellish, and a prompt can only supply facts it has.
-
-Thinking is on by default with tools. `reasoning_effort: "none"` turns it off
-where supported and cuts a gemma4 tool turn from ~113 completion tokens to 24.
-It hangs off the agent's policy, beside `model`.
-
-**Do not set it to "none" while working on anything that calls a tool.** The
-saving is real and so is the damage: a model with nowhere to think uses its
-output as the scratchpad instead. gemma4 with thinking off answers a tool
-result with one token, so the turn ends on the tool and the reader is told
-nothing; it also writes its whole reply before acting, which is how a time it
-had not looked up yet ends up in the answer. qwen3.5 with thinking off reaches
-for `load_tools` on input that needs no tools at all -- a call being the only
-place it can put a thought. At "low" both behave. A day went into chasing
-these as model bugs before the override that caused them turned up in
-`setting_overrides`, so check there first when a model starts acting stupid.
-
-The default is "low" for this reason (`api::settings`), and an override in the
-database outranks it.
 
 ## Tunables
 
@@ -171,7 +134,8 @@ turn mid-generation, it only governs scaling to zero.
 
 `cargo test` runs what is fast and needs nothing. Use it while working.
 
-Before a push, run everything:
+Before a push, run everything, but only if your change might have caused a bug
+that can be caught by additional tests:
 
 ```bash
 TEST_DATABASE_URL='postgres://outturn:outturn-dev@localhost:15432/outturn_test' \
@@ -193,23 +157,17 @@ real money:
 GEMINI_API_KEY=... cargo test --features live-providers gemini_
 ```
 
-**A key in the environment is not permission to spend it.** Somebody who
+**An LLM key in the environment is not permission to spend it.** Somebody who
 clones this, sets the keys the documentation tells them to set, and runs the
 suite while finding their way around must not discover afterwards that we
 billed them for it. The flag is the consent, and it has to be typed. Anything
 that reaches a paid endpoint belongs behind it -- and nothing else may imply
 it, including whatever gets run before a push.
 
-Within that suite a missing key fails rather than skips, because a test runner
-gives a skipped case no louder a voice than a passing one, and "all passed"
-when nothing ran is worse than a red line. Run one provider at a time by
-filtering on the name.
+Within that suite a missing key fails rather than skips.
 
-Do not assert elapsed time in the slow suites. Sixteen sandboxes compete for
-whatever cores are left, and a turn there finishes when the suite does rather
-than when its own deadline fires -- a test that measured this failed about half
-the time while the deadline it was testing worked perfectly. Bound the work
-from outside with `tokio::time::timeout` and assert that it finished.
+Do not assert elapsed time in the slow suites because of core competition
+and parallel runs.
 
 Every test gets a private Postgres schema, so the suite is safe to run in
 parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`
