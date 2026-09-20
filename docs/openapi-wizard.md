@@ -53,6 +53,19 @@ Nothing new is required for any of this. `read_object` exists, the object store
 exists, and `PUT /v1/agent-sessions/{id}/files/{scope}/{path}` is how something
 above writes a file an agent can read.
 
+### What a file has to fit inside
+
+`read_object` returns at most 32KB of a file at once, and a tool result is
+truncated at 50KB or 2000 lines
+(`READ_BUDGET`, `MAX_TOOL_BYTES`, `MAX_TOOL_LINES` in the guest). A larger
+file is not an error -- the read returns its start and its end and says at what
+offset to continue -- but an agent that has to make three reads to understand
+one operation is paying for the split twice.
+
+So every file the wizard writes should be readable in one call. An operation's
+detail is comfortably inside that; a manifest for a large API is not, which is
+what the categories below are for.
+
 ### Where the files go
 
 `workspace/` scope, which is **read-only to an agent by default**
@@ -63,9 +76,12 @@ every agent in the workspace rather than being copied per agent.
 A layout that reads well in a listing and in a path:
 
 ```
-workspace/api/<service>/index.md         the manifest, mirrored from the skill body
-workspace/api/<service>/<operation>.md   one file per operation
+workspace/api/<service>/index.md          the manifest, mirrored from the skill body
+workspace/api/<service>/<operation>.md    one file per operation
 ```
+
+For a large API this grows one level, described under *When the manifest itself
+is too large* below.
 
 The operation file name is the operation's name in the manifest, so an agent
 that has read the manifest can construct the path without being told it
@@ -145,10 +161,49 @@ absence is invisible. Including everything makes the manifest the only thing
 that grows, and a long manifest is a cost that can be measured and trimmed
 later against real usage rather than guessed at now.
 
-A very large specification may still produce a manifest worth splitting. The
-natural seam is the specification's own tags, which usually group operations the
-way the API's authors thought about them -- one skill per tag, each with its own
-manifest. Worth doing when somebody hits it, not before.
+## When the manifest itself is too large
+
+The split above moves the cost from the specification to the manifest, and for
+a big enough API the manifest is still too much. An ERP with accounts
+receivable, accounts payable, email and authentication runs to hundreds of
+operations; at a line each that is tens of kilobytes in the prompt on every
+turn, and it approaches the 32KB a single `read_object` returns before
+truncation.
+
+So the same trade is made once more. The skill body carries **categories**, and
+each category has its own manifest file listing the operations in it:
+
+```
+workspace/api/<service>/index.md          categories, one line each
+workspace/api/<service>/<category>.md     the operations in that category
+workspace/api/<service>/<operation>.md    one operation
+```
+
+An agent asked about an unpaid invoice reads the receivables manifest and
+nothing else. The prompt carries a handful of category lines whatever the size
+of the API, and each file stays well inside a single read.
+
+**Categories come from the specification's own tags first.** Almost every
+generated document carries `tags` on its operations, written by the people who
+designed the API and grouping it the way the domain actually divides. That is
+better input than anything inferred, and it is free.
+
+**A model groups them only when tags fail**, which happens in recognisable
+ways: no tags at all, one tag covering everything, or a tag per operation.
+Then a model reads the operation names and summaries -- not the whole
+specification, which is the point -- and proposes categories and
+subcategories. It is a one-off task at import, not something on the turn path,
+so it can afford a capable model and can be reviewed before it is saved.
+
+Worth stating why the model is the fallback rather than the default: a
+grouping it invents is a guess about a domain it is seeing for the first time,
+where a tag is a statement by somebody who knows. The guess is good enough
+when there is nothing better, and worse than the tag when there is.
+
+Subcategories follow the same rule, and are worth having only where a category
+is itself too large to read in one go. Nesting for its own sake costs a round
+trip per level, and a round the agent spends navigating is a round it is not
+spending on the work.
 
 ## Hosts and credentials
 
