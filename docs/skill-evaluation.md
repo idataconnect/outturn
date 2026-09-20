@@ -100,6 +100,23 @@ recommendation a person applies rather than an edit, and the judge holds no
 authority of its own -- it reads a transcript and writes prose, and cannot
 publish a version, bind a skill, or open a host.
 
+## What this owes the wizard
+
+A skill generated from an API specification
+([openapi-wizard.md](openapi-wizard.md)) deliberately carries no worked
+examples, because an example the generator invented is a guess about what a
+model will do, sitting in a file the agent trusts.
+
+Evaluation is where a real example comes from. A turn that called an operation
+and got what it wanted is evidence rather than conjecture, and it attaches to
+the operation's detail file -- which the agent already fetches lazily, so
+nothing new carries it and nothing grows in the prompt.
+
+That makes this the second half of the wizard rather than a separate feature,
+and it is the clearest use for the successful half of a transcript. Most of
+this document is about diagnosing failures; the successes are worth keeping
+too, and this is what they are for.
+
 ## Not decided
 
 - Whether the judge reads one transcript or a sample across many, which changes

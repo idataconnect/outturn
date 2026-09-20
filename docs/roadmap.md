@@ -34,15 +34,18 @@ be pinned. Both are real and neither is a prerequisite. See
 
 ### OpenAPI integration wizard
 
-No spec. Reads a specification and produces what a workspace needs to integrate
-against it -- today that means skill text: the endpoints, their arguments, what
-comes back, written the way a model reads well rather than the way an API
-reference is organised.
+[openapi-wizard.md](openapi-wizard.md).
 
-Worth building early precisely because it needs nothing. It is also the thing
-that makes the question below answerable with evidence: a wizard that generates
-prose will show where prose is not enough, in which case the same wizard
-generates tool definitions instead and only the consumer changes.
+Reads a specification and produces a skill, split the way the guest's own tools
+already split: a manifest small enough to carry on every turn, and a file per
+operation in `workspace/` scope that the agent reads with `read_object` when it
+needs one. That is what lets it include every operation without the prompt
+growing with the API.
+
+Worth building early because it needs nothing that does not exist -- the object
+store, `read_object`, `skill_version_hosts` and the files API are all in place.
+It is also what makes the fork below answerable with evidence rather than
+argument.
 
 ### Platform-level egress list
 

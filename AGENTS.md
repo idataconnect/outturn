@@ -255,6 +255,13 @@ cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
 says what exists.
 
+Turning an API specification into a skill is designed but unbuilt, in
+[docs/openapi-wizard.md](docs/openapi-wizard.md) — a manifest in the prompt and
+a file per operation in the object store, because a skill body is paid for on
+every round of every turn and a real specification is megabytes. The agent
+reads an operation with `read_object` when it needs one, which is the same
+trade `load_tools` already makes for the guest's own tools.
+
 How somebody finds out their skill is not working is designed but unbuilt, in
 [docs/skill-evaluation.md](docs/skill-evaluation.md) — a skill that documents
 its call the way an API's own docs do ("GET https://…") reads fine to a capable
