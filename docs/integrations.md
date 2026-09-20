@@ -48,11 +48,10 @@ environment variable holding a credential; `skill_version_hosts` lets a skill
 declare the hosts it will reach; the difference between declared and allowed
 surfaces as `unmet_hosts`. A workspace cannot grant itself a host.
 
-What does not exist is anything *behind* the declaration. A skill can say it
-will reach `api.example.com`, and the agent has no tool that does so: tools are
-hardcoded inside the guest and dispatched by a name match. An operator
-installing an interface has nowhere to install it to. That gap is the subject
-of its own section below, because it blocks tiers 1 and 2 equally.
+What sits behind the declaration is `fetch_url` and a skill. A skill says it
+will reach `api.example.com`, the rule permits it, and the agent composes the
+calls from what the skill documents. That is the whole of an integration today,
+and it is why this tier is the one that already works.
 
 ### 2. Vetted extensions
 
