@@ -1762,6 +1762,92 @@ async fn a_tool_that_was_not_loaded_is_refused() {
     );
 }
 
+/// A tool loaded on an earlier turn is still loaded on a later one.
+///
+/// The loaded set used to be turn state, so a model that read a schema and
+/// then called the tool a few turns later was told to load it again -- a
+/// wasted round to reload something still in front of it, which reads as the
+/// platform forgetting what it just did. It is rebuilt from the transcript
+/// instead, the guest being instantiated fresh for every turn with nowhere to
+/// carry it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_loaded_on_an_earlier_turn_stays_loaded() {
+    // Calls the clock directly, without loading it first: the load is behind
+    // it, in the history.
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "It is Saturday.".into(),
+    })
+    .await;
+
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push((outcome.content.clone(), outcome.is_error));
+        })
+    };
+
+    // An earlier turn that loaded the clock, as the transcript holds it: the
+    // assistant's call, and the answer it got.
+    let mut conversation = user("What day is it?");
+    conversation.push(Message {
+        role: "assistant".into(),
+        parts: vec![outturn::runtime::component::ContentPart::Call(
+            outturn::runtime::component::ToolCall {
+                id: "call_1".into(),
+                name: "load_tools".into(),
+                arguments: r#"{"names":["get_current_time"]}"#.into(),
+            },
+        )],
+        tool_call_id: None,
+    });
+    conversation.push(Message {
+        role: "tool".into(),
+        parts: vec![outturn::runtime::component::ContentPart::Text(
+            r#"{"loaded":["get_current_time"]}"#.into(),
+        )],
+        tool_call_id: Some("call_1".into()),
+    });
+    conversation.extend(user("And what day is it now?"));
+
+    let runner = runner();
+    let mut options = options(&gateway, None);
+    // Nothing is offered outright, so the only way the clock is callable is
+    // the load in the history.
+    options.eager_tools = Vec::new();
+    options.on_tool_result = Some(on_tool_result);
+
+    let reply = runner
+        .run(&component(), conversation, String::new(), options)
+        .await
+        .expect("run")
+        .0;
+
+    let results = seen.lock().unwrap().clone();
+    let (content, is_error) = results.first().expect("the call was answered").clone();
+    assert!(
+        !is_error,
+        "a tool loaded on an earlier turn should run, got {content:?}"
+    );
+    assert_eq!(reply, "It is Saturday.");
+
+    // And it was offered on the first round, not merely accepted when called:
+    // a model cannot call what it was not shown.
+    let requests = gateway.requests();
+    let offered: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .expect("tools were offered")
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(
+        offered.contains(&"get_current_time"),
+        "the previously loaded tool should be on offer, got {offered:?}"
+    );
+}
+
 /// An eager tool is callable without being loaded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_eager_tool_needs_no_loading() {

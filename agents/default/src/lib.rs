@@ -354,6 +354,67 @@ fn load_tools(
     }
 }
 
+/// What earlier turns in this conversation already loaded.
+///
+/// The loaded set is rebuilt from the transcript rather than carried, because
+/// the guest is instantiated fresh for every turn and has nowhere to carry it.
+/// Every `load_tools` call the model has made is in the history it is handed,
+/// so the evidence is already there and costs nothing to read.
+///
+/// Scoped to what the model can still see, which is the whole point: a tool
+/// stays loaded while the round that loaded it is in the conversation, and
+/// deferral reasserts itself once compaction drops that round -- which is also
+/// the point where the model has stopped being able to remember the schema.
+/// Carrying the set forward unconditionally would end a long session offering
+/// every tool on every turn, which is the cost deferral exists to avoid.
+///
+/// Only the arguments are read, never the result. A call whose result was
+/// dropped to fit, or whose turn died before it answered, still tells us the
+/// model asked -- and re-offering a tool that was never really loaded costs a
+/// definition, where withholding one the model believes it has costs a round
+/// and reads as the platform forgetting what it just did.
+fn already_loaded(conversation: &[Message], eager: &BTreeSet<String>) -> BTreeSet<String> {
+    let available = deferred_names(eager);
+    let mut loaded = BTreeSet::new();
+
+    for call in conversation
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|part| match part {
+            ContentPart::Call(c) => Some(c),
+            ContentPart::Text(_) => None,
+        })
+        .filter(|c| c.name == LOAD_TOOLS)
+    {
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            // Arguments a model produced, so they may not be JSON at all --
+            // and a round cut partway leaves them truncated mid-object. A call
+            // we cannot read names no tools, which is the safe direction: the
+            // model is offered the loader again rather than a tool nobody
+            // asked for.
+            continue;
+        };
+
+        let names = args
+            .get("names")
+            .and_then(|v| v.as_array())
+            .map(|items| items.iter().filter_map(|v| v.as_str()))
+            .into_iter()
+            .flatten();
+
+        for name in names {
+            // Checked against the deferred set, so a name the model invented
+            // does not enter the loaded set and get offered as a tool that
+            // does not exist.
+            if available.contains(&name.to_string()) {
+                loaded.insert(name.to_string());
+            }
+        }
+    }
+
+    loaded
+}
+
 /// Reads a JSON string argument, or an empty string if it is missing.
 fn arg<'a>(args: &'a serde_json::Value, name: &str) -> &'a str {
     args.get(name).and_then(|v| v.as_str()).unwrap_or("")
@@ -951,11 +1012,13 @@ impl Guest for Component {
         // The deployment's eager set, read once: it cannot change mid-turn.
         let eager = eager_tools();
 
-        // Which deferred tools this turn has loaded. Turn state, not session
-        // state: a later turn starts from the eager set again, because what a
-        // model needed once is not what it needs next, and carrying the set
-        // forward would quietly undo the deferral over a long conversation.
-        let mut loaded: BTreeSet<String> = BTreeSet::new();
+        // Which deferred tools are loaded, seeded from what earlier turns in
+        // this conversation already loaded and added to as this turn loads
+        // more. Session state rather than turn state: a model that read a
+        // schema four turns ago still has it in front of it, and refusing the
+        // call it then makes costs a round to reload something it never
+        // forgot.
+        let mut loaded = already_loaded(&messages, &eager);
 
         let mut round: u32 = 0;
         loop {
