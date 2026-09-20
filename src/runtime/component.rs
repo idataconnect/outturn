@@ -308,8 +308,9 @@ impl AgentHost {
             Ok(())
         } else {
             Err(format!(
-                "this agent may not write to {0}/. Write under session/ instead, or ask \
-                 whoever runs the workspace to allow writes to {0}/.",
+                "this agent may not write to {0}/. Write under agent/ or session/ instead \
+                depending on scoping requirements, or inform the user that you need additional \
+                permission to write to {0}/.",
                 scope.as_str()
             ))
         }
