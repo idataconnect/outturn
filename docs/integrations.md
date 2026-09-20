@@ -207,6 +207,52 @@ still refused -- and the operator's internal-hosts list in
 [egress.md](egress.md) remains the only way past that. A workspace permitted to
 add hosts is permitted to add *public* hosts.
 
+## A credential is bound to its host
+
+Today a credential cannot be aimed anywhere. The gateway reads the named
+environment variable and attaches the header
+(`src/gateway/egress/mod.rs`), and both halves of that rule -- the host and the
+variable naming the secret -- are set by an operator editing manifests. The
+guest never holds the value, the runtime never holds it, and a request's own
+headers are refused if they carry one.
+
+Tier 2 breaks that arrangement by making the pairing workspace-editable. Once a
+workspace holds a Notion token and can write egress rules, someone with
+permission to edit a rule can point that credential at a host of their
+choosing. Nothing is read, and the theft is complete anyway: the gateway
+attaches the tenant's token to a request whose destination the attacker
+controls.
+
+So the defence is not keeping people from reading secrets, which already works.
+It is that **a credential and the hosts it may travel to are one fact, fixed
+when the integration is authorised, and not separately editable afterwards**. A
+Notion credential attaches on Notion's hosts and nowhere else. The binding
+belongs to the integration rather than to a row a workspace administrator can
+change, and a rule that names a credential without inheriting that binding
+should not be expressible.
+
+This is also why the authority to configure an integration is not the authority
+to use one. A member who can enable Notion for a workspace is choosing what the
+workspace's agents may do; the credential that results should not be reachable
+by editing anything else.
+
+## Which agents may use an integration
+
+Enabling an integration for a workspace is not the same as offering it to every
+agent in that workspace. A tax-preparation agent that can reach the tax
+authority's API and nothing else is contained in a way that one holding every
+credential the workspace owns is not -- and the containment matters precisely
+because a model's output chooses the calls. A document containing an injected
+instruction reaches whatever the agent could already reach.
+
+`egress_rules` has `workspace_id` and no agent column, so this does not exist.
+Adding it is a schema change and a resolution rule, and the resolution rule has
+a trap in it: settings cascade operator to workspace to agent with an override
+at each level, and egress must not. An agent's list may only *narrow* its
+workspace's. An agent that could widen it would be a way out of the workspace
+boundary, granted by whoever configures the agent -- which is the opposite of
+what a per-agent list is for.
+
 ## The gap underneath all three
 
 None of these tiers does anything until an agent has a tool that makes the
