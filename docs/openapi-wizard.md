@@ -139,10 +139,17 @@ do with the operation, and a guess in a file the agent trusts is worse than no
 example.
 
 Examples come from evaluation ([skill-evaluation.md](skill-evaluation.md)).
-When a real turn calls an operation successfully, that call is evidence rather
-than conjecture -- and it attaches to the detail file, which is the same unit
-the agent already fetches. So the mechanism needs nothing added: an example is
+When a real turn calls an operation, that call is evidence rather than
+conjecture -- and it attaches to the detail file, which is the same unit the
+agent already fetches. So the mechanism needs nothing added: an example is
 appended to a file that is already lazily loaded.
+
+What the example may claim is bounded, and that document sets the bound. A call
+that returned 2xx proves its *form* was right and says nothing about whether it
+was the right call: an agent fetching the wrong customer's invoices gets a
+clean 200 too. So an example shows how an operation is called and must not
+imply that calling it was the thing to do. It also records the turn it came
+from, so a session somebody later flags takes its examples down with it.
 
 That ordering is deliberate. The wizard ships first and produces skills without
 examples; evaluation improves them afterwards from what actually happened. A

@@ -107,15 +107,87 @@ A skill generated from an API specification
 examples, because an example the generator invented is a guess about what a
 model will do, sitting in a file the agent trusts.
 
-Evaluation is where a real example comes from. A turn that called an operation
-and got what it wanted is evidence rather than conjecture, and it attaches to
-the operation's detail file -- which the agent already fetches lazily, so
-nothing new carries it and nothing grows in the prompt.
+Evaluation is where a real example comes from. A turn that actually called an
+operation is evidence rather than conjecture, and it attaches to the
+operation's detail file -- which the agent already fetches lazily, so nothing
+new carries it and nothing grows in the prompt.
 
 That makes this the second half of the wizard rather than a separate feature,
 and it is the clearest use for the successful half of a transcript. Most of
 this document is about diagnosing failures; the successes are worth keeping
 too, and this is what they are for.
+
+## What a success signal can and cannot say
+
+The loop this describes improves a skill from what happened when agents used
+it. That only works if the signal means what it is taken to mean, and the
+tempting signals mostly do not.
+
+Three kinds, and only the first is safe to act on unsupervised:
+
+**The world answered.** A probe that found the record, a uniqueness constraint
+that refused a duplicate, an error code the recipient chose to send. Nothing is
+inferred: something outside the platform was asked and replied.
+
+**The mechanism worked.** The call was well-formed, the arguments parsed, the
+reply was not truncated, the status was 2xx. This says the *form* was right and
+nothing whatever about whether it was the right call to make. An agent that
+fetches the wrong customer's invoices gets a clean 200 every time.
+
+**A person accepted the outcome.** The only signal about correctness, and it is
+sparse and expensive.
+
+The hazard is the second kind wearing the first's clothes. A worked example
+derived from a 2xx is honest about argument shape and dishonest about intent,
+and promoting one teaches every later agent that this is what to ask for. The
+artefact is prose a model reads, so there is no type error and no failing test
+-- just a skill that quietly recommends a mistake.
+
+So: form may be learned from the mechanism, intent may not. An example may show
+how an operation is called. It must not imply that calling it that way was the
+right thing to do.
+
+## A flag invalidates what was learned from it
+
+Somebody marking a session as wrong is a person's judgement arriving after the
+automated signal, about the same evidence. It is the correction channel the
+loop otherwise has no way to hear, and it has to do more than stop future
+harm.
+
+**It retracts.** By the time a session is flagged, anything derived from it may
+already be attached and already shaping turns. So every automatically acquired
+artefact records where it came from -- this example, from that turn -- and a
+flag withdraws what its session produced. Without that link a flag can only
+prevent, and what is already live stays live.
+
+**It teaches the loop where it cannot trust itself.** One flagged session says
+one example was wrong. Several against the same operation say the signal is
+unreliable *there*: that operation returns success for calls that are wrong, so
+well-formedness means nothing for it and the loop should stop acting on it
+unsupervised. That is worth more than any individual retraction.
+
+**Its absence proves nothing.** Flags are sparse and biased toward what
+somebody noticed. Nobody flags a session that quietly did the wrong thing and
+was never read. So a flag is strong negative evidence, and the lack of one is
+not evidence of anything.
+
+## Silence is the goal, but not secrecy
+
+The loop earns its keep by not demanding attention. A platform that asks its
+users to review every proposed improvement has given them a second job, and
+they will stop reading it -- which is worse than not asking, because the
+ignored prompt looks like consent.
+
+So an improvement that cannot be wrong should apply itself and say nothing: a
+probe resolving an `attempted` record, an example recording the argument shape
+of a call that demonstrably parsed. One that could be wrong waits for a person,
+and the bar for interrupting is that nobody else could have made the call.
+
+What silence must not mean is unrecorded. A platform quietly changing its own
+behaviour with no trail is the failure [inhibitors.md](inhibitors.md) already
+names for summaries, where a misstatement becomes the record nobody can see
+being made. Every automatic change is visible after the fact, attributable to
+the turn it came from, and reversible by a flag.
 
 ## Not decided
 

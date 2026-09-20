@@ -267,6 +267,14 @@ about.
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
 
+**Flagging a session as wrong.** Nothing today lets a person say a turn did the
+wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it as the
+correction channel for anything the platform learns automatically: a flag
+retracts what was derived from that session, and repeated flags against one
+operation say the signal is unreliable there. Small on its own -- a column and
+a button -- and it has to exist before anything improves a skill unsupervised,
+because a loop with no way to be told it is wrong only compounds.
+
 **Memory, or whatever the durable thing turns out to be.** A schedule running
 weekly in a fresh session each time cannot learn anything, and the fix is not a
 long-lived session. What it wants is narrow and durable, and the shape is
