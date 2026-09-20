@@ -105,9 +105,58 @@ changes for tools that do not care.
    one and passes it through. Now `attempted` is resolvable, and the guarantee
    is end-to-end rather than best-effort.
 
-**A properly keyed tool should never need a human.** Escalation is the fallback
-for recipients that do not support keys. If it fires often, that is a signal the
-tool integrations are weak, not that the platform is working as designed.
+**A properly keyed tool should never need a human.** But `keyed` is the
+minority case, and building as though it were the default gets the priorities
+backwards.
+
+Stripe and the payment processors support idempotency keys because they had to.
+A customer's booking system, a framework-generated CRUD endpoint, the internal
+API a workspace actually points an agent at -- most of them have never heard of
+one. Those recipients are the reason this document exists, not the degraded
+path it falls back to.
+
+That is the honest position: from our side this can only ever be best-effort,
+and best-effort is better than the alternative, which today is a retry that
+re-runs the tool with nothing recording that the first attempt sent. Even with
+nothing else built, telling the model "sent, outcome not observed" removes the
+silent duplicate.
+
+## Two things to try before escalating
+
+`attempted` with no key is unresolvable *by us*. It is not always unresolvable
+by the recipient, and two declarations turn a large class of unkeyed APIs into
+resolvable ones.
+
+**A read-back probe.** Many APIs that cannot dedupe a write can still answer
+whether the thing exists -- `GET /bookings?reference=...`. A tool that declares
+how to ask lets the host resolve `attempted` by asking, with no person
+involved and nothing required of the recipient beyond an ordinary read.
+
+This is worth more than it first looks. It does not improve our record, which
+was never the weak part: we know exactly that we sent. It asks the place that
+knows the part we cannot see, which is the only way that question gets a real
+answer.
+
+The probe has to be safe to run repeatedly and must distinguish "not there"
+from "cannot tell" -- a probe that errors is not evidence of absence, and
+treating it as such would resolve `attempted` to "never happened" on the
+strength of a network blip. Failing to confirm means still `attempted`, the
+same rule the egress commitment follows: could not verify means refused.
+
+**A natural key the recipient merely stores.** If the workspace's API accepts
+a reference field and keeps it -- an invoice number, a booking reference the
+agent generates -- then the write carries identity even though the API knows
+nothing about idempotency. A duplicate is then detectable by the probe above,
+and sometimes refused by the recipient's own uniqueness constraint, which is
+the best outcome available without their cooperation.
+
+Both are properties of the recipient rather than of the tool's own logic, which
+is why they belong beside `none`/`cached`/`keyed` as things a tool declares
+about what it is talking to.
+
+Escalation remains for what neither covers: a recipient that cannot be asked
+and stores nothing that identifies the write. If that fires often it is a
+signal about the integration rather than about the platform.
 
 ## Key derivation is the whole ballgame
 
@@ -183,6 +232,9 @@ The pieces, roughly in order:
 - Derivation policy in the WIT, so a tool declares its level and scope.
 - The replay path in the host's tool dispatch, which is where a retry after a
   crash finds the record the first attempt left.
+- The read-back probe, which is what keeps escalation rare against the
+  recipients this is mostly for. Later than the tristate and before any UI for
+  resolving one by hand.
 
 Stop is no longer on that list, for the reason given above.
 
@@ -195,10 +247,14 @@ integrations do, and not before.
 
 ## Human in the loop
 
-An `attempted` write with no key is not something an agent should resolve by
-guessing, and not something the platform should resolve by policy. "Did the
-payment go through, retry or not" has no correct default. It is a person's
-call.
+An `attempted` write that neither a key nor a probe can settle is not something
+an agent should resolve by guessing, and not something the platform should
+resolve by policy. "Did the payment go through, retry or not" has no correct
+default. It is a person's call.
+
+A person is the last resort rather than the first, which is the point of the
+two declarations above: the goal is that escalation is rare, not that it is
+well-designed.
 
 There is no HITL yet, and this does not wait for it. An `attempted` record is
 durable and resolves whenever something resolves it: a person reading the
