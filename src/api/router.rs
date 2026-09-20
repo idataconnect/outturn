@@ -11,12 +11,12 @@ use uuid::Uuid;
 
 use crate::auth::{self, Authority, SessionClaims, TokenMinter, TokenValidator};
 
-use super::workspace::{CreateWorkspace, Workspace, WorkspaceError, WorkspaceStore};
 use super::agent::AgentStore;
 use super::chat::ChatStore;
+use super::role::{CreateRole, RoleError, RoleStore, UpdateRole, WorkspaceRole};
 use super::session::SessionStore;
-use super::role::{CreateRole, RoleError, RoleStore, WorkspaceRole, UpdateRole};
-use super::user::{CreateUser, Identity, WorkspaceMembership, User, UserStore};
+use super::user::{CreateUser, Identity, User, UserStore, WorkspaceMembership};
+use super::workspace::{CreateWorkspace, Workspace, WorkspaceError, WorkspaceStore};
 
 use super::inhibitor::InhibitorStore as _;
 
@@ -169,7 +169,10 @@ pub(super) async fn require(
     if authorities_of(state, claims).await?.contains(&authority) {
         Ok(())
     } else {
-        Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()))
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
     }
 }
 
@@ -202,7 +205,10 @@ pub(super) async fn require_for_agent(
         // Forbidden rather than not-found: the roster is workspace-public, so
         // the caller already knows this agent exists and pretending otherwise
         // would only be confusing.
-        Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()))
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
     }
 }
 
@@ -394,7 +400,6 @@ async fn delete_workspace(
     Ok(StatusCode::NO_CONTENT)
 }
 
-
 #[derive(Debug, serde::Deserialize)]
 struct GrantRole {
     /// The name of one of the workspace's roles.
@@ -411,7 +416,9 @@ async fn list_egress_rules(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<super::egress::Rule>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    Ok(Json(super::egress::list(&state.pool, claims.workspace_id).await?))
+    Ok(Json(
+        super::egress::list(&state.pool, claims.workspace_id).await?,
+    ))
 }
 
 async fn create_egress_rule(
@@ -462,7 +469,9 @@ async fn list_users(
     if claims.is_system_admin() {
         Ok(Json(state.users.list().await?))
     } else {
-        Ok(Json(state.users.list_for_workspace(claims.workspace_id).await?))
+        Ok(Json(
+            state.users.list_for_workspace(claims.workspace_id).await?,
+        ))
     }
 }
 
@@ -652,8 +661,14 @@ async fn set_scope(
     // Narrowing somebody who is not in this workspace would write a row that
     // no query here would ever find, and would read as having worked.
     let memberships = state.users.memberships(user_id).await?;
-    if !memberships.iter().any(|m| m.workspace_id == claims.workspace_id) {
-        return Err((StatusCode::NOT_FOUND, "no such user in this workspace".into()));
+    if !memberships
+        .iter()
+        .any(|m| m.workspace_id == claims.workspace_id)
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no such user in this workspace".into(),
+        ));
     }
 
     state
@@ -691,7 +706,10 @@ async fn grant_workspace_role(
     // A workspace admin may only grant within their own workspace; a system admin
     // carries the authority in whichever workspace they are scoped to.
     if claims.workspace_id != workspace_id && !claims.is_system_admin() {
-        return Err((StatusCode::FORBIDDEN, "cannot grant outside your workspace".into()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot grant outside your workspace".into(),
+        ));
     }
     state
         .users
@@ -714,7 +732,10 @@ async fn revoke_workspace_role(
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
     if claims.workspace_id != workspace_id && !claims.is_system_admin() {
-        return Err((StatusCode::FORBIDDEN, "cannot revoke outside your workspace".into()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot revoke outside your workspace".into(),
+        ));
     }
     state
         .users
@@ -729,7 +750,6 @@ async fn revoke_workspace_role(
     );
     Ok(StatusCode::NO_CONTENT)
 }
-
 
 // -- Roles --------------------------------------------------------------------
 
@@ -766,7 +786,10 @@ async fn list_roles(
     let claims = authenticate(&state, &headers)?;
     let granted = authorities_of(&state, &claims).await?;
     if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
-        return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ));
     }
     Ok(Json(state.roles.list(claims.workspace_id).await?))
 }
@@ -779,7 +802,10 @@ async fn get_role(
     let claims = authenticate(&state, &headers)?;
     let granted = authorities_of(&state, &claims).await?;
     if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
-        return Err((StatusCode::FORBIDDEN, auth::AuthError::Forbidden.to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ));
     }
     Ok(Json(state.roles.get(claims.workspace_id, id).await?))
 }
@@ -853,7 +879,6 @@ async fn delete_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-
 // -- Usage --------------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize)]
@@ -916,7 +941,9 @@ async fn summarise_usage(
             .map(|d| d.and_utc())
             .unwrap_or(now)
     });
-    let from = query.from.unwrap_or_else(|| to - chrono::Duration::days(30));
+    let from = query
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::days(30));
     if from >= to {
         return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
     }
@@ -924,7 +951,10 @@ async fn summarise_usage(
     // partition of the ledger and an unbounded one is a way to ask the database
     // for everything by accident.
     if to - from > chrono::Duration::days(370) {
-        return Err((StatusCode::BAD_REQUEST, "window may not exceed 370 days".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "window may not exceed 370 days".into(),
+        ));
     }
 
     let summary = state
@@ -974,7 +1004,6 @@ async fn export_usage(
     Ok(Json(page))
 }
 
-
 // -- Settings -----------------------------------------------------------------
 
 use super::settings::{Level, Owner, SettingsError};
@@ -996,12 +1025,20 @@ struct SetSetting {
 }
 
 /// Whether the caller may write at `level`, and whether the setting allows it.
-async fn may_write(state: &ApiState, claims: &SessionClaims, level: Level, key: &str) -> Result<(), ApiError> {
+async fn may_write(
+    state: &ApiState,
+    claims: &SessionClaims,
+    level: Level,
+    key: &str,
+) -> Result<(), ApiError> {
     let setting = super::settings::find(key).ok_or(SettingsError::Unknown(key.to_string()))?;
     match level {
         Level::Operator => {
             if !claims.is_system_admin() {
-                return Err((StatusCode::FORBIDDEN, "only the operator sets platform defaults".into()));
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "only the operator sets platform defaults".into(),
+                ));
             }
         }
         Level::Workspace(_) | Level::Agent { .. } => {
@@ -1009,7 +1046,10 @@ async fn may_write(state: &ApiState, claims: &SessionClaims, level: Level, key: 
             if setting.owner == Owner::OperatorOnly {
                 return Err((
                     StatusCode::FORBIDDEN,
-                    format!("{} is set by the operator and cannot be overridden here", setting.label),
+                    format!(
+                        "{} is set by the operator and cannot be overridden here",
+                        setting.label
+                    ),
                 ));
             }
         }
@@ -1023,7 +1063,10 @@ async fn view_operator_settings(
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authenticate(&state, &headers)?;
     if !claims.is_system_admin() {
-        return Err((StatusCode::FORBIDDEN, "only the operator sees platform defaults".into()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only the operator sees platform defaults".into(),
+        ));
     }
     Ok(Json(state.settings.view(Level::Operator).await?))
 }
@@ -1036,7 +1079,10 @@ async fn set_operator_setting(
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     may_write(&state, &claims, Level::Operator, &key).await?;
-    state.settings.set(Level::Operator, &key, input.value).await?;
+    state
+        .settings
+        .set(Level::Operator, &key, input.value)
+        .await?;
     tracing::info!(actor = %claims.subject, key = %key, "platform setting set");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1086,7 +1132,9 @@ async fn stop_workspace(
     let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
     let held = store
         .take(super::inhibitor::TakeInhibitor {
-            scope: super::inhibitor::Scope::Workspace { workspace_id: claims.workspace_id },
+            scope: super::inhibitor::Scope::Workspace {
+                workspace_id: claims.workspace_id,
+            },
             strength: super::inhibitor::Strength::Stopped,
             reason: request.reason,
             held_by: claims.subject.to_string(),
@@ -1173,7 +1221,12 @@ async fn view_workspace_settings(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    Ok(Json(state.settings.view(Level::Workspace(claims.workspace_id)).await?))
+    Ok(Json(
+        state
+            .settings
+            .view(Level::Workspace(claims.workspace_id))
+            .await?,
+    ))
 }
 
 async fn set_workspace_setting(
@@ -1204,9 +1257,16 @@ async fn clear_workspace_setting(
 
 /// The agent must be the caller's workspace's, or the level would let a workspace
 /// write settings onto somebody else's agent.
-async fn agent_level(state: &ApiState, claims: &SessionClaims, agent_id: Uuid) -> Result<Level, ApiError> {
+async fn agent_level(
+    state: &ApiState,
+    claims: &SessionClaims,
+    agent_id: Uuid,
+) -> Result<Level, ApiError> {
     state.agents.get(claims.workspace_id, agent_id).await?;
-    Ok(Level::Agent { workspace_id: claims.workspace_id, agent_id })
+    Ok(Level::Agent {
+        workspace_id: claims.workspace_id,
+        agent_id,
+    })
 }
 
 async fn view_agent_settings(
@@ -1248,7 +1308,10 @@ async fn clear_agent_setting(
 pub fn routes(state: Arc<ApiState>) -> Router {
     Router::new()
         .route("/v1/login", post(super::login::login))
-        .route("/v1/session/workspace", post(super::login::select_workspace))
+        .route(
+            "/v1/session/workspace",
+            post(super::login::select_workspace),
+        )
         .route("/v1/logout", post(super::login::logout))
         .route("/v1/session/refresh", post(super::login::refresh))
         .route(
@@ -1281,6 +1344,23 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .patch(super::agents::update_agent)
                 .delete(super::agents::delete_agent),
         )
+        .route(
+            "/v1/schedules",
+            get(super::schedules::list_schedules).post(super::schedules::create_schedule),
+        )
+        .route(
+            "/v1/schedules/{id}",
+            get(super::schedules::get_schedule)
+                .patch(super::schedules::update_schedule)
+                .delete(super::schedules::delete_schedule),
+        )
+        // What an expression would do, without saving it. A preview rather
+        // than a resource: nothing is created, and the editor asks while
+        // somebody is still typing.
+        .route(
+            "/v1/schedules/preview",
+            post(super::schedules::preview_schedule),
+        )
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
         .route(
@@ -1310,12 +1390,17 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::files::download)
                 .put(super::files::upload)
                 .delete(super::files::delete)
-                .layer(axum::extract::DefaultBodyLimit::max(super::files::MAX_UPLOAD_BYTES)),
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    super::files::MAX_UPLOAD_BYTES,
+                )),
         )
         .route("/v1/usage", get(export_usage))
         .route("/v1/usage/summary", get(summarise_usage))
         .route("/v1/inhibitors", get(list_inhibitors))
-        .route("/v1/inhibitors/{id}", axum::routing::delete(release_inhibitor))
+        .route(
+            "/v1/inhibitors/{id}",
+            axum::routing::delete(release_inhibitor),
+        )
         .route("/v1/workspace/stop", post(stop_workspace))
         .route("/v1/agents/{id}/stop", post(stop_agent))
         .route("/v1/settings", get(view_workspace_settings))
@@ -1323,7 +1408,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/settings/{key}",
             axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
         )
-        .route("/v1/platform/skills", post(super::skills::create_platform_skill))
+        .route(
+            "/v1/platform/skills",
+            post(super::skills::create_platform_skill),
+        )
         .route(
             "/v1/platform/skills/{id}",
             axum::routing::patch(super::skills::update_platform_skill),
@@ -1351,7 +1439,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .patch(super::skills::update_skill)
                 .delete(super::skills::delete_skill),
         )
-        .route("/v1/skills/{id}/retired", axum::routing::put(super::skills::retire_skill))
+        .route(
+            "/v1/skills/{id}/retired",
+            axum::routing::put(super::skills::retire_skill),
+        )
         .route(
             "/v1/skills/{id}/versions",
             get(super::skills::list_versions).post(super::skills::add_version),
@@ -1383,7 +1474,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(get_role).patch(update_role).delete(delete_role),
         )
         .route("/v1/users", get(list_users).post(create_user))
-        .route("/v1/users/{id}", get(get_user).patch(update_user).delete(delete_user))
+        .route(
+            "/v1/users/{id}",
+            get(get_user).patch(update_user).delete(delete_user),
+        )
         .route("/v1/users/{user_id}/identities", post(add_identity))
         .route(
             "/v1/users/{user_id}/identities/{identity_id}",
@@ -1397,7 +1491,15 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/users/{user_id}/workspaces/{workspace_id}/roles/{role}",
             axum::routing::delete(revoke_workspace_role),
         )
-        .route("/v1/workspaces", get(list_workspaces).post(create_workspace))
-        .route("/v1/workspaces/{id}", get(get_workspace).patch(update_workspace).delete(delete_workspace))
+        .route(
+            "/v1/workspaces",
+            get(list_workspaces).post(create_workspace),
+        )
+        .route(
+            "/v1/workspaces/{id}",
+            get(get_workspace)
+                .patch(update_workspace)
+                .delete(delete_workspace),
+        )
         .with_state(state)
 }

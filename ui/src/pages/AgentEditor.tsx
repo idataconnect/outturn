@@ -6,6 +6,7 @@ import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
 import SettingsCascade from '../components/SettingsCascade'
 import AgentSkills from '../components/AgentSkills'
+import AgentSchedules from '../components/AgentSchedules'
 
 export type Agent = {
   id: string
@@ -262,6 +263,8 @@ export default function AgentEditor() {
       )}
 
       {!creating && !loading && id && <AgentSkills agentId={id} />}
+
+      {!creating && !loading && id && <AgentSchedules agentId={id} />}
 
       {!creating && !loading && (
         <section className="mt-8 space-y-4">
