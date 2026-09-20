@@ -71,9 +71,20 @@ than anything decided now.
 
 [idempotency.md](idempotency.md).
 
-Standalone, and live rather than hypothetical now there is a stop button: a
-tool call has three outcomes rather than two, and the third -- sent but never
-observed -- is what cancelling must avoid creating.
+Standalone, and smaller than it was written to be. The design's motivating case
+was the stop button, and stop solved it another way: cancellation is read at a
+round boundary and a round cut partway has its tool calls refused wholesale, so
+a deliberate stop cannot strand a call.
+
+What remains is the case nobody chooses -- a pod evicted or a lease expired
+while a `fetch` is in flight, where the retry re-runs the tool with nothing
+recording that the first attempt sent. Real, and not designable away by picking
+a better boundary.
+
+Low pressure today: the tools that exist are `fetch_url` and object storage,
+and a repeated `write_object` replaces rather than duplicates. It becomes
+urgent when a workspace is POSTing to its own API, which is when integrations
+do.
 
 ### Triggers
 

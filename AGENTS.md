@@ -273,8 +273,11 @@ untrusted transcripts, which is the part to be careful with.
 
 What happens to a write nobody saw the answer to is designed but unbuilt, in
 [docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
-rather than two, and the third one, sent-but-never-observed, is what a stop
-button has to avoid creating.
+rather than two, and the third, sent-but-never-observed, is what a crash
+creates however carefully a turn is written. Not what a stop creates: stopping
+only happens at a round boundary, and a round cut partway has its tool calls
+refused wholesale, so the deliberate path avoids the window rather than
+recording it.
 
 There is a stop button now, and it avoids it by never stopping inside a round.
 `POST /v1/agent-sessions/{id}/cancel` records the request on the job row; the

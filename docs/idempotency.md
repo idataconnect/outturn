@@ -11,8 +11,12 @@ allowed hosts, `write-object` puts bytes in a bucket.
 
 So there is a window, between a request leaving the pod and its response
 arriving, where the world has changed and we do not know it. Anything that ends
-a turn inside that window — a stop, a crash, a lease expiring, a pod being
-evicted — leaves a write whose outcome was never observed.
+a turn inside that window — a crash, a lease expiring, a pod being evicted —
+leaves a write whose outcome was never observed.
+
+Not a stop: that is read at a round boundary and never lands inside the window
+at all, for the reasons under *Stop solved this differently* below. What is
+left is the set of endings nobody chose.
 
 Today nothing records that. The turn fails, the job is retried, and the retry
 runs the tool again because there is nothing to tell it the first attempt got
@@ -32,8 +36,8 @@ Detaching costs nothing because nothing is shared.
 A tool call here runs *inside the store*, on the guest's linear memory, on the
 pod's heap, charged against the pod's admission. There is nowhere to detach it
 to. Keeping an interrupted call alive means keeping the whole instance alive —
-and the assumed cost of a turn is 384MB, so a stopped turn that lingers is a
-stopped turn that still costs a pod.
+and admission charges `ASSUMED_TURN_BYTES` -- 100MB -- for a turn's lifetime,
+so an interrupted turn that lingers is one that still costs a pod most of that.
 
 There is also no signal. Nothing in `wit/agent.wit` lets the host ask a guest to
 wind up; the only interruption primitives are blunt ones — drop the future,
@@ -134,26 +138,38 @@ existing contract — `chat` already says cancellation is "the host dropping the
 stream rather than something the guest must handle", and this is that principle
 applied to writes.
 
-## What this gives stop
+## Stop solved this differently, and better
 
-A stop is then a read of this machinery rather than a special case:
+This section used to describe what a stop would do with an in-flight tool call:
+tear the guest down, record the call as `attempted`, synthesise a tool result
+saying the outcome was not observed. The stop that shipped does none of that,
+because it never stops inside a round.
 
-- Drop the guest future, the store, and any in-flight host call. Return the
-  permit. Stop is immediate and holds no memory.
-- Record the in-flight tool call as `attempted`.
-- Synthesise a tool result saying so, because the conversation format requires
-  every `tool-call` to be answered and a turn truncated between them replays a
-  call with no result. It says the call was started and its outcome not
-  observed — not that it failed, and not that it did not happen.
-- Keep the partial reply, marked stopped.
+`limits.cancelled` is read at the round boundary, before `chat` is called, so a
+turn that is asked to stop returns what it has written and runs nothing. And a
+round that the gateway cut partway is refused wholesale: the guest sees a
+completion with tool calls and no finish reason, treats the arguments as
+possibly truncated mid-JSON, and answers every call with "not run" rather than
+executing any of them (`agents/default/src/lib.rs`).
 
-Dropping an in-flight `fetch` rather than letting it complete is deliberate:
-egress is host-enforced and authorised per turn, so a finished turn should not
-still be spending its authority.
+So a deliberate stop cannot strand a tool call, and this machinery is not what
+makes stop safe. Avoiding the window entirely beat recording it.
 
-Side effects may have landed. That is a property of stop, stated rather than
-papered over — and it is the same guarantee a killed shell command gives, so it
-is not a weaker position than the familiar one.
+## What is still open
+
+Everything that ends a turn *without* reaching a round boundary. A pod
+evicted, a worker crashed, a lease expired while a `fetch` was in flight: the
+guest is gone, the job is retried, and the retry runs the tool again with
+nothing recording that the first attempt got as far as sending.
+
+That is the case this document is for, and it is narrower than it was written
+to be -- not "what a stop has to avoid creating" but what a crash creates
+whatever anyone intends. It is also the case that cannot be designed away by
+choosing a better boundary, because nothing chose it.
+
+Side effects may have landed and nobody can say. That is a property of a crash
+rather than of a decision, and it is the same guarantee a killed shell command
+gives, so it is not a weaker position than the familiar one.
 
 ## Not yet built
 
@@ -165,8 +181,17 @@ The pieces, roughly in order:
 - A `tool_invocations` table holding the tristate, keyed and scoped as above.
   Partitioned by workspace like everything else that grows per-workspace.
 - Derivation policy in the WIT, so a tool declares its level and scope.
-- The replay path in the host's tool dispatch.
-- Then stop, which reads it.
+- The replay path in the host's tool dispatch, which is where a retry after a
+  crash finds the record the first attempt left.
+
+Stop is no longer on that list, for the reason given above.
+
+The pressure is still low, and it is worth being honest about why. The tools
+that exist are `fetch_url` and object storage, and a repeated `write_object` is
+idempotent by construction -- it replaces. So the case that needs this is a
+`POST` through `fetch_url` to a workspace's own API, which is exactly what
+[integrations.md](integrations.md) is about. This becomes urgent when
+integrations do, and not before.
 
 ## Human in the loop
 
