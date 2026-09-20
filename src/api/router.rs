@@ -870,6 +870,80 @@ struct UsageQuery {
     workspace_id: Option<Uuid>,
 }
 
+/// The window summed, for the dashboard.
+///
+/// The same authority as the export, and the same scoping rule: a system
+/// administrator may ask across every workspace, and everybody else gets their
+/// own however they ask. `scope=all` is how the operator says so -- an absent
+/// scope means the caller's own workspace, so a dashboard cannot widen itself
+/// by forgetting a parameter.
+async fn summarise_usage(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
+) -> Result<Json<super::usage::UsageSummary>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsageRead).await?;
+
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your workspace's ledger".into()));
+            }
+            Some(other)
+        }
+        Some(own) => Some(own),
+        None if query.scope.as_deref() == Some("all") => {
+            if !claims.is_system_admin() {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "only a system administrator sees every workspace".into(),
+                ));
+            }
+            None
+        }
+        None => Some(claims.workspace_id),
+    };
+
+    // A window is always closed, so the figures mean something without the
+    // reader knowing when the call was made. The default is the last 30 days
+    // ending at the next midnight, which makes today a whole bucket rather than
+    // a partial one that reads as a collapse in traffic.
+    let to = query.to.unwrap_or_else(|| {
+        let now = chrono::Utc::now();
+        now.date_naive()
+            .succ_opt()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc())
+            .unwrap_or(now)
+    });
+    let from = query.from.unwrap_or_else(|| to - chrono::Duration::days(30));
+    if from >= to {
+        return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
+    }
+    // A window is bounded, because the statement behind it scans every
+    // partition of the ledger and an unbounded one is a way to ask the database
+    // for everything by accident.
+    if to - from > chrono::Duration::days(370) {
+        return Err((StatusCode::BAD_REQUEST, "window may not exceed 370 days".into()));
+    }
+
+    let summary = state
+        .usage
+        .summarise(workspace_id, from, to)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(summary))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SummaryQuery {
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    /// `all` for every workspace, which only a system administrator may ask.
+    scope: Option<String>,
+    workspace_id: Option<Uuid>,
+}
+
 /// The ledger, paged. What a bill is built from.
 async fn export_usage(
     State(state): State<Arc<ApiState>>,
@@ -1239,6 +1313,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(super::files::MAX_UPLOAD_BYTES)),
         )
         .route("/v1/usage", get(export_usage))
+        .route("/v1/usage/summary", get(summarise_usage))
         .route("/v1/inhibitors", get(list_inhibitors))
         .route("/v1/inhibitors/{id}", axum::routing::delete(release_inhibitor))
         .route("/v1/workspace/stop", post(stop_workspace))

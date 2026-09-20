@@ -1,0 +1,19 @@
+-- The index the dashboard's summary reads by.
+--
+-- The ledger already had `(workspace_id, id)` for the export, which pages by
+-- id, and `(workspace_id, session_id)`. Neither helps a query bounded by time:
+-- the summary asks for a workspace's rows within a window, and with only those
+-- indexes Postgres prunes to the right partition, seeks to the workspace, and
+-- then reads every row it has ever written there to apply `occurred_at` as a
+-- filter. A workspace with a year of history pays for the year to draw a week.
+--
+-- Ordered workspace-first because every caller has a workspace: the summary
+-- resolves one before it asks, and the export takes one. The all-workspaces
+-- summary an operator can ask for is the exception rather than the shape to
+-- index for -- it drops the leading column and scans, which is what "every
+-- workspace" honestly costs.
+--
+-- `occurred_at` rather than `id` even though both order by time, because the
+-- window's bounds are timestamps and a UUIDv7 range would have to be
+-- synthesised from them. The id stays the cursor; this is the filter.
+create index usage_ledger_window_idx on usage_ledger (workspace_id, occurred_at);

@@ -1889,6 +1889,83 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
+    // The summary is a reading of the same rows: what the export pages, these
+    // figures add up.
+    let (status, body) = h.get("/v1/usage/summary", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let summary: serde_json::Value = serde_json::from_str(&body).expect("summary");
+    assert_eq!(summary["totals"]["calls"], 2, "both rounds should be counted: {body}");
+    assert_eq!(summary["totals"]["prompt_tokens"], 30);
+    assert_eq!(summary["totals"]["completion_tokens"], 7);
+    assert_eq!(summary["totals"]["sessions"], 1);
+
+    // Every day of the window is present, including the ones nothing happened
+    // on -- a chart drawn from a series that skips them draws an idle day as no
+    // day at all.
+    let daily = summary["daily"].as_array().expect("daily");
+    assert_eq!(daily.len(), 30, "the default window is 30 days of buckets: {body}");
+    // The last bucket is today's, whole rather than cut off at the moment of
+    // the call, which is why the window ends at the next midnight.
+    assert_eq!(
+        daily.last().expect("a bucket")["calls"],
+        2,
+        "the turn just recorded belongs in the last bucket: {body}"
+    );
+    let charged: i64 = daily
+        .iter()
+        .map(|d| d["prompt_tokens"].as_i64().expect("tokens"))
+        .sum();
+    assert_eq!(
+        charged, 30,
+        "the daily series must add up to the total above it: {body}"
+    );
+
+    // Every bucket opens at midnight UTC, whatever timezone the database
+    // session is in. `date_trunc` in its two-argument form reads the session's
+    // TimeZone, which nothing in this path sets, so a deployment whose server
+    // or pooler defaults elsewhere would shift every boundary -- and the
+    // browser, which labels buckets in UTC, would print the wrong day against
+    // the right figures. The explicit zone in the query is what pins this.
+    for day in daily {
+        let at = day["at"].as_str().expect("a bucket opens somewhere");
+        assert!(
+            at.ends_with("T00:00:00Z"),
+            "a bucket opened at {at} rather than at midnight UTC: {body}"
+        );
+    }
+
+    // The slices carry names, not just ids, and the account label the session
+    // was opened with.
+    let by_model = summary["by_model"].as_array().expect("by_model");
+    assert_eq!(by_model.len(), 2, "two models answered: {body}");
+    let models: Vec<&str> = by_model.iter().map(|m| m["key"].as_str().expect("key")).collect();
+    assert!(models.contains(&"qwen") && models.contains(&"claude-sonnet-5"), "{body}");
+    assert_eq!(summary["by_account"][0]["key"], "hoa-sunnyvale", "{body}");
+    assert_eq!(summary["by_workspace"][0]["label"], "Acme", "the workspace was not named: {body}");
+
+    // Scope is what widens a summary, and it is not this admin's to ask for.
+    let (status, _) = h.get("/v1/usage/summary?scope=all", Some(&admin)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a workspace administrator must not see every workspace"
+    );
+
+    // The operator may. Globex has no rows, so the platform total is still Acme's.
+    let root = h
+        .login_as("root@example.com", Some(Role::SystemAdmin), Some((acme, "admin")))
+        .await;
+    let (status, body) = h.get("/v1/usage/summary?scope=all", Some(&root)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let platform: serde_json::Value = serde_json::from_str(&body).expect("summary");
+    assert_eq!(platform["totals"]["calls"], 2, "body: {body}");
+
+    // A window that does not close is refused rather than guessed at.
+    let (status, _) = h
+        .get("/v1/usage/summary?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z", Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     finish!(h);
 }
 

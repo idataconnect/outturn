@@ -35,6 +35,7 @@ import Skills from './pages/Skills'
 import SkillEditor from './pages/SkillEditor'
 import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
+import Dashboard from './pages/Dashboard'
 import Workspaces from './pages/Workspaces'
 import Roles from './pages/Roles'
 import RoleEditor from './pages/RoleEditor'
@@ -42,20 +43,6 @@ import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
 import { iconButton, iconButtonLarge } from './lib/buttons'
-
-function Dashboard() {
-  const state = useSession()
-  return (
-    <div className="p-6">
-      <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Dashboard</h1>
-      <p className="mt-2 text-surface-600 dark:text-surface-400">
-        {state.status === 'authenticated'
-          ? `Signed in as ${state.displayName}.`
-          : 'Overview coming soon.'}
-      </p>
-    </div>
-  )
-}
 
 function SettingsPage() {
   const state = useSession()

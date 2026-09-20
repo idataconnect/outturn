@@ -121,6 +121,82 @@ pub struct UsagePage {
     pub next: Option<Uuid>,
 }
 
+/// What a dashboard asks for: sums, not rows.
+///
+/// The export is the product and stays the product -- this is a reading of it,
+/// computed where the rows are. A browser folding the ledger itself would have
+/// to page every row of the window down the wire to show one number, which is
+/// fine at a dev machine's volumes and wrong at a real deployment's.
+///
+/// Every figure here is tokens. Nothing in this codebase knows a price, for the
+/// reason the ledger gives: rate cards change and disputes happen.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSummary {
+    /// The window these figures cover, echoed back so a reader of the JSON
+    /// knows what was asked rather than inferring it from the numbers.
+    pub from: chrono::DateTime<chrono::Utc>,
+    pub to: chrono::DateTime<chrono::Utc>,
+    pub totals: UsageTotals,
+    /// One entry per day in the window, including days nothing happened --
+    /// see [`UsageStore::summarise`]. Ascending.
+    pub daily: Vec<UsageBucket>,
+    /// The dimensions a reader cuts by, each already ordered and capped.
+    pub by_workspace: Vec<UsageSlice>,
+    pub by_model: Vec<UsageSlice>,
+    pub by_agent: Vec<UsageSlice>,
+    pub by_account: Vec<UsageSlice>,
+    /// How much of the window's tokens came from rows nobody measured. A
+    /// dashboard that shows totals without this presents an estimate as a fact.
+    pub by_source: Vec<UsageSlice>,
+    /// What class of work spent the tokens: an agent answering somebody
+    /// (`assistant`), against the platform's own naming and compaction. Those
+    /// rows carry no agent, so without this cut they surface only as an
+    /// unattributed row with nothing saying what they were.
+    pub by_traffic: Vec<UsageSlice>,
+}
+
+/// The window's headline figures.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UsageTotals {
+    pub calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub reasoning_tokens: i64,
+    /// Distinct sessions, agents and workspaces the window touched.
+    pub sessions: i64,
+    pub agents: i64,
+    pub workspaces: i64,
+}
+
+/// One day of the window.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageBucket {
+    /// Midnight UTC opening the day.
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub reasoning_tokens: i64,
+}
+
+/// One cut of the window along some dimension.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSlice {
+    /// The dimension's value: a model name, a workspace id, an account label.
+    /// A null column -- an unattributed agent, a session with no account --
+    /// comes back as `None` rather than as an invented label.
+    pub key: Option<String>,
+    /// What to call it on a page, where the key is an id. Absent where the key
+    /// already reads as a name.
+    pub label: Option<String>,
+    pub calls: i64,
+    pub tokens: i64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum UsageError {
     #[error("usage store error: {0}")]
@@ -142,6 +218,22 @@ pub trait UsageStore: Send + Sync {
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<UsagePage, UsageError>;
+
+    /// The window summed, for a dashboard.
+    ///
+    /// `workspace_id` of `None` means every workspace, which only a system
+    /// administrator ever gets -- the route is what enforces that, the same way
+    /// the export's does.
+    ///
+    /// Days with no rows are filled in with zeros rather than omitted. A chart
+    /// drawn from a series that skips its empty days draws a quiet day as no
+    /// day at all, which reads as a shorter window rather than an idle one.
+    async fn summarise(
+        &self,
+        workspace_id: Option<Uuid>,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<UsageSummary, UsageError>;
 }
 
 #[cfg(test)]

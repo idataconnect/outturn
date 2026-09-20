@@ -85,6 +85,78 @@ The API writes a ledger row as each arrives, before the turn ends. A failed
 ledger write is logged at error, because a wrong bill is an operator's problem
 and a quiet one is worse than a loud one.
 
+## The summary
+
+`GET /v1/usage/summary`, needing `usage:read`. What the dashboard reads.
+
+The export stays the product -- this is a reading of it, computed where the rows
+are. A browser folding the ledger itself would page every row of a window down
+the wire to show one number, which is tolerable on a dev machine and wrong on a
+real deployment.
+
+Parameters are `from` and `to` as the export has them, defaulting to the last 30
+days ending at the *next* midnight, so today is a whole bucket rather than a
+partial one that reads as a collapse in traffic. A window is always closed, and
+bounded at 370 days: the statement behind it scans every partition, and an
+unbounded one is a way to ask the database for everything by accident.
+
+Scope works the way the export's does, with one addition. `workspace_id` names a
+workspace, and only a system administrator may name one that is not their own.
+`scope=all` sums every workspace, and only a system administrator may ask -- an
+absent scope means the caller's own workspace, so a page cannot widen itself by
+forgetting a parameter.
+
+The response carries the window's totals, a bucket per day, and the window cut
+by workspace, model, agent, account and `usage_source`. Days with no rows are
+filled in with zeros rather than omitted: a chart drawn from a series that skips
+its empty days draws a quiet day as no day at all, which reads as a shorter
+window rather than an idle one. Each dimension is ordered by tokens and capped,
+with the tail folded into a single "others" entry rather than dropped, so
+nothing is lost between a dimension's slices.
+
+They do not all sum to the window's total, though, and the page does not
+pretend they do. A dimension whose column is nullable -- `account` most
+obviously, `agent_id` for the platform's own work -- has rows in no named
+slice, which arrive as a slice with a null key rather than as an invented
+label. Each panel's shares are therefore against its own dimension, not
+against the headline figure.
+
+Tokens throughout, never prices, for the reason the ledger gives. `by_source` is
+what keeps that honest on a page: a total that mixes reported and unmeasured
+rows without saying so presents an estimate as a fact, so the dashboard states
+what share of a window nobody measured rather than folding it in silently.
+
+## The dashboard
+
+The overview page reads the summary and nothing else, so everything on it is
+about model calls -- it says nothing about turns that never reached a model,
+which is worth remembering before it grows panels that look like they cover
+everything.
+
+The platform's own work -- naming a session, compacting a transcript -- carries
+no agent, because no agent asked for it. It appears as an unattributed slice,
+and the `traffic_type` cut beside it is what says what that work was; the agent
+count includes it as one more answer to "who answered", so the tile and the
+panel below it cannot disagree.
+
+Two things on it are design rather than decoration. Cache reads are drawn beside
+the daily stack rather than in it: on a transcript-heavy workload they run an
+order of magnitude above the rest, and stacking them leaves completion tokens a
+few pixels tall. The separation is real rather than cosmetic -- a cache read is
+context being re-read, priced differently by every provider, not new work the
+way a prompt or a completion is -- and the alternatives are worse, a log axis
+making a tenfold difference look small and a second y-axis never being the
+answer. The line is dashed and its own maximum is written into the legend,
+because a reader must be able to see that it does not share the axis beside it.
+
+The other is that every chart has a table behind it carrying the same figures,
+and that the series colours are checked rather than chosen: they come from the
+theme's own ramps, stepped until both modes cleared a validator for the
+lightness band, the chroma floor, adjacent-pair separation under protanopia and
+deuteranopia, and contrast against the surface. `ui/src/lib/viz.ts` holds them,
+and the fixed slot order is the safety mechanism -- anything past the last slot
+takes a neutral rather than a hue nobody checked.
+
 ## Not yet
 
 - `credential_owner` is always `operator` and `fallback` always `none`, because
@@ -93,9 +165,6 @@ and a quiet one is worse than a loud one.
   [routing.md](routing.md).
 - Nothing spends on the platform workspace's behalf yet. The row exists for when
   something does.
-- No UI. The export is an API, and the first consumer is a billing system, not
-  a page. A per-workspace usage page can be built on the same call when somebody
-  wants to look rather than bill.
 - Retention. The ledger grows with every call and is never pruned. A billing
   obligation decides how long rows must be kept, and that is a policy the
   operator sets, not a default the platform should guess.
