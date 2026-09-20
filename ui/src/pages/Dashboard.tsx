@@ -360,12 +360,6 @@ export default function Dashboard() {
               subtitle="Tokens, largest first"
               slices={summary.by_agent}
               empty="No agent answered in this window."
-              // A session cannot exist without an agent, and everything done
-              // for one -- including the platform's own naming and compaction
-              // -- bills to it. So a null here is a row that lost its
-              // attribution rather than one that never had any, and it should
-              // read as the anomaly it is.
-              unattributed="Missing an agent"
             />
             <Panel
               title="Accounts"
