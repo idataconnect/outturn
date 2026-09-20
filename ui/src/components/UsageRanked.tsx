@@ -24,11 +24,23 @@ export type Slice = {
 export default function UsageRanked({
   slices,
   empty,
+  unattributed = 'Not attributed',
   unit = 'tokens',
 }: {
   slices: Slice[]
   /** What to say when the window holds nothing. */
   empty: string
+  /**
+   * What to call the row whose key is null.
+   *
+   * Each dimension's null means something different, and "Not attributed"
+   * read as a gap in every one of them -- next to an agent list it looked
+   * like spend that had gone astray, when it was the platform naming a
+   * session and had nowhere else to go. A panel that knows why its column is
+   * null says so here, and the reader learns what the row is rather than only
+   * that something is missing.
+   */
+  unattributed?: string
   unit?: 'tokens' | 'calls'
 }) {
   const dark = useDarkMode()
@@ -60,11 +72,12 @@ export default function UsageRanked({
                 }`}
                 title={name ?? undefined}
               >
-                {/* A null key is a row the ledger genuinely has no value for --
-                    a turn with no account, an agent since deleted. Saying so is
-                    the honest rendering; inventing "Unknown" as though it were
-                    a category is not. */}
-                {name ?? 'Not attributed'}
+                {/* A null key is a row the ledger genuinely has no value for.
+                    Named by the panel, which knows what its own null means;
+                    inventing "Unknown" as though it were a category is not the
+                    honest rendering, but neither is saying "missing" about a
+                    column that was never going to be filled. */}
+                {name ?? unattributed}
               </span>
               <span
                 className="shrink-0 text-surface-900 dark:text-surface-100 font-medium"

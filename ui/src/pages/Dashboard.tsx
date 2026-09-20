@@ -360,12 +360,16 @@ export default function Dashboard() {
               subtitle="Tokens, largest first"
               slices={summary.by_agent}
               empty="No agent answered in this window."
+              // Not a gap: naming a session runs before there is an agent to
+              // bill it to. The Work panel beside this one says what it was.
+              unattributed="The platform itself"
             />
             <Panel
               title="Accounts"
               subtitle="The workspace's own label for whose conversation this was"
               slices={summary.by_account}
               empty="No conversation in this window carried an account label."
+              unattributed="No account label"
             />
             <Panel
               title="Work"
@@ -385,17 +389,19 @@ function Panel({
   subtitle,
   slices,
   empty,
+  unattributed,
 }: {
   title: string
   subtitle: string
   slices: Slice[]
   empty: string
+  unattributed?: string
 }) {
   return (
     <div className="rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 p-5">
       <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">{title}</h2>
       <p className="mt-0.5 mb-4 text-xs text-surface-500 dark:text-surface-400">{subtitle}</p>
-      <UsageRanked slices={slices} empty={empty} />
+      <UsageRanked slices={slices} empty={empty} unattributed={unattributed} />
     </div>
   )
 }

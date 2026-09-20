@@ -27,6 +27,21 @@ describe('UsageRanked', () => {
     expect(screen.getByText('Not attributed')).toBeInTheDocument()
   })
 
+  it('lets a panel name its own null, since each dimension means a different thing by it', () => {
+    // An agent panel's null is the platform naming a session -- work that ran
+    // before there was an agent to bill it to, not spend that went astray.
+    // Called "Not attributed" it read as a gap, which is what prompted this.
+    render(
+      <UsageRanked
+        empty="nothing"
+        unattributed="The platform itself"
+        slices={[{ key: null, label: null, calls: 1, tokens: 10 }]}
+      />,
+    )
+    expect(screen.getByText('The platform itself')).toBeInTheDocument()
+    expect(screen.queryByText('Not attributed')).not.toBeInTheDocument()
+  })
+
   it('shows each slice as a share of the window', () => {
     render(
       <UsageRanked
