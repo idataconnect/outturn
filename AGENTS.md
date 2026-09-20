@@ -271,11 +271,13 @@ mind"; the guest hears about it through `limits.cancelled` and returns at its
 next round boundary, keeping whatever it had written.
 
 Stopping work for a reason other than somebody clicking stop -- a spend cap, an
-operator, a turn waiting on an approval -- is designed and unbuilt in
+operator, a turn waiting on an approval -- is in
 [docs/inhibitors.md](docs/inhibitors.md). Zero or more holds, each contributing
 `suspended` or `stopped`, with the strongest winning and the verdict derived
-rather than stored. Kill switches come first because they are pure `stopped`,
-and human-in-the-loop is the same mechanism once suspension and resume work.
+rather than stored. Largely built: the strength and verdict model, `decide`, a
+Postgres store, `/v1/inhibitors`, and enforcement in the worker and the
+gateway. What is unconfirmed is whether a suspended turn parks and resumes or
+is merely outranked, which is the half human-in-the-loop needs.
 
 A round cut partway is therefore untrusted in full: its tool calls may carry
 arguments truncated mid-JSON, and running one is precisely the outcome that
@@ -477,6 +479,12 @@ itself permanently full.
 source, check pod age before theorising.
 
 ## Direction
+
+What is next and what blocks what is in [docs/roadmap.md](docs/roadmap.md),
+which links each item's design where one exists. The short version is that
+tools live inside the guest and nothing above the sandbox can add one, so
+integrations, generated clients and skill evaluation all wait on the same
+seam.
 
 Intended but not yet built, so that nobody mistakes these for facts about the
 code: Redis caching, per-workspace usage attribution, OpenTelemetry, and workflows
