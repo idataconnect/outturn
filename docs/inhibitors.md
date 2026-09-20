@@ -57,10 +57,19 @@ A hold also cuts a turn already running: the gateway polls for it on the same
 tick it polls for cancels, and the reason rides the trailer so the runtime can
 say what stopped it rather than looking like a provider that hung up.
 
-Still to come: suspension -- which currently refuses a turn like a stop but
-without latching, because nothing takes a suspended hold until human-in-the-loop
-does. A suspended turn needs no marker: it pauses where the conversation is
-consistent and resumes from there, so there is no fragment to explain.
+Still to come: suspension. Nothing takes a suspended hold -- `POST
+/v1/workspace/stop` and `POST /v1/agents/{id}/stop` both write
+`Strength::Stopped`, so a suspended row can only be made by hand. The verdict
+arm exists and refuses a turn like a stop but without latching: the job
+completes, nothing is requeued, and the next turn re-evaluates.
+
+That last part is the gap rather than a detail. A suspension is meant to pause
+where the conversation is consistent and resume from there of its own accord --
+which is why it needs no marker, there being no fragment to explain. What it
+does today is decline, leaving nothing to resume. Parking a turn so it can be
+given back to the queue when the hold lifts is the work, and it interacts with
+the serial key: a parked turn must not hold its session's queue closed while it
+waits.
 
 A reader looking at a paused conversation is told, and by its own event. A
 refused turn is declined before a placeholder exists, so without one the message

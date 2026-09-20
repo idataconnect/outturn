@@ -46,8 +46,6 @@ generates tool definitions instead and only the consumer changes.
 
 ### Platform-level egress list
 
-### Platform-level egress list
-
 [egress.md](egress.md) — "An operator allowlist, by name".
 
 Designed down to the environment variable. An operator names internal hosts the
@@ -77,19 +75,22 @@ do so and an account of who or what did.
 Worth noting it is the only item here that makes agents useful to a workspace
 that is not sitting in the UI, which is most of them most of the time.
 
-### Confirm what inhibitors actually does
+### ~~Confirm what inhibitors actually does~~ — done, 2026-09-20
 
-[inhibitors.md](inhibitors.md).
+Stopping is built and suspension is not, in the precise sense that matters:
+**nothing can take a suspended hold.** Both endpoints hardcode
+`Strength::Stopped` (`src/api/router.rs`), so `Strength::Suspended` appears
+only in the enum, its parser, the verdict mapping and unit tests. The
+`Verdict::Suspended` arm in `worker::inhibited` is reachable only by a row
+written straight to the database.
 
-Not a build. AGENTS.md describes this as designed and unbuilt, and it is
-substantially built: the strength and verdict model, `decide`, a Postgres
-store, two migrations, `/v1/inhibitors`, and enforcement in both the worker and
-the gateway. `Suspended` is modelled and ordered throughout.
+What that arm does when reached is refuse the turn without latching: no
+requeue, no parked state, the job completes, and the next turn re-evaluates.
+So a suspension does not park and resume today -- it declines, and something
+must arrive later to try again.
 
-What is unverified is whether a suspended turn parks and resumes, or is merely
-outranked. That is the half human-in-the-loop needs, so the answer decides
-whether the item below is a build or a wiring-up. Cheap to establish, and it
-corrects a file people are meant to trust.
+That makes human-in-the-loop a build rather than a wiring-up, and says what
+the build is. See its entry in tier 2.
 
 ## Tier 2 — needs something in tier 1
 
@@ -108,9 +109,26 @@ not adding the capability.
 [inhibitors.md](inhibitors.md) — the same mechanism, once suspension and resume
 work.
 
-Needs the confirmation above. A turn waiting on an approval is an inhibitor
-contributing `suspended`; whether that already parks a turn is exactly what is
-unknown.
+A build rather than a wiring-up, now that the tier 1 item above has established
+why. Three pieces, none of them the verdict model, which is done:
+
+1. **Something that takes a suspended hold.** Both stop endpoints hardcode
+   `Strength::Stopped`, so nothing can create one. Whatever asks for approval
+   is what takes it, which means the shape follows from the approval flow
+   rather than from the inhibitor API.
+2. **A turn that parks rather than declines.** `Verdict::Suspended` currently
+   refuses the turn and completes the job, so nothing is left to resume. A
+   held turn has to remain claimable -- a requeue with a `run_after`, or a
+   state the claim skips until the hold lifts -- and that choice interacts
+   with the serial key, since a parked turn must not block its session's
+   queue for ever.
+3. **Resumption when the hold lifts.** A stop waits for a person by design;
+   a suspension is supposed to run again of its own accord. Releasing the
+   hold is the event, and something has to notice it and give the turn back
+   to the queue.
+
+The reader-facing half is already there: `chat.held` carries a `resumable`
+flag, true for suspensions, and the worker already announces it.
 
 ## Tier 3 — needs tiers 1 and 2
 

@@ -278,10 +278,19 @@ Stopping work for a reason other than somebody clicking stop -- a spend cap, an
 operator, a turn waiting on an approval -- is in
 [docs/inhibitors.md](docs/inhibitors.md). Zero or more holds, each contributing
 `suspended` or `stopped`, with the strongest winning and the verdict derived
-rather than stored. Largely built: the strength and verdict model, `decide`, a
-Postgres store, `/v1/inhibitors`, and enforcement in the worker and the
-gateway. What is unconfirmed is whether a suspended turn parks and resumes or
-is merely outranked, which is the half human-in-the-loop needs.
+rather than stored. Stopping is built: the strength and verdict model,
+`decide`, a Postgres store, `/v1/inhibitors`, and enforcement in the worker and
+the gateway.
+
+Suspension is not, and the sense in which it is not is narrow enough to be
+worth stating. Nothing can take a suspended hold -- both endpoints hardcode
+`Strength::Stopped`, so `Strength::Suspended` exists in the enum, its parser,
+the verdict mapping and the unit tests, and nowhere else. The
+`Verdict::Suspended` arm in `worker::inhibited` is reachable only by a row
+written straight to the database, and what it does there is refuse the turn
+without latching: no requeue, no parked state, the job completes and the next
+turn re-evaluates. So a suspension declines rather than parks, which is why
+human-in-the-loop is a build rather than a wiring-up.
 
 A round cut partway is therefore untrusted in full: its tool calls may carry
 arguments truncated mid-JSON, and running one is precisely the outcome that
