@@ -46,19 +46,38 @@ large hammer.
 
 ## The problem with refusing every private address
 
-Most deployments will want an agent to reach a service the customer runs, and
-most of the time that service runs in the same cluster. A ticketing API at
-`tickets.internal`, an inventory service, whatever the workspace's work is
-actually about. Today all of it is refused, for the same reason `outturn-api`
-is: the address is private.
+Deployments will want an agent to reach a service the customer runs. Most of
+the time that service has a public name and the section below is irrelevant --
+but some of them do not, and a ticketing API reachable only at
+`tickets.internal` is refused today for the same reason `outturn-api` is: the
+address is private.
 
-So the guard is preventing the thing it exists to prevent *and* the ordinary
-case, and there is no way to have one without the other.
+So the guard is preventing the thing it exists to prevent *and* a case nobody
+meant to forbid, and there is no way to have one without the other.
+
+## First, the path that needs none of this
+
+A customer's service usually has a public name. `tickets.acme.com`, resolving
+to a public address, with a certificate. Reaching it needs nothing below: the
+workspace allows the host, the address vets as public, the credential travels
+over https, and it is the same path every other rule takes.
+
+That is the recommended shape, and it is worth saying plainly because the
+alternative below costs something. A credential to an internal host is
+permitted over plain http -- internal services mostly do not terminate TLS --
+so taking the internal route means a key crossing a network where other
+tenants' agents are running. The public route has no such clause.
+
+So the allowlist is an escape hatch, for a service that genuinely has no public
+name and sits beside outturn in the cluster. That is a real case and a narrower
+one than it first appears: a deployment on Kubernetes is not by itself a reason
+to use it.
 
 ## An operator allowlist, by name
 
-The fix is a list of internal hosts the *operator* has said the gateway may
-reach, checked before the private-address refusal.
+For the case the section above does not cover: a list of internal hosts the
+*operator* has said the gateway may reach, checked before the private-address
+refusal.
 
 Operator-level and never workspace-settable. This is the whole point: a
 workspace allowing `tickets.internal` is expressing what its agents need, and a
@@ -72,6 +91,27 @@ as it does now. `OUTTURN_INTERNAL_HOSTS` on the gateway, comma or whitespace
 separated: configuration rather than a table, because an operator adding an
 internal service is already editing manifests, and a table is what to build when
 somebody wants the list without a redeploy.
+
+**A name in a cluster is not one string.** `tickets`,
+`tickets.default.svc.cluster.local` and `tickets.internal` may all reach the
+same service, and which one a caller writes decides what the gateway is asked
+for. A bare name is worse than ambiguous: the resolver's `search` list expands
+it against the *caller's own* namespace, so the same string means different
+things depending on where it is resolved from.
+
+The list matches the host as the caller offered it, so an operator has to name
+the spelling that will actually arrive. The fully-qualified form is the one to
+write, being the only one that means the same thing everywhere.
+
+Getting it wrong should not be a mystery, so a refusal says what it saw: the
+host as offered, and that it was not on the list. That is the one line that
+turns a silent refusal into a copyable answer, and it costs nothing -- the
+gateway already has the string in hand.
+
+Headless services and statefulset members are where this is least intuitive. A
+headless service resolves to every pod behind it rather than one address, and a
+member is `pod-0.svc.ns.svc.cluster.local`. Both work, and neither is what
+somebody writing `tickets` expects to be matching.
 
 **Names, not ranges.** An operator allowing `10.0.0.0/8` would re-open the path
 to outturn's own services, and would not have meant to: it reads as "our

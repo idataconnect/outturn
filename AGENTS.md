@@ -226,9 +226,11 @@ like a mistake until you know about S3's per-bucket lifecycle rule cap.
 How an agent reaches anything outside the platform -- and why the tier running
 workspace code holds no credential and opens no socket -- is in
 [docs/egress.md](docs/egress.md). It also has the design for reaching a service
-inside the cluster, which is refused today: most deployments will want an agent
-to call something the customer runs, and the guard that stops a workspace aiming
-the gateway at `outturn-api` currently stops that too.
+inside the cluster, which is refused today -- an escape hatch rather than the
+usual path, since a customer's service normally has a public name and needs
+none of it. Where one genuinely does not, the guard that stops a workspace
+aiming the gateway at `outturn-api` stops that too, and the operator's list is
+what separates them.
 
 Who supplies those hosts and the credentials that go with them is a separate
 question, designed and unbuilt in [docs/integrations.md](docs/integrations.md):

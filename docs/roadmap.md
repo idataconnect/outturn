@@ -47,13 +47,25 @@ store, `read_object`, `skill_version_hosts` and the files API are all in place.
 It is also what makes the fork below answerable with evidence rather than
 argument.
 
-### Platform-level egress list
+### Platform-level egress list — an escape hatch, not a priority
 
 [egress.md](egress.md) — "An operator allowlist, by name".
 
-Designed down to the environment variable. An operator names internal hosts the
-gateway may reach, checked before the private-address refusal, empty by
-default, never workspace-settable.
+Designed down to the environment variable, and deliberately configuration
+rather than a table or a UI: something changeable only by redeploying is the
+strongest form of operator-only, since there is no endpoint to guard.
+
+Downgraded on 2026-09-20 after asking who actually needs it. A customer's
+service usually has a public name, and reaching `tickets.acme.com` needs none
+of this -- ordinary rule, public address, credential over https. The list is
+for a service with no public name at all, sitting beside outturn in the
+cluster. Real, and narrower than the design first claimed.
+
+It is also the path that permits a credential over plain http, so it is the
+less safe of the two and should not be the recommended one.
+
+Nothing today needs it, so the first real operator who does is better evidence
+than anything decided now.
 
 ### Idempotency
 
@@ -95,17 +107,27 @@ must arrive later to try again.
 That makes human-in-the-loop a build rather than a wiring-up, and says what
 the build is. See its entry in tier 2.
 
-## Tier 2 — needs something in tier 1
+## Tier 2 — larger, and each needs a decision made first
+
+Neither of these waits on tier 1 any more. Workspace-defined egress never did,
+and human-in-the-loop was waiting on a question tier 1 has now answered. They
+are here because each is substantial and each rests on something settled rather
+than obvious -- not because something above has to be built first.
 
 ### Workspace-defined egress
 
 [integrations.md](integrations.md) — tier 3, and
 [egress.md](egress.md) for the check itself.
 
-Needs the platform list first, which is what a workspace's list is checked
-against. Note this one inverts: `egress_rules` is already per-workspace and
-checked first, so the work is adding the restriction and flipping the default,
-not adding the capability.
+Does not need the platform list, which an earlier draft claimed. The two
+answer different questions: the platform list says whether an *internal* host
+is reachable at all, while this governs who may add rules for public ones. A
+workspace permitted to add hosts is permitted to add public hosts, and the
+address check it cannot waive is what keeps those apart.
+
+Note this one inverts: `egress_rules` is already per-workspace and checked
+first, so the work is adding the restriction and flipping the default, not
+adding the capability.
 
 ### Human in the loop
 
@@ -139,11 +161,13 @@ flag, true for suspensions, and the worker already announces it.
 
 [integrations.md](integrations.md).
 
-Needs the platform egress list and workspace-defined egress. Also needs two
-things that document describes and nothing implements: a credential store that
-holds one credential per workspace with three possible lifecycles, and
-per-agent scoping, which is a schema change plus a resolution rule that must
-narrow rather than widen.
+Needs workspace-defined egress, and two things that document describes and
+nothing implements: a credential store that holds one credential per workspace
+with three possible lifecycles, and per-agent scoping, which is a schema change
+plus a resolution rule that must narrow rather than widen.
+
+Not the platform egress list. A workspace integrating with Notion or a
+customer's public API never touches the internal path.
 
 Not tool registration. An integration is a permitted host, a bound credential,
 and a skill saying what to call -- all of which `fetch_url` already serves.
@@ -154,11 +178,17 @@ No spec of its own; the rules are [egress.md](egress.md) and
 [integrations.md](integrations.md).
 
 `/v1/egress-rules` exists and has no UI, so allowing a host means an API call
-today. Three levels are wanted. Platform and workspace both have a concept
-behind them already -- the operator's list and `egress_rules` -- so those tabs
-wait only on tier 1 and tier 2. The agent level does not exist at all:
-`egress_rules` has `workspace_id` and no agent column, so that tab is a schema
-change, and the rule it implements is narrowing-only.
+today. That is the gap worth closing, and it is the workspace level: the table
+exists, the endpoint exists, and nothing but a page is missing.
+
+The agent level does not exist at all -- `egress_rules` has `workspace_id` and
+no agent column -- so it is a schema change plus a resolution rule that narrows
+rather than widens.
+
+The platform level should be *shown* and not edited. The internal-hosts list is
+configuration on the gateway on purpose, so a page that let somebody change it
+would undo the thing that makes it operator-only. Displaying what is currently
+set is useful; offering a save button is not.
 
 ## Tier 4
 
