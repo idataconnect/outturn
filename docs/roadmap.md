@@ -268,12 +268,22 @@ about.
 above, and it reads rows `/v1/usage` already carries.
 
 **Flagging a session as wrong.** Nothing today lets a person say a turn did the
-wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it as the
-correction channel for anything the platform learns automatically: a flag
-retracts what was derived from that session, and repeated flags against one
-operation say the signal is unreliable there. Small on its own -- a column and
-a button -- and it has to exist before anything improves a skill unsupervised,
-because a loop with no way to be told it is wrong only compounds.
+wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it twice over,
+and the second is the surprising one.
+
+As a correction channel: a flag retracts what was derived from that session,
+and repeated flags against one operation say the signal is unreliable there.
+
+And as the *only labelling that will ever happen*. Every turn stored is real
+and none of it says whether it went well, so a held set of cases to test a
+skill edit against has to come from somewhere -- and the alternatives are
+asking a workspace to author test cases, which is a second job, or inventing
+them, which cannot show that prose is confusing because whoever wrote them
+already knew what it meant. A flagged session is real inputs, a real failure
+and a person's verdict, for free. Enough of them is a corpus nobody wrote.
+
+Small on its own -- a column and a button -- and load-bearing out of proportion
+to that.
 
 **Memory, or whatever the durable thing turns out to be.** A schedule running
 weekly in a fresh session each time cannot learn anything, and the fix is not a

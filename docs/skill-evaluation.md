@@ -127,6 +127,22 @@ now; a fixed set is the only thing that can say whether a change made it
 better, because it is the only thing where before and after are the same
 question.
 
+**The set accumulates rather than being authored**, and the difference is the
+whole feasibility of this. Asking a workspace to sit down and write test cases
+for their skill is asking them to do a second job, and cases invented for the
+purpose carry the author's idea of what the skill means -- which is exactly the
+thing under test. Synthetic cases cannot show that prose is confusing, because
+whoever wrote them already knew what it was supposed to say.
+
+A flagged session is the alternative and it is free. Real inputs, a real
+failure, and a person's judgement that it went wrong -- which is the only
+labelling that is ever going to happen here. Enough of them and there is a
+corpus nobody wrote, made of things that actually broke.
+
+So the order is flagging first, cases accumulate, and this test becomes
+available when there are enough of them. Not a corpus to build before
+starting.
+
 **Wilson score intervals** for the rates themselves. A skill with four
 failures in twenty turns has a failure rate somewhere between about 7% and 40%,
 and the naive interval around 20% is not only wrong but can extend past zero
@@ -137,6 +153,13 @@ a few lines of arithmetic rather than a dependency.
 Both are queries. Neither needs a model, which matters because the
 model-reading half is the dangerous half and the expensive half, and this is
 the question people most want answered.
+
+They are not equally ready, though. Wilson costs a few lines and needs nothing
+that does not exist, so it belongs wherever a rate is shown, from the first
+one. McNemar needs the accumulated set above, which needs flagging, which does
+not exist -- so it is the right thing to reach for later and the wrong thing to
+build toward now. The test is fifteen lines; everything expensive about it is
+the corpus.
 
 A skill generated from an API specification
 ([openapi-wizard.md](openapi-wizard.md)) deliberately carries no worked
