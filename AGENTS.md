@@ -230,6 +230,16 @@ inside the cluster, which is refused today: most deployments will want an agent
 to call something the customer runs, and the guard that stops a workspace aiming
 the gateway at `outturn-api` currently stops that too.
 
+Who supplies those hosts and the credentials that go with them is a separate
+question, designed and unbuilt in [docs/integrations.md](docs/integrations.md):
+the operator installs their own APIs, approves extensions a workspace can turn
+on for itself, and may optionally let a workspace add its own hosts -- which is
+today's behaviour, so that tier is a restriction to add rather than a feature.
+All three wait on the same missing piece: tools live inside the guest and are
+dispatched by a name match, so nothing above the sandbox can add one to a turn.
+That is what an OpenAPI wizard would generate into, and what skill evaluation
+needs before a skill can be tested doing anything.
+
 Every model call is a row in the usage ledger, tagged with workspace, agent,
 session, user, the workspace's own account label, the model that actually served,
 and whose key paid; the export at `/v1/usage` is what bills are built from.
