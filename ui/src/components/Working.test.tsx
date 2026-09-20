@@ -39,6 +39,32 @@ describe('the working mark', () => {
     expect(container.querySelectorAll('circle')).toHaveLength(3)
   })
 
+  it('staggers each dot\'s colour to match its place in the swell', () => {
+    prefersReducedMotion(false)
+
+    const { container } = render(<Working />)
+
+    const delays = Array.from(container.querySelectorAll('circle')).map(
+      (dot) => (dot as SVGCircleElement).style.animationDelay,
+    )
+    // The same 0.4s stagger the swell uses, so the dot wearing the accent is
+    // the dot that is widest rather than one trailing behind it.
+    expect(delays).toEqual(['0s', '0.4s', '0.8s'])
+  })
+
+  it('leaves the colour to the stylesheet, so a theme can replace it', () => {
+    prefersReducedMotion(false)
+
+    const { container } = render(<Working />)
+
+    for (const dot of container.querySelectorAll('circle')) {
+      // A fill resolved in the component would stop following a theme that
+      // replaced the token.
+      expect(dot.getAttribute('fill')).toBeNull()
+      expect(dot).toHaveClass('working-dot')
+    }
+  })
+
   it('names itself for a reader who cannot see it', () => {
     prefersReducedMotion(false)
 

@@ -13,21 +13,19 @@ import { useReducedMotion } from '../lib/useReducedMotion'
  * spinner in both places would collapse two different states into one shape.
  * Three dots carrying a travelling swell read as speech continuing rather
  * than as a machine turning, which is the honest description -- the turn is
- * mid-sentence, not stuck.
+ * mid-sentence, not stuck. Whichever dot is widest also wears the accent the
+ * theme reserves for the mark, so the colour travels with the swell rather
+ * than the whole row changing hue at once.
  */
 export default function Working() {
   // SMIL is not covered by `prefers-reduced-motion`, so the only way to
   // honour it for the swell is not to draw the animation at all. The colour
-  // underneath is CSS and stops itself -- see index.css.
+  // is CSS on each dot and stops itself -- see index.css.
   const reduced = useReducedMotion()
 
   return (
     <span
-      // The colour is a class rather than a Tailwind text-* utility: it
-      // travels between the two ends of the logo's gradient, and the dots
-      // below are filled with `currentColor` so they follow it. Light and
-      // dark pick different stops -- see index.css.
-      className="working-hue mt-1 inline-flex items-center"
+      className="mt-1 inline-flex items-center"
       title="Working"
       role="status"
       aria-label="Working"
@@ -44,13 +42,20 @@ export default function Working() {
           // steady dots in the reply's colour still say something is coming,
           // which is the whole job. Drawn at full strength rather than the
           // resting 0.35, since nothing is going to brighten them.
+          //
+          // `fill` is left to the stylesheet rather than set here: the colour
+          // is a theme token, and a value resolved in the component would
+          // stop following a theme that replaced it.
           <circle
             key={x}
+            className="working-dot"
+            // The same stagger the swell uses, so the dot wearing the accent
+            // is the dot that is widest rather than one trailing behind it.
+            style={{ animationDelay: `${i * 0.4}s` }}
             cx={x}
             cy={5}
             r={reduced ? 2.6 : 2}
-            fill="currentColor"
-            opacity={reduced ? 0.8 : 0.35}
+            opacity={reduced ? 0.9 : 0.6}
           >
             {/* `begin` staggers by a third of the cycle each, so the swell
                 arrives at each dot in turn and the row never goes fully dark. */}
@@ -66,9 +71,13 @@ export default function Working() {
                   keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
                   keyTimes="0;0.5;1"
                 />
+                {/* A shallower fade than the colour version needed. There,
+                    opacity was the only thing saying which dot was active;
+                    here the accent says it, and dropping the resting two to
+                    0.35 only leaves their teal looking muddy. */}
                 <animate
                   attributeName="opacity"
-                  values="0.35;1;0.35"
+                  values="0.6;1;0.6"
                   dur="1.2s"
                   begin={`${i * 0.4}s`}
                   repeatCount="indefinite"
