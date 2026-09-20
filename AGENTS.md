@@ -257,6 +257,12 @@ cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
 says what exists.
 
+Starting a turn when nobody is typing is in [docs/triggers.md](docs/triggers.md)
+— schedules being built, webhooks and email designed and deferred. Two labels
+rather than one: the *owner* who set a trigger up is recorded for
+accountability, while `user_id` stays null because nobody is waiting, which is
+also what stops an agent clearing its own stopped-session latch.
+
 Turning an API specification into a skill is designed but unbuilt, in
 [docs/openapi-wizard.md](docs/openapi-wizard.md) — a manifest in the prompt and
 a file per operation in the object store, because a skill body is paid for on

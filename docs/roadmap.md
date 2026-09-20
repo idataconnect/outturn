@@ -88,18 +88,20 @@ do.
 
 ### Triggers
 
-No spec. Needs no interface change, which is what makes it unusually cheap for
-what it enables.
+[triggers.md](triggers.md). Schedules first; webhooks and email designed and
+deferred.
 
-Today a turn begins because a person sent a message. Everything else a
-workspace might want an agent to react to -- a webhook from the operator's own
-systems, an inbound email, a schedule -- has no way in. The agent side does not
-change: a turn still runs a conversation and returns a reply. What is missing
-is a way for something other than a person to start one, with the authority to
-do so and an account of who or what did.
+The only item here that makes agents useful to a workspace not sitting in the
+UI, which is most of them most of the time.
 
-Worth noting it is the only item here that makes agents useful to a workspace
-that is not sitting in the UI, which is most of them most of the time.
+Schedules are cheap because the queue was built for them: `jobs.run_after`
+schedules work forward and the claim reads `priority` first, so background
+turns cannot get in front of somebody waiting. Both exist and are tested.
+
+Two things it surfaces rather than solves, both recorded in that document:
+notifications, which is where a reply nobody asked for and a repeatedly failing
+schedule both land, and a dashboard panel for agent health. Neither exists, and
+triggers are what make their absence matter.
 
 ### ~~Confirm what inhibitors actually does~~ — done, 2026-09-20
 
@@ -251,6 +253,28 @@ means an interface change. In the host, it is not a tool the component reasons
 about at all, only one the host offers and answers on its behalf, and the
 guest's dispatch stops being the whole story. Both are defensible; they are
 different platforms afterwards.
+
+## Undesigned, and wanted
+
+Named by other work rather than chosen, which is the usual way a gap is found.
+
+**Notifications.** [triggers.md](triggers.md) needs them twice over: a reply
+nobody asked for is useless if nothing says it arrived, and a schedule failing
+every morning is a broken integration nobody is watching. Undesigned -- what is
+notified, to whom, through what, and how a workspace says what it wants to hear
+about.
+
+**A dashboard panel for agent health.** The smallest useful version of the
+above, and it reads rows `/v1/usage` already carries.
+
+**Memory, or whatever the durable thing turns out to be.** A schedule running
+weekly in a fresh session each time cannot learn anything, and the fix is not a
+long-lived session. What it wants is narrow and durable, and the shape is
+unsettled: an agent writing notes for its future self is a judgement about what
+mattered, which is nearer compaction carry-over than user-declared memory, and
+AGENTS.md is explicit that those must not share a store. It is also partly an
+evaluation problem, since knowing what was worth keeping means knowing what
+went wrong without it.
 
 ## Not on this list
 
