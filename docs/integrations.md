@@ -253,29 +253,31 @@ workspace's. An agent that could widen it would be a way out of the workspace
 boundary, granted by whoever configures the agent -- which is the opposite of
 what a per-agent list is for.
 
-## The gap underneath all three
+## What an integration actually is
 
-None of these tiers does anything until an agent has a tool that makes the
-request.
+A permitted host, a credential bound to it, and a skill saying what to call.
+`fetch_url` already reaches any host a workspace is allowed, so nothing above
+needs a new tool to become real -- the work is all in the rules and the
+credential, which is where this document has spent its length.
 
-Tools live inside the guest component. They are declared in one list and
-dispatched by matching on the name, so adding one means editing
-`agents/default/src/lib.rs` and rebuilding the committed wasm. There is no
-host-side registration: nothing above the sandbox boundary can add a tool to a
-turn.
+That is worth stating because the opposite looked true for a while. Tools live
+inside the guest component, declared in one list and dispatched by matching on
+the name, so nothing above the sandbox boundary can add one. It reads like a
+prerequisite. It is not: a generated `create_booking` tool would be checked by
+exactly the same code as a `fetch_url` call to the same place, so it adds no
+containment. The boundary is the egress rule and the credential the gateway
+attaches, and both are already enforced.
 
-That is what an OpenAPI wizard would generate into, and it is why the wizard is
-not the first thing to build. A generator with no registration seam produces
-code somebody pastes into the guest, which is a worse version of writing it by
-hand. The seam first, then the thing that fills it.
+What a typed tool would buy is argument shape -- a weaker model cannot malform
+a request it did not compose -- and argument constraints, which is the only
+mechanism that could pin a conduit's sender domain or bound its recipients.
+Both real, neither a prerequisite. [roadmap.md](roadmap.md) records this as a
+fork to take when a specific integration demands it.
 
-It is also what blocks skill evaluation ([skill-evaluation.md](skill-evaluation.md)).
-A skill that documents an API call reads fine to a capable model and gets
-called as a tool name by a weaker one -- but testing that requires a skill that
-can actually perform something, which requires a tool to perform it with. The
-eval fixture wants a mock service the operator has allowed, a skill declaring
-that host, and an agent that completes a task against it. Every part of that
-exists except the tool.
+An OpenAPI wizard is worth building either way. Pointed at a specification it
+produces what a workspace needs to integrate: skill text today, tool
+definitions if that turns out not to be enough, with only the consumer
+changing.
 
 ## Open questions
 

@@ -482,9 +482,10 @@ source, check pod age before theorising.
 
 What is next and what blocks what is in [docs/roadmap.md](docs/roadmap.md),
 which links each item's design where one exists. The short version is that
-tools live inside the guest and nothing above the sandbox can add one, so
-integrations, generated clients and skill evaluation all wait on the same
-seam.
+little blocks anything: an integration is a permitted host, a bound credential
+and a skill saying what to call, and `fetch_url` already serves all three. It
+also records why tools living inside the guest is a fork to take later rather
+than the prerequisite it first looked like.
 
 Intended but not yet built, so that nobody mistakes these for facts about the
 code: Redis caching, per-workspace usage attribution, OpenTelemetry, and workflows
