@@ -50,6 +50,11 @@ Per skill version, so "did rewording it help" has an answer. `skill_versions`
 already has the ordinals, and a reply already records what ran, so the
 comparison is available rather than needing new plumbing.
 
+Available, but weaker than it looks when the two versions ran against different
+traffic -- last week's turns are not this week's, and a rate that improved may
+only mean an easier week. Comparing versions properly wants the same cases put
+to both, which is what the held set and McNemar's test below are for.
+
 That alone would have caught this, without a model and without anyone reading
 anything.
 
@@ -100,7 +105,38 @@ recommendation a person applies rather than an edit, and the judge holds no
 authority of its own -- it reads a transcript and writes prose, and cannot
 publish a version, bind a skill, or open a host.
 
-## What this owes the wizard
+## Did the edit help, or trade one failure for another
+
+A skill is edited to fix something. The pass rate goes from 71% to 74%, and
+nobody can say whether that is an improvement or four cases fixed and three
+broken. Prose has no type checker, so every edit is free to regress something
+it was not about, and the comparison that would catch it is not the one a pass
+rate makes.
+
+**McNemar's test** is the comparison that does. Re-run the same fixed set of
+cases before and after, and look only at the pairs that *disagree*: passing
+before and failing now, against failing before and passing now. The cases that
+did not change carry no information about the edit and are discarded. Five
+fixed and four broken is a net gain of one that McNemar will call
+indistinguishable from noise, which is exactly the verdict a person editing
+prose needs to hear.
+
+That requires a held set of cases rather than a stream of live traffic, and it
+is the strongest argument for keeping one. Live turns say what is going wrong
+now; a fixed set is the only thing that can say whether a change made it
+better, because it is the only thing where before and after are the same
+question.
+
+**Wilson score intervals** for the rates themselves. A skill with four
+failures in twenty turns has a failure rate somewhere between about 7% and 40%,
+and the naive interval around 20% is not only wrong but can extend past zero
+when the count is small -- which is the common case, since most skills are not
+run thousands of times. Wilson behaves near the ends and at small n, and it is
+a few lines of arithmetic rather than a dependency.
+
+Both are queries. Neither needs a model, which matters because the
+model-reading half is the dangerous half and the expensive half, and this is
+the question people most want answered.
 
 A skill generated from an API specification
 ([openapi-wizard.md](openapi-wizard.md)) deliberately carries no worked
