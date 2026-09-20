@@ -104,22 +104,43 @@ outturn against it themselves. That means an authorization-code flow per
 workspace, a refresh token per workspace, and refresh, revocation and
 expiry handled by the platform.
 
-**There is no single shape to store.** Three real providers, three lifecycles,
-and a store that handles these handles most of what follows:
+**There is no single shape to store.** Three real providers, three lifecycles
+-- one of which is refused outright, and is in the table because knowing why it
+is refused is what keeps it from being adopted later for looking easy:
 
 | | Grant | What is held | Lifecycle |
 |---|---|---|---|
 | Notion | authorization code | a token, per workspace | durable; nothing to refresh |
 | Google | authorization code | a refresh token, per workspace | rotates on use, expires when idle |
-| DocuSign | JWT bearer | one key, held by the platform | consent recorded per workspace; the key does not expire |
+| DocuSign | JWT bearer *(refused -- see below)* | one key, held by the platform | consent recorded per workspace; the key does not expire |
 
 The JWT case is the one that breaks a naive design, because there is no
 per-workspace secret at all. The tenant consents once against the platform's
 integration key, and from then on the platform signs an assertion and exchanges
 it for an access token. What the store holds for that workspace is the fact of
-consent, not a credential -- and the credential it does hold is one key that
-reaches every tenant who has consented, which is a much higher-value secret
-than any single refresh token.
+consent, not a credential.
+
+**That shape is refused for anything a tenant uses.** One key that reaches
+every tenant who has consented is a secret whose compromise is every tenant at
+once -- a worse blast radius than anything else here, including
+`OUTTURN_TOKEN_SECRET`, which at least only mints credentials for outturn. It
+would also contradict the platform's one real promise: a compromise reaches
+co-residency and nothing further. A credential that spans every workspace is
+exactly the thing that does not.
+
+So the rule is **one credential per workspace, always**, and it is a constraint
+on which grants may be used rather than a preference about storage. A provider
+offering only a platform-wide key is not integrated as a tenant-facing
+extension, however convenient the lifecycle looks. Where a provider supports
+both -- DocuSign supports authorization code as well as JWT bearer -- the
+per-workspace grant is the one taken, and the operational cost of refresh
+tokens is the price of the boundary holding.
+
+The exception is a genuine platform integration: something the platform itself
+uses, never on a tenant's behalf and never reachable from a workspace's agent.
+There a single credential spans nothing, because there is nothing to span. The
+test is not who pays for it or who benefits, but whether any workspace's
+configuration can cause it to be used -- and if one can, it is not this case.
 
 The rotating case breaks a different thing. A provider that returns a new
 refresh token on each exchange invalidates the old one, so the new token must
