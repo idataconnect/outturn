@@ -21,13 +21,52 @@ outturn_token_secret() {
 # and an OCTET STRING of 32 bytes. Only the last 32 bytes of the DER public
 # key are the key itself. Checked against ed25519-dalek's own derivation --
 # the two agree, which is what matters, since dalek is what reads these.
+#
+# macOS ships LibreSSL as `openssl`, and LibreSSL cannot load an Ed25519 key
+# at all -- it answers "unable to load key". With the error discarded that
+# produced an empty public key, written into the secret without complaint, and
+# a gateway that panicked at startup with "no public keys to verify with". So
+# the openssl that can do it is found rather than assumed, and a machine with
+# none is told so instead of being handed a key that is not one.
+outturn_openssl() {
+  local candidate
+  for candidate in \
+    "${OUTTURN_OPENSSL:-}" \
+    /opt/homebrew/opt/openssl@3/bin/openssl \
+    /opt/homebrew/opt/openssl/bin/openssl \
+    /usr/local/opt/openssl@3/bin/openssl \
+    openssl
+  do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    # Asked rather than inferred from a version string: what matters is
+    # whether this build does Ed25519, and the cheapest way to know is to
+    # make it do one.
+    if "$candidate" genpkey -algorithm ed25519 -outform DER >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  echo "no openssl here can do Ed25519 (macOS ships LibreSSL, which cannot);" \
+       "install one with: brew install openssl@3" >&2
+  return 1
+}
+
 outturn_public_key_of() {
-  local seed="$1" der
+  local seed="$1" der ssl pub
+  ssl=$(outturn_openssl) || return 1
   der=$(mktemp)
   printf '302e020100300506032b657004220420%s' "$seed" | xxd -r -p >"$der"
-  openssl pkey -inform DER -in "$der" -pubout -outform DER 2>/dev/null |
-    tail -c 32 | xxd -p -c 64
+  pub=$("$ssl" pkey -inform DER -in "$der" -pubout -outform DER 2>/dev/null |
+    tail -c 32 | xxd -p -c 64)
   rm -f "$der"
+  # A short answer is a failed derivation, and writing it would hand the
+  # gateway a key that cannot verify anything the API signs.
+  if [ "${#pub}" -ne 64 ]; then
+    echo "could not derive the public key from the seed" >&2
+    return 1
+  fi
+  printf '%s' "$pub"
 }
 
 # What the runtime presents to take work. Not a signing key and never
