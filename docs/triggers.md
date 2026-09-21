@@ -117,6 +117,41 @@ turn's output is reachable two ways that do: the session is listed like any
 other, and an agent that writes its result to `workspace/` scope leaves
 something a person will find where they already look. Neither is a substitute.
 
+## The fixture this needs
+
+Webhooks are the first thing here where a test against the mounted app is not
+enough. Signature verification, refusals and body limits are all testable
+in-process, and should be -- but the thing webhooks exist for is a round trip:
+an event arrives, an agent works, and something outside the platform is changed
+as a result. None of that is exercised by a request built in a test.
+
+So a fixture service, beside `outturn-mockllm` and for the same stated reason:
+a test against an in-process shortcut measures the shortcut, and the parts most
+likely to break are the ones a shortcut skips.
+
+A small booking system is the shape to build, because it is the worked example
+these documents already use. It emits a webhook when a booking is made, exposes
+a REST API for availability and reservations, and can be asked what it holds so
+a test can assert the agent's work landed. Deployed at zero replicas like the
+mock provider, scaled up when something needs it.
+
+Three things earn their keep at once, which is why this is worth building
+rather than mocking:
+
+- **Triggers**, end to end: it POSTs a signed delivery and the turn that
+  follows is a real turn.
+- **Integrations** ([integrations.md](integrations.md)): the agent reaches back
+  through `fetch_url`, so the egress rule, the credential and the gateway are
+  all in the path rather than assumed.
+- **The OpenAPI wizard** ([openapi-wizard.md](openapi-wizard.md)) and
+  **evaluation**: it serves its own specification, so the wizard has a real
+  document to read and the skill that results has a real service to be judged
+  against.
+
+It must be obviously fake from the outside, the way the mock provider's
+`x-outturn-mock` header makes a pretend transcript identifiable later by
+somebody who does not know it exists.
+
 ## What this needs that does not exist
 
 Recorded here because triggers are what make the absence matter, not because
@@ -184,25 +219,78 @@ before it is saved rather than after.
 
 ## Webhooks
 
-Designed, unbuilt. The shape, so that schedules do not accidentally decide it:
-
 An inbound endpoint per trigger, at an unguessable path, accepting a POST from
 outside the platform. That is a different security posture from anything here
 today -- every existing endpoint is authenticated, and this one is reachable by
 whoever has the URL.
 
-So it needs, at minimum: a shared secret the sender signs with and the platform
-verifies, rejection of anything unsigned rather than best-effort acceptance, a
-body size ceiling, and the per-trigger rate ceiling above doing real work
-rather than being a formality. An unguessable path is not authentication and
-must not be treated as any.
+**This is core rather than an add-on**, and the reasoning is worth recording
+because it looked like the other way round. A deployment with users already
+exposes the API, so one more route is not a new posture. And an agent that
+cannot be reached by the systems it is meant to help with can only be polled or
+waited on by a person -- which is not the product. What an operator eventually
+pays for around webhooks is the operational surround: delivery history, replay
+of failures, alerting on a trigger that has stopped receiving. The mechanism
+itself has to work in the box or the box does not work.
 
-The body becomes the turn's prompt, which means untrusted text from outside
-reaches a model that has tools. That is prompt injection with a public front
-door, and the answer is not to sanitise the body -- it is that a webhook
-trigger names the agent it starts, and that agent's scopes and egress rules are
-what bound the damage. An agent fed by a public hook should be configured as
-though its input were hostile, because it is.
+### Authentication
+
+**HMAC-SHA256 over the raw body**, with a per-trigger secret. The sender sends
+the digest and a timestamp; the platform recomputes over the bytes as received
+and compares in constant time, then refuses a timestamp outside a few minutes
+so a captured request cannot be replayed indefinitely.
+
+Over the raw bytes rather than a parsed body, because two JSON documents that
+mean the same thing have different bytes, and a signature over a reserialised
+body verifies something the sender never sent.
+
+What it must not do is accept an unsigned request. An unguessable path is not
+authentication and must not be treated as any: a URL leaks into logs, browser
+history, screenshots and support tickets, and a secret that travels in the path
+is a secret sent to everything in between.
+
+A bearer token was considered and refused. It is easier for a sender that
+cannot compute a digest, and the cost is that the secret itself travels on
+every request rather than a proof of it -- so any proxy or log that records
+headers holds the credential. Offering both would make the weaker one the
+default, because it is the easier one to wire up.
+
+### What the agent is asked
+
+**The trigger owns a prompt template and the body fills it.** Not the raw body
+as the prompt: that makes the entire instruction attacker-controlled text, with
+nothing saying what it is or what to do with it.
+
+A template puts the workspace's own framing around untrusted content -- "A
+booking notification arrived. Summarise it and check availability: {{body}}" --
+so the model reads the payload as data inside an instruction rather than as the
+instruction. That is not a defence against prompt injection and must not be
+described as one. It is the difference between a model that has been told what
+it is looking at and one that has not.
+
+The real bound is elsewhere, and it is the same one as everywhere else here: a
+webhook trigger names the agent it starts, and that agent's scopes and egress
+rules are what a compromised payload can reach. An agent fed by a public hook
+should be configured as though its input were hostile, because it is.
+
+### Which session
+
+**A new session per delivery**, as for schedules. Each event is independent and
+the simplest thing is right for a first version.
+
+The alternative -- keying deliveries by a field in the body so events about one
+booking land in one conversation -- is the thing a real deployment will ask
+for, and it is deliberately not built. It needs a mapping from external
+identity to session, a decision about when a thread is finished, and a story
+for two deliveries racing into one session. A nullable key column added later
+costs less than guessing at those now.
+
+### What is still to settle
+
+The per-trigger rate ceiling is specified above and unbuilt for schedules too.
+A public endpoint is where it stops being optional: a schedule can only fire as
+often as its own expression says, while a hook fires as often as whoever holds
+the URL chooses.
 
 ## Email
 
