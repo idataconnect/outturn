@@ -7,4 +7,5 @@ resources:
   - minio.yaml
   - postgres.yaml
   - mockllm.yaml
+  - hollowbrook.yaml
   - networkpolicy.yaml

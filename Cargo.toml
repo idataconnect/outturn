@@ -42,6 +42,9 @@ rand = "0.8"
 thiserror = "2"
 argon2 = "0.6"
 sha2 = "0.10"
+# Webhook signatures, both ends: the API verifies an inbound delivery and the
+# Hollowbrook fixture signs an outbound one.
+hmac = "0.12"
 hex = "0.4"
 # Data URLs for an image on its way to a model; nothing else here needs it,
 # and the session token that claims to be base64 is hex.
@@ -101,6 +104,10 @@ live-providers = []
 [[bin]]
 name = "mockllm"
 path = "src/bin/mockllm.rs"
+
+[[bin]]
+name = "hollowbrook"
+path = "src/bin/hollowbrook.rs"
 
 [[test]]
 name = "api"

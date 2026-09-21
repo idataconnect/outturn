@@ -33,6 +33,10 @@ build:
       docker:
         dockerfile: Dockerfile
         target: mockllm
+    - image: outturn-hollowbrook
+      docker:
+        dockerfile: Dockerfile
+        target: hollowbrook
 
 manifests:
   kustomize:

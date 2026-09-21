@@ -1,0 +1,78 @@
+# A guesthouse that never was, for testing the things that talk to one.
+#
+# Deployed at zero replicas and left there, like the mock provider beside it.
+# Scaling it up is the whole of turning it on:
+#
+#   kubectl scale deploy/outturn-hollowbrook --replicas=1
+#
+# It exists because the interesting parts of this platform are the seams
+# between tiers, and a seam tested in-process is a seam not tested: a webhook
+# delivered by a test's own request never crosses a socket, and an agent's
+# outbound call that is stubbed never reaches an egress rule.
+#
+# To have it announce bookings into outturn, point it at a trigger and give it
+# that trigger's secret:
+#
+#   kubectl set env deploy/outturn-hollowbrook \
+#       HOLLOWBROOK_WEBHOOK_URL=http://outturn-api:8080/v1/hooks/<path> \
+#       HOLLOWBROOK_WEBHOOK_SECRET=<the trigger's secret>
+#
+# Absent those it keeps its news to itself, which is the default: a fixture
+# that POSTs somewhere on startup is a fixture that fails in somebody's
+# cluster for reasons they did not ask about.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-hollowbrook
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: outturn-hollowbrook
+  template:
+    metadata:
+      labels:
+        app: outturn-hollowbrook
+    spec:
+      containers:
+        - name: hollowbrook
+          image: outturn-hollowbrook
+          ports:
+            - containerPort: 8084
+          env:
+            # Whether a booking is announced, and how it is signed. `hmac`
+            # signs the body; `shared_secret` sends the credential itself,
+            # which is what a sender that cannot sign does -- see
+            # docs/triggers.md.
+            - name: HOLLOWBROOK_WEBHOOK_SCHEME
+              value: "hmac"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8084
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8084
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: "1"
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-hollowbrook
+spec:
+  selector:
+    app: outturn-hollowbrook
+  ports:
+    - port: 8084
+      targetPort: 8084

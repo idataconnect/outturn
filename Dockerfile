@@ -26,11 +26,12 @@ COPY wit/ wit/
 COPY assets/agent_default.wasm /agent_default.wasm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin api --bin gateway --bin runtime --bin mockllm && \
+    cargo build --release --bin api --bin gateway --bin runtime --bin mockllm --bin hollowbrook && \
     cp /app/target/release/api /usr/local/bin/api && \
     cp /app/target/release/gateway /usr/local/bin/gateway && \
     cp /app/target/release/runtime /usr/local/bin/runtime && \
-    cp /app/target/release/mockllm /usr/local/bin/mockllm
+    cp /app/target/release/mockllm /usr/local/bin/mockllm && \
+    cp /app/target/release/hollowbrook /usr/local/bin/hollowbrook
 
 FROM debian:trixie-slim AS api
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -59,3 +60,13 @@ FROM debian:trixie-slim AS mockllm
 COPY --from=builder /usr/local/bin/mockllm /usr/local/bin/mockllm
 EXPOSE 8083
 ENTRYPOINT ["mockllm"]
+
+# A guesthouse that never was. Sends webhooks, answers a REST API, and serves
+# its own OpenAPI document, so the seams between tiers can be tested across
+# real sockets. Zero replicas until something wants it.
+FROM debian:trixie-slim AS hollowbrook
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/bin/hollowbrook /usr/local/bin/hollowbrook
+EXPOSE 8084
+ENTRYPOINT ["hollowbrook"]
