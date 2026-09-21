@@ -9,8 +9,6 @@ use chrono::Utc;
 use chrono_tz::Tz;
 use uuid::Uuid;
 
-use crate::jobs;
-
 use super::{Cron, TICK, advance, postgres};
 
 /// Runs until the process is asked to stop.
@@ -137,124 +135,25 @@ async fn record(
     }
 }
 
-/// Creates the session and queues the turn, in one transaction.
-///
-/// Together, for the same reason `sessions::enqueue_turn` does it: a message
-/// that exists with no job to answer it is a message nothing will ever notice.
+/// One firing's turn, through the shared trigger path.
 async fn start_turn(pool: &sqlx::PgPool, schedule: &super::Schedule) -> Result<Uuid, String> {
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-
-    let session_id = Uuid::now_v7();
-    // Titled after the schedule, because a list of sessions called "Untitled"
-    // is no use to somebody working out what their agent did overnight.
-    // `account` is carried so the usage ledger can group a scheduled turn the
-    // same way it groups an interactive one -- the worker copies it onto every
-    // ledger row, and a null here drops the turn out of the workspace's own
-    // billing breakdown. Null when the schedule names none, which is the same
-    // thing an unattributed session does.
-    sqlx::query(
-        "insert into agent_sessions (id, workspace_id, agent_id, user_id, title, schedule_id, account) \
-         values ($1, $2, $3, null, $4, $5, $6)",
-    )
-    .bind(session_id)
-    .bind(schedule.workspace_id)
-    .bind(schedule.agent_id)
-    .bind(&schedule.name)
-    .bind(schedule.id)
-    .bind(schedule.account.as_deref())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // A user message with no user. The role is what the model needs to see --
-    // a turn with nothing in the user position has nothing to answer -- while
-    // the null `user_id` is what says nobody typed it. The browser draws it as
-    // the schedule's words rather than as somebody's.
-    let message_id = Uuid::now_v7();
-    sqlx::query(
-        "insert into agent_messages (id, session_id, role, content, user_id, metadata) \
-         values ($1, $2, 'user', $3, null, $4)",
-    )
-    .bind(message_id)
-    .bind(session_id)
-    .bind(&schedule.prompt)
-    .bind(serde_json::json!({
-        "schedule_id": schedule.id,
-        "schedule_name": schedule.name,
-    }))
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // The struct rather than a JSON literal, so a field added to
-    // `ChatTurnPayload` fails here at compile time. Hand-written keys would
-    // drift silently and break every scheduled turn at runtime, in a loop
-    // nobody is watching.
-    let payload = serde_json::to_value(crate::api::worker::ChatTurnPayload {
-        workspace_id: schedule.workspace_id,
-        session_id,
-        agent_id: schedule.agent_id,
-        message_id,
-        // The schedule's zone, so the agent's clock reads the way whoever set
-        // it up expects rather than the way the pod's does.
-        timezone: Some(schedule.timezone.clone()),
-        // Null on purpose, and load-bearing twice over: the usage ledger
-        // records this as work nobody sent, and `worker::inhibited` will not
-        // clear a stopped session's latch for it -- so an agent cannot
-        // restart itself by being scheduled.
-        user_id: None,
-    })
-    .map_err(|e| e.to_string())?;
-
-    // Somebody's agent is in this conversation even though nobody is, so it
-    // counts towards how many pods the fleet wants. `sessions::enqueue_turn`
-    // writes this for the same reason: `desired_runtime_pods` reads recently
-    // active sessions because queue depth is a lagging measure, and a
-    // scheduled turn left out of it is a turn the autoscaler cannot see
-    // coming.
-    sqlx::query(
-        "insert into live_sessions (session_id, expires_at) \
-         values ($1, now() + interval '5 minutes') \
-         on conflict (session_id) do update set expires_at = excluded.expires_at",
-    )
-    .bind(session_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    jobs::enqueue(
-        &mut *tx,
-        schedule.workspace_id,
-        crate::api::worker::CHAT_TURN,
-        payload,
-        None,
-        Some(&session_id.to_string()),
-        // Nobody is waiting, so this queues behind anyone who is.
-        jobs::PRIORITY_BACKGROUND,
+    crate::api::trigger::start(
+        pool,
+        crate::api::trigger::Started {
+            workspace_id: schedule.workspace_id,
+            agent_id: schedule.agent_id,
+            title: schedule.name.clone(),
+            prompt: schedule.prompt.clone(),
+            account: schedule.account.clone(),
+            // The schedule's zone, so the agent's clock reads the way whoever
+            // set it up expects rather than the way the pod's does.
+            timezone: Some(schedule.timezone.clone()),
+            source: crate::api::trigger::Source::Schedule(schedule.id),
+            metadata: serde_json::json!({
+                "schedule_id": schedule.id,
+                "schedule_name": schedule.name,
+            }),
+        },
     )
     .await
-    .map_err(|e| e.to_string())?;
-
-    // Announced like any other message. A browser with the session open reads
-    // history plus a cursor and then consumes events above it, so a message
-    // that arrives with no event is one the reader never sees appear -- and
-    // the deltas of the reply that follows hang off nothing.
-    crate::events::append_on(
-        &mut tx,
-        schedule.workspace_id,
-        Some(session_id),
-        "chat.message",
-        serde_json::json!({
-            "id": message_id,
-            "session_id": session_id,
-            "role": "user",
-            "content": schedule.prompt,
-            "schedule_id": schedule.id,
-        }),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(session_id)
 }

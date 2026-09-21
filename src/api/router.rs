@@ -1361,6 +1361,23 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/schedules/preview",
             post(super::schedules::preview_schedule),
         )
+        .route(
+            "/v1/webhook-triggers",
+            get(super::webhooks::list_triggers).post(super::webhooks::create_trigger),
+        )
+        .route(
+            "/v1/webhook-triggers/{id}",
+            get(super::webhooks::get_trigger)
+                .patch(super::webhooks::update_trigger)
+                .delete(super::webhooks::delete_trigger),
+        )
+        .route(
+            "/v1/webhook-triggers/{id}/rotate",
+            post(super::webhooks::rotate_secret),
+        )
+        // The public half. Reachable by whoever holds the URL, which is why
+        // it sits apart from everything above it and refuses for a living.
+        .route("/v1/hooks/{path}", post(super::webhooks::deliver))
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
         .route(

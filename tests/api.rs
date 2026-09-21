@@ -4822,3 +4822,274 @@ async fn firing_a_schedule_produces_a_turn_nobody_sent() {
 
     finish!(h);
 }
+
+// ---------------------------------------------------------------------------
+// Webhook triggers
+//
+// The public half is the only endpoint here reachable by somebody this
+// platform never gave a credential to, so most of what is worth testing is
+// what it refuses.
+// ---------------------------------------------------------------------------
+
+/// Signs a body the way a sender does, for tests that should be accepted.
+fn sign(secret: &str, body: &str, at: i64) -> (String, String) {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let ts = at.to_string();
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_bytes()).expect("key");
+    mac.update(format!("{ts}.{body}").as_bytes());
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    (format!("sha256={hex}"), ts)
+}
+
+async fn make_trigger(h: &Harness, token: &str, agent_id: &str, body: &str) -> (String, String) {
+    let (status, created) = h.post("/v1/webhook-triggers", Some(token), body).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+    let v: Value = serde_json::from_str(&created).expect("json");
+    let path = v["path"].as_str().expect("path").to_string();
+    let secret = v["secret"].as_str().expect("secret").to_string();
+    (path, secret)
+}
+
+async fn deliver(h: &Harness, path: &str, body: &str, headers: &[(&str, &str)]) -> StatusCode {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/hooks/{path}"))
+        .header("content-type", "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let (status, _) = h
+        .send(req.body(Body::from(body.to_string())).expect("request"))
+        .await;
+    status
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-a@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking arrived: {{{{body}}}}","scheme":"hmac"}}"#
+        ),
+    )
+    .await;
+
+    let payload = r#"{"event":"booking.created","id":"bk_1"}"#;
+    let (sig, ts) = sign(&secret, payload, chrono::Utc::now().timestamp());
+
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            payload,
+            &[("x-outturn-signature", &sig), ("x-outturn-timestamp", &ts)],
+        )
+        .await,
+        StatusCode::ACCEPTED,
+        "a correctly signed delivery was not accepted"
+    );
+
+    // Unsigned, and otherwise identical.
+    assert_eq!(
+        deliver(&h, &path, payload, &[]).await,
+        StatusCode::NOT_FOUND,
+        "an unsigned delivery was accepted"
+    );
+
+    // Signed, then the body changed -- which is the whole reason for signing
+    // the body rather than sending a token.
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            r#"{"event":"booking.created","id":"bk_TAMPERED"}"#,
+            &[("x-outturn-signature", &sig), ("x-outturn-timestamp", &ts)],
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "a tampered body was accepted"
+    );
+
+    // An old signature, correctly computed.
+    let old = chrono::Utc::now().timestamp() - 3600;
+    let (old_sig, old_ts) = sign(&secret, payload, old);
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            payload,
+            &[
+                ("x-outturn-signature", &old_sig),
+                ("x-outturn-timestamp", &old_ts)
+            ],
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "a replayed delivery was accepted"
+    );
+
+    // The accepted one produced a session with a message nobody sent.
+    let (status, body) = h.get("/v1/agent-sessions", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("Bookings"),
+        "no session was started by the delivery: {body}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_path_that_exists_is_indistinguishable_from_one_that_does_not() {
+    // Otherwise the endpoint is an oracle for which paths are real, and an
+    // unauthenticated caller can enumerate a deployment's triggers.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-b@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk2"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, _) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(r#"{{"agent_id":"{agent_id}","name":"Real","prompt":"got {{{{body}}}}"}}"#),
+    )
+    .await;
+
+    let real = deliver(&h, &path, "{}", &[]).await;
+    let imaginary = deliver(&h, "0123456789abcdef0123456789abcdef", "{}", &[]).await;
+    assert_eq!(real, imaginary, "a real path answered differently");
+    assert_eq!(real, StatusCode::NOT_FOUND);
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hourly_ceiling_refuses_rather_than_queueing() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-c@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk3"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    // A ceiling of two, so the third is refused.
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Busy","prompt":"got {{{{body}}}}","scheme":"shared_secret","max_per_hour":2}}"#
+        ),
+    )
+    .await;
+
+    for n in 1..=2 {
+        assert_eq!(
+            deliver(&h, &path, "{}", &[("x-outturn-token", &secret)]).await,
+            StatusCode::ACCEPTED,
+            "delivery {n} of 2 was refused"
+        );
+    }
+    assert_eq!(
+        deliver(&h, &path, "{}", &[("x-outturn-token", &secret)]).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the ceiling did not refuse the third delivery"
+    );
+
+    // And the refusal is recorded, because a hook dropping traffic silently
+    // looks exactly like a sender that stopped sending.
+    let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
+    let rows: Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        rows[0]["refused"], 1,
+        "the refusal was not counted: {listed}"
+    );
+    // The secret is never handed back.
+    assert!(
+        !listed.contains(&secret),
+        "the secret was returned to a reader: {listed}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trigger_cannot_be_pointed_at_another_workspaces_agent() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let other = h.make_workspace("Other", "other").await;
+    let acme_admin = h
+        .login_as("hook-d@acme.example", None, Some((acme, "admin")))
+        .await;
+    let other_admin = h
+        .login_as("hook-e@other.example", None, Some((other, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&other_admin),
+            r#"{"name":"Theirs","slug":"theirs-hook"}"#,
+        )
+        .await;
+    let theirs: Value = serde_json::from_str(&body).expect("agent");
+    let theirs = theirs["id"].as_str().expect("id");
+
+    let (status, body) = h
+        .post(
+            "/v1/webhook-triggers",
+            Some(&acme_admin),
+            &format!(r#"{{"agent_id":"{theirs}","name":"Borrowed","prompt":"go"}}"#),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another workspace's agent was accepted: {body}"
+    );
+
+    finish!(h);
+}

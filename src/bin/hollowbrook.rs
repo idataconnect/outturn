@@ -29,13 +29,12 @@
 //! mock provider marks its own responses: somebody finding this data later
 //! should be able to tell it is not real without knowing this file exists.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
