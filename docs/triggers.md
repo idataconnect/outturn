@@ -235,25 +235,46 @@ itself has to work in the box or the box does not work.
 
 ### Authentication
 
-**HMAC-SHA256 over the raw body**, with a per-trigger secret. The sender sends
-the digest and a timestamp; the platform recomputes over the bytes as received
-and compares in constant time, then refuses a timestamp outside a few minutes
-so a captured request cannot be replayed indefinitely.
+**A trigger declares one scheme and the platform enforces exactly that one.**
+Not a list of things it will accept: a request that fails the declared check is
+refused, never retried against a weaker one.
 
-Over the raw bytes rather than a parsed body, because two JSON documents that
-mean the same thing have different bytes, and a signature over a reserialised
-body verifies something the sender never sent.
+`hmac` is the scheme to prefer. HMAC-SHA256 over the raw body with a
+per-trigger secret; the sender sends the digest and a timestamp, the platform
+recomputes over the bytes as received, compares in constant time, and refuses a
+timestamp outside a few minutes so a captured request cannot be replayed
+indefinitely. Over the raw bytes rather than a parsed body, because two JSON
+documents that mean the same thing have different bytes, and a signature over a
+reserialised body verifies something the sender never sent.
 
-What it must not do is accept an unsigned request. An unguessable path is not
-authentication and must not be treated as any: a URL leaks into logs, browser
-history, screenshots and support tickets, and a secret that travels in the path
-is a secret sent to everything in between.
+`shared_secret` exists because the alternative is refusing real senders.
+Postmark states plainly that it does not support HMAC signing and recommends
+HTTP Basic Auth with IP allowlisting instead -- and this document already names
+Postmark as how email arrives. A platform that accepts only signatures cannot
+receive email, so the choice is not between strong and weak but between working
+and not. It carries a per-trigger credential in a header, compared in constant
+time.
 
-A bearer token was considered and refused. It is easier for a sender that
-cannot compute a digest, and the cost is that the secret itself travels on
-every request rather than a proof of it -- so any proxy or log that records
-headers holds the credential. Offering both would make the weaker one the
-default, because it is the easier one to wire up.
+This is deliberately not "support both and let people pick". The scheme is a
+property of the sender rather than a preference, and the difference matters:
+
+- The credential travels on every request rather than a proof of it, so any
+  proxy or log that records headers holds it. Anything that reads
+  `webhook_triggers` must therefore be as careful with it as with an egress
+  credential.
+- It does not bind the body, so a request that was captured can be replayed
+  with a different payload.
+
+So a trigger using it should say so where somebody will see it, and the
+operator's mitigations are the sender's own: restrict by source address where
+the sender publishes its ranges, and rotate the secret on a schedule. Neither
+is the platform's to enforce, and both are worth telling somebody about at the
+moment they choose the scheme.
+
+What neither scheme permits is an unauthenticated request. An unguessable path
+is not authentication and must not be treated as any: a URL leaks into logs,
+browser history, screenshots and support tickets, and a secret that travels in
+the path is a secret sent to everything in between.
 
 ### What the agent is asked
 
@@ -297,6 +318,12 @@ the URL chooses.
 Designed, unbuilt, and mostly not its own thing: an inbound email provider
 (SES, Postmark, and others) delivers by POSTing to an endpoint, so email is the
 webhook path plus parsing.
+
+It is also why the webhook path has two authentication schemes rather than one.
+Postmark does not sign its deliveries at all -- its documentation says so and
+recommends Basic Auth with IP allowlisting instead -- so an HMAC-only platform
+could not receive email through it. Checking that before building was worth
+more than the assumption it replaced.
 
 What is genuinely its own: threading, since a reply should land in the session
 its predecessor started, which is the external-identity mapping above with a
