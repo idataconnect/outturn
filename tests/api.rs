@@ -5358,3 +5358,101 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
 
     finish!(h);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() {
+    // A trigger is a standing instruction to start sessions with an agent, so
+    // it has to clear the bar `sessions::create_session` clears. It did not:
+    // `agents:update` is deliberately not narrowed per agent, so creating a
+    // schedule or a hook was a way around the narrowing rather than a use of
+    // it. Two reviews raised this before it was fixed.
+    use outturn::api::scope::ScopeStore;
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("narrow@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let mut ids = Vec::new();
+    for slug in ["books", "helpdesk"] {
+        let (_, body) = h
+            .post(
+                "/v1/agents",
+                Some(&admin),
+                &format!(r#"{{"name":"{slug}","slug":"{slug}"}}"#),
+            )
+            .await;
+        ids.push(
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        );
+    }
+    let (books, helpdesk) = (ids[0], ids[1]);
+
+    let me: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("narrow@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the account that logged in");
+    h.scopes
+        .set(acme, me, &[helpdesk])
+        .await
+        .expect("set scope");
+
+    // The agent they were given is still reachable both ways.
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{helpdesk}","name":"ok","prompt":"go","expression":"0 9 * * *"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/webhook-triggers",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{helpdesk}","name":"ok","prompt":"got {{{{body}}}}"}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+
+    // The one they were scoped away from is refused on both.
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{books}","name":"sneaky","prompt":"go","expression":"0 9 * * *"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a scoped-away agent was given a schedule: {body}"
+    );
+
+    let (status, body) = h
+        .post(
+            "/v1/webhook-triggers",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{books}","name":"sneaky","prompt":"got {{{{body}}}}"}}"#),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a scoped-away agent was given a public endpoint: {body}"
+    );
+
+    finish!(h);
+}

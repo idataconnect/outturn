@@ -113,6 +113,15 @@ pub async fn create_trigger(
         .get(claims.workspace_id, input.agent_id)
         .await?;
 
+    // And that this person may start sessions with *this* agent. A hook is a
+    // standing instruction to do exactly that, so it clears the same bar
+    // `sessions::create_session` clears -- `agents:update` is deliberately not
+    // narrowed per agent, and a public endpoint pointed at an agent somebody
+    // was scoped away from is a way around the narrowing rather than a use of
+    // it.
+    super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
+        .await?;
+
     validate(&input).map_err(bad_request)?;
 
     // 16 bytes of path, 32 of secret. The path only has to be unguessable;
@@ -158,6 +167,8 @@ pub async fn update_trigger(
     state
         .agents
         .get(claims.workspace_id, input.agent_id)
+        .await?;
+    super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
         .await?;
     validate(&input).map_err(bad_request)?;
 

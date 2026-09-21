@@ -126,6 +126,14 @@ pub async fn create_schedule(
         .get(claims.workspace_id, input.agent_id)
         .await?;
 
+    // And that this person may start sessions with *this* agent. A schedule is
+    // a standing instruction to do exactly that, so it has to clear the same
+    // bar `sessions::create_session` clears -- `agents:update` is deliberately
+    // not narrowed per agent, and without this a person scoped to the support
+    // agent could schedule the accounting one and read what came back.
+    super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
+        .await?;
+
     // Refused here rather than at the firing loop. A schedule that cannot be
     // parsed will never fire, and finding that out tomorrow morning means
     // finding it out from its absence.
@@ -159,6 +167,8 @@ pub async fn update_schedule(
     state
         .agents
         .get(claims.workspace_id, input.agent_id)
+        .await?;
+    super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
         .await?;
 
     // Which agent a schedule belongs to is not editable, and a request that
