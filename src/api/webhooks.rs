@@ -290,8 +290,20 @@ pub async fn deliver(
         }
     };
 
+    // Everything from here until the credential is proved is logged and not
+    // written. The ordering below puts the ceiling after verification so an
+    // unauthenticated caller cannot spend a workspace's allowance -- and the
+    // same reasoning applies to writing at all, which an earlier version
+    // missed. A refusal recorded before the credential is proved means anyone
+    // holding the URL can drive row-locked updates at line rate, on the row
+    // every real delivery needs to update, while filling the operator's only
+    // diagnostic with their own noise.
+    //
+    // It is also what made the two 404s distinguishable: an unknown path did a
+    // select and a bad signature did a select and a write, which is 1.3ms of
+    // difference over HTTP and a reliable oracle for which paths are real.
     if !trigger.enabled {
-        return refuse(&state, &trigger, Refusal::Disabled).await;
+        return refuse_quietly(Refusal::Disabled, &path);
     }
 
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
@@ -303,7 +315,7 @@ pub async fn deliver(
         header(webhook::TOKEN_HEADER),
         Utc::now(),
     ) {
-        return refuse(&state, &trigger, why).await;
+        return refuse_quietly(why, &path);
     }
 
     match postgres::admit(&state.pool, trigger.id).await {
@@ -363,7 +375,14 @@ pub async fn deliver(
     }
 }
 
-/// Refuses a delivery for a trigger that exists, recording why.
+/// Refuses a delivery that proved its credential, recording why.
+///
+/// Only reached past verification, which is what makes the write safe to do:
+/// whoever triggered it holds the secret, so they are a sender this workspace
+/// chose rather than anybody with the URL. That is also what makes `refused`
+/// mean one thing -- it counts what the ceiling turned away and nothing else,
+/// so an operator seeing it climb knows to look at the rate rather than at a
+/// clock or a signature.
 async fn refuse(state: &ApiState, trigger: &Trigger, why: Refusal) -> axum::response::Response {
     tracing::warn!(
         trigger_id = %trigger.id,
@@ -375,10 +394,16 @@ async fn refuse(state: &ApiState, trigger: &Trigger, why: Refusal) -> axum::resp
     (why.status(), "").into_response()
 }
 
-/// Refuses without a trigger to record it against.
+/// Refuses without writing anything.
 ///
-/// Logged and nothing else: there is no row to count this on, and a path
-/// somebody is probing should not create one.
+/// Every refusal decided before the credential is proved comes here, whether
+/// or not there is a row it could have been recorded against. A path somebody
+/// is probing should not create work, and a path they are probing with a bad
+/// signature should not either -- which is the same sentence, and the reason
+/// the two 404s are now indistinguishable in time as well as in status.
+///
+/// The operator still learns of it, in the log, which is where somebody
+/// allowed to know the difference can look.
 fn refuse_quietly(why: Refusal, path: &str) -> axum::response::Response {
     tracing::warn!(
         reason = why.reason(),

@@ -306,12 +306,47 @@ identity to session, a decision about when a thread is finished, and a story
 for two deliveries racing into one session. A nullable key column added later
 costs less than guessing at those now.
 
+### Replay within the window is permitted
+
+A delivery signed five minutes ago is accepted five minutes ago, and nothing
+records which signatures have been seen -- so the same captured request can be
+sent again, as many times as the ceiling allows, until its timestamp ages out.
+Each replay is a new session and a new billable turn.
+
+Said plainly because the earlier wording was not: "refuses a timestamp outside
+a few minutes so a captured request cannot be replayed indefinitely" is true
+and reads as a replay defence, which it is not. It bounds how long replay is
+possible and does not prevent it.
+
+For a trigger whose agent acts on the world -- the booking case these documents
+use -- that is duplicate work, which is what
+[idempotency.md](idempotency.md) is about. Until something records seen
+signatures, a trigger's prompt should be written so that acting twice is
+survivable, and that is the operator's job rather than the platform's.
+
+`shared_secret` is worse and the difference is worth stating: it binds no body,
+so a captured request can be replayed with a payload of the attacker's choosing
+until the secret is rotated.
+
 ### What is still to settle
 
-The per-trigger rate ceiling is specified above and unbuilt for schedules too.
-A public endpoint is where it stops being optional: a schedule can only fire as
-often as its own expression says, while a hook fires as often as whoever holds
-the URL chooses.
+**The concurrency half of the ceiling.** The section above specifies "a maximum
+concurrent and a maximum per hour" and only the second exists. With a new
+session per delivery there is no serial key joining them, so a trigger allowing
+sixty an hour against turns that take three minutes runs them genuinely
+concurrently -- which is the first runaway shape this document describes,
+unbounded by the ceiling that was supposed to bound it.
+
+**The ceiling for schedules.** Unbuilt there too. Less urgent, because a
+schedule fires only as often as its own expression says, where a hook fires as
+often as whoever holds the URL chooses.
+
+**Per-agent narrowing on trigger creation.** Creating a trigger is a way to
+make an agent run turns, and `sessions:create` is narrowed per agent
+(`user_agent_scopes`) while `agents:update` deliberately is not. So somebody
+narrowed away from an agent can still cause it to run by giving it a schedule
+or a hook. Both endpoints have this; neither checks `require_for_agent` the way
+`sessions::create_session` does.
 
 ## Email
 

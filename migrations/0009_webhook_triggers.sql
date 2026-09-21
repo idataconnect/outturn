@@ -76,6 +76,14 @@ create table webhook_triggers (
     -- How many deliveries the ceiling turned away, ever. Kept because a hook
     -- silently dropping half its traffic looks exactly like a sender that
     -- stopped sending.
+    --
+    -- The ceiling and nothing else. Refusals decided before the credential is
+    -- proved -- a bad signature, a drifted clock, a disabled trigger -- are
+    -- logged and never counted here, for two reasons. They would make this
+    -- number attacker-controlled, since anybody holding the URL can produce
+    -- them at will; and they would make it ambiguous, so an operator seeing it
+    -- climb would raise `max_per_hour` when the sender's clock is what needs
+    -- fixing.
     refused      int         not null default 0,
 
     created_by   uuid        references users (id) on delete set null,

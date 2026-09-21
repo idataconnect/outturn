@@ -1377,7 +1377,16 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         // The public half. Reachable by whoever holds the URL, which is why
         // it sits apart from everything above it and refuses for a living.
-        .route("/v1/hooks/{path}", post(super::webhooks::deliver))
+        .route(
+            "/v1/hooks/{path}",
+            post(super::webhooks::deliver).layer(axum::extract::DefaultBodyLimit::max(
+                // A layer rather than a check inside the handler, which is
+                // where this started: the handler takes `Bytes`, so a body has
+                // already been buffered whole by the time it could be
+                // measured, and the declared limit was not the enforced one.
+                super::webhook::MAX_BODY_BYTES,
+            )),
+        )
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
         .route(

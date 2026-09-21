@@ -267,6 +267,13 @@ about.
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
 
+**Per-agent narrowing on trigger creation.** Creating a schedule or a webhook
+is a way to make an agent run turns, and neither checks the per-agent narrowing
+that `sessions::create_session` enforces with `require_for_agent`. Somebody
+scoped away from an agent can still give it a trigger. Small -- one call in two
+handlers -- and it is a documented rule the code does not follow, so it should
+not wait for a bigger piece of work. See [triggers.md](triggers.md).
+
 **Flagging a session as wrong.** Nothing today lets a person say a turn did the
 wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it twice over,
 and the second is the surprising one.

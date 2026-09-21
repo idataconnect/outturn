@@ -24,13 +24,6 @@ pub enum Source {
 }
 
 impl Source {
-    fn column(&self) -> &'static str {
-        match self {
-            Source::Schedule(_) => "schedule_id",
-            Source::Webhook(_) => "webhook_trigger_id",
-        }
-    }
-
     fn id(&self) -> Uuid {
         match self {
             Source::Schedule(id) | Source::Webhook(id) => *id,
@@ -68,13 +61,20 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     // The source column differs and nothing else does, so the statement is
     // written twice rather than built from a string -- sqlx takes literals,
     // and two short literals are cheaper to read than a builder.
-    let inserted = match started.source.column() {
-        "schedule_id" => sqlx::query(
+    //
+    // Matched on the enum rather than on a string it maps to, so a third kind
+    // of trigger fails to compile here rather than compiling and writing its
+    // id into the wrong column. An earlier version went through a
+    // `&'static str` with a catch-all arm, which threw away exactly the check
+    // this file was extracted to provide -- and docs/triggers.md already
+    // contemplates email as a third kind.
+    let inserted = match started.source {
+        Source::Schedule(_) => sqlx::query(
             "insert into agent_sessions \
-                     (id, workspace_id, agent_id, user_id, title, account, schedule_id) \
-                 values ($1, $2, $3, null, $4, $5, $6)",
+                 (id, workspace_id, agent_id, user_id, title, account, schedule_id) \
+             values ($1, $2, $3, null, $4, $5, $6)",
         ),
-        _ => sqlx::query(
+        Source::Webhook(_) => sqlx::query(
             "insert into agent_sessions \
                  (id, workspace_id, agent_id, user_id, title, account, webhook_trigger_id) \
              values ($1, $2, $3, null, $4, $5, $6)",

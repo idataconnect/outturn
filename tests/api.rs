@@ -4934,7 +4934,10 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
         "a tampered body was accepted"
     );
 
-    // An old signature, correctly computed.
+    // An old signature, correctly computed. Staleness, not replay: replay
+    // within the window is permitted and is recorded as such in
+    // docs/triggers.md, because nothing here stores which signatures have
+    // been seen.
     let old = chrono::Utc::now().timestamp() - 3600;
     let (old_sig, old_ts) = sign(&secret, payload, old);
     assert_eq!(
@@ -4949,7 +4952,7 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
         )
         .await,
         StatusCode::NOT_FOUND,
-        "a replayed delivery was accepted"
+        "a delivery signed outside the timestamp window was accepted"
     );
 
     // The accepted one produced a session with a message nobody sent.
@@ -5090,6 +5093,268 @@ async fn a_trigger_cannot_be_pointed_at_another_workspaces_agent() {
         StatusCode::NOT_FOUND,
         "another workspace's agent was accepted: {body}"
     );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_before_the_credential_is_proved_writes_nothing() {
+    // Three findings had one cause: recording a refusal before knowing the
+    // caller holds the secret. It let anybody with the URL drive row-locked
+    // updates on the row every real delivery needs, filled the operator's one
+    // diagnostic with a prober's noise, and made the two 404s distinguishable
+    // by the 1.3ms the write costs.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-f@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk4"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, _secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(r#"{{"agent_id":"{agent_id}","name":"Quiet","prompt":"got {{{{body}}}}"}}"#),
+    )
+    .await;
+
+    // Every refusal that happens before verification.
+    let stale = (chrono::Utc::now().timestamp() - 9999).to_string();
+    for headers in [
+        vec![],
+        vec![
+            ("x-outturn-signature", "sha256=wrong"),
+            ("x-outturn-timestamp", "1"),
+        ],
+        vec![
+            ("x-outturn-signature", "sha256=wrong"),
+            ("x-outturn-timestamp", stale.as_str()),
+        ],
+    ] {
+        assert_eq!(
+            deliver(&h, &path, "{}", &headers).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
+    let rows: Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        rows[0]["refused"], 0,
+        "an unauthenticated caller moved the refusal counter: {listed}"
+    );
+    assert!(
+        rows[0]["last_status"].is_null(),
+        "an unauthenticated caller wrote the trigger's status: {listed}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disabled_trigger_refuses_without_saying_it_exists() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-g@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk5"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Off","prompt":"got {{{{body}}}}","scheme":"shared_secret","enabled":false}}"#
+        ),
+    )
+    .await;
+
+    // Correct credential, disabled trigger: still a 404, and still no write.
+    assert_eq!(
+        deliver(&h, &path, "{}", &[("x-outturn-token", &secret)]).await,
+        StatusCode::NOT_FOUND
+    );
+    let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
+    let rows: Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        rows[0]["refused"], 0,
+        "a disabled trigger was written to: {listed}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rotated_secret_replaces_the_one_before_it() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-h@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk6"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (_, created) = h
+        .post(
+            "/v1/webhook-triggers",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Rotating","prompt":"got {{{{body}}}}","scheme":"shared_secret"}}"#
+            ),
+        )
+        .await;
+    let v: Value = serde_json::from_str(&created).expect("json");
+    let id = v["id"].as_str().expect("id").to_string();
+    let path = v["path"].as_str().expect("path").to_string();
+    let first = v["secret"].as_str().expect("secret").to_string();
+
+    assert_eq!(
+        deliver(&h, &path, "{}", &[("x-outturn-token", &first)]).await,
+        StatusCode::ACCEPTED
+    );
+
+    let (status, rotated) = h
+        .post(
+            &format!("/v1/webhook-triggers/{id}/rotate"),
+            Some(&token),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {rotated}");
+    let second = serde_json::from_str::<Value>(&rotated).expect("json")["secret"]
+        .as_str()
+        .expect("secret")
+        .to_string();
+    assert_ne!(first, second, "rotating returned the same secret");
+
+    // The old one stops working and the new one works. Rotating that left the
+    // old credential valid would be a rotation that rotated nothing.
+    assert_eq!(
+        deliver(&h, &path, "{}", &[("x-outturn-token", &first)]).await,
+        StatusCode::NOT_FOUND,
+        "the old secret still worked after rotation"
+    );
+    assert_eq!(
+        deliver(&h, &path, "{}", &[("x-outturn-token", &second)]).await,
+        StatusCode::ACCEPTED,
+        "the new secret did not work"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_still_fires_through_the_shared_trigger_path() {
+    // start_turn moved out of schedule/worker.rs into trigger.rs so webhooks
+    // could use it. The copy it replaced had three steps missing, found by an
+    // earlier review, and the shared version is now the single place where
+    // getting this wrong breaks both trigger kinds at once.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sched-e@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Nightly","slug":"nightly2"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (_, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Sweep","prompt":"check things","expression":"0 * * * *","timezone":"UTC","account":"acme-ops"}}"#
+            ),
+        )
+        .await;
+    let created: Value = serde_json::from_str(&body).expect("json");
+    let id: Uuid = created["id"].as_str().expect("id").parse().expect("uuid");
+
+    sqlx::query("update schedules set next_run_at = now() - interval '1 minute' where id = $1")
+        .bind(id)
+        .execute(&h.db.pool)
+        .await
+        .expect("set due");
+
+    let (schedule, owed) =
+        outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
+            .await
+            .expect("take_due")
+            .expect("due");
+
+    let session = outturn::api::trigger::start(
+        &h.db.pool,
+        outturn::api::trigger::Started {
+            workspace_id: schedule.workspace_id,
+            agent_id: schedule.agent_id,
+            title: schedule.name.clone(),
+            prompt: schedule.prompt.clone(),
+            account: schedule.account.clone(),
+            timezone: Some(schedule.timezone.clone()),
+            source: outturn::api::trigger::Source::Schedule(schedule.id),
+            metadata: serde_json::json!({ "schedule_id": schedule.id }),
+        },
+    )
+    .await
+    .expect("start");
+    assert!(owed < chrono::Utc::now());
+
+    // All three steps the earlier review found missing from the old copy.
+    let (live, account, sched, events): (i64, Option<String>, Option<Uuid>, i64) = sqlx::query_as(
+        "select \
+           (select count(*) from live_sessions where session_id = $1), \
+           (select account from agent_sessions where id = $1), \
+           (select schedule_id from agent_sessions where id = $1), \
+           (select count(*) from events where session_id = $1 and kind = 'chat.message')",
+    )
+    .bind(session)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("query");
+
+    assert_eq!(live, 1, "the autoscaler cannot see this session");
+    assert_eq!(
+        account.as_deref(),
+        Some("acme-ops"),
+        "the ledger loses its account label"
+    );
+    assert_eq!(
+        sched,
+        Some(schedule.id),
+        "the session forgot which schedule started it"
+    );
+    assert_eq!(events, 1, "a browser would never see the message arrive");
 
     finish!(h);
 }
