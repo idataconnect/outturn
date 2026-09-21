@@ -34,6 +34,10 @@ pub struct Cron {
 /// that matches nothing -- 31 February -- terminates here rather than looping.
 const HORIZON_DAYS: i64 = 366 * 4;
 
+/// How far back the first day's scan reaches before the instant check takes
+/// over. One hour, which is the largest offset change any zone applies.
+const MINUTES_PER_HOUR: u32 = 60;
+
 impl Cron {
     pub fn parse(expression: &str) -> Result<Self, String> {
         let fields: Vec<&str> = expression.split_whitespace().collect();
@@ -50,13 +54,21 @@ impl Cron {
         let months = field(fields[3], 1, 12, "month")?;
         let weekdays = field(fields[4], 0, 6, "day of week")?;
 
+        // Whether each day field actually narrows anything, judged by what it
+        // expanded to rather than by how it was written. `*/1` and `0-6` both
+        // restrict nothing while differing from the text "*", and comparing
+        // the text made `0 0 1 * */1` take the union branch and fire daily
+        // instead of on the first of the month.
+        let restricts_dom = days.len() < 31;
+        let restricts_dow = weekdays.len() < 7;
+
         Ok(Self {
             minutes,
             hours,
             days,
             months,
             weekdays,
-            both_days: fields[2] != "*" && fields[4] != "*",
+            both_days: restricts_dom && restricts_dow,
         })
     }
 
@@ -79,19 +91,60 @@ impl Cron {
             if !self.matches_date(date) {
                 continue;
             }
-            let from = if day_offset == 0 { start_minute } else { 0 };
+            // On the morning an hour repeats, a wall-clock time inside it maps
+            // to two instants. Whether the second is a firing depends on what
+            // the expression means rather than on the calendar:
+            //
+            // - An hourly or sub-hourly schedule owes work in both halves, so
+            //   the repeated hour is a real firing and skipping it loses an
+            //   hour of work once a year.
+            // - A daily schedule owes one firing that day. Its wall-clock time
+            //   simply happens twice, and running it twice would act on the
+            //   world twice.
+            //
+            // So the scan reaches back into the repeated hour only when the
+            // expression fires more than once an hour. Otherwise the ordinary
+            // minute-of-day filter applies and the second occurrence is never
+            // considered.
+            let reach_back = if self.fires_within_an_hour() {
+                MINUTES_PER_HOUR
+            } else {
+                0
+            };
+            let from = if day_offset == 0 {
+                start_minute.saturating_sub(reach_back)
+            } else {
+                0
+            };
             for &hour in &self.hours {
                 for &minute in &self.minutes {
                     if hour * 60 + minute < from {
                         continue;
                     }
-                    if let Some(at) = resolve(date, hour, minute, tz) {
-                        return Some(at);
+                    // Every instant this wall-clock time maps to, earliest
+                    // first. Usually one; two on the autumn morning the clocks
+                    // go back. The first genuinely ahead of `after` is the
+                    // answer.
+                    for at in resolve(date, hour, minute, tz) {
+                        if at > after {
+                            return Some(at);
+                        }
                     }
                 }
             }
         }
         None
+    }
+
+    /// Whether this expression fires more than once in an hour.
+    ///
+    /// Which is the same question as "is a repeated wall-clock hour two
+    /// firings or one". An expression naming every hour, or several minutes
+    /// within an hour, owes work in both halves of the hour the clocks give
+    /// back; one naming a single time of day owes one firing whose wall-clock
+    /// time merely happens twice.
+    fn fires_within_an_hour(&self) -> bool {
+        self.hours.len() == 24 || self.minutes.len() > 1
     }
 
     fn matches_date(&self, date: NaiveDate) -> bool {
@@ -110,32 +163,44 @@ impl Cron {
     }
 }
 
-/// Turns a local wall-clock time into an instant, coping with the two days a
-/// year when it is not one.
+/// Every instant a local wall-clock time maps to, earliest first.
 ///
-/// Spring forward and a local time does not exist: 02:30 is skipped entirely,
+/// Usually one. Two on the autumn morning the clocks go back, and none on the
+/// spring morning they go forward -- which is why this returns a list rather
+/// than an answer.
+///
+/// **Spring forward**, and the time does not exist: 02:30 is skipped entirely,
 /// so a schedule set for it would silently not run that day. It fires at the
 /// next time that does exist instead, which is what somebody who asked for
 /// "half past two, daily" meant by it.
 ///
-/// Autumn back and a local time happens twice. The earlier is taken, so the
-/// schedule runs once rather than twice -- a duplicate turn is worse than an
-/// hour's difference, since it may act twice on the world.
-fn resolve(date: NaiveDate, hour: u32, minute: u32, tz: Tz) -> Option<DateTime<Utc>> {
-    let naive = date.and_hms_opt(hour, minute, 0)?;
+/// **Autumn back**, and the time happens twice. Both are returned, and the
+/// caller takes the first that is ahead of where it is searching from. That
+/// makes a daily schedule fire once -- the second occurrence is behind the
+/// next day's search -- while an hourly one fires in both, which is what an
+/// hourly schedule means. Returning only the earlier made the repeated hour
+/// unreachable: it always sits behind the firing that preceded it, so an
+/// hourly schedule skipped from 01:00 straight to 02:00 and lost an hour of
+/// work once a year with nothing recorded.
+fn resolve(date: NaiveDate, hour: u32, minute: u32, tz: Tz) -> Vec<DateTime<Utc>> {
+    let Some(naive) = date.and_hms_opt(hour, minute, 0) else {
+        return Vec::new();
+    };
     match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(at) => Some(at.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(earlier, _) => Some(earlier.with_timezone(&Utc)),
+        chrono::LocalResult::Single(at) => vec![at.with_timezone(&Utc)],
+        chrono::LocalResult::Ambiguous(earlier, later) => {
+            vec![earlier.with_timezone(&Utc), later.with_timezone(&Utc)]
+        }
         chrono::LocalResult::None => {
             // Walk forward a minute at a time to the far side of the gap. A
             // gap is an hour at most, so this is bounded and short.
             for extra in 1..=120 {
                 let shifted = naive + chrono::Duration::minutes(extra);
                 if let chrono::LocalResult::Single(at) = tz.from_local_datetime(&shifted) {
-                    return Some(at.with_timezone(&Utc));
+                    return vec![at.with_timezone(&Utc)];
                 }
             }
-            None
+            Vec::new()
         }
     }
 }
@@ -151,6 +216,16 @@ fn field(spec: &str, min: u32, max: u32, name: &str) -> Result<Vec<u32>, String>
                     .map_err(|_| format!("{name}: '{step}' is not a step"))?;
                 if step == 0 {
                     return Err(format!("{name}: step cannot be zero"));
+                }
+                // A step wider than the field collapses to a single value, so
+                // `*/70` silently becomes "on the hour" rather than anything
+                // resembling every seventy minutes. Every other bad input here
+                // is refused with a message; this one used to pass and be
+                // reinterpreted, which the preview then confirmed as correct.
+                if step > max - min {
+                    return Err(format!(
+                        "{name}: a step of {step} is wider than {min}-{max}, so it would mean a single value"
+                    ));
                 }
                 (range, step)
             }
@@ -234,14 +309,73 @@ mod tests {
     }
 
     #[test]
-    fn an_hour_that_happens_twice_fires_once() {
+    fn a_daily_schedule_fires_once_on_the_day_an_hour_repeats() {
         // Los Angeles falls back on 2026-11-01: 01:30 occurs at 08:30Z and
-        // again at 09:30Z. The earlier is taken, because a turn that ran twice
-        // may have acted on the world twice.
+        // again at 09:30Z. A daily schedule takes the first and then searches
+        // from there, so the second occurrence is behind the next day's search
+        // and never fires -- once, which is what daily means.
         assert_eq!(
             next("30 1 * * *", "2026-11-01T00:00:00Z", "America/Los_Angeles"),
             "2026-11-01T08:30:00+00:00"
         );
+        assert_eq!(
+            next("30 1 * * *", "2026-11-01T08:30:00Z", "America/Los_Angeles"),
+            "2026-11-02T09:30:00+00:00",
+            "the next firing is the following day, not the repeated hour"
+        );
+    }
+
+    #[test]
+    fn an_hourly_schedule_fires_in_both_halves_of_a_repeated_hour() {
+        // The same morning, hourly. 01:00 happens at 08:00Z and again at
+        // 09:00Z, and both are firings an hourly schedule owes -- taking only
+        // the earlier made 09:00Z unreachable and lost an hour of work once a
+        // year, silently.
+        let c = Cron::parse("0 * * * *").expect("parse");
+        let tz: Tz = "America/Los_Angeles".parse().expect("tz");
+        let mut at = at("2026-11-01T06:30:00Z");
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            at = c.next_after(at, tz).expect("next");
+            seen.push(at.to_rfc3339());
+        }
+        assert_eq!(
+            seen,
+            vec![
+                "2026-11-01T07:00:00+00:00",
+                "2026-11-01T08:00:00+00:00",
+                "2026-11-01T09:00:00+00:00",
+                "2026-11-01T10:00:00+00:00",
+                "2026-11-01T11:00:00+00:00",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_field_that_restricts_nothing_does_not_trigger_the_union() {
+        // `*/1` expands to every weekday, so it restricts nothing -- but it is
+        // not the text "*". Judged by the text, this took cron's union branch
+        // and fired daily instead of on the first of the month.
+        assert_eq!(
+            next("0 0 1 * */1", "2026-09-20T01:00:00Z", "UTC"),
+            "2026-10-01T00:00:00+00:00"
+        );
+        // And `0-6` in the same position, written out.
+        assert_eq!(
+            next("0 0 1 * 0-6", "2026-09-20T01:00:00Z", "UTC"),
+            "2026-10-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn a_step_wider_than_its_field_is_refused_rather_than_reinterpreted() {
+        // `*/70` used to parse as minutes [0] -- hourly -- and the preview
+        // confirmed it as correct. Every other bad input here is refused.
+        let e = Cron::parse("*/70 * * * *").expect_err("accepted");
+        assert!(e.contains("wider than"), "{e}");
+        assert!(Cron::parse("0 */40 * * *").is_err());
+        // A step that fits is still fine.
+        assert!(Cron::parse("*/30 * * * *").is_ok());
     }
 
     #[test]

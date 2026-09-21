@@ -28,6 +28,13 @@ create table schedules (
 
     enabled      boolean     not null default true,
 
+    -- The workspace's own label for whose work this is, copied onto every
+    -- session this schedule starts and from there onto every usage ledger
+    -- row. Null means unattributed, as it does for a session nobody labelled.
+    -- Here rather than derived at firing time because a schedule is the only
+    -- thing that knows: there is no person in the loop to ask.
+    account      text,
+
     -- Who set this up, kept apart from who is waiting for the reply, because
     -- those are different questions and a triggered turn has no answer to the
     -- second. The turn's `user_id` stays null: it is what the usage ledger

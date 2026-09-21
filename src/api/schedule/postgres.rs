@@ -16,6 +16,7 @@ fn row(r: &PgRow) -> Schedule {
         expression: r.get("expression"),
         timezone: r.get("timezone"),
         enabled: r.get("enabled"),
+        account: r.get("account"),
         owner_id: r.get("owner_id"),
         next_run_at: r.get("next_run_at"),
         last_run_at: r.get("last_run_at"),
@@ -32,7 +33,7 @@ pub async fn list(
     agent_id: Option<Uuid>,
 ) -> Result<Vec<Schedule>, sqlx::Error> {
     let rows = sqlx::query(
-        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
+        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
          from schedules \
          where workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
          order by id",
@@ -50,7 +51,7 @@ pub async fn get(
     id: Uuid,
 ) -> Result<Option<Schedule>, sqlx::Error> {
     let found = sqlx::query(
-        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
+        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
          from schedules where workspace_id = $1 and id = $2",
     )
         .bind(workspace_id)
@@ -70,9 +71,9 @@ pub async fn create(
     let r = sqlx::query(
         "insert into schedules \
              (id, workspace_id, agent_id, name, prompt, expression, timezone, \
-              enabled, owner_id, next_run_at, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9) \
-         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
+              enabled, account, owner_id, next_run_at, created_by) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10) \
+         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
     )
         .bind(Uuid::now_v7())
         .bind(workspace_id)
@@ -82,6 +83,7 @@ pub async fn create(
         .bind(input.expression.trim())
         .bind(input.timezone.trim())
         .bind(input.enabled)
+        .bind(input.account.as_deref())
         .bind(owner_id)
         .bind(next_run_at)
         .fetch_one(pool)
@@ -104,9 +106,9 @@ pub async fn update(
     let found = sqlx::query(
         "update schedules set \
              name = $3, prompt = $4, expression = $5, timezone = $6, \
-             enabled = $7, next_run_at = $8, updated_at = now() \
+             enabled = $7, account = $8, next_run_at = $9, updated_at = now() \
          where workspace_id = $1 and id = $2 \
-         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
+         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
     )
         .bind(workspace_id)
         .bind(id)
@@ -115,6 +117,7 @@ pub async fn update(
         .bind(input.expression.trim())
         .bind(input.timezone.trim())
         .bind(input.enabled)
+        .bind(input.account.as_deref())
         .bind(next_run_at)
         .fetch_optional(pool)
         .await?;
@@ -130,33 +133,64 @@ pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool,
     Ok(done.rows_affected() > 0)
 }
 
-/// Takes one schedule that is due, and clears its `next_run_at` in the same
-/// statement.
+/// Takes one schedule that is due, with the firing it was owed.
 ///
 /// `for update skip locked` and the immediate clear are what make this safe to
 /// run in more than one API pod. Two loops ticking at once would otherwise
 /// both see the same due row and both fire it, and a duplicate turn is a turn
 /// that may act on the world twice.
 ///
-/// The row comes back with `next_run_at` already null, so a crash between here
-/// and writing the successor leaves a schedule that stops rather than one that
-/// fires twice. Stopping is visible in the list; a double firing is not.
-pub async fn take_due(pool: &PgPool, now: DateTime<Utc>) -> Result<Option<Schedule>, sqlx::Error> {
+/// The clear destroys the one thing that says what this firing was *for*, so
+/// it comes back separately: `next_run_at` on the returned row is the
+/// post-update value and always null. That time is what says how many firings
+/// were missed while nothing was running -- an earlier version passed `now` in
+/// its place, which made every firing look punctual and the skip count
+/// permanently zero.
+///
+/// A crash between here and writing the successor leaves a schedule that stops
+/// rather than one that fires twice.
+///
+/// `next_run_at` on the returned row is the post-update value and therefore
+/// always null, so the time this firing was *for* has to come back separately
+/// -- it is what says how many firings were missed while nothing was running.
+/// An earlier version passed `now` in its place, which made every firing look
+/// punctual and the skip count permanently zero.
+pub async fn take_due(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+) -> Result<Option<(Schedule, DateTime<Utc>)>, sqlx::Error> {
+    // The due row is chosen in a CTE, which is what makes its `next_run_at`
+    // readable at all: RETURNING sees the new row, and Postgres has no OLD to
+    // ask. `for update skip locked` in the CTE is also what stops two API pods
+    // taking the same firing.
     let found = sqlx::query(
-        "update schedules set next_run_at = null, updated_at = now() \
-         where id = ( \
-             select id from schedules \
+        "with due as ( \
+             select id, next_run_at from schedules \
              where enabled and next_run_at is not null and next_run_at <= $1 \
              order by next_run_at \
              for update skip locked \
              limit 1 \
+         ), \
+         taken as ( \
+             update schedules set next_run_at = null, updated_at = now() \
+             where id in (select id from due) \
+             returning id, workspace_id, agent_id, name, prompt, expression, timezone, \
+                       enabled, account, owner_id, next_run_at, last_run_at, last_status, \
+                       last_error, skipped, created_at \
          ) \
-         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
+         select taken.*, due.next_run_at as was_due \
+         from taken join due on due.id = taken.id",
     )
     .bind(now)
     .fetch_optional(pool)
     .await?;
-    Ok(found.as_ref().map(row))
+    Ok(found.as_ref().map(|r| {
+        let owed: Option<DateTime<Utc>> = r.get("was_due");
+        // `owed` cannot be null -- the row was selected on `next_run_at is not
+        // null` -- but falling back to `now` degrades to "nothing was missed"
+        // rather than panicking in a loop nobody is watching.
+        (row(r), owed.unwrap_or(now))
+    }))
 }
 
 /// Records what a firing did and when it should happen again.

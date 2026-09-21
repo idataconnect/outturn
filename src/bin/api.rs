@@ -189,7 +189,10 @@ async fn main() {
     // than the runtime, because it creates work rather than doing it -- and it
     // is safe in more than one pod: a due schedule is taken with `for update
     // skip locked`, so two loops ticking together cannot both fire it.
-    tokio::spawn(outturn::api::schedule::worker::run(pool.clone()));
+    tokio::spawn(outturn::api::schedule::worker::run(
+        pool.clone(),
+        health.shutdown_signal(),
+    ));
 
     // Documents become readable in the background, where they are configured
     // to. Absent OUTTURN_TIKA_URL this logs once and does nothing further.

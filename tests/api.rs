@@ -4610,3 +4610,215 @@ async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
         "the cursor stopped at the last visible event instead of the end of the window: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Schedules
+//
+// The unit tests underneath these exercise cron arithmetic in isolation, which
+// is exactly why they missed what these catch: every bug found in review lived
+// in the path between the row and the firing, not in the arithmetic.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_cannot_be_pointed_at_another_workspaces_agent() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let other = h.make_workspace("Other", "other").await;
+
+    let acme_admin = h
+        .login_as("sched-a@acme.example", None, Some((acme, "admin")))
+        .await;
+    let other_admin = h
+        .login_as("sched-b@other.example", None, Some((other, "admin")))
+        .await;
+
+    // An agent belonging to the other workspace.
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&other_admin),
+            r#"{"name":"Theirs","slug":"theirs"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let theirs: Value = serde_json::from_str(&body).expect("agent json");
+    let theirs = theirs["id"].as_str().expect("agent id");
+
+    // Acme's admin naming it. The row's workspace_id comes from the token and
+    // the agent_id from the body, so without a check this stores one
+    // workspace beside another's agent -- and the firing loop would run it.
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&acme_admin),
+            &format!(
+                r#"{{"agent_id":"{theirs}","name":"Borrowed","prompt":"go","expression":"0 9 * * *","timezone":"UTC"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another workspace's agent was accepted: {body}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_round_trips_through_the_database() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sched-c@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Reporter","slug":"reporter"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent json");
+    let agent_id = agent["id"].as_str().expect("agent id");
+
+    // Every column the row carries is written and read back here. The columns
+    // are named in hand-written SQL rather than checked by the compiler, so a
+    // typo only ever surfaces at runtime -- which is what this is for.
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Morning","prompt":"Summarise yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London","account":"acme-ops"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let created: Value = serde_json::from_str(&body).expect("schedule json");
+    let id = created["id"].as_str().expect("schedule id").to_string();
+
+    assert_eq!(created["account"], "acme-ops");
+    assert_eq!(created["timezone"], "Europe/London");
+    assert!(
+        created["next_run_at"].is_string(),
+        "a new schedule should know when it fires next: {body}"
+    );
+    assert_eq!(
+        created["upcoming"].as_array().expect("upcoming").len(),
+        3,
+        "the editor's next-firings list came back empty: {body}"
+    );
+
+    // Listing, filtered by agent.
+    let (status, body) = h
+        .get(&format!("/v1/schedules?agent_id={agent_id}"), Some(&token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("Morning"), "body: {body}");
+
+    // Moving a schedule to another agent is refused rather than answered with
+    // a 200 that did not do it.
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Other","slug":"other-agent"}"#,
+        )
+        .await;
+    let second: Value = serde_json::from_str(&body).expect("agent json");
+    let second_id = second["id"].as_str().expect("agent id");
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/schedules/{id}"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"agent_id":"{second_id}","name":"Morning","prompt":"Summarise yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London"}}"#
+        )))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a schedule was silently moved between agents: {body}"
+    );
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/schedules/{id}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn firing_a_schedule_produces_a_turn_nobody_sent() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sched-d@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Nightly","slug":"nightly"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent json");
+    let agent_id = agent["id"].as_str().expect("agent id");
+
+    let (_, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Nightly sweep","prompt":"check things","expression":"0 * * * *","timezone":"UTC","account":"acme-ops"}}"#
+            ),
+        )
+        .await;
+    let created: Value = serde_json::from_str(&body).expect("schedule json");
+    let id: Uuid = created["id"].as_str().expect("id").parse().expect("uuid");
+
+    // Owed an hour ago, so the firing is late and something was missed. Set
+    // directly because waiting for the clock is not a test.
+    sqlx::query("update schedules set next_run_at = now() - interval '3 hours' where id = $1")
+        .bind(id)
+        .execute(&h.db.pool)
+        .await
+        .expect("set due");
+
+    let taken = outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
+        .await
+        .expect("take_due")
+        .expect("a schedule was due");
+    let (schedule, owed) = taken;
+    assert_eq!(schedule.id, id);
+    // The clear destroys the row's own copy, so the owed time has to survive
+    // separately -- passing `now` here is what made every firing look punctual
+    // and the skip count permanently zero.
+    assert!(
+        owed < chrono::Utc::now(),
+        "the firing this was owed came back as the present"
+    );
+
+    // Nothing is due a second time: the take cleared it, which is what stops
+    // two API pods firing one schedule.
+    assert!(
+        outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
+            .await
+            .expect("take_due")
+            .is_none(),
+        "the same schedule was handed out twice"
+    );
+
+    finish!(h);
+}

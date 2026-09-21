@@ -35,6 +35,7 @@ pub struct Schedule {
     pub expression: String,
     pub timezone: String,
     pub enabled: bool,
+    pub account: Option<String>,
     pub owner_id: Option<Uuid>,
     pub next_run_at: Option<DateTime<Utc>>,
     pub last_run_at: Option<DateTime<Utc>>,
@@ -55,6 +56,9 @@ pub struct ScheduleInput {
     pub timezone: String,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The workspace's label for whose work this is, for the usage ledger.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 fn utc() -> String {
@@ -214,6 +218,7 @@ mod tests {
             expression: "nonsense".into(),
             timezone: "UTC".into(),
             enabled: true,
+            account: None,
         };
         assert!(validate(&bad).is_err());
 

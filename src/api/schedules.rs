@@ -115,6 +115,17 @@ pub async fn create_schedule(
 ) -> Result<(StatusCode, Json<WithUpcoming>), ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
 
+    // Proves the agent is this workspace's before scheduling anything against
+    // it. The row's `workspace_id` comes from the token and `agent_id` from
+    // the body, so without this a caller can store their own workspace beside
+    // somebody else's agent -- and the firing loop would then run that agent,
+    // with its prompt and its skills, billed here. The FK is on `agents (id)`
+    // alone and cannot tell the difference.
+    state
+        .agents
+        .get(claims.workspace_id, input.agent_id)
+        .await?;
+
     // Refused here rather than at the firing loop. A schedule that cannot be
     // parsed will never fire, and finding that out tomorrow morning means
     // finding it out from its absence.
@@ -145,6 +156,29 @@ pub async fn update_schedule(
     Json(input): Json<ScheduleInput>,
 ) -> Result<Json<WithUpcoming>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
+    state
+        .agents
+        .get(claims.workspace_id, input.agent_id)
+        .await?;
+
+    // Which agent a schedule belongs to is not editable, and a request that
+    // asks to change it is refused rather than answered with a 200 that did
+    // not do it. Moving a schedule between agents is deleting one and making
+    // another, because the sessions it has already produced hang off the agent
+    // it had.
+    let existing = postgres::get(&state.pool, claims.workspace_id, id)
+        .await
+        .map_err(internal)?;
+    match &existing {
+        Some(s) if s.agent_id != input.agent_id => {
+            return Err(bad_request(
+                "a schedule cannot be moved to another agent".to_string(),
+            ));
+        }
+        Some(_) => {}
+        None => return Err((StatusCode::NOT_FOUND, "no such schedule".to_string())),
+    }
+
     let (cron, tz) = schedule::validate(&input).map_err(bad_request)?;
 
     // Recomputed rather than kept. An edit to the expression or the zone makes
