@@ -1,5 +1,5 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleSlash, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
+import { CircleSlash, FileText, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
@@ -11,7 +11,7 @@ import MessageAge from './MessageAge'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
 import Working from './Working'
-import { deleteFile, uploadPastedImage } from '../lib/chat'
+import { deleteFile, uploadFile, uploadPastedImage } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
 /**
@@ -256,8 +256,14 @@ function AssistantMessage() {
 type Attachment = {
   /** Where it was stored, which is what the model is told to look at. */
   path: string
-  /** A local object URL, so the preview costs no round trip. */
-  preview: string
+  /** A local object URL for an image, so the preview costs no round trip.
+   *  Absent for anything that is not an image: a thumbnail of a PDF or a CSV
+   *  would be a grey rectangle pretending to be a preview, and the name is
+   *  the thing somebody actually recognises it by. */
+  preview?: string
+  /** What to call it in the chip. The stored name rather than the path,
+   *  which is longer and mostly the part every file shares. */
+  name: string
 }
 
 export default function Thread({
@@ -292,6 +298,9 @@ export default function Thread({
   const input = useRef<HTMLTextAreaElement>(null)
   const focused = useRef(0)
   const [pasting, setPasting] = useState(false)
+  /** A drag is over the box. Only for the outline: the drop is what stores
+   *  anything, and a drag that leaves again must put the box back. */
+  const [dragging, setDragging] = useState(false)
   /** Images pasted into this message and not yet sent, with a local preview. */
   const [attached, setAttached] = useState<Attachment[]>([])
 
@@ -313,7 +322,9 @@ export default function Thread({
   // revoked. Left alone they accumulate for as long as the tab is open.
   useEffect(() => {
     return () => {
-      for (const image of attached) URL.revokeObjectURL(image.preview)
+      for (const image of attached) {
+        if (image.preview) URL.revokeObjectURL(image.preview)
+      }
     }
     // Only on unmount: revoking on every change would kill previews still
     // being shown, and each chip revokes its own when it is removed.
@@ -327,10 +338,20 @@ export default function Thread({
   useEffect(() => {
     if (!takeAttachments) return
     takeAttachments.current = () => {
-      const references = attached.map((image) => `[image: ${image.path}]`).join('\n')
+      // Named by what it is, because the two are read differently at the
+      // other end: `describe_image` takes an image, and anything else is a
+      // file the agent opens with whatever its skills give it. A PDF
+      // announced as an image would send it to the wrong tool.
+      const references = attached
+        .map((item) =>
+          item.preview ? `[image: ${item.path}]` : `[file: ${item.path}]`,
+        )
+        .join('\n')
       // Forgotten as they are taken: they belong to the message just sent,
       // and the previews are no longer anybody's to show.
-      for (const image of attached) URL.revokeObjectURL(image.preview)
+      for (const image of attached) {
+        if (image.preview) URL.revokeObjectURL(image.preview)
+      }
       setAttached([])
       return references
     }
@@ -341,7 +362,7 @@ export default function Thread({
 
   async function removeAttachment(image: Attachment) {
     setAttached((current) => current.filter((a) => a.path !== image.path))
-    URL.revokeObjectURL(image.preview)
+    if (image.preview) URL.revokeObjectURL(image.preview)
     // Removed means removed. The file is already stored, and leaving it would
     // mean a screenshot somebody pasted by mistake is still there for the
     // agent to read -- the surprise in the direction that matters.
@@ -380,7 +401,11 @@ export default function Thread({
           const stored = await uploadPastedImage(sessionId, blob)
           setAttached((current) => [
             ...current,
-            { path: stored.path, preview: URL.createObjectURL(blob) },
+            {
+              path: stored.path,
+              preview: URL.createObjectURL(blob),
+              name: stored.path.split('/').pop() ?? stored.path,
+            },
           ])
           onStoredChange?.()
         } catch (e) {
@@ -391,6 +416,73 @@ export default function Thread({
       setPasting(false)
     }
   }
+  // A file dropped on the box, stored the same way a pasted image is and
+  // referenced the same way afterwards. The difference is only that this one
+  // arrived with a name of its own, so nothing has to be invented for it.
+  //
+  // Everything is accepted rather than images alone. The agent reads a stored
+  // file by path, and what it can do with a CSV or a PDF is a question for the
+  // agent and its skills -- refusing here would decide it on their behalf, and
+  // wrongly for any workspace that installed something to handle it.
+  async function storeDropped(files: File[]) {
+    if (!sessionId || files.length === 0) return
+    setPasting(true)
+    try {
+      for (const file of files) {
+        try {
+          const stored = await uploadFile(sessionId, 'session', file)
+          setAttached((current) => [
+            ...current,
+            {
+              path: stored.path,
+              // A preview for an image, nothing for anything else: a
+              // thumbnail of a spreadsheet is a grey rectangle that has to be
+              // read to be understood, which is what the name is for.
+              preview: file.type.startsWith('image/')
+                ? URL.createObjectURL(file)
+                : undefined,
+              name: file.name,
+            },
+          ])
+          onStoredChange?.()
+        } catch (e) {
+          onStoredChange?.(
+            e instanceof ApiError ? e.message : `could not store ${file.name}`,
+          )
+        }
+      }
+    } finally {
+      setPasting(false)
+    }
+  }
+
+  function onDragOver(event: React.DragEvent) {
+    // Only for a drag carrying files. Dragging selected text within the box
+    // is an ordinary edit, and claiming it here would break moving a word.
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return
+    // Both, every time: without preventDefault the browser navigates to the
+    // file instead, and it has to be called on the drag as well as the drop.
+    event.preventDefault()
+    event.dataTransfer.dropEffect = disabled || !sessionId ? 'none' : 'copy'
+    if (!disabled && sessionId) setDragging(true)
+  }
+
+  function onDragLeave(event: React.DragEvent) {
+    // A drag crossing into a child fires leave on the parent, so the outline
+    // would flicker over any element inside the box. `relatedTarget` is where
+    // the pointer went; still inside means it never left.
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setDragging(false)
+  }
+
+  function onDrop(event: React.DragEvent) {
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return
+    event.preventDefault()
+    setDragging(false)
+    if (disabled || !sessionId) return
+    void storeDropped(Array.from(event.dataTransfer.files))
+  }
+
   useEffect(() => {
     if (disabled || focusRequest === focused.current) return
     focused.current = focusRequest
@@ -446,11 +538,31 @@ export default function Thread({
         <div className="flex gap-2 flex-wrap px-4 pt-3 border-t border-surface-200 dark:border-surface-800">
           {attached.map((image) => (
             <div key={image.path} className="relative group">
-              <img
-                src={image.preview}
-                alt={`Pasted, stored as ${image.path}`}
-                className="h-16 w-16 object-cover rounded-md border border-surface-300 dark:border-surface-700"
-              />
+              {image.preview ? (
+                <img
+                  src={image.preview}
+                  alt={`Pasted, stored as ${image.path}`}
+                  className="h-16 w-16 object-cover rounded-md border border-surface-300 dark:border-surface-700"
+                />
+              ) : (
+                // The same square an image would occupy, so a mixed row lines
+                // up. The name is what identifies it, truncated rather than
+                // wrapped: a chip that grew to fit a long filename would push
+                // the others around.
+                <div
+                  title={image.name}
+                  className="h-16 w-16 flex flex-col items-center justify-center gap-1 p-1 rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-800"
+                >
+                  <FileText
+                    size={20}
+                    className="text-surface-500 dark:text-surface-400 shrink-0"
+                    aria-hidden
+                  />
+                  <span className="w-full text-[10px] leading-tight text-center truncate text-surface-600 dark:text-surface-300">
+                    {image.name}
+                  </span>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => void removeAttachment(image)}
@@ -465,7 +577,17 @@ export default function Thread({
         </div>
       )}
 
-      <ComposerPrimitive.Root className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}`}>
+      <ComposerPrimitive.Root
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}${
+          // An outline round the whole box rather than a full-pane overlay:
+          // the drop lands here, and saying so where it lands is less startling
+          // than covering the conversation to say it.
+          dragging ? ' ring-2 ring-inset ring-brand-500 rounded-md' : ''
+        }`}
+      >
         <ComposerPrimitive.Input
           ref={input}
           autoFocus

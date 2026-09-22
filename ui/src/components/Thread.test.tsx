@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   AssistantRuntimeProvider,
@@ -14,6 +14,7 @@ function Harness(props: {
   focusRequest?: number
   running?: boolean
   messages?: ThreadMessageLike[]
+  sessionId?: string
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: props.messages ?? [],
@@ -41,7 +42,11 @@ function Harness(props: {
       <button type="button">elsewhere</button>
       {/* `messages` is the harness's own, for the store above: passing it on
           would put an unknown prop on the component under test. */}
-      <Thread disabled={props.disabled} focusRequest={props.focusRequest} />
+      <Thread
+        disabled={props.disabled}
+        focusRequest={props.focusRequest}
+        sessionId={props.sessionId}
+      />
     </AssistantRuntimeProvider>
   )
 }
@@ -157,5 +162,60 @@ describe('saying a reply is still going', () => {
     render(<Harness messages={reply({ type: 'incomplete', reason: 'cancelled' })} />)
 
     expect(working()).not.toBeInTheDocument()
+  })
+})
+
+describe('dropping a file on the composer', () => {
+  /** A drag carrying files, which is the only kind the composer claims. */
+  function fileDrag(files: File[]) {
+    return {
+      dataTransfer: {
+        types: ['Files'],
+        files,
+        items: files.map((file) => ({ kind: 'file', type: file.type })),
+      },
+    }
+  }
+
+  it('offers to take a dragged file', () => {
+    render(<Harness sessionId="s1" />)
+
+    fireEvent.dragOver(composer(), fileDrag([new File(['x'], 'notes.pdf')]))
+
+    // The outline is on the box rather than over the conversation: the drop
+    // lands here, and saying so where it lands is less startling than
+    // covering what somebody is reading to say it.
+    expect(composer().closest('.ring-2')).not.toBeNull()
+  })
+
+  it('takes the outline back when the drag leaves again', () => {
+    render(<Harness sessionId="s1" />)
+    const box = composer()
+
+    fireEvent.dragOver(box, fileDrag([new File(['x'], 'notes.pdf')]))
+    fireEvent.dragLeave(box, { relatedTarget: document.body })
+
+    expect(box.closest('.ring-2')).toBeNull()
+  })
+
+  it('ignores a drag that is not carrying files', () => {
+    render(<Harness sessionId="s1" />)
+
+    // Dragging selected text within the box is an ordinary edit. Claiming it
+    // would break moving a word from one end of a sentence to the other.
+    fireEvent.dragOver(composer(), {
+      dataTransfer: { types: ['text/plain'], files: [], items: [] },
+    })
+
+    expect(composer().closest('.ring-2')).toBeNull()
+  })
+
+  it('refuses a drop before there is a session to store it in', () => {
+    render(<Harness />)
+
+    fireEvent.dragOver(composer(), fileDrag([new File(['x'], 'notes.pdf')]))
+
+    // Nothing to attach it to yet, so the box must not say it will take it.
+    expect(composer().closest('.ring-2')).toBeNull()
   })
 })
