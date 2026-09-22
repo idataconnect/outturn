@@ -303,8 +303,16 @@ function AssistantMessage() {
           distinguishes a reply that is done from one still being written.
           Dropped outright when a newer reply takes the mark -- there is
           always one further down the thread now, so a copy fading out up here
-          is a second mark rather than a softer ending. */}
-      {(running || newest) && <Working phase={running ? 'running' : 'done'} />}
+          is a second mark rather than a softer ending.
+
+          `newest` alone, not `running || newest`. A turn that crashed
+          mid-generation leaves a reply the agent resumes when the next
+          message arrives -- so an older reply can be running while a newer
+          one exists, and the pair drew two marks at once: a settled line on
+          the new one and a travelling swell on the old. The mark says where
+          the conversation is, and the conversation is at its last reply
+          whichever one the agent happens to be finishing. */}
+      {newest && <Working phase={running ? 'running' : 'done'} />}
     </MessagePrimitive.Root>
   )
 }
