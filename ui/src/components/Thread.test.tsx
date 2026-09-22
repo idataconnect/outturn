@@ -223,27 +223,22 @@ describe('dropping a file on the composer', () => {
 })
 
 describe('a reader who may not send', () => {
-  it('says which authority is missing rather than telling them to start a session', () => {
+  it('does not tell them to start a session they already have', () => {
     render(<Harness sessionId="s1" readOnly />)
 
-    // "Start a session first" is advice, and acting on it is impossible for
-    // somebody who already has one. Naming the authority at least says who to
-    // ask.
-    expect(
-      screen.getByPlaceholderText('Sending needs the gateway:invoke authority'),
-    ).toBeInTheDocument()
+    // The one thing the box must not say. It is advice, and acting on it is
+    // impossible for somebody who already has a session -- it would send them
+    // looking for the thing they are already looking at.
+    expect(screen.queryByPlaceholderText('Start a session first')).not.toBeInTheDocument()
   })
 
   it('will not take a message it cannot send', () => {
-    // Both, as the page passes them: `disabled` stops the keystroke and
-    // `readOnly` picks the placeholder that says why.
+    // Both, as the page passes them.
     render(<Harness sessionId="s1" readOnly disabled />)
 
     // The box used to accept a paragraph, clear itself on submit, and fail --
     // so the writing was gone and the only trace was a banner in the top bar.
     // Refusing the keystroke loses nothing.
-    expect(
-      screen.getByPlaceholderText('Sending needs the gateway:invoke authority'),
-    ).toBeDisabled()
+    expect(screen.getByRole('textbox')).toBeDisabled()
   })
 })

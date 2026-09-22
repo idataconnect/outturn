@@ -277,10 +277,9 @@ export default function Thread({
 }: {
   disabled?: boolean
   /** There is a session, but this reader may not say anything in it. Told
-   *  apart from `disabled` so the box can say which of the two it is: "start
-   *  a session first" is advice somebody can act on, and "you may not send"
-   *  is not, and offering the first to somebody in the second position sends
-   *  them looking for a session they already have. */
+   *  apart from `disabled` so the box does not offer "start a session first",
+   *  which is advice somebody who already has one cannot act on. It says
+   *  nothing at all instead: a disabled box needs no caption. */
   readOnly?: boolean
   /** A stop has been asked for and the turn has not ended yet. */
   stopping?: boolean
@@ -604,11 +603,15 @@ export default function Thread({
           // file and named by path, not carried along with the message.
           addAttachmentOnPaste={false}
           onPaste={onPaste}
+          // Nothing for a reader who may not send: the box is disabled, which
+          // says so on its own, and a placeholder explaining why is an
+          // explanation nobody asked for in the place they would have typed.
+          // The Read-only badge beside the sessions carries the reason once.
           placeholder={
             pasting
               ? 'Storing the image…'
               : readOnly
-                ? 'Sending needs the gateway:invoke authority'
+                ? undefined
                 : disabled
                   ? 'Start a session first'
                   : 'Message the agent…'
