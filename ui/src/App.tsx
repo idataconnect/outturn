@@ -103,15 +103,21 @@ function SettingsPage() {
 }
 
 // `authority` gates visibility; the API enforces the same rule on every call.
+//
+// Every item that leads somewhere authority-gated declares it. Dashboard and
+// Settings did not, and showed to everyone: an operator clicking either was
+// told "reading usage needs the usage:read authority" by a page they had been
+// invited to open. A link that cannot work is worse than no link, because it
+// reads as something broken rather than as something not theirs.
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', authority: 'usage:read' },
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
   { to: '/skills', icon: BookText, label: 'Skills', authority: 'skills:read' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
   { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
   { to: '/workspaces', icon: Building2, label: 'Workspaces', authority: 'workspaces:read' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/settings', icon: Settings, label: 'Settings', authority: 'settings:read' },
 ]
 
 function useSessionState(): [SessionState, SessionActions] {
@@ -374,6 +380,10 @@ function Shell() {
             under the previous workspace -- lists, editors, an open thread --
             is gone rather than shown until something happens to refetch it. */}
         <Routes key={state.status === 'authenticated' ? state.session.workspace_id : 'anon'}>
+          {/* Not gated by RequireAuthority: the page checks `usage:read`
+              itself and says which authority is missing, which tells somebody
+              who arrived by a bookmark more than a silent redirect would. The
+              nav simply stops offering it. */}
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
