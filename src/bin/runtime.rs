@@ -128,6 +128,7 @@ async fn main() {
             .unwrap_or_else(|_| "http://outturn-api:8080".into()),
         runtime_key: runtime_key.trim().to_string(),
         http: outturn::http_client::streaming_client(outturn::http_client::IDLE_TIMEOUT),
+        reporting: outturn::http_client::reporting_client(),
         runner: Arc::clone(&state.runner),
         agent_module: Arc::clone(&state.agent_module),
         storage: state.storage.clone(),
