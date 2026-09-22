@@ -15,8 +15,12 @@ import { agentSkills, listSkills, type Skill } from './skills'
  * -- retiring is not unbinding -- but it is not something to suggest.
  */
 export type SkillCommand = {
-  /** The slug, which is what `/` matches on and what gets typed. */
+  /** The slug. What `/` filters on, because it is what somebody types: short,
+   *  lowercase and without spaces. Not what gets written into the message --
+   *  see `plainWords` in SkillMenu for why that is the name. */
   id: string
+  /** What the agent knows this skill as: the turn's prompt gives each skill a
+   *  `## {name}` heading, so this is the only handle the model has. */
   label: string
   description: string
 }

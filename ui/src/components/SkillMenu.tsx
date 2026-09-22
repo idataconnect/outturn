@@ -51,7 +51,14 @@ import type { SkillCommand } from '../lib/useSkillCommands'
  * three ordinary words.
  */
 const plainWords: Unstable_DirectiveFormatter = {
-  serialize: (item) => `run skill ${item.id}`,
+  // The name, not the id. The slug is a database and URL identifier and
+  // reaches the model nowhere: src/api/skill/mod.rs composes the turn's prompt
+  // with `## {name}` headings and `ResolvedSkill` has no slug field to write
+  // even if it wanted to. So a message saying `run skill customer-onboarding`
+  // asks the model to match a slug against a heading called "Customer
+  // Onboarding" -- near enough to work by luck, and wrong the moment the two
+  // drift, which a rename does permanently because the slug does not follow.
+  serialize: (item) => `run skill ${item.label ?? item.id}`,
   parse: (text) => [{ kind: 'text', text }],
 }
 
