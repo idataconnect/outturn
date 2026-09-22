@@ -85,7 +85,7 @@ describe('the mark when the turn ends', () => {
       'settling',
     )
 
-    rerender(<Working done />)
+    rerender(<Working phase="done" />)
 
     // The same three shapes, handed to a CSS animation that owns their
     // geometry for its duration. Not SMIL, which is what the swell uses: a
@@ -108,7 +108,7 @@ describe('the mark when the turn ends', () => {
     vi.useFakeTimers()
     try {
       const { container, rerender } = render(<Working />)
-      rerender(<Working done />)
+      rerender(<Working phase="done" />)
       await act(async () => {
         vi.advanceTimersByTime(1000)
       })
@@ -131,7 +131,7 @@ describe('the mark when the turn ends', () => {
     const { getByRole, rerender } = render(<Working />)
     expect(getByRole('status')).toHaveAttribute('aria-label', 'Working')
 
-    rerender(<Working done />)
+    rerender(<Working phase="done" />)
     expect(getByRole('status')).toHaveAttribute('aria-label', 'Finished')
   })
 
@@ -141,11 +141,63 @@ describe('the mark when the turn ends', () => {
     prefersReducedMotion(true)
 
     const { container, rerender } = render(<Working />)
-    rerender(<Working done />)
+    rerender(<Working phase="done" />)
 
     expect(container.querySelectorAll('animate')).toHaveLength(0)
     expect(container.querySelectorAll('rect')[0].className.baseVal).toContain(
       'working-dot-settling',
     )
+  })
+
+  it('breathes together while held, rather than passing a swell along', () => {
+    prefersReducedMotion(false)
+
+    const { container } = render(<Working phase="held" />)
+
+    // The travelling swell is SMIL and belongs to `running` alone. Held is a
+    // CSS pulse: no <animate> at all, which is also what stops the two from
+    // running at once on the same attributes.
+    expect(container.querySelectorAll('animate')).toHaveLength(0)
+    for (const dot of container.querySelectorAll('rect')) {
+      expect(dot.className.baseVal).toContain('working-dot-held')
+    }
+  })
+
+  it('gives the held dots no stagger, so they pulse as one object', () => {
+    prefersReducedMotion(false)
+
+    const { container } = render(<Working phase="held" />)
+
+    // The whole distinction the mark rests on: in unison reads as waiting,
+    // travelling reads as advancing. A stagger here would blur the two.
+    const delays = Array.from(container.querySelectorAll('rect')).map(
+      (dot) => dot.style.animationDelay,
+    )
+    expect(delays).toEqual(['0s', '0s', '0s'])
+  })
+
+  it('says what a held turn is waiting for, not just that it is waiting', () => {
+    prefersReducedMotion(false)
+
+    const { getByRole } = render(
+      <Working phase="held" label="Waiting for the model" />,
+    )
+
+    // `queued`, `steering` and `waiting` all move the same way, because they
+    // are the same news. What separates them is only ever said in words.
+    expect(getByRole('status')).toHaveAttribute('aria-label', 'Waiting for the model')
+  })
+
+  it('draws no pulse for somebody who asked for less motion', () => {
+    prefersReducedMotion(true)
+
+    const { container } = render(<Working phase="held" />)
+
+    // The class carries a CSS animation, so unlike the SMIL case the element
+    // may exist -- but the stylesheet must not animate it. Asserted on the
+    // class the component chooses, since jsdom applies no stylesheet.
+    for (const dot of container.querySelectorAll('rect')) {
+      expect(dot.className.baseVal).not.toContain('working-dot-held')
+    }
   })
 })

@@ -1,7 +1,7 @@
 import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleSlash, CircleX, Hourglass, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
+import { CircleSlash, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 
 import { useMessageAge } from '../lib/useMessageAge'
@@ -22,20 +22,68 @@ import { ApiError } from '../lib/api'
  */
 
 /**
- * Where a message is, shown as an icon under the message it is about.
+ * Whether a status is one the mark can draw as movement.
  *
- * Icon only, with the words in a tooltip and read out to a screen reader.
- * Until the first token there is nothing of the reply to show, and a message
- * taken mid-turn never gets a reply of its own, so the state sits on the
- * user's message. Colour is a secondary cue; the icon carries the meaning.
+ * `queued`, `steering` and `waiting` are all the same news to a reader --
+ * something has your message and nothing has come back -- so they are all the
+ * same movement, and what separates them goes in the label. `retrying` joins
+ * them because it is also a turn still in flight; it says so in words rather
+ * than by moving differently, since a reader cannot be expected to tell two
+ * pulse rates apart and guess which means what.
+ *
+ * The rest are terminal, and a mark that draws movement has nothing true to
+ * say about them. They stay as badges under the prompt.
  */
-function StatusLine({ status }: { status: MessageStatus }) {
-  const { icon, label, tone, live } = describe(status)
+function heldLabel(status: MessageStatus): string | null {
+  switch (status.kind) {
+    case 'queued':
+      return 'Queued'
+    case 'steering':
+      return 'Queued: it will join the reply being written'
+    case 'waiting':
+      return 'Waiting for the model'
+    case 'retrying':
+      return 'Starting over: the runtime was lost'
+    default:
+      return null
+  }
+}
+
+/**
+ * Where a message ended up, shown under the message it is about.
+ *
+ * Only the states a turn can finish in. While a turn is in flight the mark on
+ * the reply says so instead -- one shape for the whole life of a turn, rather
+ * than a spinner here handing over to a different animation there.
+ *
+ * A failure gets a button, not a badge. The old red cross said what happened
+ * and left the reader with nothing to do about it: the turn would not retry
+ * on its own, and a refresh retried it once by accident rather than because
+ * anybody asked. Choosing when to try again is the reader's to make.
+ */
+function StatusLine({ status, onRetry }: { status: MessageStatus; onRetry?: () => void }) {
+  if (status.kind === 'failed') {
+    return (
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={!onRetry}
+        className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:hover:bg-transparent disabled:cursor-default"
+        title={`Failed: ${status.message}`}
+        aria-label={`Failed: ${status.message}. Send it again.`}
+      >
+        <RotateCw size={12} aria-hidden />
+        Try again
+      </button>
+    )
+  }
+
+  const { icon, label, tone } = describe(status)
   return (
     <span
       className={`mt-1 inline-flex items-center ${tone}`}
       title={label}
-      role={live}
+      role="status"
       aria-label={label}
     >
       {icon}
@@ -47,38 +95,14 @@ function describe(status: MessageStatus): {
   icon: React.ReactNode
   label: string
   tone: string
-  live: 'status' | 'alert'
 } {
   const muted = 'text-surface-500 dark:text-surface-400'
   switch (status.kind) {
-    case 'queued':
-    case 'steering':
-      return {
-        icon: <Hourglass size={14} aria-hidden />,
-        label: 'Queued',
-        tone: muted,
-        live: 'status',
-      }
-    case 'waiting':
-      return {
-        icon: <Loader size={14} className="animate-spin" aria-hidden />,
-        label: 'Waiting for the model',
-        tone: muted,
-        live: 'status',
-      }
-    case 'retrying':
-      return {
-        icon: <RotateCw size={14} className="animate-spin" aria-hidden />,
-        label: 'Starting over: the runtime was lost',
-        tone: 'text-amber-700 dark:text-amber-400',
-        live: 'status',
-      }
     case 'absorbed':
       return {
         icon: <Merge size={14} aria-hidden />,
         label: 'Folded into the reply in progress',
         tone: muted,
-        live: 'status',
       }
     case 'silent':
       // Not red: nothing failed, and dressing it as an error sends somebody
@@ -88,24 +112,32 @@ function describe(status: MessageStatus): {
         icon: <CircleSlash size={14} aria-hidden />,
         label: 'The agent ended its turn without replying',
         tone: 'text-amber-700 dark:text-amber-400',
-        live: 'status',
       }
-    case 'failed':
-      return {
-        icon: <CircleX size={14} aria-hidden />,
-        label: `Failed: ${status.message}`,
-        tone: 'text-red-700 dark:text-red-400',
-        live: 'alert',
-      }
+    default:
+      // Every in-flight state is drawn by the mark, not here. Unreachable
+      // while `heldLabel` and this agree on which is which, and typed as
+      // never so that adding a state to `MessageStatus` without deciding
+      // where it belongs fails the build rather than drawing nothing.
+      return { icon: null, label: '', tone: muted }
   }
 }
 
-function UserMessage() {
+function UserMessage({ onRetry }: { onRetry?: (text: string) => void }) {
   const status = useAuiState(
     (s) => (s.message.metadata.custom?.status as MessageStatus | null | undefined) ?? null,
   )
   const id = useAuiState((s) => s.message.id)
+  // What to send again if this one failed. Read off the message rather than
+  // held by the caller, because the caller does not know which message the
+  // button belongs to.
+  const text = useAuiState((s) =>
+    s.message.content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(''),
+  )
   const { phrase, shown, handlers } = useMessageAge(id ?? '')
+  const held = status ? heldLabel(status) : null
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
       <div
@@ -116,7 +148,19 @@ function UserMessage() {
         <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
       </div>
       <MessageAge phrase={phrase} shown={shown} align="right" />
-      {status && <StatusLine status={status} />}
+      {/* In flight: the mark, breathing, which is the same mark the reply
+          wears once it starts arriving. Finished: a badge, or the button to
+          send it again. */}
+      {held ? (
+        <Working phase="held" label={held} />
+      ) : (
+        status && (
+          <StatusLine
+            status={status}
+            onRetry={onRetry && text ? () => onRetry(text) : undefined}
+          />
+        )
+      )}
     </MessagePrimitive.Root>
   )
 }
@@ -213,7 +257,7 @@ function AssistantMessage() {
           dots together into a line rather than vanishing, which is what
           distinguishes a reply that is done from one still being written. */}
       {(running || newest || lingering) && (
-        <Working done={!running} leaving={lingering} />
+        <Working phase={running ? 'running' : 'done'} leaving={lingering} />
       )}
     </MessagePrimitive.Root>
   )
@@ -364,6 +408,34 @@ export default function Thread({
     input.current?.focus()
   }, [focusRequest, disabled])
 
+  // Put a failed message back in the box rather than sending it again behind
+  // the reader's back. The turn failed for a reason they may want to act on --
+  // a model that was down, a prompt that asked for too much -- and a button
+  // that silently re-sent would repeat whatever caused it. This gives them the
+  // words back, in the place they would have typed them, ready to edit or
+  // send. The native setter, because React's own onChange does not fire for a
+  // value assigned straight to the node.
+  const retry = useCallback((text: string) => {
+    const node = input.current
+    if (!node) return
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      'value',
+    )?.set
+    setter?.call(node, text)
+    node.dispatchEvent(new Event('input', { bubbles: true }))
+    node.focus()
+  }, [])
+
+  // Bound once rather than inline, so every user message is not rerendered by
+  // a new component identity each time this one renders.
+  const UserMessageWithRetry = useMemo(
+    () => function Bound() {
+      return <UserMessage onRetry={retry} />
+    },
+    [retry],
+  )
+
   return (
     <ThreadPrimitive.Root className="flex flex-col h-full">
       <ThreadPrimitive.Viewport className="flex-1 overflow-auto p-6 space-y-4">
@@ -375,7 +447,7 @@ export default function Thread({
 
         <ThreadPrimitive.Messages
           components={{
-            UserMessage,
+            UserMessage: UserMessageWithRetry,
             AssistantMessage,
           }}
         />
