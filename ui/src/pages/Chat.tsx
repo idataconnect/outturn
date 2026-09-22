@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Menu, PanelLeftClose, Paperclip, Plus, X } from 'lucide-react'
+import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
 
 import Thread from '../components/Thread'
 import FilesPanel from '../components/FilesPanel'
@@ -21,7 +21,7 @@ import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
-import { iconButton, iconButtonLarge } from '../lib/buttons'
+import { iconButtonLarge } from '../lib/buttons'
 
 export default function Chat() {
   const state = useSession()
@@ -214,18 +214,15 @@ export default function Chat() {
           breakpoint === 'phone' ? 'fixed inset-y-0 left-0 shadow-xl' : 'static'
         } z-30 w-64 shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
       >
-        <div className="p-3 border-b border-surface-200 dark:border-surface-800 flex items-center justify-between gap-2">
+        {/* No close button of its own. The header's toggle already hides this
+            panel and is the only thing that can bring it back, so a second
+            control that could only do half the job left the pair disagreeing
+            about which one to reach for -- and it sat inside the thing it
+            closed, vanishing with it. */}
+        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
           <p className="text-xs font-medium text-surface-600 dark:text-surface-400">
             Start a session
           </p>
-          <button
-            type="button"
-            onClick={() => toggleSessions(false)}
-            aria-label="Close sessions"
-            className={iconButton}
-          >
-            <X size={16} aria-hidden />
-          </button>
         </div>
         <div className="p-3 border-b border-surface-200 dark:border-surface-800">
           {agents.length === 0 ? (
