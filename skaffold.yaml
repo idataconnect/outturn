@@ -96,3 +96,13 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-mac-small
+  # Mac with document extraction. `scripts/dev-mac.sh -p tika` reaches ollama
+  # on the host and brings up Apache Tika. A combined profile rather than two
+  # `-p` flags, because skaffold replaces the kustomize paths per profile
+  # rather than merging them -- `-p mac -p tika` would use local-tika's base,
+  # which has the Linux Docker bridge address instead of host.docker.internal.
+  - name: mac-tika
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/local-mac-tika
