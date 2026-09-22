@@ -830,6 +830,37 @@ impl Worker {
                             .execute(&self.pool)
                             .await;
 
+                        // `SessionStore::sweep_expired` has existed since the
+                        // first migration and was called from nowhere, so
+                        // refresh tokens accumulated for ever -- rotated and
+                        // revoked rows included, since those are kept until
+                        // expiry so a replay stays detectable.
+                        //
+                        // Through the store rather than as another statement
+                        // here: the retention rule is written down in
+                        // `sweep_expired`, beside the comment explaining why
+                        // revoked rows are kept, and a copy of the statement
+                        // in this tick would be the one that runs while the
+                        // documented one quietly became dead.
+                        {
+                            use crate::api::session::SessionStore as _;
+                            let store = crate::api::session::PostgresSessionStore::new(
+                                self.pool.clone(),
+                            );
+                            let _ = store.sweep_expired().await;
+                        }
+
+                        // Deliveries are remembered only for as long as their
+                        // signature would still be accepted, so a row past
+                        // that protects nothing. Swept here rather than by a
+                        // loop of its own: the table holds a few minutes of
+                        // traffic by construction, and a missed sweep costs a
+                        // slightly larger index rather than a wrong answer --
+                        // the primary key is what refuses a replay, not the
+                        // expiry.
+                        let _ =
+                            super::webhook::postgres::forget_expired(&self.pool).await;
+
                         // Deltas exist to assemble a reply that is still
                         // streaming and to let a browser catch up on one. Once
                         // the reply is stored they are copies of text held

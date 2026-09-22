@@ -318,7 +318,7 @@ pub async fn deliver(
     }
 
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    if let Err(why) = webhook::verify(
+    let replayable_until = match webhook::verify(
         &trigger,
         &body,
         header(webhook::SIGNATURE_HEADER),
@@ -326,14 +326,58 @@ pub async fn deliver(
         header(webhook::TOKEN_HEADER),
         Utc::now(),
     ) {
-        return refuse_quietly(why, &path);
+        Ok(until) => until,
+        Err(why) => return refuse_quietly(why, &path),
+    };
+
+    // Seen before? A signature stays valid until its own timestamp ages out,
+    // so without this the same captured request works repeatedly for the whole
+    // tolerance window -- and each acceptance is a new session and a new turn
+    // against an agent that may act on the world.
+    //
+    // `replayable_until` is the signed timestamp plus the tolerance, so the
+    // record outlives the credential it refuses by exactly nothing. Anchoring
+    // it to arrival instead would leave a future-dated signature verifiable
+    // after its own record had been swept.
+    //
+    // Only `hmac` reaches this: `shared_secret` yields no anchor and nothing
+    // time-bound to key on, so it is admitted without a replay check rather
+    // than refused on legitimate duplicate payloads. See `delivery_digest`.
+    //
+    // After verification, so an unauthenticated caller cannot fill the table;
+    // before the ceiling, so a replay does not consume the hourly allowance a
+    // legitimate delivery needs.
+    // The scheme decides, not the presence of a header: `shared_secret` is
+    // exempt because it binds no time, and reading that off the signature
+    // would make the exemption a consequence of `verify`'s control flow rather
+    // than a decision. A scheme that later returned no anchor would then
+    // silently admit unlimited replays.
+    let mut claimed = None;
+    let claimant = uuid::Uuid::now_v7();
+    if trigger.scheme != "shared_secret"
+        && let (Some(signature), Some(until)) =
+            (header(webhook::SIGNATURE_HEADER), replayable_until)
+    {
+        let digest = webhook::delivery_digest(signature);
+        match postgres::remember(&state.pool, trigger.id, &digest, until, claimant).await {
+            Ok(true) => claimed = Some(digest),
+            Ok(false) => return refuse(&state, &trigger, Refusal::Replayed).await,
+            Err(e) => {
+                tracing::error!(error = %e, trigger_id = %trigger.id, "could not record a delivery");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
+            }
+        }
     }
 
     match postgres::admit(&state.pool, trigger.id).await {
         Ok(true) => {}
-        Ok(false) => return refuse(&state, &trigger, Refusal::RateLimited).await,
+        Ok(false) => {
+            release(&state, claimed.as_deref(), trigger.id, claimant).await;
+            return refuse(&state, &trigger, Refusal::RateLimited).await;
+        }
         Err(e) => {
             tracing::error!(error = %e, trigger_id = %trigger.id, "could not count a delivery");
+            release(&state, claimed.as_deref(), trigger.id, claimant).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
         }
     }
@@ -381,8 +425,33 @@ pub async fn deliver(
         Err(e) => {
             tracing::error!(trigger_id = %trigger.id, error = %e, "a webhook could not start a turn");
             let _ = postgres::record_delivery(&state.pool, trigger.id, "failed", Some(&e)).await;
+            release(&state, claimed.as_deref(), trigger.id, claimant).await;
             (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
         }
+    }
+}
+
+/// Releases a claimed delivery on a path that did not start a turn.
+///
+/// `remember` runs before the ceiling and before the turn starts, so a replay
+/// spends neither. The cost is that a delivery refused by the ceiling, or one
+/// whose turn failed to start, has already claimed its slot -- and left there,
+/// the byte-identical retry that a 429 or a 500 asks for is refused as a
+/// replay and the event is lost silently. Releasing is what keeps the claim
+/// meaning "this delivery became a turn" rather than "this delivery arrived".
+///
+/// `None` means nothing was claimed, which is every `shared_secret` delivery.
+async fn release(
+    state: &ApiState,
+    claimed: Option<&[u8]>,
+    trigger_id: uuid::Uuid,
+    claimant: uuid::Uuid,
+) {
+    let Some(digest) = claimed else { return };
+    if let Err(e) = postgres::forget(&state.pool, trigger_id, digest, claimant).await {
+        // Not fatal: the sweep removes it once the signature ages out, so the
+        // cost is that this one delivery cannot be retried until then.
+        tracing::warn!(error = %e, trigger_id = %trigger_id, "could not release a delivery");
     }
 }
 
@@ -401,7 +470,9 @@ async fn refuse(state: &ApiState, trigger: &Trigger, why: Refusal) -> axum::resp
         reason = why.reason(),
         "a webhook delivery was refused"
     );
-    let _ = postgres::record_refusal(&state.pool, trigger.id, why.reason()).await;
+    // Only the ceiling's refusals move the counter the column is named for.
+    let counts = why == Refusal::RateLimited;
+    let _ = postgres::record_refusal(&state.pool, trigger.id, why.reason(), counts).await;
     (why.status(), "").into_response()
 }
 

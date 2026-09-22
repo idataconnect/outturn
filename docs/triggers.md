@@ -247,13 +247,13 @@ indefinitely. Over the raw bytes rather than a parsed body, because two JSON
 documents that mean the same thing have different bytes, and a signature over a
 reserialised body verifies something the sender never sent.
 
-`shared_secret` exists because the alternative is refusing real senders.
-Postmark states plainly that it does not support HMAC signing and recommends
-HTTP Basic Auth with IP allowlisting instead -- and this document already names
-Postmark as how email arrives. A platform that accepts only signatures cannot
-receive email, so the choice is not between strong and weak but between working
-and not. It carries a per-trigger credential in a header, compared in constant
-time.
+`shared_secret` exists because the alternative is refusing real senders. Some
+of them do not sign at all -- a common recommendation among those is a bearer
+credential in a header plus IP allowlisting -- and inbound email providers are
+well represented in that group. A platform that accepts only signatures cannot
+receive from them, so the choice is not between strong and weak but between
+working and not. It carries a per-trigger credential in a header, compared in
+constant time.
 
 This is deliberately not "support both and let people pick". The scheme is a
 property of the sender rather than a preference, and the difference matters:
@@ -264,6 +264,9 @@ property of the sender rather than a preference, and the difference matters:
   credential.
 - It does not bind the body, so a request that was captured can be replayed
   with a different payload.
+- It gets no replay record, because there is nothing time-bound to key one on
+  and nothing a record would defend against. See "Replay is refused, under
+  `hmac`" below.
 
 So a trigger using it should say so where somebody will see it, and the
 operator's mitigations are the sender's own: restrict by source address where
@@ -306,23 +309,52 @@ identity to session, a decision about when a thread is finished, and a story
 for two deliveries racing into one session. A nullable key column added later
 costs less than guessing at those now.
 
-### Replay within the window is permitted
+### Replay is refused, under `hmac`
 
-A delivery signed five minutes ago is accepted five minutes ago, and nothing
-records which signatures have been seen -- so the same captured request can be
-sent again, as many times as the ceiling allows, until its timestamp ages out.
-Each replay is a new session and a new billable turn.
+A signature stays valid until its own timestamp ages out, so the window alone
+is not a replay defence: it bounds how long a captured request works and does
+not stop it working. Said plainly because the earlier wording was not --
+"refuses a timestamp outside a few minutes so a captured request cannot be
+replayed indefinitely" is true and reads as a defence it never was.
 
-Said plainly because the earlier wording was not: "refuses a timestamp outside
-a few minutes so a captured request cannot be replayed indefinitely" is true
-and reads as a replay defence, which it is not. It bounds how long replay is
-possible and does not prevent it.
+So the signature is recorded. `webhook_deliveries` holds one row per delivery,
+keyed on the trigger and a hash of the signature, and the insert *is* the
+check: a primary key means the second presentation cannot be stored, and
+`on conflict do nothing` turns that into an answer rather than an error. One
+statement, no read-then-write race. A replay is answered `409`, not the quiet
+`404` an unverified caller gets -- it holds the credential, so telling it that
+this delivery already landed is telling it something it may act on.
 
-For a trigger whose agent acts on the world -- the booking case these documents
-use -- that is duplicate work, which is what
-[idempotency.md](idempotency.md) is about. Until something records seen
-signatures, a trigger's prompt should be written so that acting twice is
-survivable, and that is the operator's job rather than the platform's.
+Replay *rejection*, not idempotency: what is remembered is that a delivery
+happened, not what it produced. Handing back the first result is what
+[idempotency.md](idempotency.md) is about, and it is a larger promise than an
+inbound hook needs.
+
+The record is anchored to the signed timestamp plus the tolerance, not to
+arrival, and the difference is load-bearing. The window is checked with an
+absolute value, so a signature stamped in the future verifies now and keeps
+verifying after an arrival-anchored record would have been swept -- which is
+the gap a replay walks through. It is released again on any path that does not
+start a turn: a delivery the ceiling refuses, or one whose turn fails to start,
+has claimed a slot it never used, and a `429` or a `500` is precisely the
+response that asks a sender to send the same bytes again. Refusing that retry
+as a replay would lose the event silently, which is worse than the duplicate it
+prevents.
+
+Rows are swept once they can no longer be replayed, from the worker's tick
+rather than a loop of its own, so the table stays the size of a few minutes of
+traffic.
+
+`shared_secret` gets none of this, and the exemption is deliberate. It carries
+no signature and binds no time, so the only thing to key a record on is the
+token and the body -- which makes a heartbeat, a retry, or the same event
+reported twice indistinguishable from a replay, and the second of them refused.
+It would also buy nothing: there is no captured *request* to replay when the
+credential travels on every delivery and never expires, so whoever captured one
+mints fresh requests rather than resending an old one. Refusing real traffic to
+defend against nothing is the wrong trade. A sender on this scheme should still
+be treated as able to deliver the same event twice, and a trigger whose agent
+acts on the world should be written so that acting twice is survivable.
 
 `shared_secret` is worse and the difference is worth stating: it binds no body,
 so a captured request can be replayed with a payload of the attacker's choosing
@@ -351,14 +383,13 @@ or a hook. Both endpoints have this; neither checks `require_for_agent` the way
 ## Email
 
 Designed, unbuilt, and mostly not its own thing: an inbound email provider
-(SES, Postmark, and others) delivers by POSTing to an endpoint, so email is the
-webhook path plus parsing.
+delivers by POSTing to an endpoint, so email is the webhook path plus parsing.
 
 It is also why the webhook path has two authentication schemes rather than one.
-Postmark does not sign its deliveries at all -- its documentation says so and
-recommends Basic Auth with IP allowlisting instead -- so an HMAC-only platform
-could not receive email through it. Checking that before building was worth
-more than the assumption it replaced.
+Not every such provider signs its deliveries; some recommend a bearer
+credential and IP allowlisting instead, so an HMAC-only platform could not
+receive email through those. Confirm what a given provider actually does before
+relying on either -- checking is worth more than the assumption it replaces.
 
 What is genuinely its own: threading, since a reply should land in the session
 its predecessor started, which is the external-identity mapping above with a
