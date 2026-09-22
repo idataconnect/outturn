@@ -263,4 +263,19 @@ describe('copying a reply', () => {
     // Half a sentence is not what anybody means to copy.
     expect(screen.queryByRole('button', { name: 'Copy this reply' })).not.toBeInTheDocument()
   })
+
+  it('shows and hides with the age beside it', async () => {
+    const user = userEvent.setup()
+    render(<Harness messages={reply({ type: 'complete', reason: 'stop' })} />)
+
+    const bar = screen.getByRole('button', { name: 'Copy this reply' }).parentElement!
+    expect(bar.className).toContain('opacity-0')
+
+    // One hover region for the whole reply, not two conditions that can
+    // disagree: the age is on a timer and the copy button was on a CSS
+    // hover, so a long hover left the icon beside nothing.
+    await user.hover(screen.getByText('the answer'))
+
+    expect(bar.className).toContain('opacity-100')
+  })
 })
