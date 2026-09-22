@@ -50,6 +50,11 @@ pub struct Puller {
     /// nothing that could mint a credential for anyone. See `RuntimeKey`.
     pub runtime_key: String,
     pub http: reqwest::Client,
+    /// For reporting a turn's events, which is a long request body answered
+    /// once at the end rather than a response streamed back. `http`'s read
+    /// timeout would measure the length of the turn instead of the health of
+    /// the connection -- see `http_client::reporting_client`.
+    pub reporting: reqwest::Client,
     pub runner: Arc<AgentRunner>,
     pub agent_module: Arc<Vec<u8>>,
     pub storage: Option<Arc<dyn super::storage::StorageBackend>>,
@@ -290,7 +295,7 @@ impl Puller {
         });
 
         let response = self
-            .http
+            .reporting
             .post(format!("{}/v1/work/{job_id}/events", self.api_url))
             .bearer_auth(self.token()?)
             .header(crate::api::work::LEASE_HEADER, lease.to_string())
