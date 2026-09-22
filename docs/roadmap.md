@@ -168,6 +168,12 @@ why. Three pieces, none of them the verdict model, which is done:
 The reader-facing half is already there: `chat.held` carries a `resumable`
 flag, true for suspensions, and the worker already announces it.
 
+What it does not have is a way to tell somebody who is not looking at that
+session. An approval nobody hears about is a turn parked for ever, so this
+wants the inbox under [Undesigned, and wanted](#undesigned-and-wanted) --
+not as a prerequisite, since a workspace watching one session would manage,
+but as the thing that makes it usable by anybody else.
+
 ## Tier 3 — needs tiers 1 and 2
 
 ### Integrations
@@ -254,15 +260,101 @@ about at all, only one the host offers and answers on its behalf, and the
 guest's dispatch stops being the whole story. Both are defensible; they are
 different platforms afterwards.
 
+## Done, and not from this list
+
+Work that answered something found by using the thing rather than by reading
+the plan. Recorded because the list above says nothing about it, and a reader
+comparing the two would otherwise think it never happened.
+
+**Open source readiness** — 2026-09-21. CI running the tier a bare checkout
+can run, `SECURITY.md` with the boundary stated rather than boilerplate,
+contributing guide, code of conduct, `NOTICE`, and clippy enforced for the
+first time across the tree. That last one found a real leak: the provider
+stream tests wrapped the mock in the struct whose `Drop` kills it only after
+the readiness wait succeeded, so a timeout left `mockllm` holding a port.
+
+**Two bugs found by signing in as somebody else** — 2026-09-21. An operator
+was seeded without `settings:read` while a viewer had it, which made operator
+the only role that was not a superset of the one beneath it; operator now also
+holds `usage:read`, since whoever holds `gateway:invoke` is spending the money
+and the usage window is how runaway spend gets noticed. A viewer was offered a
+start button that threw and a composer that took a message and dropped it. A
+test now asserts the roles form a ladder.
+
+Worth repeating before any release: the authority system had only ever been
+seen from an account that bypasses every check.
+
+**Composer and transcript work** — 2026-09-21. One mark now carries a turn
+from asked-for to finished, replacing a spinner under the prompt that handed
+over to a different animation under the reply. Files can be dropped on the
+composer. A reply can be copied. A passage can be quoted back out of one. And
+`/` lists the skills an agent actually has.
+
+The slash menu is the one worth reading about, because it went wrong twice in
+the same way. The library's default writes `:command[Name]{name=slug}`, which
+nothing here renders -- so the model received markdown-directive syntax raw,
+said it was not a syntax it responded to, and then invented a fact rather than
+stopping. Replacing it with a sentence then wrote the slug, which reaches the
+model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
+prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
+were found by a person trying it, not by a test.
+
 ## Undesigned, and wanted
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
-**Notifications.** [triggers.md](triggers.md) needs them twice over: a reply
-nobody asked for is useless if nothing says it arrived, and a schedule failing
-every morning is a broken integration nobody is watching. Undesigned -- what is
-notified, to whom, through what, and how a workspace says what it wants to hear
-about.
+**Notifications, and the inbox that shows them.**
+[triggers.md](triggers.md) needs them twice over: a reply nobody asked for is
+useless if nothing says it arrived, and a schedule failing every morning is a
+broken integration nobody is watching. Human-in-the-loop needs them a third
+time, since an approval nobody is told about is a turn parked for ever.
+
+Less undesigned than it reads. The second channel already exists end to end:
+`events.session_id` is nullable, `events_workspace_id_idx` indexes the
+workspace-wide read, and `/v1/events` takes `session_id` as an `Option` -- so
+omitting it polls the whole workspace today, narrowed by `Visible::of` like
+every other read. Nothing consumes it.
+
+What is actually missing:
+
+1. **A second poll loop in the browser**, keyed on the workspace rather than
+   the open session, running whether or not a session is open.
+2. **Read state**, which is the only genuinely new storage. Either a
+   per-user high-water cursor -- cheap, and the shape the poll already
+   speaks -- or an `event_reads` row per `(user_id, event_id)`, which is
+   what per-item dismissal needs. The cursor cannot express "dismiss this
+   one and keep that one unread", so the choice is whether that matters.
+3. **The inbox itself**, and what a workspace can say about which kinds
+   reach it.
+
+Not `QueueItemPrimitive`, which renders assistant-ui's own composer queue --
+the lanes this project deliberately leaves empty, because a message is
+persisted the moment it is sent and a browser-held copy would be a second
+source of truth that vanishes with the tab. An inbox is the opposite case:
+the server is the origin, so there is nothing local to disagree with it.
+
+**Showing what the model was thinking.** Thinking blocks are dropped at
+`src/gateway/llm/translate.rs`, with a comment saying they cannot be replayed
+to the provider so keeping them would only put them in a transcript that must
+not send them back. That conflates two questions. What a provider will accept
+back is one thing; what a person may see is another, and the second does not
+follow from the first.
+
+The real constraint is narrower: Anthropic wants a thinking block returned
+with its signature when a turn continues into tool use, so the block and its
+signature have to be kept together and replayed where the API expects them,
+and dropped where a provider has no equivalent. That is the ordinary shape of
+multi-provider mapping rather than a reason not to store them.
+
+Four pieces: keep the block and signature instead of discarding them; store it
+as a part the transcript can tell from output; replay or drop per provider at
+the gateway; and a workspace setting that gates display. Off by default,
+because thinking is less filtered than output and a model sometimes reasons
+about things it does not say -- which is a reason for a workspace to choose it
+deliberately, not a reason nobody may have it.
+
+`ChainOfThoughtPrimitive` renders it once there is something to render, and
+brings its own accordion.
 
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
