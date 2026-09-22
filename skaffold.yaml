@@ -80,6 +80,17 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-petstore
+  # What scripts/dev-mac.sh deploys. The overlay is written by that script
+  # from the base and whichever components were asked for, because the
+  # alternative is one committed overlay per combination and nobody keeps
+  # four of those in step. Not useful on its own -- the path does not exist
+  # until the script has run.
+  - name: generated
+    manifests:
+      kustomize:
+        paths:
+          - k8s/overlays/.generated
+
   # A Mac. `skaffold dev -p mac` reaches ollama on the host rather than across
   # the Linux Docker bridge, and defaults to qwen3.8:27b-mlx. scripts/dev-mac.sh
   # checks ollama and the model first, then runs this.
@@ -96,13 +107,3 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-mac-small
-  # Mac with document extraction. `scripts/dev-mac.sh -p tika` reaches ollama
-  # on the host and brings up Apache Tika. A combined profile rather than two
-  # `-p` flags, because skaffold replaces the kustomize paths per profile
-  # rather than merging them -- `-p mac -p tika` would use local-tika's base,
-  # which has the Linux Docker bridge address instead of host.docker.internal.
-  - name: mac-tika
-    manifests:
-      kustomize:
-        paths:
-          - k8s/overlays/local-mac-tika
