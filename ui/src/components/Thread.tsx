@@ -1,5 +1,11 @@
-import { ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { CircleSlash, FileText, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
+import {
+  ActionBarPrimitive,
+  ComposerPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+  useAuiState,
+} from '@assistant-ui/react'
+import { Check, CircleSlash, Copy, FileText, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
@@ -222,7 +228,7 @@ function AssistantMessage() {
   }
 
   return (
-    <MessagePrimitive.Root className="flex flex-col items-start">
+    <MessagePrimitive.Root className="group/reply flex flex-col items-start">
       <div
         {...handlers}
         tabIndex={-1}
@@ -240,7 +246,35 @@ function AssistantMessage() {
           }}
         />
       </div>
-      <MessageAge phrase={phrase} shown={shown} />
+      <div className="flex items-center gap-1">
+        <MessageAge phrase={phrase} shown={shown} />
+        {/* Copy, which until now meant selecting the reply by hand and
+            dragging to its end -- awkward on a long answer and impossible to
+            do exactly, because the selection takes the age and the mark with
+            it. Shown on hover rather than always: it is worth having and not
+            worth a permanent button under every reply.
+
+            `hideWhenRunning` because a half-written reply is not the thing
+            anybody means to copy. */}
+        <ActionBarPrimitive.Root
+          hideWhenRunning
+          className="opacity-0 group-hover/reply:opacity-100 focus-within:opacity-100 transition-opacity"
+        >
+          <ActionBarPrimitive.Copy
+            // Long enough to be seen without the tick becoming the resting
+            // state of a button somebody copies from twice.
+            copiedDuration={1500}
+            aria-label="Copy this reply"
+            title="Copy this reply"
+            className="p-1 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 [&[data-copied]]:text-brand-600 dark:[&[data-copied]]:text-brand-400"
+          >
+            {/* Two icons, one shown at a time by the data attribute the
+                primitive sets: no state of our own to keep in step with it. */}
+            <Copy size={13} aria-hidden className="[[data-copied]_&]:hidden" />
+            <Check size={13} aria-hidden className="hidden [[data-copied]_&]:block" />
+          </ActionBarPrimitive.Copy>
+        </ActionBarPrimitive.Root>
+      </div>
       {/* Kept mounted after the turn ends so the mark can finish: it draws its
           dots together into a line rather than vanishing, which is what
           distinguishes a reply that is done from one still being written.
