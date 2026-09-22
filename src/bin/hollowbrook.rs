@@ -406,27 +406,119 @@ async fn reset(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
 /// Served rather than committed as a file so it cannot drift from the routes
 /// above without somebody noticing -- and because the wizard's job is to read
 /// one from a URL, which is what most services offer.
+/// The specification an agent reads before calling any of this.
+///
+/// Written by hand and kept so deliberately. Axum retains nothing at runtime
+/// that a document could be derived from, and the crates that do it
+/// (`utoipa` and its kin) derive the schemas from annotations you still write
+/// -- so the choice is between annotations near the handlers and a document
+/// near nothing. What decided it is that this fixture exists to give the
+/// OpenAPI wizard something realistic to read: a specification is the wizard's
+/// input, so having one that somebody wrote the way a customer's team writes
+/// theirs is the point rather than an accident.
+///
+/// The response schemas are the part worth maintaining. An agent that knows
+/// `total_pence` exists does not ask for a price it was already handed, and a
+/// summary saying "The bookings." tells it nothing at all -- which is how the
+/// first version of this read.
 async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
     let doc = serde_json::json!({
       "openapi": "3.0.3",
       "info": {
         "title": "Hollowbrook House",
-        "version": "1.0.0",
-        "description": "Rooms and bookings for a small guesthouse. A fixture: nothing here is real."
+        "version": "1.1.0",
+        "description":
+          "Rooms and bookings for a small guesthouse. A fixture: nothing here is real.\n\n\
+           Money is in pence throughout, so nothing does floating-point arithmetic on it. \
+           Dates are YYYY-MM-DD and name nights: `arrival` is the first night and \
+           `departure` is the morning the guest leaves, so a stay of one night has a \
+           departure one day after its arrival."
+      },
+      "servers": [
+        { "url": "http://outturn-hollowbrook:8084", "description": "Beside outturn in the cluster." }
+      ],
+      "components": {
+        "schemas": {
+          "Room": {
+            "type": "object",
+            "required": ["id", "name", "sleeps", "rate_pence"],
+            "properties": {
+              "id": { "type": "string", "description": "What a booking names, e.g. `garden`." },
+              "name": { "type": "string", "description": "What a person calls it." },
+              "sleeps": { "type": "integer", "description": "How many it takes." },
+              "rate_pence": { "type": "integer", "description": "One night, in pence." }
+            }
+          },
+          "Booking": {
+            "type": "object",
+            "required": [
+              "id", "room_id", "guest_name", "arrival", "departure",
+              "total_pence", "created_at"
+            ],
+            "properties": {
+              "id": { "type": "string", "description": "Quote this to a guest; `getBooking` takes it." },
+              "room_id": { "type": "string" },
+              "guest_name": { "type": "string" },
+              "arrival": { "type": "string", "format": "date" },
+              "departure": { "type": "string", "format": "date" },
+              "total_pence": {
+                "type": "integer",
+                "description": "The whole stay, so a caller is not asked to multiply."
+              },
+              "created_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "Vacancy": {
+            "type": "object",
+            "description": "A room free for the dates asked about, priced for that stay.",
+            "required": ["room_id", "name", "sleeps", "rate_pence", "total_pence"],
+            "properties": {
+              "room_id": {
+                "type": "string",
+                "description": "`room_id` here, not `id` as in Room -- this is what createBooking takes."
+              },
+              "name": { "type": "string" },
+              "sleeps": { "type": "integer" },
+              "rate_pence": { "type": "integer", "description": "One night, in pence." },
+              "total_pence": { "type": "integer", "description": "Rate times nights." }
+            }
+          },
+          "Error": {
+            "type": "object",
+            "required": ["error"],
+            "properties": { "error": { "type": "string", "description": "What was wrong, in a sentence." } }
+          }
+        }
       },
       "paths": {
         "/rooms": {
           "get": {
             "operationId": "listRooms",
             "summary": "List every room, with what it sleeps and what it costs a night.",
+            "description":
+              "Every room the house has, whether or not it is free. Use `checkAvailability` \
+               to find out which are free for a stay.",
             "tags": ["rooms"],
-            "responses": { "200": { "description": "The rooms." } }
+            "responses": {
+              "200": {
+                "description": "The rooms.",
+                "content": { "application/json": { "schema": {
+                  "type": "object",
+                  "required": ["rooms"],
+                  "properties": { "rooms": { "type": "array", "items": { "$ref": "#/components/schemas/Room" } } }
+                } } }
+              }
+            }
           }
         },
         "/availability": {
           "get": {
             "operationId": "checkAvailability",
             "summary": "Which rooms are free for a stay, and what the stay would cost.",
+            "description":
+              "A room is free when no booking overlaps the range. The total is the room's \
+               nightly rate times the number of nights, so it does not have to be worked out \
+               from the rate.",
             "tags": ["rooms"],
             "parameters": [
               {
@@ -441,8 +533,23 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
               }
             ],
             "responses": {
-              "200": { "description": "Rooms free for those dates." },
-              "400": { "description": "Departure is not after arrival." }
+              "200": {
+                "description": "Rooms free for those dates. An empty `available` means none are.",
+                "content": { "application/json": { "schema": {
+                  "type": "object",
+                  "required": ["arrival", "departure", "nights", "available"],
+                  "properties": {
+                    "arrival": { "type": "string", "format": "date" },
+                    "departure": { "type": "string", "format": "date" },
+                    "nights": { "type": "integer", "description": "What the range works out to." },
+                    "available": { "type": "array", "items": { "$ref": "#/components/schemas/Vacancy" } }
+                  }
+                } } }
+              },
+              "400": {
+                "description": "Departure is not after arrival.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              }
             }
           }
         },
@@ -451,11 +558,23 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
             "operationId": "listBookings",
             "summary": "Every booking currently held.",
             "tags": ["bookings"],
-            "responses": { "200": { "description": "The bookings." } }
+            "responses": {
+              "200": {
+                "description": "The bookings, oldest first.",
+                "content": { "application/json": { "schema": {
+                  "type": "object",
+                  "required": ["bookings"],
+                  "properties": { "bookings": { "type": "array", "items": { "$ref": "#/components/schemas/Booking" } } }
+                } } }
+              }
+            }
           },
           "post": {
             "operationId": "createBooking",
             "summary": "Reserve a room for a guest.",
+            "description":
+              "The room has to be free for the whole range. A 409 means part of it is taken, \
+               and `checkAvailability` for the same dates says what is not.",
             "tags": ["bookings"],
             "requestBody": {
               "required": true,
@@ -465,19 +584,35 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
                     "type": "object",
                     "required": ["room_id", "guest_name", "arrival", "departure"],
                     "properties": {
-                      "room_id": { "type": "string", "description": "From /rooms, e.g. garden." },
+                      "room_id": {
+                        "type": "string",
+                        "description": "A room's id, from listRooms or the `room_id` of a vacancy. Not its name."
+                      },
                       "guest_name": { "type": "string" },
                       "arrival": { "type": "string", "format": "date" },
-                      "departure": { "type": "string", "format": "date" }
+                      "departure": { "type": "string", "format": "date", "description": "Must be after arrival." }
                     }
                   }
                 }
               }
             },
             "responses": {
-              "201": { "description": "The booking that was made." },
-              "404": { "description": "No such room." },
-              "409": { "description": "That room is taken for those dates." }
+              "201": {
+                "description": "The booking that was made, with its id and the total.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Booking" } } }
+              },
+              "400": {
+                "description": "Departure is not after arrival.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              },
+              "404": {
+                "description": "No room has that id.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              },
+              "409": {
+                "description": "That room is taken for part of those dates.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              }
             }
           }
         },
@@ -490,12 +625,150 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
               { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
             ],
             "responses": {
-              "200": { "description": "The booking." },
-              "404": { "description": "No such booking." }
+              "200": {
+                "description": "The booking.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Booking" } } }
+              },
+              "404": {
+                "description": "No booking has that id.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              }
             }
           }
         }
       }
     });
     marked(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::State;
+
+    /// Reads the document `openapi` serves, as JSON.
+    async fn spec() -> serde_json::Value {
+        // Empty: `openapi` ignores its state, and the document is the same
+        // whatever the house happens to be holding.
+        let state = Arc::new(Fixture {
+            rooms: Vec::new(),
+            bookings: Mutex::new(Vec::new()),
+            webhook: None,
+            client: reqwest::Client::new(),
+        });
+        let response = openapi(State(state)).await.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("the specification must be JSON")
+    }
+
+    /// Every route this serves is in the document, and nothing else is.
+    ///
+    /// The failure this exists for is drift in the direction nobody notices: a
+    /// route added and the specification forgotten. An agent reads the
+    /// document to decide what it can call, so an operation missing from it is
+    /// an operation that does not exist as far as any agent is concerned --
+    /// and the wizard that turns this into a skill sees exactly what the
+    /// document says.
+    ///
+    /// Hand-written and hand-maintained, which is the reason to check it
+    /// mechanically. A derived document could not drift; this one can, and
+    /// only a test will say so.
+    #[tokio::test]
+    async fn the_specification_describes_every_route_and_no_others() {
+        let spec = spec().await;
+        let described: std::collections::BTreeSet<String> = spec["paths"]
+            .as_object()
+            .expect("paths")
+            .keys()
+            .cloned()
+            .collect();
+
+        // The API an agent is given. `/healthz`, `/readyz` and `/openapi.json`
+        // are how the cluster and the wizard find their way in rather than
+        // things to call, and `/fixture/reset` is named for not being real.
+        let served: std::collections::BTreeSet<String> =
+            ["/rooms", "/availability", "/bookings", "/bookings/{id}"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+
+        assert_eq!(
+            described, served,
+            "the specification and the router disagree about what exists"
+        );
+    }
+
+    /// Every operation says what comes back, not merely that something does.
+    ///
+    /// A response documented as "The bookings." tells an agent nothing it can
+    /// act on: it cannot know a booking carries `total_pence` until it has
+    /// made one and looked. That was true of every response here before this
+    /// test, which is why it is worth asserting rather than trusting.
+    #[tokio::test]
+    async fn every_success_response_has_a_schema() {
+        let spec = spec().await;
+        for (path, methods) in spec["paths"].as_object().expect("paths") {
+            for (method, operation) in methods.as_object().expect("methods") {
+                let responses = operation["responses"].as_object().expect("responses");
+                let (code, response) = responses
+                    .iter()
+                    .find(|(code, _)| code.starts_with('2'))
+                    .unwrap_or_else(|| panic!("{method} {path} describes no success"));
+                assert!(
+                    response["content"]["application/json"]["schema"].is_object(),
+                    "{method} {path} answers {code} with nothing an agent can read"
+                );
+            }
+        }
+    }
+
+    /// Every schema a response points at is one the document defines.
+    ///
+    /// A `$ref` to a name that is not there is the ordinary way a hand-written
+    /// document rots, and it fails silently: a reader follows the reference,
+    /// finds nothing, and carries on with whatever it already believed.
+    #[tokio::test]
+    async fn every_reference_resolves() {
+        let spec = spec().await;
+        let defined: std::collections::BTreeSet<String> = spec["components"]["schemas"]
+            .as_object()
+            .expect("schemas")
+            .keys()
+            .cloned()
+            .collect();
+
+        let mut referenced = std::collections::BTreeSet::new();
+        fn walk(node: &serde_json::Value, found: &mut std::collections::BTreeSet<String>) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "$ref"
+                            && let Some(name) = value.as_str().and_then(|r| {
+                                r.strip_prefix("#/components/schemas/").map(String::from)
+                            })
+                        {
+                            found.insert(name);
+                        }
+                        walk(value, found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(&spec["paths"], &mut referenced);
+
+        assert!(!referenced.is_empty(), "no schema is referenced at all");
+        let dangling: Vec<_> = referenced.difference(&defined).collect();
+        assert!(
+            dangling.is_empty(),
+            "referenced but not defined: {dangling:?}"
+        );
+    }
 }
