@@ -41,10 +41,24 @@ scripts/dev-mac.sh
 ```
 
 It starts ollama if it is not running, pulls `qwen3.8:27b-mlx` if it is
-missing, loads it, and runs `skaffold dev -p mac`. That profile points the
-gateway at ollama on the host through `host.docker.internal` and makes qwen3.8
-the default model. Loaded, the model takes 18-23GB. It was chosen on a 64GB
-M4; beside the cluster's VM, a 32GB machine will be tight.
+missing, loads it, writes the overlay for this run, and hands it to skaffold.
+The gateway reaches ollama on the host through `host.docker.internal`, and
+qwen3.8 is the default model. Loaded, it takes 18-23GB. It was chosen on a
+64GB M4; beside the cluster's VM, a 32GB machine will be tight.
+
+Two flags, and anything else goes to skaffold:
+
+```
+scripts/dev-mac.sh --small              # qwen3.5, for a Mac with less to spare
+scripts/dev-mac.sh --with tika          # plus document extraction
+scripts/dev-mac.sh --with tika,petstore
+```
+
+`--with` takes anything in `k8s/components`. They are kustomize components,
+so they compose: the script writes an overlay listing whichever were asked
+for, and adding a third component needs no change to the script. The overlay
+is generated rather than committed because the alternative is one per
+combination -- and two features already make four.
 
 Then start the UI with `cd ui && npm run dev`, open http://localhost:3000, and
 sign in as `admin@outturn.local`. The password is this clone's own -- the

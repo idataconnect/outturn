@@ -16,3 +16,8 @@ agents/*/target/
 # This clone's local cluster keys, written by scripts/dev-secrets.sh. Generated
 # rather than committed: a key in the repository is one every clone shares.
 k8s/overlays/local/dev-secrets.env
+
+# The overlay scripts/dev-mac.sh writes for a run: the base it was asked for
+# plus whichever components. Generated rather than committed because the
+# alternative is one overlay per combination, and four of them would drift.
+k8s/overlays/.generated/
