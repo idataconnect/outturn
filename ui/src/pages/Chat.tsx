@@ -47,7 +47,7 @@ export default function Chat() {
   /** Filled by the composer; read by the runtime as a message is sent. */
   const takeAttachments = useRef<(() => string) | null>(null)
 
-  const { runtime, error: chatError, held, stopping } = useChatRuntime(
+  const { runtime, error: chatError, held, stopping, retry } = useChatRuntime(
     active,
     (title) => {
       if (!active) return
@@ -375,6 +375,7 @@ export default function Chat() {
               disabled={!active || !canSend}
               readOnly={!!active && !canSend}
               skills={skills}
+              onRetry={retry}
               stopping={stopping}
               focusRequest={focusRequest}
               sessionId={active}

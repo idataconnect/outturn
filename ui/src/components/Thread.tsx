@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 
 import { useMessageAge } from '../lib/useMessageAge'
@@ -32,7 +32,7 @@ import toolRenderers from './toolRenderers'
 import Working from './Working'
 import SkillMenu from './SkillMenu'
 import type { SkillCommand } from '../lib/useSkillCommands'
-import { deleteFile, retryTurn, uploadFile, uploadPastedImage } from '../lib/chat'
+import { deleteFile, uploadFile, uploadPastedImage } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
 /**
@@ -332,6 +332,7 @@ export default function Thread({
   onStoredChange,
   takeAttachments,
   skills = [],
+  onRetry,
 }: {
   disabled?: boolean
   /** There is a session, but this reader may not say anything in it. Told
@@ -357,6 +358,11 @@ export default function Thread({
    *  Passed in rather than fetched here, because which agent it is belongs to
    *  the page that knows which session is open. */
   skills?: SkillCommand[]
+  /** Runs a failed turn again. Owned by the runtime rather than here, because
+   *  the failure it has to clear is runtime state -- and clearing it locally
+   *  is what makes the mark change under the hand that pressed the button,
+   *  rather than a poll cycle later. */
+  onRetry?: (messageId: string) => void
 }) {
   // `autoFocus` only speaks for the first mount, and the thread outlives
   // every change of session -- so a session chosen from the sidebar left
@@ -557,32 +563,13 @@ export default function Thread({
     input.current?.focus()
   }, [focusRequest, disabled])
 
-  // Runs the failed turn again, which requeues the job that failed rather
-  // than sending the words a second time.
-  //
-  // The first version put the text back in the composer, reasoning that a
-  // turn failed for a reason somebody might want to act on. But the failed
-  // message stays in the transcript -- what failed is the attempt at
-  // answering it -- so pressing enter sent a second copy and the agent was
-  // asked the same thing twice. Editing before retrying is a real thing to
-  // want, and it is a different button from this one.
-  const retry = useCallback(
-    (messageId: string) => {
-      if (!sessionId) return
-      void retryTurn(sessionId, messageId).catch((e) => {
-        onStoredChange?.(e instanceof ApiError ? e.message : 'could not run that turn again')
-      })
-    },
-    [sessionId, onStoredChange],
-  )
-
   // Bound once rather than inline, so every user message is not rerendered by
   // a new component identity each time this one renders.
   const UserMessageWithRetry = useMemo(
     () => function Bound() {
-      return <UserMessage onRetry={retry} />
+      return <UserMessage onRetry={onRetry} />
     },
-    [retry],
+    [onRetry],
   )
 
   return (

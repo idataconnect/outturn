@@ -9,6 +9,7 @@ import {
   cancelTurn,
   loadHistory,
   pollEvents,
+  retryTurn,
   sendMessage,
   type Delivery,
   type Message,
@@ -551,6 +552,35 @@ export function useChatRuntime(
             setStopping(false)
           }
 
+          // A failed turn put back on the queue, by this reader or another
+          // one. Whoever pressed the button has already had the mark change
+          // under their hand; this is what tells everybody else, who would
+          // otherwise go on being shown a failure that is no longer true.
+          const retried = result.events.find((e) => e.kind === 'chat.requeued')
+          if (retried) {
+            const { message_id } = retried.payload as { message_id?: string }
+            if (message_id) {
+              setFailures((prev) => {
+                if (!prev.has(message_id)) return prev
+                const next = new Map(prev)
+                next.delete(message_id)
+                return next
+              })
+              // The stored state says `failed` until the next load, and
+              // `annotate` reads it as well as the map -- so clearing one
+              // without the other leaves the button where it was.
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === message_id && m.job_state === 'failed'
+                    ? { ...m, job_state: 'pending' }
+                    : m,
+                ),
+              )
+              setError(null)
+              setIsRunning(true)
+            }
+          }
+
           const failed = result.events.find((e) => e.kind === 'chat.error')
           if (failed) {
             const { message, message_id } = failed.payload as {
@@ -705,6 +735,50 @@ export function useChatRuntime(
     }
   }, [sessionId])
 
+  /**
+   * Runs a failed turn again.
+   *
+   * The failure is cleared here rather than waited for over the feed. The
+   * server answers, then emits `chat.requeued`, then this tab polls -- which
+   * is a second or more of a button that says Try again beside a turn that is
+   * already trying. Put back if the call fails, so a refusal does not leave
+   * somebody watching a mark for work nobody is doing.
+   */
+  const retry = useCallback(
+    async (messageId: string) => {
+      if (!sessionId) return
+      const previous = failures.get(messageId)
+      setFailures((prev) => {
+        if (!prev.has(messageId)) return prev
+        const next = new Map(prev)
+        next.delete(messageId)
+        return next
+      })
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId && m.job_state === 'failed' ? { ...m, job_state: 'pending' } : m,
+        ),
+      )
+      setError(null)
+      setIsRunning(true)
+      try {
+        await retryTurn(sessionId, messageId)
+      } catch (e) {
+        if (previous !== undefined) {
+          setFailures((prev) => new Map(prev).set(messageId, previous))
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId && m.job_state === 'pending' ? { ...m, job_state: 'failed' } : m,
+          ),
+        )
+        setIsRunning(false)
+        setError(e instanceof Error ? e.message : 'could not run that turn again')
+      }
+    },
+    [sessionId, failures],
+  )
+
   const runtime = useExternalStoreRuntime({
     messages: annotated,
     isRunning,
@@ -717,7 +791,7 @@ export function useChatRuntime(
   })
 
   return useMemo(
-    () => ({ runtime, error, held, isRunning, stopping }),
-    [runtime, error, held, isRunning, stopping],
+    () => ({ runtime, error, held, isRunning, stopping, retry }),
+    [runtime, error, held, isRunning, stopping, retry],
   )
 }

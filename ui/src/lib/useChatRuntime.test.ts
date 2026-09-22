@@ -111,3 +111,43 @@ describe('quoting a passage out of a reply', () => {
     expect(withQuote('hello', { quote: { text: '   ' } })).toBe('hello')
   })
 })
+
+describe('a failed turn put back on the queue', () => {
+  const failed = [
+    message({ id: 'u1', role: 'user', job_state: 'failed' }),
+    message({ id: 'a1', role: 'assistant', replies_to: 'u1' }),
+  ]
+
+  it('shows the retry button while it is failed', () => {
+    const status = annotate(failed, new Set(), new Map([['u1', 'the model was unreachable']]))
+      .find((m) => m.id === 'u1')?.status
+    expect(status).toEqual({ kind: 'failed', message: 'the model was unreachable' })
+  })
+
+  it('needs both the failure and the stored state cleared, not either', () => {
+    // `annotate` reads the map *or* job_state, so clearing one leaves the
+    // button sitting beside a turn that is already running again -- which is
+    // exactly what the first version of this did.
+    const mapOnly = annotate(failed, new Set(), new Map()).find((m) => m.id === 'u1')?.status
+    expect(mapOnly).toMatchObject({ kind: 'failed' })
+
+    const stateOnly = annotate(
+      [message({ id: 'u1', role: 'user', job_state: 'pending' }), failed[1]],
+      new Set(),
+      new Map([['u1', 'the model was unreachable']]),
+    ).find((m) => m.id === 'u1')?.status
+    expect(stateOnly).toMatchObject({ kind: 'failed' })
+  })
+
+  it('goes back to waiting once both are cleared', () => {
+    const status = annotate(
+      [message({ id: 'u1', role: 'user', job_state: 'pending' }), failed[1]],
+      new Set(),
+      new Map(),
+    ).find((m) => m.id === 'u1')?.status
+
+    // The held mark, which is what somebody who pressed the button expects to
+    // see: the turn is going again, and nothing about it has failed yet.
+    expect(status).toMatchObject({ kind: 'waiting' })
+  })
+})
