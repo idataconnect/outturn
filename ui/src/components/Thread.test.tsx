@@ -11,6 +11,7 @@ import Thread from './Thread'
 
 function Harness(props: {
   disabled?: boolean
+  readOnly?: boolean
   focusRequest?: number
   running?: boolean
   messages?: ThreadMessageLike[]
@@ -44,6 +45,7 @@ function Harness(props: {
           would put an unknown prop on the component under test. */}
       <Thread
         disabled={props.disabled}
+        readOnly={props.readOnly}
         focusRequest={props.focusRequest}
         sessionId={props.sessionId}
       />
@@ -217,5 +219,31 @@ describe('dropping a file on the composer', () => {
 
     // Nothing to attach it to yet, so the box must not say it will take it.
     expect(composer().closest('.ring-2')).toBeNull()
+  })
+})
+
+describe('a reader who may not send', () => {
+  it('says which authority is missing rather than telling them to start a session', () => {
+    render(<Harness sessionId="s1" readOnly />)
+
+    // "Start a session first" is advice, and acting on it is impossible for
+    // somebody who already has one. Naming the authority at least says who to
+    // ask.
+    expect(
+      screen.getByPlaceholderText('Sending needs the gateway:invoke authority'),
+    ).toBeInTheDocument()
+  })
+
+  it('will not take a message it cannot send', () => {
+    // Both, as the page passes them: `disabled` stops the keystroke and
+    // `readOnly` picks the placeholder that says why.
+    render(<Harness sessionId="s1" readOnly disabled />)
+
+    // The box used to accept a paragraph, clear itself on submit, and fail --
+    // so the writing was gone and the only trace was a banner in the top bar.
+    // Refusing the keystroke loses nothing.
+    expect(
+      screen.getByPlaceholderText('Sending needs the gateway:invoke authority'),
+    ).toBeDisabled()
   })
 })

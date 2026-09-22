@@ -268,6 +268,7 @@ type Attachment = {
 
 export default function Thread({
   disabled,
+  readOnly,
   stopping,
   focusRequest = 0,
   sessionId,
@@ -275,6 +276,12 @@ export default function Thread({
   takeAttachments,
 }: {
   disabled?: boolean
+  /** There is a session, but this reader may not say anything in it. Told
+   *  apart from `disabled` so the box can say which of the two it is: "start
+   *  a session first" is advice somebody can act on, and "you may not send"
+   *  is not, and offering the first to somebody in the second position sends
+   *  them looking for a session they already have. */
+  readOnly?: boolean
   /** A stop has been asked for and the turn has not ended yet. */
   stopping?: boolean
   /** Changed to put the cursor in the composer, e.g. for a session just chosen. */
@@ -600,9 +607,11 @@ export default function Thread({
           placeholder={
             pasting
               ? 'Storing the image…'
-              : disabled
-                ? 'Start a session first'
-                : 'Message the agent…'
+              : readOnly
+                ? 'Sending needs the gateway:invoke authority'
+                : disabled
+                  ? 'Start a session first'
+                  : 'Message the agent…'
           }
           className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
