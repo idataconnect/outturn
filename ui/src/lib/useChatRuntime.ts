@@ -149,7 +149,15 @@ export function annotate(
       // "waiting" leaves the reader watching a spinner for a reply that is
       // never coming. gemma4 does this with thinking off, and any model does
       // it by spending its whole turn on tool calls that go nowhere.
-      const jobOver = m.job_state !== 'pending' && m.job_state !== 'running'
+      // Named states only. `job_state` is null while no job row exists for
+      // the message yet -- the window between storing it and enqueueing its
+      // turn, which a poll lands in often enough to see -- and reading that
+      // as "over" declared the agent silent moments before it started
+      // streaming, next to a stop button saying the opposite.
+      const jobOver =
+        m.job_state === 'succeeded' ||
+        m.job_state === 'failed' ||
+        m.job_state === 'cancelled'
       if (jobOver && !retrying.has(reply.id)) {
         return { ...m, status: { kind: 'silent' } }
       }

@@ -151,3 +151,31 @@ describe('a failed turn put back on the queue', () => {
     expect(status).toMatchObject({ kind: 'waiting' })
   })
 })
+
+describe('a reply that has not said anything yet', () => {
+  const pair = (job_state: Message['job_state']) => [
+    message({ id: 'u1', role: 'user', job_state }),
+    message({ id: 'a1', role: 'assistant', replies_to: 'u1' }),
+  ]
+
+  it('is waiting, not silent, before its job row exists', () => {
+    // `job_state` is null between storing the message and enqueueing its
+    // turn. Reading that as "the job is over" called the agent silent a
+    // moment before it began streaming -- next to a stop button saying a
+    // turn was running.
+    expect(annotate(pair(null), new Set(), new Map()).find((m) => m.id === 'u1')?.status)
+      .toMatchObject({ kind: 'waiting' })
+  })
+
+  it('is waiting while the turn runs', () => {
+    expect(annotate(pair('running'), new Set(), new Map()).find((m) => m.id === 'u1')?.status)
+      .toMatchObject({ kind: 'waiting' })
+  })
+
+  it('is silent once the turn ended having said nothing', () => {
+    // The case this state exists for: a turn that spent itself on tool calls
+    // going nowhere, or a model that answered with nothing at all.
+    expect(annotate(pair('succeeded'), new Set(), new Map()).find((m) => m.id === 'u1')?.status)
+      .toMatchObject({ kind: 'silent' })
+  })
+})
