@@ -249,9 +249,12 @@ function AssistantMessage() {
   }
 
   return (
-    <MessagePrimitive.Root className="group/reply flex flex-col items-start">
+    // Handlers on the whole reply rather than on the bubble alone. The footer
+    // is a sibling of the bubble, so reaching down to click Copy left the
+    // bubble, called `hide`, and faded the button out from under the pointer
+    // on its way to it.
+    <MessagePrimitive.Root {...handlers} className="flex flex-col items-start">
       <div
-        {...handlers}
         tabIndex={-1}
         className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100"
       >
@@ -275,11 +278,18 @@ function AssistantMessage() {
             it. Shown on hover rather than always: it is worth having and not
             worth a permanent button under every reply.
 
+            Tied to `shown`, which is what the age uses, rather than to a
+            hover of its own. Two conditions meant two answers: the age is on
+            the bubble and times out after twenty seconds, while a CSS hover
+            on the whole row has no timer and covers the footer as well -- so
+            a long hover, or a pointer over the footer, left the icon sitting
+            there beside nothing.
+
             `hideWhenRunning` because a half-written reply is not the thing
             anybody means to copy. */}
         <ActionBarPrimitive.Root
           hideWhenRunning
-          className="opacity-0 group-hover/reply:opacity-100 focus-within:opacity-100 transition-opacity"
+          className={`transition-opacity ${shown ? 'opacity-100' : 'opacity-0'} focus-within:opacity-100`}
         >
           <ActionBarPrimitive.Copy
             // Long enough to be seen without the tick becoming the resting
