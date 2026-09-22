@@ -242,7 +242,7 @@ fn every(share: f64, counter: &AtomicU64) -> bool {
     }
     let n = counter.fetch_add(1, Ordering::Relaxed);
     let period = (1.0 / share).round().max(1.0) as u64;
-    n % period == 0
+    n.is_multiple_of(period)
 }
 
 /// Notices a stream that was dropped before it finished.

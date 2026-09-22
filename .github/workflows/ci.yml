@@ -1,0 +1,91 @@
+# What a bare checkout can prove about itself.
+#
+# Deliberately only the tier that needs nothing external. `cargo test` with no
+# features runs the fast suite; `slow-tests` instantiates a WebAssembly sandbox
+# per case and `integration-tests` wants Postgres and a gateway, and neither
+# belongs in the check that gates a pull request. Cargo.toml explains the split
+# at the feature definitions.
+#
+# A missing tool fails here rather than skipping, for the reason the README
+# gives about skipped tests: a green run that tested nothing is worse than a
+# red one.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push or a second push to the same branch makes the earlier run
+# pointless. Cancel it rather than pay for it -- except on main, where each
+# commit's result is a fact worth keeping.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Stable, tracking whatever that is -- to agree with the Dockerfile,
+      # which builds `FROM rust:1`. Pinning a version here would mean CI could
+      # go red for a toolchain the thing being shipped never uses, which is a
+      # worse failure than the occasional surprise from a new release.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Formatting first: it is the cheapest to run and the least interesting
+      # to argue about in review.
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- --deny warnings
+
+      # No features. The fast tier is what a clone can run, and this job is
+      # the promise that it stays that way -- a test that quietly grows a
+      # dependency on a live service fails here, in the open.
+      - name: Test
+        run: cargo test
+
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # `ci` rather than `install`: it installs the lockfile as written and
+      # fails if package.json has drifted from it, which is the whole point of
+      # committing one.
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # Typechecks as a side effect -- `build` is `tsc -b && vite build`, so a
+      # type error fails here without a separate step for it.
+      - name: Build
+        run: npm run build

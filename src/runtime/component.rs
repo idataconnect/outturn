@@ -529,7 +529,7 @@ impl outturn::agent::host::Host for AgentHost {
                     .paid_by
                     .clone()
                     .unwrap_or_else(|| "operator".to_string()),
-                usage: usage.clone(),
+                usage: *usage,
                 provider_usage: served.provider_usage.clone(),
                 service_tier: served.service_tier.clone(),
             });
@@ -763,10 +763,10 @@ impl outturn::agent::host::Host for AgentHost {
         // given the first kilobyte of a PNG spends the tokens working out that
         // it is a PNG; told so, it can say so, or reach for the tool that
         // deals with it.
-        if offset == 0 {
-            if let Some(what) = describe_binary(&bytes) {
-                return Err(format!("{path} is not text: it is {what}"));
-            }
+        if offset == 0
+            && let Some(what) = describe_binary(&bytes)
+        {
+            return Err(format!("{path} is not text: it is {what}"));
         }
         Ok(bytes)
     }

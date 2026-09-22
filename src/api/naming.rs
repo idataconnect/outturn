@@ -383,7 +383,7 @@ fn tidy(raw: &str) -> Option<String> {
         t = t.strip_prefix(prefix).unwrap_or(t).trim();
     }
     let t = t.trim_matches(|c: char| matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’' | '*' | '`'));
-    let t = t.trim_end_matches(|c: char| matches!(c, '.' | '!' | ':' | ';' | ','));
+    let t = t.trim_end_matches(['.', '!', ':', ';', ',']);
     let t = t.trim();
     if t.is_empty() {
         return None;

@@ -52,10 +52,21 @@ async fn start_mock() -> Mock {
         .spawn()
         .expect("the mock should start");
 
-    let base_url = format!("http://127.0.0.1:{port}");
+    // Wrapped before the wait rather than after it. `Child` does not kill on
+    // drop, so the timeout below used to panic while the process it spawned
+    // went on holding the port -- a stray mockllm per failed run, in exactly
+    // the situation where something is already wrong. Owned by `Mock` from
+    // here on, its Drop runs on the panic path too.
+    let mock = Mock {
+        child,
+        base_url: format!("http://127.0.0.1:{port}"),
+    };
     for _ in 0..200 {
-        if reqwest::get(format!("{base_url}/healthz")).await.is_ok() {
-            return Mock { child, base_url };
+        if reqwest::get(format!("{}/healthz", mock.base_url))
+            .await
+            .is_ok()
+        {
+            return mock;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -171,10 +182,10 @@ async fn anthropic_streams_a_tool_call_in_fragments() {
         }
         for call in chunk.choices[0].delta.tool_calls.iter().flatten() {
             if let Some(function) = &call.function {
-                if let Some(n) = &function.name {
-                    if !n.is_empty() {
-                        name = Some(n.clone());
-                    }
+                if let Some(n) = &function.name
+                    && !n.is_empty()
+                {
+                    name = Some(n.clone());
                 }
                 if let Some(args) = &function.arguments {
                     arguments.push_str(args);
