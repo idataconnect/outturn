@@ -1,8 +1,8 @@
 # Working on outturn
 
-outturn is a multiworkspace (multitenant) agent platform: workspaces deploy
-agents that serve their own customers, with isolation, usage attribution and
-security boundaries built in rather than added later. Rust, Axum, Tokio,
+outturn is a multitenant agent platform: workspaces deploy agents that serve
+their own customers, with isolation, usage attribution and security
+boundaries built in rather than added later. Rust, Axum, Tokio,
 PostgreSQL, WASM sandboxing, Kubernetes. Apache-2.0, edition 2024.
 
 ## The tiers

@@ -2,7 +2,7 @@
 
 *You define the process, outturn delivers the result.*
 
-A multiworkspace agent platform.
+A multitenant agent platform.
 
 ## Prerequisites
 
