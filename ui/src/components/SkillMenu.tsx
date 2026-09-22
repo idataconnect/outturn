@@ -1,11 +1,12 @@
-import type { ReactNode } from "react";
+import type { ReactNode } from 'react'
 
 import {
   ComposerPrimitive,
   unstable_useSlashCommandAdapter,
-} from "@assistant-ui/react";
+  type Unstable_DirectiveFormatter,
+} from '@assistant-ui/react'
 
-import type { SkillCommand } from "../lib/useSkillCommands";
+import type { SkillCommand } from '../lib/useSkillCommands'
 
 /**
  * The `/` menu over the composer, listing the skills this agent has.
@@ -32,6 +33,28 @@ import type { SkillCommand } from "../lib/useSkillCommands";
  * breaking change on a deliberate upgrade is a compile error here and
  * nowhere else.
  */
+/**
+ * What picking a skill puts in the message.
+ *
+ * The library's default writes `:command[Randomness]{name=randomness}` --
+ * markdown-directive syntax, meant for a renderer to turn into a visual pill.
+ * Nothing renders it here, so the model received it raw and had to guess: one
+ * agent answered that this was not a command syntax it responded to, and then
+ * invented a fact rather than stopping. That is the failure this avoids.
+ *
+ * Plain words instead, legible to the model, to a person reading the
+ * transcript back, and to anything else that ever reads a message.
+ *
+ * `parse` hands the text back whole rather than recognising what `serialize`
+ * wrote. The round trip exists so a renderer can find directives to draw; a
+ * sentence has none to find, and claiming otherwise would draw a pill around
+ * three ordinary words.
+ */
+const plainWords: Unstable_DirectiveFormatter = {
+  serialize: (item) => `run skill ${item.id}`,
+  parse: (text) => [{ kind: 'text', text }],
+}
+
 export default function SkillMenu({
   commands,
   children,
@@ -58,14 +81,16 @@ export default function SkillMenu({
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Unstable_TriggerPopover
-        char="/"
+        char='/'
         adapter={slash.adapter}
-        className="z-40 w-80 max-h-64 overflow-auto rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-1"
+        className='z-40 w-80 max-h-64 overflow-auto rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-1'
       >
-        {/* The chip is left behind rather than stripped: what somebody picked
-            is part of what they sent, and a menu that erased its own trace
-            would leave a message nobody could read back. */}
+        {/* Left behind rather than stripped: what somebody picked is part of
+            what they sent, and a menu that erased its own trace would leave a
+            message nobody could read back. Written as words, not as a
+            directive -- see `plainWords`. */}
         <ComposerPrimitive.Unstable_TriggerPopover.Action
+          formatter={plainWords}
           onExecute={slash.action.onExecute}
         />
         <ComposerPrimitive.Unstable_TriggerPopoverItems>
@@ -75,7 +100,7 @@ export default function SkillMenu({
                 key={item.id}
                 item={item}
                 index={index}
-                className="w-full text-left px-2 py-1.5 rounded text-sm text-surface-700 dark:text-surface-200 data-[highlighted]:bg-surface-100 dark:data-[highlighted]:bg-surface-700"
+                className='w-full text-left px-2 py-1.5 rounded text-sm text-surface-700 dark:text-surface-200 data-[highlighted]:bg-surface-100 dark:data-[highlighted]:bg-surface-700'
               >
                 <span className="block font-medium truncate">
                   {item.label ?? item.id}

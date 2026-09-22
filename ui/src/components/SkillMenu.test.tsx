@@ -63,6 +63,24 @@ describe('the skill menu', () => {
     expect(screen.queryByText('Onboard a customer')).not.toBeInTheDocument()
   })
 
+  it('writes words a model can read, not directive syntax', async () => {
+    const user = userEvent.setup()
+    render(<Harness skills={onboarding} />)
+
+    await user.click(composer())
+    await user.keyboard('/inv')
+    await user.click(await screen.findByText('Raise an invoice'))
+
+    // The library's default writes `:command[Raise an invoice]{name=invoice}`,
+    // which nothing here renders -- so the model got it raw, said it was not
+    // a syntax it responded to, and then made something up rather than
+    // stopping. Words go to the model, the transcript and anything else that
+    // ever reads a message.
+    const written = (composer() as HTMLTextAreaElement).value
+    expect(written).toContain('run skill invoice')
+    expect(written).not.toContain(':command[')
+  })
+
   it('stays out of the way when the agent has no skills', async () => {
     const user = userEvent.setup()
     render(<Harness skills={[]} />)
