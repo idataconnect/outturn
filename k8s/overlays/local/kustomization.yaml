@@ -146,6 +146,12 @@ patches:
                 name: outturn-provider-keys
                 key: GEMINI_API_KEY
                 optional: true
+          - name: ANTHROPIC_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-provider-keys
+                key: ANTHROPIC_API_KEY
+                optional: true
   - target:
       kind: Deployment
       name: outturn-runtime
