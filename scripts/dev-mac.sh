@@ -3,6 +3,7 @@
 #
 #   scripts/dev-mac.sh            # checks ollama and the model, then skaffold dev -p mac
 #   scripts/dev-mac.sh --small    # qwen3.5 instead, for a Mac with less memory
+#   scripts/dev-mac.sh --tika     # with document extraction
 #   scripts/dev-mac.sh -v info    # anything else is passed to skaffold
 #
 # Expects a cluster already running (Docker Desktop's Kubernetes, kind, or
@@ -19,6 +20,15 @@ if [[ "${1:-}" == "--small" ]]; then
   # A smaller model, for a machine that cannot spare 22GB for the big one.
   profile=mac-small
   overlay=k8s/overlays/local-mac-small/kustomization.yaml
+  shift
+fi
+
+if [[ "${1:-}" == "--tika" ]]; then
+  # Document extraction. A combined overlay rather than a second -p flag,
+  # because skaffold replaces the kustomize paths per profile rather than
+  # merging them -- `-p mac -p tika` would take the tika overlay's base,
+  # which has the Linux Docker bridge address instead of host.docker.internal.
+  profile="${profile}-tika"
   shift
 fi
 
