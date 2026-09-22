@@ -1,8 +1,18 @@
 # outturn
 
-*You define the process, outturn delivers the result.*
+A fast and secure foundation for companies that want to build and run their
+own agent platform.
 
-A multitenant agent platform.
+![outturn](docs/screenshot.png)
+
+Workspaces deploy agents that serve their own customers, with isolation, usage
+attribution and security boundaries built in rather than added later. The
+runtime runs agent code in a WebAssembly sandbox with deny-by-default egress;
+the gateway holds the credentials and never shares them with the sandbox; the
+API holds the signing key and the database. Each tier holds only what it needs
+and nothing more.
+
+Rust, Axum, Tokio, PostgreSQL, WASM, Kubernetes. Apache-2.0.
 
 ## Prerequisites
 
