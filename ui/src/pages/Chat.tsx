@@ -3,6 +3,8 @@ import { NavLink, useNavigate, useParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
 
+import { useSkillCommands } from '../lib/useSkillCommands'
+
 import Thread from '../components/Thread'
 import FilesPanel from '../components/FilesPanel'
 import SidePane, { type PaneTab } from '../components/SidePane'
@@ -206,6 +208,9 @@ export default function Chat() {
   )
 
   const current = sessions.find((s) => s.id === active)
+  // What the composer's `/` menu offers. Keyed on the open session's agent,
+  // so switching sessions switches the menu with it.
+  const skills = useSkillCommands(current?.agent_id ?? null)
   const activeTitle = active ? sessionName(current) : 'Sessions'
 
   async function rename(id: string, title: string) {
@@ -369,6 +374,7 @@ export default function Chat() {
             <Thread
               disabled={!active || !canSend}
               readOnly={!!active && !canSend}
+              skills={skills}
               stopping={stopping}
               focusRequest={focusRequest}
               sessionId={active}
