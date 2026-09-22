@@ -2960,6 +2960,66 @@ async fn seeded_role_templates_are_all_honourable() {
     );
 }
 
+/// The seeded roles are a ladder: each rung holds everything the one below it
+/// does, and more.
+///
+/// Not a matter of taste. A role that is not a superset of the one beneath it
+/// makes "promote this person" a question nobody can answer from the names --
+/// and the way it went wrong is instructive: `viewer` was seeded with
+/// `settings:read` and `operator` was not, so the person who builds agents
+/// could not read the settings those agents inherit while the person who only
+/// looks could. It survived until somebody signed in as an operator and found
+/// a page they had been invited to open and could not read.
+#[tokio::test]
+async fn the_seeded_roles_are_a_ladder() {
+    let h = harness_or_skip!();
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("select template_name, authority from role_template_authorities")
+            .fetch_all(&h.db.pool)
+            .await
+            .expect("template authorities");
+
+    let held = |name: &str| -> std::collections::BTreeSet<String> {
+        rows.iter()
+            .filter(|(template, _)| template == name)
+            .map(|(_, authority)| authority.clone())
+            .collect()
+    };
+
+    let viewer = held("viewer");
+    let operator = held("operator");
+    let admin = held("admin");
+    assert!(!viewer.is_empty(), "no viewer template was seeded");
+
+    let below_not_above = |lower: &std::collections::BTreeSet<String>,
+                           upper: &std::collections::BTreeSet<String>| {
+        lower.difference(upper).cloned().collect::<Vec<_>>()
+    };
+
+    assert!(
+        below_not_above(&viewer, &operator).is_empty(),
+        "viewer holds what operator does not: {:?}",
+        below_not_above(&viewer, &operator)
+    );
+    assert!(
+        below_not_above(&operator, &admin).is_empty(),
+        "operator holds what admin does not: {:?}",
+        below_not_above(&operator, &admin)
+    );
+
+    // And each rung is strictly higher, or two of them are the same role
+    // wearing different names.
+    assert!(
+        operator.len() > viewer.len(),
+        "operator adds nothing to viewer"
+    );
+    assert!(
+        admin.len() > operator.len(),
+        "admin adds nothing to operator"
+    );
+}
+
 /// A skill that reaches somewhere the workspace has not allowed cannot be bound.
 ///
 /// Declaring a host is a statement of what a skill needs, never a grant. The
