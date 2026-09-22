@@ -118,6 +118,19 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
+          # Empty, and here rather than only where something sets it. Hosts
+          # an operator has opened to the gateway, which is the exception to
+          # the private-address refusal -- see docs/egress.md.
+          #
+          # Declared so there is a value to write to. A component cannot set
+          # it: this is one variable, JSON Patch cannot append to a string,
+          # and a container holding the variable twice hands `std::env::var`
+          # the first -- so two components each opening a host would leave one
+          # of them unreachable with nothing said about why. The overlay
+          # carries the whole list, and scripts/dev-mac.sh builds it from the
+          # components asked for.
+          - name: OUTTURN_INTERNAL_HOSTS
+            value: ""
           # ollama speaks the OpenAI chat-completions protocol, so it is
           # reached through the same provider as api.openai.com -- only the
           # base URL differs, and no key is wanted.

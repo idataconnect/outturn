@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Hollowbrook House, running beside outturn rather than sitting at zero
+# replicas.
+#
+# The base deploys it stopped, because a fixture that runs in everybody's
+# cluster is a fixture nobody asked for. This is the whole of turning it on,
+# and it exists so a demonstration is one flag rather than a page of kubectl.
+#
+# What it demonstrates is the thing the platform is for: a workspace whose
+# agents work against its own systems. Hollowbrook has a REST API and serves
+# its own /openapi.json, so a skill can describe it and an agent can book a
+# room -- which is a more honest exercise of the egress path than any fixture
+# that only answers.
+#
+# The host is not opened here. `OUTTURN_INTERNAL_HOSTS` is one variable and
+# JSON Patch cannot append to a string, so the overlay carries the whole list;
+# `internal-host` in this directory is what scripts/dev-mac.sh reads to build
+# it. A workspace still has to allow the host in its own egress rules.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-hollowbrook
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1

@@ -89,6 +89,49 @@ mkdir -p "$generated"
       echo "  - ../../components/$feature"
     done
   fi
+
+  # The hosts those components need the gateway to be allowed to reach, as
+  # one list.
+  #
+  # Written here rather than by each component because OUTTURN_INTERNAL_HOSTS
+  # is a single variable and JSON Patch cannot append to a string: two
+  # components each opening a host would overwrite one another, and the one
+  # that lost would be unreachable with nothing said about why. A container
+  # holding the variable twice is no better -- `std::env::var` takes the
+  # first. So the overlay carries the whole list, and a component only
+  # declares what it needs in a file.
+  #
+  # Only what was asked for. A host is opened because somebody asked for the
+  # component that needs it, which is the operator decision docs/egress.md
+  # says this list is.
+  hosts=""
+  for feature in ${features[@]+"${features[@]}"}; do
+    [[ -f "k8s/components/$feature/internal-host" ]] || continue
+    while read -r entry; do
+      [[ -n "$entry" ]] || continue
+      hosts="${hosts:+$hosts,}$entry"
+    done <"k8s/components/$feature/internal-host"
+  done
+  if [[ -n "$hosts" ]]; then
+    echo
+    echo "patches:"
+    echo "  - target:"
+    echo "      kind: Deployment"
+    echo "      name: outturn-gateway"
+    echo "    patch: |"
+    echo "      apiVersion: apps/v1"
+    echo "      kind: Deployment"
+    echo "      metadata:"
+    echo "        name: outturn-gateway"
+    echo "      spec:"
+    echo "        template:"
+    echo "          spec:"
+    echo "            containers:"
+    echo "              - name: gateway"
+    echo "                env:"
+    echo "                  - name: OUTTURN_INTERNAL_HOSTS"
+    echo "                    value: \"$hosts\""
+  fi
 } >"$generated/kustomization.yaml"
 
 # This clone's keys, if it has none yet. Silent when they already exist, and
