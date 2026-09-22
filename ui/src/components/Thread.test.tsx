@@ -242,3 +242,25 @@ describe('a reader who may not send', () => {
     expect(screen.getByRole('textbox')).toBeDisabled()
   })
 })
+
+describe('copying a reply', () => {
+  const reply = (status: ThreadMessageLike['status']): ThreadMessageLike[] => [
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'the answer' }], status },
+  ]
+
+  it('offers a copy button on a finished reply', () => {
+    render(<Harness messages={reply({ type: 'complete', reason: 'stop' })} />)
+
+    // Selecting by hand takes the age and the working mark with it, so the
+    // text somebody gets is never quite the reply.
+    expect(screen.getByRole('button', { name: 'Copy this reply' })).toBeInTheDocument()
+  })
+
+  it('does not offer it while the reply is still being written', () => {
+    render(<Harness running messages={reply({ type: 'running' })} />)
+
+    // Half a sentence is not what anybody means to copy.
+    expect(screen.queryByRole('button', { name: 'Copy this reply' })).not.toBeInTheDocument()
+  })
+})
