@@ -5,6 +5,8 @@ own agent platform.
 
 ![outturn](docs/screenshot.png)
 
+![dashboard](docs/dashboard.png)
+
 Workspaces deploy agents that serve their own customers, with isolation, usage
 attribution and security boundaries built in rather than added later. The
 runtime runs agent code in a WebAssembly sandbox with deny-by-default egress;
