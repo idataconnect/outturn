@@ -64,7 +64,8 @@ register.
 
 **Commit messages in the imperative, describing the behaviour.** No
 conventional-commits prefixes. `git log` shows the style -- "Let a trigger
-declare its scheme, because Postmark cannot sign", not "fix(triggers): scheme".
+declare its scheme, because not every sender can sign", not
+"fix(triggers): scheme".
 Say what changes and, when it is not obvious, why.
 
 **Respect for the tier boundaries.** api holds the signing key and the

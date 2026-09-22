@@ -23,9 +23,9 @@ create table webhook_triggers (
     -- one is the default.
     --
     -- 'hmac' is preferred: the digest proves the body without the credential
-    -- travelling. 'shared_secret' exists because Postmark and others do not
-    -- sign at all, and a platform that only accepts signatures cannot receive
-    -- email -- see docs/triggers.md.
+    -- travelling. 'shared_secret' exists because some senders do not sign at
+    -- all, and a platform that only accepts signatures cannot receive from
+    -- them -- see docs/triggers.md.
     scheme       text        not null default 'hmac'
                  check (scheme in ('hmac', 'shared_secret')),
 
