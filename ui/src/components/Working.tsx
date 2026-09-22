@@ -47,17 +47,12 @@ export type WorkingPhase = 'held' | 'running' | 'done'
 export default function Working({
   phase = 'running',
   label,
-  leaving = false,
 }: {
   phase?: WorkingPhase
   /** What to call this state for a screen reader and on hover. The phase
    *  says how the mark moves; this says what it means, which is the part
    *  that differs between a queued message and one whose model is slow. */
   label?: string
-  /** This reply is no longer the newest, so the line is on its way out. It
-   *  fades rather than vanishing: a mark that blinked off would draw the eye
-   *  to the wrong place just as a new reply starts arriving below it. */
-  leaving?: boolean
 }) {
   // SMIL is not covered by `prefers-reduced-motion`, so the only way to
   // honour it for the swell is not to draw the animation at all. The colour
@@ -101,7 +96,7 @@ export default function Working({
 
   return (
     <span
-      className={`mt-1 inline-flex items-center${leaving ? ' working-leaving' : ''}`}
+      className="mt-1 inline-flex items-center"
       title={meaning}
       role="status"
       aria-label={meaning}
