@@ -4,16 +4,25 @@ kind: Component
 resources:
   - petstore.yaml
 
-# No configuration travels with it, unlike the tika component -- nothing in
-# outturn is pointed at a sample API, because an agent reaches one the way it
-# reaches any other host: through the gateway, against an egress rule a
+# Nothing in outturn is pointed at a sample API: an agent reaches one the way
+# it reaches any other host, through the gateway and against an egress rule a
 # workspace allowed.
 #
-# Which is the thing to know before using this. `resolve_and_vet` refuses any
-# host resolving to a private address, with no exception a rule can waive (see
-# `vet_addresses` in src/runtime/egress.rs), so `petstore:8080` is unreachable
-# from an agent by design. That guard is not the kind to weaken for a
-# convenience; reaching this from a turn means giving it an address the vetting
-# accepts -- a tunnel with a public name, or a second cluster -- and until then
-# this is for building an OpenAPI consumer against a real spec, which is what it
-# is here for.
+# What travels with it is the operator's half of that. The gateway refuses a
+# host resolving to a private address, which is what stops a workspace aiming
+# it at `outturn-api` -- and `OUTTURN_INTERNAL_HOSTS` is the exception only
+# somebody outside the workspace can add, checked before the refusal. See
+# "An operator allowlist, by name" in docs/egress.md.
+#
+# A workspace still has to allow `petstore` in its own rules. This says the
+# gateway *may* go there, not that anyone may ask it to.
+#
+# The host is not opened here. `OUTTURN_INTERNAL_HOSTS` is one variable, and
+# JSON Patch cannot append to a string -- so a second component opening a host
+# would overwrite the first rather than join it, and whichever lost would be
+# unreachable with nothing said about why. The overlay carries the whole list
+# instead: scripts/dev-mac.sh writes it from the components asked for, and
+# k8s/overlays/local-petstore sets it for a standalone run.
+#
+# What a component may safely bring is its own service and its own
+# configuration, which is what this and the tika component do.
