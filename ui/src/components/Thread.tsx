@@ -2,10 +2,23 @@ import {
   ActionBarPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
+  SelectionToolbarPrimitive,
   ThreadPrimitive,
   useAuiState,
 } from '@assistant-ui/react'
-import { Check, CircleSlash, Copy, FileText, Loader, Merge, RotateCw, Send, Square, X } from 'lucide-react'
+import {
+  Check,
+  CircleSlash,
+  Copy,
+  FileText,
+  Loader,
+  Merge,
+  Quote,
+  RotateCw,
+  Send,
+  Square,
+  X,
+} from 'lucide-react'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
@@ -72,17 +85,23 @@ function heldLabel(status: MessageStatus): string | null {
 function StatusLine({ status, onRetry }: { status: MessageStatus; onRetry?: () => void }) {
   if (status.kind === 'failed') {
     return (
-      <button
-        type="button"
-        onClick={onRetry}
-        disabled={!onRetry}
-        className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:hover:bg-transparent disabled:cursor-default"
-        title={`Failed: ${status.message}`}
-        aria-label={`Failed: ${status.message}. Send it again.`}
-      >
-        <RotateCw size={12} aria-hidden />
-        Try again
-      </button>
+      // Wrapped in an alert rather than left as a button somebody has to
+      // notice: a turn that failed is news, and a reader using a screen
+      // reader was told nothing at all -- the button announced itself only
+      // once they had already found it.
+      <span role="alert" className="contents">
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={!onRetry}
+          className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:hover:bg-transparent disabled:cursor-default"
+          title={`Failed: ${status.message}`}
+          aria-label={`Failed: ${status.message}. Send it again.`}
+        >
+          <RotateCw size={12} aria-hidden />
+          Try again
+        </button>
+      </span>
     )
   }
 
@@ -580,6 +599,35 @@ export default function Thread({
           }}
         />
       </ThreadPrimitive.Viewport>
+
+      {/* Floats at whatever was selected, in whichever reply. The primitive
+          does the detection, keeps the selection from being cleared by its
+          own mousedown, and refuses a selection spanning two messages --
+          which would quote a question and an answer as though the agent had
+          said both. */}
+      <SelectionToolbarPrimitive.Root className="z-50 flex items-center rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-0.5">
+        <SelectionToolbarPrimitive.Quote className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-700">
+          <Quote size={12} aria-hidden />
+          Quote
+        </SelectionToolbarPrimitive.Quote>
+      </SelectionToolbarPrimitive.Root>
+
+      {/* The passage waiting to go with the next message. Shown because a
+          quote taken and then forgotten is a quote somebody sends by
+          accident, and the composer otherwise looks exactly as it did. */}
+      <ComposerPrimitive.Quote>
+        <div className="flex items-start gap-2 px-4 pt-3 text-xs text-surface-600 dark:text-surface-400">
+          <span className="mt-0.5 w-0.5 self-stretch rounded bg-surface-300 dark:bg-surface-600 shrink-0" />
+          <ComposerPrimitive.QuoteText className="flex-1 line-clamp-3 italic" />
+          <ComposerPrimitive.QuoteDismiss
+            aria-label="Drop the quote"
+            title="Drop the quote"
+            className="shrink-0 p-0.5 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800"
+          >
+            <X size={12} aria-hidden />
+          </ComposerPrimitive.QuoteDismiss>
+        </div>
+      </ComposerPrimitive.Quote>
 
       {attached.length > 0 && (
         <div className="flex gap-2 flex-wrap px-4 pt-3 border-t border-surface-200 dark:border-surface-800">

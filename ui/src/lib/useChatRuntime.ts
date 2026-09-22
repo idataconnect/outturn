@@ -57,6 +57,31 @@ type Annotated = Message & {
  * `retrying` is the one thing the transcript cannot tell: a retry reuses the
  * same empty reply, so it is remembered from the event until a delta arrives.
  */
+/**
+ * A message with whatever was quoted into it, as markdown.
+ *
+ * The composer carries a quoted passage in its metadata until send, and this
+ * is where it becomes part of what is actually sent. Written as an ordinary
+ * `>` block rather than as a structure: the model already knows what that
+ * means, the transcript reads back the way it was written, and nothing new
+ * has to be honoured at either end. A richer shape can replace this later
+ * without the quote having gone missing in the meantime.
+ *
+ * Every line is prefixed, not just the first. A multi-paragraph selection
+ * with one `>` on it is a quote for exactly one line and ordinary text
+ * afterwards, which reads as the person having said the rest themselves.
+ */
+export function withQuote(text: string, custom: unknown): string {
+  const quote = (custom as { quote?: { text?: string } } | undefined)?.quote?.text
+  if (!quote?.trim()) return text
+  const block = quote
+    .trim()
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')
+  return `${block}\n\n${text}`
+}
+
 export function annotate(
   messages: Message[],
   retrying: Set<string>,
@@ -572,7 +597,22 @@ export function useChatRuntime(
       // Taken at send rather than as it is pasted, so an image removed before
       // the message goes is an image the model never hears about.
       const references = attachments.current?.() ?? ''
-      const text = references ? `${part.text}\n\n${references}`.trim() : part.text
+      // A passage quoted out of a reply, which the composer carries in its
+      // metadata until send. Written as an ordinary markdown quote rather
+      // than as a structure: the model already knows what `>` means, the
+      // transcript reads back the way it was written, and nothing new has to
+      // be honoured anywhere. A richer shape can replace this later without
+      // the quote having gone missing in the meantime.
+      const quote = (message.metadata?.custom as { quote?: { text: string } } | undefined)?.quote
+      const quoted = quote?.text
+        ? `${quote.text
+            .trim()
+            .split('\n')
+            .map((line) => `> ${line}`)
+            .join('\n')}\n\n`
+        : ''
+      const body = `${quoted}${part.text}`
+      const text = references ? `${body}\n\n${references}`.trim() : body
 
       setError(null)
       setHeld(null)
