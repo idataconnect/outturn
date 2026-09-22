@@ -146,6 +146,30 @@ function AssistantMessage() {
   // nothing streams. `StatusLine`'s `waiting` has ended by then, and without
   // this a half-finished reply is indistinguishable from a finished one.
   const running = useAuiState((s) => s.message.status?.type === 'running')
+  // The newest reply in the transcript, which is the only one that wears the
+  // finished mark. Taken from the transcript rather than from what this tab
+  // watched: a component only knows what it saw, so every reply it watched
+  // finish would keep its line and a refresh would clear them all.
+  const newest = useAuiState((s) => s.message.metadata.custom?.newest === true)
+
+  // Kept a moment longer than it is the newest, so the line can fade rather
+  // than blink off. A newer reply takes the mark the instant it exists, and
+  // removing this one on the same frame draws the eye upward exactly as the
+  // next reply starts arriving below it.
+  const [lingering, setLingering] = useState(false)
+  const wasNewest = useRef(newest)
+  useEffect(() => {
+    if (newest) {
+      wasNewest.current = true
+      setLingering(false)
+      return
+    }
+    if (!wasNewest.current) return
+    wasNewest.current = false
+    setLingering(true)
+    const timer = setTimeout(() => setLingering(false), 500)
+    return () => clearTimeout(timer)
+  }, [newest])
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
   // not this particular message ends up drawn.
@@ -185,7 +209,12 @@ function AssistantMessage() {
         />
       </div>
       <MessageAge phrase={phrase} shown={shown} />
-      {running && <Working />}
+      {/* Kept mounted after the turn ends so the mark can finish: it draws its
+          dots together into a line rather than vanishing, which is what
+          distinguishes a reply that is done from one still being written. */}
+      {(running || newest || lingering) && (
+        <Working done={!running} leaving={lingering} />
+      )}
     </MessagePrimitive.Root>
   )
 }

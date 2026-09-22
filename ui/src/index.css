@@ -52,17 +52,20 @@
   100% {
     fill: var(--color-brand-600);
   }
-  25% {
-    fill: var(--color-accent-500);
-  }
   50% {
-    fill: var(--color-brand-600);
+    fill: var(--color-accent-500);
   }
 }
 
 .working-dot {
   /* Matches the SMIL swell's 1.2s and its 0.4s stagger, so the colour peaks
-     on the same dot that is widest. Set per dot by an inline delay. */
+     on the same dot that is widest. Set per dot by an inline delay.
+     
+     The accent sits at 50% because that is where the swell peaks: `r` runs
+     2;3.4;2 over keyTimes 0;0.5;1. An earlier version put it at 25% and
+     returned to brand by 50%, so the colour crossed each dot a full quarter
+     cycle -- 300ms -- before the dot swelled under it, and the two read as
+     separate effects travelling at the same speed. */
   animation: outturn-working-fill 1.2s linear infinite;
 }
 
@@ -75,10 +78,98 @@
   100% {
     fill: var(--color-brand-400);
   }
-  25% {
+  50% {
     fill: var(--color-accent-400);
   }
-  50% {
+}
+
+/*
+ * What the mark becomes once the turn is over: one stroke in the brand's own
+ * colour, not the accent the swell carries and not a status colour. Green
+ * would say the turn succeeded, which this cannot know -- a reply that ended
+ * badly would wear it too -- so the shape says "finished" and the colour says
+ * nothing at all.
+ */
+.working-line {
+  fill: var(--color-brand-600);
+}
+
+:root.dark .working-line {
+  fill: var(--color-brand-400);
+}
+
+/*
+ * While the dots are drawing together the travelling colour has to stop, or
+ * the accent keeps sweeping a row that is collapsing. Held at the brand end
+ * so the three dots and the line arriving between them are one colour.
+ */
+.working-dot-settling {
+  /* The whole settle in one animation: the shape and the colour on the same
+     clock, so they cannot come apart.
+     
+     CSS rather than SMIL, which is what the swell uses. SMIL freezes its last
+     value on the element, and a second SMIL animation mounted afterwards
+     begins from the element's base attributes rather than from that frozen
+     value -- so the dot jumped to its resting size and the settle ran from
+     there, which read as a snap however the curves were tuned. CSS keyframes
+     on the same attributes have no such handoff: presentation attributes are
+     animatable, and the keyframe simply owns them for its duration. */
+  animation: outturn-working-settle 900ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  fill: var(--color-brand-600);
+  /* Scaled about the dot's own centre, so each grows sideways where it
+     stands: 2.5x of a 4-wide dot is 10, which is the 10 they sit apart, so
+     the three meet exactly. Transform rather than the geometry properties --
+     `x` and `width` as CSS want units and a var() inside an animated
+     geometry property is the least portable corner of SVG there is, which is
+     why the shape was not moving at all. */
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/*
+ * Shrink first, reach second. The dot loses its height over the first half
+ * and only then stretches sideways, so it reads as a dot being drawn out into
+ * a line rather than a dot being swapped for one. `x` and `width` hold their
+ * resting values through that first half, which is what keeps the order.
+ */
+@keyframes outturn-working-settle {
+  0% {
+    transform: scale(1, 1);
+    opacity: 0.6;
+    fill: var(--color-accent-500);
+  }
+  45% {
+    transform: scale(1, 0.45);
+    opacity: 1;
+    fill: #fff;
+  }
+  100% {
+    transform: scale(2.5, 0.45);
+    opacity: 1;
+    fill: var(--color-brand-600);
+  }
+}
+
+:root.dark .working-dot-settling {
+  animation-name: outturn-working-settle-dark;
+  fill: var(--color-brand-400);
+}
+
+
+@keyframes outturn-working-settle-dark {
+  0% {
+    transform: scale(1, 1);
+    opacity: 0.6;
+    fill: var(--color-accent-400);
+  }
+  45% {
+    transform: scale(1, 0.45);
+    opacity: 1;
+    fill: #fff;
+  }
+  100% {
+    transform: scale(2.5, 0.45);
+    opacity: 1;
     fill: var(--color-brand-400);
   }
 }
@@ -97,5 +188,32 @@
 
   :root.dark .working-dot {
     fill: var(--color-brand-400);
+  }
+}
+
+/*
+ * The line on its way out, once a newer reply has taken the mark. Faded
+ * rather than removed: a mark that blinked off pulls the eye to the message
+ * above exactly as the next one starts arriving below it, which is the wrong
+ * place to be looking. Left occupying its space, so nothing reflows either.
+ */
+.working-leaving {
+  animation: outturn-working-leave 500ms ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes outturn-working-leave {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-leaving {
+    animation: none;
+    opacity: 0;
   }
 }

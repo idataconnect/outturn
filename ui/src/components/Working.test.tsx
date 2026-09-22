@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import Working from './Working'
@@ -17,8 +17,10 @@ describe('the working mark', () => {
 
     const { container } = render(<Working />)
 
-    // Two per dot: one for the swell, one for the brightness.
-    expect(container.querySelectorAll('animate')).toHaveLength(6)
+    // Six per dot: a rect swells by moving four sides and its corner radius,
+    // where a circle needed only `r`. The shape is a rect throughout so that
+    // widening it into the line is one animation rather than a swap.
+    expect(container.querySelectorAll('animate')).toHaveLength(18)
   })
 
   it('draws no animation at all for somebody who asked for less motion', () => {
@@ -36,7 +38,7 @@ describe('the working mark', () => {
 
     const { container } = render(<Working />)
 
-    expect(container.querySelectorAll('circle')).toHaveLength(3)
+    expect(container.querySelectorAll('rect')).toHaveLength(3)
   })
 
   it('staggers each dot\'s colour to match its place in the swell', () => {
@@ -44,8 +46,8 @@ describe('the working mark', () => {
 
     const { container } = render(<Working />)
 
-    const delays = Array.from(container.querySelectorAll('circle')).map(
-      (dot) => (dot as SVGCircleElement).style.animationDelay,
+    const delays = Array.from(container.querySelectorAll('rect')).map(
+      (dot) => dot.style.animationDelay,
     )
     // The same 0.4s stagger the swell uses, so the dot wearing the accent is
     // the dot that is widest rather than one trailing behind it.
@@ -57,7 +59,7 @@ describe('the working mark', () => {
 
     const { container } = render(<Working />)
 
-    for (const dot of container.querySelectorAll('circle')) {
+    for (const dot of container.querySelectorAll('rect')) {
       // A fill resolved in the component would stop following a theme that
       // replaced the token.
       expect(dot.getAttribute('fill')).toBeNull()
@@ -71,5 +73,79 @@ describe('the working mark', () => {
     const { getByRole } = render(<Working />)
 
     expect(getByRole('status', { name: 'Working' })).toBeInTheDocument()
+  })
+})
+
+describe('the mark when the turn ends', () => {
+  it('draws its dots together into a line', async () => {
+    prefersReducedMotion(false)
+
+    const { container, rerender } = render(<Working />)
+    expect(container.querySelectorAll('rect')[0].className.baseVal).not.toContain(
+      'settling',
+    )
+
+    rerender(<Working done />)
+
+    // The same three shapes, handed to a CSS animation that owns their
+    // geometry for its duration. Not SMIL, which is what the swell uses: a
+    // second SMIL animation begins from the element's base attributes rather
+    // than from the value the first one froze, so the dot snapped back to its
+    // resting size before moving however the curves were tuned.
+    const shapes = container.querySelectorAll('rect')
+    expect(shapes).toHaveLength(3)
+    for (const shape of shapes) {
+      expect(shape.className.baseVal).toContain('working-dot-settling')
+    }
+    // The swell's SMIL is gone, so nothing is left fighting the keyframes.
+    expect(container.querySelectorAll('animate')).toHaveLength(0)
+  })
+
+  it('is left holding a line rather than disappearing', async () => {
+    // A mark that vanished would leave a finished reply looking like one
+    // still being written, which is the distinction it exists to draw.
+    prefersReducedMotion(false)
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<Working />)
+      rerender(<Working done />)
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      // Three shapes still there, still wearing the animation that ends on
+      // the line and holds it -- `forwards`, so what it computed last is what
+      // stays. The attributes keep their resting values; the keyframe owns
+      // them.
+      const shapes = container.querySelectorAll('rect')
+      expect(shapes).toHaveLength(3)
+      for (const shape of shapes) {
+        expect(shape.className.baseVal).toContain('working-dot-settling')
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says which state it is in, for somebody who cannot see it', () => {
+    prefersReducedMotion(false)
+    const { getByRole, rerender } = render(<Working />)
+    expect(getByRole('status')).toHaveAttribute('aria-label', 'Working')
+
+    rerender(<Working done />)
+    expect(getByRole('status')).toHaveAttribute('aria-label', 'Finished')
+  })
+
+  it('goes straight to the line when less motion was asked for', () => {
+    // No travel to watch, so there is nothing to animate into: the line is
+    // simply what is there once the turn is over.
+    prefersReducedMotion(true)
+
+    const { container, rerender } = render(<Working />)
+    rerender(<Working done />)
+
+    expect(container.querySelectorAll('animate')).toHaveLength(0)
+    expect(container.querySelectorAll('rect')[0].className.baseVal).toContain(
+      'working-dot-settling',
+    )
   })
 })

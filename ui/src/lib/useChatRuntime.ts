@@ -46,6 +46,9 @@ type Annotated = Message & {
   /** On a reply: its turn is still running, so a call without a result is
    *  one still being run, not one whose turn died before it answered. */
   live?: boolean
+  /** The newest assistant reply in the transcript: the only one that wears
+   *  the finished mark, and the reason it is still there after a refresh. */
+  newest?: boolean
 }
 
 /**
@@ -85,8 +88,17 @@ export function annotate(
   // saying "queued" to someone who just typed mid-reply reads as a fault.
   const replyInProgress = inProgress.size > 0
 
+  // The last assistant message, by the order the transcript is already in --
+  // ids are UUIDv7, so the newest is simply the last one. Derived here rather
+  // than remembered by a component: a component only knows what it watched,
+  // so every reply it ever saw finish would keep its mark, and a refresh
+  // would clear the lot.
+  const newest = [...messages].reverse().find((m) => m.role === 'assistant')?.id
+
   return messages.map((m) => {
-    if (m.role === 'assistant') return { ...m, live: inProgress.has(m.id) }
+    if (m.role === 'assistant') {
+      return { ...m, live: inProgress.has(m.id), newest: m.id === newest }
+    }
     if (m.role !== 'user') return m
 
     if (m.absorbed_by) {
@@ -155,6 +167,10 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // here so the thread can draw it as the boundary it is: everything above
       // it is what the agent now remembers of what came before.
       summary: message.metadata.summary_through != null,
+      // Only the newest reply wears the finished mark. Every other one is
+      // just conversation, and a line under each would be noise by the
+      // twentieth turn.
+      newest: message.newest === true,
     },
   },
   content: parts(message),

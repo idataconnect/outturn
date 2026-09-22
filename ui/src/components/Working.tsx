@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+
 import { useReducedMotion } from '../lib/useReducedMotion'
 
 /**
@@ -17,52 +19,146 @@ import { useReducedMotion } from '../lib/useReducedMotion'
  * theme reserves for the mark, so the colour travels with the swell rather
  * than the whole row changing hue at once.
  */
-export default function Working() {
+/** How long the dots take to draw out into the line.
+ *
+ * Slow enough to watch. The first version ran in 420ms with a sharp ease, and
+ * most of that was spent already arrived -- what read as a bang rather than a
+ * movement. */
+const SETTLE_MS = 900
+
+export default function Working({
+  done = false,
+  leaving = false,
+}: {
+  done?: boolean
+  /** This reply is no longer the newest, so the line is on its way out. It
+   *  fades rather than vanishing: a mark that blinked off would draw the eye
+   *  to the wrong place just as a new reply starts arriving below it. */
+  leaving?: boolean
+}) {
   // SMIL is not covered by `prefers-reduced-motion`, so the only way to
   // honour it for the swell is not to draw the animation at all. The colour
   // is CSS on each dot and stops itself -- see index.css.
   const reduced = useReducedMotion()
 
+  // The settle runs once, on the turn ending, and then the mark holds as a
+  // line. Kept here rather than driven by the parent because the parent knows
+  // only whether a turn is running: a mark that vanished the moment it
+  // stopped would have nothing to finish with, which is why this component
+  // owns its own ending.
+  const [settled, setSettled] = useState(done)
+  const wasDone = useRef(done)
+  useEffect(() => {
+    if (!done || wasDone.current) return
+    wasDone.current = true
+    if (reduced) {
+      // No travel for somebody who asked for none: the line is simply what
+      // is there once the turn ends.
+      setSettled(true)
+      return
+    }
+    // A little past the animation rather than exactly on it: when `settled`
+    // flips, the SMIL elements unmount and the attributes below take over.
+    // Landing that on the same frame the animation ends risks reading the
+    // frozen value a frame early, which snaps.
+    const timer = setTimeout(() => setSettled(true), SETTLE_MS + 60)
+    return () => clearTimeout(timer)
+  }, [done, reduced])
+
+  const settling = done && !settled && !reduced
+
   return (
     <span
-      className="mt-1 inline-flex items-center"
-      title="Working"
+      className={`mt-1 inline-flex items-center${leaving ? ' working-leaving' : ''}`}
+      title={done ? 'Finished' : 'Working'}
       role="status"
-      aria-label="Working"
+      aria-label={done ? 'Finished' : 'Working'}
     >
       <svg width={26} height={10} viewBox="0 0 26 10" aria-hidden focusable="false">
-        {/* One keyframe set, three dots, staggered by delay: the swell passes
-            along the row rather than all three breathing together, which is
-            what makes it read as travelling. Written as SMIL rather than CSS
-            because it rides with the element -- no keyframes to declare in a
-            stylesheet that has none of its own, and nothing left behind if
-            this component goes away. */}
+        {/* The turn is over, and the mark says so by becoming a line: each dot
+            stretches sideways from where it stands until the three meet. A
+            shape rather than a colour, because a colour would have to mean
+            something -- green would claim the turn succeeded, which this
+            cannot know, and a reply that ended badly would wear it too.
+
+            Held rather than faded. A mark that disappeared would leave a
+            finished reply looking like one still being written, which is the
+            distinction this draws. */}
         {[3, 13, 23].map((x, i) => (
-          // Held at the swell's midpoint when movement is unwanted: three
-          // steady dots in the reply's colour still say something is coming,
-          // which is the whole job. Drawn at full strength rather than the
-          // resting 0.35, since nothing is going to brighten them.
-          //
-          // `fill` is left to the stylesheet rather than set here: the colour
-          // is a theme token, and a value resolved in the component would
-          // stop following a theme that replaced it.
-          <circle
+          // Drawn as a rounded rect rather than a circle so there is one
+          // shape throughout: a dot is this at its narrowest, and widening it
+          // is the whole animation. Swapping a circle for a rect halfway
+          // would be two shapes pretending to be one.
+          <rect
             key={x}
-            className="working-dot"
-            // The same stagger the swell uses, so the dot wearing the accent
-            // is the dot that is widest rather than one trailing behind it.
-            style={{ animationDelay: `${i * 0.4}s` }}
-            cx={x}
-            cy={5}
-            r={reduced ? 2.6 : 2}
+            className={
+              settling || settled ? 'working-dot working-dot-settling' : 'working-dot'
+            }
+            // The geometry the settle animates *to* is declared here as CSS
+            // custom properties rather than as attributes, because the
+            // animation has to interpolate the attributes themselves and a
+            // keyframe cannot read a per-dot value any other way.
+            style={{
+              animationDelay: settling || settled ? '0s' : `${i * 0.4}s`,
+              ['--dot-x' as string]: `${x - (reduced ? 2.6 : 2)}`,
+              ['--line-x' as string]: `${x - 5}`,
+            }}
+            x={x - (reduced ? 2.6 : 2)}
+            y={5 - (reduced ? 2.6 : 2)}
+            width={(reduced ? 2.6 : 2) * 2}
+            height={(reduced ? 2.6 : 2) * 2}
+            rx={reduced ? 2.6 : 2}
             opacity={reduced ? 0.9 : 0.6}
           >
-            {/* `begin` staggers by a third of the cycle each, so the swell
-                arrives at each dot in turn and the row never goes fully dark. */}
-            {!reduced && (
+            {/* One keyframe set, three dots, staggered by delay: the swell
+                passes along the row rather than all three breathing together,
+                which is what makes it read as travelling. */}
+            {!reduced && !settling && !settled && (
               <>
                 <animate
-                  attributeName="r"
+                  attributeName="width"
+                  values="4;6.8;4"
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+                <animate
+                  attributeName="height"
+                  values="4;6.8;4"
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+                {/* x and y follow so the dot swells about its centre rather
+                    than growing down and to the right. */}
+                <animate
+                  attributeName="x"
+                  values={`${x - 2};${x - 3.4};${x - 2}`}
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+                <animate
+                  attributeName="y"
+                  values="3;1.6;3"
+                  dur="1.2s"
+                  begin={`${i * 0.4}s`}
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
+                  keyTimes="0;0.5;1"
+                />
+                <animate
+                  attributeName="rx"
                   values="2;3.4;2"
                   dur="1.2s"
                   begin={`${i * 0.4}s`}
@@ -71,10 +167,6 @@ export default function Working() {
                   keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
                   keyTimes="0;0.5;1"
                 />
-                {/* A shallower fade than the colour version needed. There,
-                    opacity was the only thing saying which dot was active;
-                    here the accent says it, and dropping the resting two to
-                    0.35 only leaves their teal looking muddy. */}
                 <animate
                   attributeName="opacity"
                   values="0.6;1;0.6"
@@ -87,7 +179,7 @@ export default function Working() {
                 />
               </>
             )}
-          </circle>
+          </rect>
         ))}
       </svg>
     </span>
