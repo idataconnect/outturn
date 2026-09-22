@@ -464,7 +464,17 @@ async fn chat_completions(
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");
                 state.observe(provider, caller, Err(&e)).await;
+                // A client error is the request being wrong rather than the
+                // endpoint being unwell, so the next route refuses it the same
+                // way -- walking the list spends attempts to reach the same
+                // answer and buries the one message that explains it. 408 and
+                // 429 are excluded from that reading, so a provider asking to
+                // be retried still is.
+                let fatal = e.is_client_error();
                 last_error = Some(e);
+                if fatal {
+                    break;
+                }
                 continue;
             }
         }
@@ -520,6 +530,8 @@ async fn chat_completions_stream(
     let pending = state
         .take_pending(claims.workspace_id, claims.subject, reply_id(&headers))
         .await;
+
+    let mut last_error = None;
 
     for attempt in state.attempts(claims.workspace_id, &traffic).await {
         let provider = &attempt.provider;
@@ -675,12 +687,27 @@ async fn chat_completions_stream(
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "stream failed");
                 state.observe(provider, caller, Err(&e)).await;
+                let fatal = e.is_client_error();
+                last_error = Some(e);
+                if fatal {
+                    break;
+                }
                 continue;
             }
         }
     }
 
-    Err((StatusCode::BAD_GATEWAY, "no provider could stream".into()))
+    // Says which failure ended it rather than only that one did. "no provider
+    // could stream" is true of a misconfigured route, an outage and a
+    // malformed request alike, and an operator reading it learns none of them
+    // -- the reason was in the gateway's log and nowhere a caller could see.
+    Err((
+        StatusCode::BAD_GATEWAY,
+        match last_error {
+            Some(e) => format!("no provider could stream: {e}"),
+            None => "no provider could stream".into(),
+        },
+    ))
 }
 
 pub fn routes(state: Arc<GatewayState>) -> Router {

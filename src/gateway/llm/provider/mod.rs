@@ -83,8 +83,70 @@ pub trait LlmProvider: Send + Sync {
 pub enum ProviderError {
     Unavailable,
     RateLimited,
-    Upstream(String),
+    /// The endpoint answered and the answer was a failure, or the transport
+    /// failed before there was an answer at all.
+    ///
+    /// `status` is what it answered with, and `None` is the transport case --
+    /// a connection refused, a stream cut mid-body, a timeout. The two are
+    /// genuinely different and were once told apart by parsing the status back
+    /// out of `detail`, which was formatted as `"{status}: {body}"`. That
+    /// worked and was still wrong: the status was known at the point the error
+    /// was built and thrown away, so every consumer that needed it had to
+    /// reconstruct it from prose, and a provider whose message merely began
+    /// with digits would have been read as a status.
+    Upstream {
+        status: Option<u16>,
+        detail: String,
+    },
     Translation(String),
+}
+
+impl ProviderError {
+    /// An upstream failure the request itself caused.
+    ///
+    /// Sending it again changes nothing, and sending it to a *different*
+    /// provider changes nothing either -- which is what makes this worth
+    /// distinguishing from a 5xx. 408 and 429 are excluded because they are
+    /// the endpoint asking to be retried rather than refusing the request.
+    ///
+    /// A transport error is not one of these: nothing was answered, so nothing
+    /// says the request was at fault.
+    pub fn is_client_error(&self) -> bool {
+        match self {
+            Self::Upstream {
+                status: Some(status),
+                ..
+            } => (400..500).contains(status) && *status != 408 && *status != 429,
+            _ => false,
+        }
+    }
+
+    /// Builds the error for a response that failed, reading the status from
+    /// the response rather than back out of the text.
+    ///
+    /// 429 becomes `RateLimited` here rather than at each call site: the
+    /// status is already in hand, and three providers each testing for it
+    /// separately is three places to edit when the retryable set changes --
+    /// which `is_client_error` already treats as more than one status.
+    pub async fn from_response(response: reqwest::Response) -> Self {
+        let status = response.status();
+        if status.as_u16() == 429 {
+            return Self::RateLimited;
+        }
+        let detail = response.text().await.unwrap_or_default();
+        Self::Upstream {
+            status: Some(status.as_u16()),
+            detail: format!("{status}: {detail}"),
+        }
+    }
+
+    /// Builds the transport case, where there is no status to read.
+    pub fn transport(e: impl std::fmt::Display) -> Self {
+        Self::Upstream {
+            status: None,
+            detail: e.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderError {
@@ -92,7 +154,7 @@ impl std::fmt::Display for ProviderError {
         match self {
             Self::Unavailable => write!(f, "provider unavailable"),
             Self::RateLimited => write!(f, "rate limited"),
-            Self::Upstream(e) => write!(f, "upstream error: {e}"),
+            Self::Upstream { detail, .. } => write!(f, "upstream error: {detail}"),
             Self::Translation(e) => write!(f, "translation error: {e}"),
         }
     }
@@ -161,7 +223,7 @@ where
                         Ok(text) => buffer.push_str(text),
                         Err(e) => {
                             return Some((
-                                Err(ProviderError::Upstream(e.to_string())),
+                                Err(ProviderError::transport(&e)),
                                 (stream, buffer, true),
                             ));
                         }

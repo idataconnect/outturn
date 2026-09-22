@@ -45,12 +45,7 @@ impl GeminiProvider {
     }
 
     async fn fail(response: reqwest::Response) -> ProviderError {
-        let status = response.status();
-        if status.as_u16() == 429 {
-            return ProviderError::RateLimited;
-        }
-        let body = response.text().await.unwrap_or_default();
-        ProviderError::Upstream(format!("{status}: {body}"))
+        ProviderError::from_response(response).await
     }
 }
 
@@ -75,7 +70,7 @@ impl LlmProvider for GeminiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -84,7 +79,7 @@ impl LlmProvider for GeminiProvider {
         let value: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         translate::gemini_to_openai(&value).map_err(|e| ProviderError::Translation(e.to_string()))
     }
@@ -110,7 +105,7 @@ impl LlmProvider for GeminiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -118,7 +113,7 @@ impl LlmProvider for GeminiProvider {
 
         let bytes = response
             .bytes_stream()
-            .map_err(|e| ProviderError::Upstream(e.to_string()));
+            .map_err(|e| ProviderError::transport(&e));
 
         let mut state = GeminiStream::new(model);
         Ok(Box::pin(super::sse_payloads(bytes).filter_map(
