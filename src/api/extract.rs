@@ -49,10 +49,10 @@ pub fn failed_key(object_key: &str) -> String {
 /// readable by anyone who names it. Absence is not an error here.
 pub async fn invalidate(storage: &dyn crate::runtime::storage::StorageBackend, key: &str) {
     for stale in [text_key(key), failed_key(key)] {
-        if let Err(e) = storage.delete(&stale).await {
-            if !matches!(e, crate::runtime::storage::StorageError::NotFound) {
-                tracing::warn!(key = %stale, error = %e, "could not remove stale extraction");
-            }
+        if let Err(e) = storage.delete(&stale).await
+            && !matches!(e, crate::runtime::storage::StorageError::NotFound)
+        {
+            tracing::warn!(key = %stale, error = %e, "could not remove stale extraction");
         }
     }
 }
@@ -223,15 +223,14 @@ pub fn spawn(
                                 // the text would have gone, so a reader is
                                 // told "never" rather than "not yet".
                                 tracing::warn!(job_id = %job.id, error = %e, "extraction failed");
-                                if job.attempts >= job.max_attempts {
-                                    if let Ok(payload) =
+                                if job.attempts >= job.max_attempts
+                                    && let Ok(payload) =
                                         serde_json::from_value::<ExtractPayload>(job.payload.clone())
                                     {
                                         let _ = storage
                                             .write(&failed_key(&payload.key), 0, e.as_bytes())
                                             .await;
                                     }
-                                }
                                 jobs::fail(
                                     &pool,
                                     job.id,

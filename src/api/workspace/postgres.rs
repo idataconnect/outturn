@@ -17,10 +17,10 @@ impl PostgresWorkspaceStore {
 /// Postgres reports a unique-constraint breach as SQLSTATE 23505; the slug is
 /// the only unique column on this table.
 fn map_sqlx_error(e: sqlx::Error, slug: &str) -> WorkspaceError {
-    if let sqlx::Error::Database(ref db) = e {
-        if db.code().as_deref() == Some("23505") {
-            return WorkspaceError::DuplicateSlug(slug.to_string());
-        }
+    if let sqlx::Error::Database(ref db) = e
+        && db.code().as_deref() == Some("23505")
+    {
+        return WorkspaceError::DuplicateSlug(slug.to_string());
     }
     WorkspaceError::Internal(e.to_string())
 }
