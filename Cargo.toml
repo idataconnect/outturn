@@ -139,3 +139,25 @@ required-features = ["slow-tests"]
 [[test]]
 name = "provider_live"
 required-features = ["live-providers"]
+
+# Two clippy lints turned off for the whole crate rather than with attributes
+# scattered over six sites, because in both cases the decision is one decision
+# and it is easier to argue with in one place.
+[lints.clippy]
+# Fires on constructors and store traits that take a handle per dependency:
+# `Router::new` takes seventeen, and `ChatStore::append_message` eight. The
+# suggested remedy is to bundle them into a struct, which moves the arguments
+# somewhere else and adds a type whose only purpose is to have fields. These
+# are injection sites, written to be explicit about what a thing depends on --
+# a long list there is the design working, not a smell. Kept as a lint for
+# ordinary functions would mean silencing it six times and growing; a function
+# that genuinely takes too many arguments is something review can catch.
+too_many_arguments = "allow"
+
+# Both sites are the Merkle tree's level-building loop in src/egress/commit.rs,
+# where `chunks_exact(2)` pairs the leaves and `remainder()` is the odd one
+# carried up a level -- the case the domain separation exists for. `as_chunks`
+# is equivalent, but it returns a tuple whose `.0` and `.1` say nothing, and
+# this is commitment code where a reader should be able to see the odd leaf
+# being handled. Clarity wins over the idiom here.
+chunks_exact_to_as_chunks = "allow"
