@@ -17,6 +17,8 @@ import MessageAge from './MessageAge'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
 import Working from './Working'
+import SkillMenu from './SkillMenu'
+import type { SkillCommand } from '../lib/useSkillCommands'
 import { deleteFile, uploadFile, uploadPastedImage } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
@@ -308,6 +310,7 @@ export default function Thread({
   sessionId,
   onStoredChange,
   takeAttachments,
+  skills = [],
 }: {
   disabled?: boolean
   /** There is a session, but this reader may not say anything in it. Told
@@ -329,6 +332,10 @@ export default function Thread({
    *  composer has attached. Held by the page because the runtime is created
    *  there, while the attachments live here with the composer that made them. */
   takeAttachments?: React.MutableRefObject<(() => string) | null>
+  /** What the `/` menu offers: the skills this session's agent is bound to.
+   *  Passed in rather than fetched here, because which agent it is belongs to
+   *  the page that knows which session is open. */
+  skills?: SkillCommand[]
 }) {
   // `autoFocus` only speaks for the first mount, and the thread outlives
   // every change of session -- so a session chosen from the sidebar left
@@ -617,6 +624,11 @@ export default function Thread({
         </div>
       )}
 
+      {/* Wraps the composer rather than sitting inside it: the root is a
+          provider that watches what is typed, so the input has to be within
+          it. Draws nothing until a `/` is typed, and nothing at all when the
+          agent has no skills. */}
+      <SkillMenu commands={skills}>
       <ComposerPrimitive.Root
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -689,6 +701,7 @@ export default function Thread({
           </ComposerPrimitive.Cancel>
         )}
       </ComposerPrimitive.Root>
+      </SkillMenu>
     </ThreadPrimitive.Root>
   )
 }
