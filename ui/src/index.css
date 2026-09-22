@@ -175,18 +175,85 @@
 }
 
 /*
+ * A turn that is held: asked for, and nothing back yet. The three dots
+ * breathe together rather than passing a swell along the row, which is the
+ * whole distinction the mark rests on -- in unison reads as one object
+ * waiting, travelling reads as something advancing. A reader can tell the two
+ * apart across the room without having to know which is which.
+ *
+ * Slower than the swell (1.8s against 1.2s) and shallower, because nothing is
+ * happening and the movement should not claim otherwise. Dimmer at its low
+ * point than the running mark ever goes, so a held turn is quieter than a
+ * running one even at a glance.
+ *
+ * Scale rather than the geometry properties, for the reason the settle gives:
+ * `width` and `x` as CSS want units, and a var() inside an animated geometry
+ * property is the least portable corner of SVG there is.
+ */
+.working-dot-held {
+  animation:
+    outturn-working-held 1.8s ease-in-out infinite,
+    outturn-working-held-fill 1.8s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes outturn-working-held {
+  0%,
+  100% {
+    transform: scale(0.82);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.85;
+  }
+}
+
+/* One colour across all three, unlike the running mark where the accent
+   travels. There is nowhere for it to travel to: nothing is moving along the
+   row, so an accent picking out one dot would invent a position that means
+   nothing. */
+@keyframes outturn-working-held-fill {
+  0%,
+  100% {
+    fill: var(--color-brand-600);
+  }
+  50% {
+    fill: var(--color-accent-500);
+  }
+}
+
+:root.dark .working-dot-held {
+  animation-name: outturn-working-held, outturn-working-held-fill-dark;
+}
+
+@keyframes outturn-working-held-fill-dark {
+  0%,
+  100% {
+    fill: var(--color-brand-400);
+  }
+  50% {
+    fill: var(--color-accent-400);
+  }
+}
+
+/*
  * Someone who asked for less motion gets the mark holding still: three dots
  * in the resting colour, saying a reply is coming without any travel. The
  * swell is not rendered at all -- SMIL does not honour this query, so the
  * component leaves it out; see Working.tsx.
  */
 @media (prefers-reduced-motion: reduce) {
-  .working-dot {
+  .working-dot,
+  .working-dot-held {
     animation: none;
     fill: var(--color-brand-600);
+    transform: none;
   }
 
-  :root.dark .working-dot {
+  :root.dark .working-dot,
+  :root.dark .working-dot-held {
     fill: var(--color-brand-400);
   }
 }
