@@ -258,29 +258,3 @@
   }
 }
 
-/*
- * The line on its way out, once a newer reply has taken the mark. Faded
- * rather than removed: a mark that blinked off pulls the eye to the message
- * above exactly as the next one starts arriving below it, which is the wrong
- * place to be looking. Left occupying its space, so nothing reflows either.
- */
-.working-leaving {
-  animation: outturn-working-leave 500ms ease-out forwards;
-  pointer-events: none;
-}
-
-@keyframes outturn-working-leave {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .working-leaving {
-    animation: none;
-    opacity: 0;
-  }
-}

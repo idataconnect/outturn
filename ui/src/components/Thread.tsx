@@ -202,24 +202,6 @@ function AssistantMessage() {
   // finish would keep its line and a refresh would clear them all.
   const newest = useAuiState((s) => s.message.metadata.custom?.newest === true)
 
-  // Kept a moment longer than it is the newest, so the line can fade rather
-  // than blink off. A newer reply takes the mark the instant it exists, and
-  // removing this one on the same frame draws the eye upward exactly as the
-  // next reply starts arriving below it.
-  const [lingering, setLingering] = useState(false)
-  const wasNewest = useRef(newest)
-  useEffect(() => {
-    if (newest) {
-      wasNewest.current = true
-      setLingering(false)
-      return
-    }
-    if (!wasNewest.current) return
-    wasNewest.current = false
-    setLingering(true)
-    const timer = setTimeout(() => setLingering(false), 500)
-    return () => clearTimeout(timer)
-  }, [newest])
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
   // not this particular message ends up drawn.
@@ -261,10 +243,11 @@ function AssistantMessage() {
       <MessageAge phrase={phrase} shown={shown} />
       {/* Kept mounted after the turn ends so the mark can finish: it draws its
           dots together into a line rather than vanishing, which is what
-          distinguishes a reply that is done from one still being written. */}
-      {(running || newest || lingering) && (
-        <Working phase={running ? 'running' : 'done'} leaving={lingering} />
-      )}
+          distinguishes a reply that is done from one still being written.
+          Dropped outright when a newer reply takes the mark -- there is
+          always one further down the thread now, so a copy fading out up here
+          is a second mark rather than a softer ending. */}
+      {(running || newest) && <Working phase={running ? 'running' : 'done'} />}
     </MessagePrimitive.Root>
   )
 }
