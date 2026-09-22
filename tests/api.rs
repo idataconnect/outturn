@@ -4892,6 +4892,12 @@ async fn firing_a_schedule_produces_a_turn_nobody_sent() {
 // ---------------------------------------------------------------------------
 
 /// Signs a body the way a sender does, for tests that should be accepted.
+/// The window a signature is accepted in, read from the code that enforces it
+/// rather than written again here: these tests position signatures relative to
+/// its edges, and a copy would keep passing while testing a window production
+/// no longer uses.
+const TOLERANCE: i64 = outturn::api::webhook::TIMESTAMP_TOLERANCE_SECS;
+
 fn sign(secret: &str, body: &str, at: i64) -> (String, String) {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -5512,6 +5518,558 @@ async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() 
         status,
         StatusCode::FORBIDDEN,
         "a scoped-away agent was given a public endpoint: {body}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_delivery_is_accepted_once_and_refused_after() {
+    // A signature stays valid until its timestamp ages out, so without this
+    // the same captured request works repeatedly for the whole window -- each
+    // acceptance a new session and a new turn against an agent that may act on
+    // the world.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("replay@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"replay-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(r#"{{"agent_id":"{agent_id}","name":"Once","prompt":"got {{{{body}}}}"}}"#),
+    )
+    .await;
+
+    let payload = r#"{"event":"booking.created","id":"bk_once"}"#;
+    let (sig, ts) = sign(&secret, payload, chrono::Utc::now().timestamp());
+    let headers = [
+        ("x-outturn-signature", sig.as_str()),
+        ("x-outturn-timestamp", ts.as_str()),
+    ];
+
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::ACCEPTED,
+        "the first delivery was not accepted"
+    );
+
+    // Byte for byte the same request. It holds the credential, so it is told
+    // plainly what happened rather than hidden behind a 404.
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::CONFLICT,
+        "the same delivery was accepted twice"
+    );
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::CONFLICT
+    );
+
+    // Exactly one session, so the replays produced no work.
+    let sessions: i64 = sqlx::query_scalar(
+        "select count(*) from agent_sessions where webhook_trigger_id is not null",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(sessions, 1, "a replay started a turn");
+
+    // A genuinely different event, signed at the same instant, is not a
+    // replay -- the signature binds the body, so this must still get through.
+    let other = r#"{"event":"booking.created","id":"bk_two"}"#;
+    let (sig2, ts2) = sign(&secret, other, chrono::Utc::now().timestamp());
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            other,
+            &[
+                ("x-outturn-signature", sig2.as_str()),
+                ("x-outturn-timestamp", ts2.as_str())
+            ],
+        )
+        .await,
+        StatusCode::ACCEPTED,
+        "a different delivery was mistaken for a replay"
+    );
+
+    // And a replay does not move the ceiling's counter, which means one thing.
+    let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
+    let rows: Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        rows[0]["refused"], 0,
+        "a replay was counted against the hourly ceiling: {listed}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forgotten_delivery_can_be_sent_again() {
+    // Deliveries are remembered only while their signature would still be
+    // accepted. Past that the row protects nothing, and the sweep removes it
+    // -- so the table stays the size of a few minutes of traffic rather than
+    // growing for ever.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sweep@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"sweep-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(r#"{{"agent_id":"{agent_id}","name":"Sweepable","prompt":"got {{{{body}}}}"}}"#),
+    )
+    .await;
+
+    // Signed near the old edge of the tolerance: still inside it, so it is
+    // accepted, but its record expires within the window rather than at some
+    // point the test would have to wait for.
+    let payload = r#"{"event":"sweep"}"#;
+    let behind = chrono::Utc::now().timestamp() - (TOLERANCE - 20);
+    let (sig, ts) = sign(&secret, payload, behind);
+    let headers = [
+        ("x-outturn-signature", sig.as_str()),
+        ("x-outturn-timestamp", ts.as_str()),
+    ];
+
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::CONFLICT
+    );
+
+    // The record is anchored to the signature, so waiting for one to lapse is
+    // waiting for both. Moving the clock forward stands in for that wait --
+    // and it moves the *record*, which is what the sweep reads, exactly as far
+    // as the signature has already aged past its own edge.
+    //
+    // Deliberately not `expires_at = now() - interval` out of nowhere: that
+    // would sweep a record whose signature was still good, which is a state
+    // this code cannot produce and a test asserting on it would be asserting
+    // on fiction.
+    sqlx::query("update webhook_deliveries set expires_at = to_timestamp($1)")
+        .bind((behind - 600 + TOLERANCE) as f64)
+        .execute(&h.db.pool)
+        .await
+        .expect("age");
+    let gone = outturn::api::webhook::postgres::forget_expired(&h.db.pool)
+        .await
+        .expect("sweep");
+    assert_eq!(gone, 1, "the sweep forgot nothing");
+
+    // Nothing is let through by the sweep. The record is gone, so the replay
+    // check no longer refuses it -- but the signature it carries is the thing
+    // the record was anchored to, and in production the two lapse together.
+    // Here the signature is still inside its window, so this asserts the
+    // narrower fact the sweep is responsible for: the row went, and the table
+    // does not grow without bound.
+    let remembered: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(remembered, 0, "the sweep left the record behind");
+
+    // The name's own claim, asserted rather than implied: once the record is
+    // gone the replay check no longer refuses these bytes. Without this the
+    // test passes against a `remember` that refuses everything after the
+    // first insert, since every other assertion here is about the sweep's SQL.
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::ACCEPTED,
+        "a forgotten delivery was still refused as a replay"
+    );
+
+    // And a signature genuinely past its window is refused whether or not a
+    // record survives -- the timestamp check is what bounds replay once the
+    // table has forgotten, and it is checked before the digest.
+    let stale = r#"{"event":"stale"}"#;
+    let (sig2, ts2) = sign(
+        &secret,
+        stale,
+        chrono::Utc::now().timestamp() - TOLERANCE - 100,
+    );
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            stale,
+            &[
+                ("x-outturn-signature", sig2.as_str()),
+                ("x-outturn-timestamp", ts2.as_str())
+            ],
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "a signature past its window was accepted"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
+    // The replay record is claimed before the ceiling is consulted, so that a
+    // replay spends nobody's allowance. The hazard in that ordering is the
+    // mirror image: a delivery the ceiling turns away has already claimed its
+    // slot, and a 429 is precisely the response that asks a sender to send the
+    // same bytes again. Left claimed, that retry comes back 409 and the event
+    // is lost -- silently, which is worse than the duplicate turn the record
+    // exists to prevent.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("ceiling@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"ceiling-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    // One delivery an hour, so the second is refused by the ceiling.
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Tight","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
+        ),
+    )
+    .await;
+
+    let first = r#"{"event":"first"}"#;
+    let (sig1, ts1) = sign(&secret, first, chrono::Utc::now().timestamp());
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            first,
+            &[
+                ("x-outturn-signature", sig1.as_str()),
+                ("x-outturn-timestamp", ts1.as_str())
+            ],
+        )
+        .await,
+        StatusCode::ACCEPTED
+    );
+
+    // A different event, refused because the ceiling is spent.
+    let second = r#"{"event":"second"}"#;
+    let (sig2, ts2) = sign(&secret, second, chrono::Utc::now().timestamp());
+    let headers2 = [
+        ("x-outturn-signature", sig2.as_str()),
+        ("x-outturn-timestamp", ts2.as_str()),
+    ];
+    assert_eq!(
+        deliver(&h, &path, second, &headers2).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // Raise the ceiling, as an operator would, and let the sender retry the
+    // same signed request. It must be admitted: it never became a turn, so it
+    // is not a replay of one.
+    sqlx::query("update webhook_triggers set max_per_hour = 100 where path = $1")
+        .bind(&path)
+        .execute(&h.db.pool)
+        .await
+        .expect("raise");
+
+    assert_eq!(
+        deliver(&h, &path, second, &headers2).await,
+        StatusCode::ACCEPTED,
+        "a ceiling-refused delivery was refused as a replay on retry, so the event was lost"
+    );
+
+    // Two turns, not one: the retry produced the turn the 429 had denied.
+    let sessions: i64 = sqlx::query_scalar(
+        "select count(*) from agent_sessions where webhook_trigger_id is not null",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(sessions, 2, "the retried delivery did not start a turn");
+
+    // And now that it *has* become a turn, sending it a third time is a real
+    // replay and must be refused.
+    assert_eq!(
+        deliver(&h, &path, second, &headers2).await,
+        StatusCode::CONFLICT,
+        "a delivery that became a turn was replayable"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
+    // Two byte-identical deliveries arrive together; one claims the record and
+    // the other is refused as a replay. If the claim were keyed on the digest
+    // alone, the winner failing afterwards would release the row the loser's
+    // refusal rests on -- no turn, a 409 already sent saying one had started,
+    // and the event lost. The claimant is what keeps a release to its own row.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("race@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"race-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    // One an hour, so the second delivery is the one the ceiling refuses.
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Racy","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
+        ),
+    )
+    .await;
+
+    // Spend the allowance, so the next delivery claims its record and is then
+    // refused by the ceiling -- the winner-fails half of the race, made
+    // deterministic.
+    let first = r#"{"event":"first"}"#;
+    let (sig1, ts1) = sign(&secret, first, chrono::Utc::now().timestamp());
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            first,
+            &[
+                ("x-outturn-signature", sig1.as_str()),
+                ("x-outturn-timestamp", ts1.as_str())
+            ],
+        )
+        .await,
+        StatusCode::ACCEPTED
+    );
+
+    let racer = r#"{"event":"racer"}"#;
+    let (sig2, ts2) = sign(&secret, racer, chrono::Utc::now().timestamp());
+    let headers2 = [
+        ("x-outturn-signature", sig2.as_str()),
+        ("x-outturn-timestamp", ts2.as_str()),
+    ];
+
+    // Claims, then loses to the ceiling, then releases its own row.
+    assert_eq!(
+        deliver(&h, &path, racer, &headers2).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // The racer released its own row and nothing else: the first delivery
+    // became a turn, so its record must survive -- releasing by digest alone
+    // would be indistinguishable here, but a release that took the wrong row
+    // would leave that first delivery replayable.
+    let remembered: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        remembered, 1,
+        "the racer did not release its own row, or took one that was not its"
+    );
+
+    // Which row survived: the one that became a turn, still unreplayable.
+    assert_eq!(
+        deliver(
+            &h,
+            &path,
+            first,
+            &[
+                ("x-outturn-signature", sig1.as_str()),
+                ("x-outturn-timestamp", ts1.as_str())
+            ],
+        )
+        .await,
+        StatusCode::CONFLICT,
+        "the racer's release took the accepted delivery's record with it"
+    );
+
+    // And the racer's own bytes are retryable, which is what the release is
+    // for: raise the ceiling and the event it was refused for still lands.
+    sqlx::query("update webhook_triggers set max_per_hour = 100 where path = $1")
+        .bind(&path)
+        .execute(&h.db.pool)
+        .await
+        .expect("raise");
+    assert_eq!(
+        deliver(&h, &path, racer, &headers2).await,
+        StatusCode::ACCEPTED,
+        "the racer could not be retried after its claim was released"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shared_secret_sender_may_repeat_a_payload() {
+    // `shared_secret` binds no time, so the only thing to key a replay record
+    // on is the token and the body -- which makes a heartbeat, a retry, or the
+    // same event reported twice indistinguishable from a replay. It would also
+    // buy nothing: the credential travels on every delivery and never expires,
+    // so anyone holding it mints fresh requests rather than resending an old
+    // one. Refusing real traffic to defend against nothing is the trade this
+    // pins shut.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("repeat@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"repeat-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Repeats","prompt":"got {{{{body}}}}","scheme":"shared_secret"}}"#
+        ),
+    )
+    .await;
+
+    let payload = r#"{"event":"heartbeat"}"#;
+    for attempt in 1..=3 {
+        assert_eq!(
+            deliver(&h, &path, payload, &[("x-outturn-token", &secret)]).await,
+            StatusCode::ACCEPTED,
+            "an identical shared_secret payload was refused on attempt {attempt}"
+        );
+    }
+
+    // And nothing was written to the replay table, which is what keeps the
+    // sweep bounded by hmac traffic alone.
+    let remembered: i64 = sqlx::query_scalar("select count(*) from webhook_deliveries")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        remembered, 0,
+        "a shared_secret delivery was recorded, so identical payloads will collide"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
+    // The window is checked with `abs`, so a signature stamped in the future
+    // verifies now *and* keeps verifying until its own timestamp plus the
+    // tolerance. Anchoring the record to arrival instead would sweep it while
+    // the signature it refuses is still good -- and the replay walks in behind
+    // the sweep. The record must outlive the credential, not the request.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("ahead@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"ahead-desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(r#"{{"agent_id":"{agent_id}","name":"Ahead","prompt":"got {{{{body}}}}"}}"#),
+    )
+    .await;
+
+    // Stamped near the far edge of the tolerance, which still verifies.
+    let ahead = chrono::Utc::now().timestamp() + (TOLERANCE - 60);
+    let payload = r#"{"event":"ahead"}"#;
+    let (sig, ts) = sign(&secret, payload, ahead);
+    let headers = [
+        ("x-outturn-signature", sig.as_str()),
+        ("x-outturn-timestamp", ts.as_str()),
+    ];
+
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::ACCEPTED
+    );
+
+    // The record must still be there after an arrival-anchored one would have
+    // gone, because the signature is still being accepted.
+    let gone = outturn::api::webhook::postgres::forget_expired(&h.db.pool)
+        .await
+        .expect("sweep");
+    assert_eq!(gone, 0, "a still-valid signature was forgotten");
+
+    let expires: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("select expires_at from webhook_deliveries")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("expiry");
+    // Strictly past what arrival-anchoring would give. Signed at now+240 with
+    // a 300s tolerance, the signature is good until now+540; an arrival
+    // anchor would expire at now+300. Asserting past 300 is what makes the
+    // two distinguishable -- an earlier version compared against 240, which
+    // both satisfy, and so pinned nothing.
+    let floor = chrono::Utc::now().timestamp() + TOLERANCE;
+    assert!(
+        expires.timestamp() > floor,
+        "expiry {} is not past the arrival-anchored {floor}, so the record dies before the signature",
+        expires.timestamp()
+    );
+
+    assert_eq!(
+        deliver(&h, &path, payload, &headers).await,
+        StatusCode::CONFLICT,
+        "a future-dated signature was replayable"
     );
 
     finish!(h);

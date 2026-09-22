@@ -258,8 +258,15 @@ level is in [docs/settings.md](docs/settings.md). Both are mostly design: each
 says what exists.
 
 Starting a turn when nobody is typing is in [docs/triggers.md](docs/triggers.md)
-— schedules being built, webhooks and email designed and deferred. Two labels
-rather than one: the *owner* who set a trigger up is recorded for
+— schedules and webhooks being built, email designed and deferred. An inbound
+delivery is authenticated by `hmac` or by `shared_secret`, and under `hmac` it
+is recorded so the same signed request cannot be spent twice: the record is
+anchored to the signed timestamp rather than to arrival, and released again on
+any path that does not start a turn, so a delivery the ceiling refused can
+still be retried. `shared_secret` is exempt, because it binds no time and a
+record keyed on token and body would refuse a sender's legitimate duplicate.
+
+Two labels rather than one: the *owner* who set a trigger up is recorded for
 accountability, while `user_id` stays null because nobody is waiting, which is
 also what stops an agent clearing its own stopped-session latch.
 

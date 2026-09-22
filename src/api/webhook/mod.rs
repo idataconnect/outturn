@@ -103,6 +103,7 @@ pub enum Refusal {
     MissingCredential,
     TooLarge,
     RateLimited,
+    Replayed,
 }
 
 impl Refusal {
@@ -121,6 +122,12 @@ impl Refusal {
             // throttled needs to know to slow down, and at this point it has
             // already proved it holds the credential.
             Refusal::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            // A replay has proved it holds the credential, so hiding behind a
+            // 404 would tell a legitimate sender nothing about why their retry
+            // did nothing. 409 says what happened: this exact delivery has
+            // already been accepted, and sending it again will not produce a
+            // second turn.
+            Refusal::Replayed => StatusCode::CONFLICT,
             _ => StatusCode::NOT_FOUND,
         }
     }
@@ -135,6 +142,7 @@ impl Refusal {
             Refusal::MissingCredential => "no credential was presented",
             Refusal::TooLarge => "the body was larger than the limit",
             Refusal::RateLimited => "the trigger's hourly ceiling was reached",
+            Refusal::Replayed => "this delivery has already been accepted",
         }
     }
 }
@@ -145,6 +153,15 @@ impl Refusal {
 /// signature covers what was sent, and two JSON documents that mean the same
 /// thing have different bytes, so verifying a reserialisation verifies
 /// something the sender never sent.
+///
+/// Returns the instant the credential stops being accepted, which is what a
+/// replay record must be anchored to. For `hmac` that is the *signed*
+/// timestamp plus the tolerance, not arrival plus the tolerance: the window is
+/// checked with `abs`, so a signature stamped in the future verifies now and
+/// keeps verifying after an arrival-anchored record would have been swept --
+/// which is exactly the gap a replay walks through. `None` for
+/// `shared_secret`, which binds no time and so offers no anchor; the caller
+/// decides what to do with that.
 pub fn verify(
     trigger: &Trigger,
     body: &[u8],
@@ -152,14 +169,14 @@ pub fn verify(
     timestamp: Option<&str>,
     token: Option<&str>,
     now: DateTime<Utc>,
-) -> Result<(), Refusal> {
+) -> Result<Option<DateTime<Utc>>, Refusal> {
     match trigger.scheme.as_str() {
         "shared_secret" => {
             let Some(token) = token else {
                 return Err(Refusal::MissingCredential);
             };
             if constant_time_eq(token.as_bytes(), trigger.secret.as_bytes()) {
-                Ok(())
+                Ok(None)
             } else {
                 Err(Refusal::BadSignature)
             }
@@ -173,8 +190,18 @@ pub fn verify(
             // request is refused whether or not it was signed correctly -- and
             // it is *inside* the signed material, so a caller cannot move it
             // without invalidating the signature.
+            // Checked, because the header is attacker-chosen and reaches
+            // here before any credential is proved: `i64::MIN` overflows the
+            // subtraction and panics a debug build, and `i64::MIN.abs()`
+            // panics on its own. A value that cannot be compared is one that
+            // cannot be shown to be inside the window, so it is refused.
             let sent: i64 = timestamp.parse().map_err(|_| Refusal::StaleTimestamp)?;
-            if (now.timestamp() - sent).abs() > TIMESTAMP_TOLERANCE_SECS {
+            let within = now
+                .timestamp()
+                .checked_sub(sent)
+                .and_then(i64::checked_abs)
+                .is_some_and(|drift| drift <= TIMESTAMP_TOLERANCE_SECS);
+            if !within {
                 return Err(Refusal::StaleTimestamp);
             }
 
@@ -185,12 +212,50 @@ pub fn verify(
 
             let expected = format!("sha256={}", hmac_hex(trigger.secret.as_bytes(), &signed));
             if constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
-                Ok(())
+                // `None` here would reach the caller as the `shared_secret`
+                // exemption -- no anchor, so no replay record -- and admit an
+                // hmac delivery with no protection at all. The tolerance
+                // check above makes it unreachable today, which is exactly
+                // the kind of reasoning that stops being true two refactors
+                // later. "Could not verify" means refused; see AGENTS.md.
+                let Some(at) = DateTime::from_timestamp(sent, 0) else {
+                    return Err(Refusal::StaleTimestamp);
+                };
+                Ok(Some(
+                    at + chrono::Duration::seconds(TIMESTAMP_TOLERANCE_SECS),
+                ))
             } else {
                 Err(Refusal::BadSignature)
             }
         }
     }
+}
+
+/// What identifies a delivery, for deciding whether it has been seen.
+///
+/// The signature, hashed. It already binds both the body and the timestamp, so
+/// two deliveries differing by a byte are different deliveries, a genuine
+/// retry of the same signed request is the same one, and the identity expires
+/// on its own -- a sender resending the same event a minute later signs a new
+/// timestamp and is admitted.
+///
+/// `hmac` only, and deliberately. `shared_secret` has no signature to key on:
+/// the only candidate is the token and the body, which binds no time, so two
+/// legitimate deliveries of an identical payload -- a heartbeat, a retry, the
+/// same event reported twice -- would be indistinguishable from a replay and
+/// the second refused. It would also buy nothing, because that scheme has no
+/// captured *request* to replay: the credential travels on every delivery and
+/// never expires, so anyone who captured one mints fresh requests rather than
+/// resending an old one. Refusing real traffic to defend against nothing is a
+/// bad trade; see docs/triggers.md.
+///
+/// Hashed rather than stored raw so that reading the table hands nobody
+/// anything they could present.
+pub fn delivery_digest(signature: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(signature.as_bytes());
+    hasher.finalize().to_vec()
 }
 
 pub fn hmac_hex(key: &[u8], message: &[u8]) -> String {
