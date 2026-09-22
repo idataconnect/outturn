@@ -32,7 +32,7 @@ import toolRenderers from './toolRenderers'
 import Working from './Working'
 import SkillMenu from './SkillMenu'
 import type { SkillCommand } from '../lib/useSkillCommands'
-import { deleteFile, uploadFile, uploadPastedImage } from '../lib/chat'
+import { deleteFile, retryTurn, uploadFile, uploadPastedImage } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
 /**
@@ -96,7 +96,7 @@ function StatusLine({ status, onRetry }: { status: MessageStatus; onRetry?: () =
           disabled={!onRetry}
           className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:hover:bg-transparent disabled:cursor-default"
           title={`Failed: ${status.message}`}
-          aria-label={`Failed: ${status.message}. Send it again.`}
+          aria-label={`Failed: ${status.message}. Run the turn again.`}
         >
           <RotateCw size={12} aria-hidden />
           Try again
@@ -149,20 +149,12 @@ function describe(status: MessageStatus): {
   }
 }
 
-function UserMessage({ onRetry }: { onRetry?: (text: string) => void }) {
+function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
   const status = useAuiState(
     (s) => (s.message.metadata.custom?.status as MessageStatus | null | undefined) ?? null,
   )
   const id = useAuiState((s) => s.message.id)
-  // What to send again if this one failed. Read off the message rather than
-  // held by the caller, because the caller does not know which message the
-  // button belongs to.
-  const text = useAuiState((s) =>
-    s.message.content
-      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
-      .map((part) => part.text)
-      .join(''),
-  )
+
   const { phrase, shown, handlers } = useMessageAge(id ?? '')
   const held = status ? heldLabel(status) : null
   return (
@@ -180,7 +172,7 @@ function UserMessage({ onRetry }: { onRetry?: (text: string) => void }) {
       {!held && status && (
         <StatusLine
           status={status}
-          onRetry={onRetry && text ? () => onRetry(text) : undefined}
+          onRetry={onRetry && id ? () => onRetry(id) : undefined}
         />
       )}
       {/* In flight, the mark goes to the left instead: it is the same mark the
@@ -565,24 +557,24 @@ export default function Thread({
     input.current?.focus()
   }, [focusRequest, disabled])
 
-  // Put a failed message back in the box rather than sending it again behind
-  // the reader's back. The turn failed for a reason they may want to act on --
-  // a model that was down, a prompt that asked for too much -- and a button
-  // that silently re-sent would repeat whatever caused it. This gives them the
-  // words back, in the place they would have typed them, ready to edit or
-  // send. The native setter, because React's own onChange does not fire for a
-  // value assigned straight to the node.
-  const retry = useCallback((text: string) => {
-    const node = input.current
-    if (!node) return
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      'value',
-    )?.set
-    setter?.call(node, text)
-    node.dispatchEvent(new Event('input', { bubbles: true }))
-    node.focus()
-  }, [])
+  // Runs the failed turn again, which requeues the job that failed rather
+  // than sending the words a second time.
+  //
+  // The first version put the text back in the composer, reasoning that a
+  // turn failed for a reason somebody might want to act on. But the failed
+  // message stays in the transcript -- what failed is the attempt at
+  // answering it -- so pressing enter sent a second copy and the agent was
+  // asked the same thing twice. Editing before retrying is a real thing to
+  // want, and it is a different button from this one.
+  const retry = useCallback(
+    (messageId: string) => {
+      if (!sessionId) return
+      void retryTurn(sessionId, messageId).catch((e) => {
+        onStoredChange?.(e instanceof ApiError ? e.message : 'could not run that turn again')
+      })
+    },
+    [sessionId, onStoredChange],
+  )
 
   // Bound once rather than inline, so every user message is not rerendered by
   // a new component identity each time this one renders.

@@ -223,7 +223,7 @@ where
                         Ok(text) => buffer.push_str(text),
                         Err(e) => {
                             return Some((
-                                Err(ProviderError::transport(&e)),
+                                Err(ProviderError::transport(e)),
                                 (stream, buffer, true),
                             ));
                         }

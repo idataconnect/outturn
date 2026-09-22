@@ -1338,6 +1338,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/agent-sessions/{id}/cancel",
             post(super::sessions::cancel_turn),
         )
+        // Running a failed turn again. Under the message rather than the
+        // session, unlike cancel: stopping means the turn in flight, of which
+        // there is one, and retrying means a particular prompt that failed,
+        // of which a session may hold several.
+        .route(
+            "/v1/agent-sessions/{id}/messages/{message_id}/retry",
+            post(super::sessions::retry_turn),
+        )
         .route(
             "/v1/agents/{id}",
             get(super::agents::get_agent)

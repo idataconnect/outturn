@@ -380,6 +380,117 @@ async fn abandoned_lease_is_reaped_and_retried() {
     finish!(db);
 }
 
+/// A failed turn can be put back, and only a failed one.
+///
+/// The row is reused rather than a second job written for the same message.
+/// That is the whole point: the message is already stored, so a new job would
+/// have the agent answer a prompt nobody sent twice -- which is exactly what
+/// the retry button did before this existed, by putting the words back in the
+/// composer while the failed message stayed in the transcript.
+#[tokio::test]
+async fn a_failed_turn_can_be_run_again() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let message = Uuid::now_v7();
+
+    let job_id = jobs::enqueue(
+        pool,
+        workspace,
+        "chat.turn",
+        serde_json::json!({ "message_id": message }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    // Found by the message, because that is what somebody pressing the button
+    // has: the prompt that failed, not the row answering it.
+    let found = jobs::turn_for_message(pool, workspace, message)
+        .await
+        .expect("lookup");
+    assert_eq!(found, Some(job_id), "the turn for that message");
+
+    // Pending, not failed: nothing to retry yet.
+    assert_eq!(
+        jobs::requeue_failed(pool, job_id).await.expect("requeue"),
+        jobs::Requeued::NotFailed,
+        "a turn still queued must not be requeued underneath itself"
+    );
+
+    let claimed = jobs::claim(pool, &["chat.turn"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+
+    // Running is the dangerous one: requeuing would put the same turn on a
+    // second runtime while the first is still answering.
+    assert_eq!(
+        jobs::requeue_failed(pool, job_id).await.expect("requeue"),
+        jobs::Requeued::NotFailed,
+        "a running turn must never be duplicated onto another runtime"
+    );
+
+    // Failed for good, not merely this attempt. `fail` hands a job back to the
+    // queue while it has attempts left, so a turn only reaches `failed` once
+    // the automatic retries are spent -- which is also the only moment a
+    // person is shown the button, because until then it is still going.
+    jobs::fail(
+        pool,
+        job_id,
+        "the model was unreachable",
+        Duration::from_secs(0),
+        None,
+    )
+    .await
+    .expect("fail");
+    // Three, the schema default for max_attempts; the first is spent above.
+    for _ in 1..3 {
+        let handles = jobs::claim(pool, &["chat.turn"], 10, jobs::DEFAULT_LEASE)
+            .await
+            .expect("claim");
+        assert_eq!(handles.len(), 1, "a turn with attempts left comes back");
+        jobs::fail(
+            pool,
+            job_id,
+            "the model was unreachable",
+            Duration::from_secs(0),
+            None,
+        )
+        .await
+        .expect("fail");
+    }
+
+    assert_eq!(
+        jobs::requeue_failed(pool, job_id).await.expect("requeue"),
+        jobs::Requeued::Queued,
+    );
+
+    let again = jobs::claim(pool, &["chat.turn"], 10, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    assert_eq!(again.len(), 1, "the requeued turn must be claimable");
+    assert_eq!(again[0].job.id, job_id, "the same row, not a new one");
+    // Zero rather than carried over: a person asking again is a new decision,
+    // and leaving the count would give the second manual retry fewer goes
+    // than the first.
+    assert_eq!(
+        again[0].job.attempts, 1,
+        "counted as this run's first attempt"
+    );
+
+    assert_eq!(
+        jobs::requeue_failed(pool, Uuid::now_v7())
+            .await
+            .expect("requeue"),
+        jobs::Requeued::Unknown,
+        "a job that is not there is told apart from one that is not failed"
+    );
+
+    finish!(db);
+}
+
 #[tokio::test]
 async fn job_fails_permanently_after_max_attempts() {
     let (db, workspace) = setup_or_skip!();

@@ -371,6 +371,75 @@ async fn enqueue_turn(
 ///
 /// Idempotent. Pressing stop twice is what a person does when the first press
 /// appears not to have worked, and the second must not be an error.
+/// Runs a failed turn again.
+///
+/// The message is already stored -- what failed is the attempt at answering
+/// it -- so this requeues that job rather than writing a new one. The
+/// alternative, which is what the button did before this existed, was to put
+/// the text back in the composer: the failed message stayed in the
+/// transcript, so sending produced a second copy and the agent was asked the
+/// same thing twice.
+pub async fn retry_turn(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((id, message_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Sending, because that is what this is: the same prompt asked again, at
+    // the same cost to the same allowance.
+    let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
+
+    // `Insufficient` rather than `Suffices`, unlike cancelling. Stopping is
+    // the safe direction; this starts a turn. Having begun the thread is not
+    // the question being asked -- somebody narrowed away from an agent must
+    // not reach it again through a conversation they opened before.
+    let _session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsCreate,
+        Ownership::Insufficient,
+    )
+    .await?;
+
+    let Some(job_id) = jobs::turn_for_message(&state.pool, claims.workspace_id, message_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    else {
+        return Err((StatusCode::NOT_FOUND, "no turn for that message".into()));
+    };
+
+    let outcome = jobs::requeue_failed(&state.pool, job_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (queued, described) = match outcome {
+        jobs::Requeued::Queued => (true, "queued"),
+        // Not an error: two people pressing the button, or one pressing it
+        // twice, is a race nobody can avoid and should not be scolded for.
+        jobs::Requeued::NotFailed => (false, "not_failed"),
+        jobs::Requeued::Unknown => (false, "no_turn"),
+    };
+
+    // Told to everyone watching, like a cancel is. A second reader with the
+    // conversation open should see it start again rather than go on showing a
+    // failure that is no longer true.
+    if queued {
+        events::append(
+            &state.pool,
+            claims.workspace_id,
+            Some(id),
+            "chat.retrying",
+            serde_json::json!({ "job_id": job_id, "message_id": message_id }),
+        )
+        .await
+        .ok();
+    }
+
+    Ok(Json(
+        serde_json::json!({ "queued": queued, "state": described }),
+    ))
+}
+
 pub async fn cancel_turn(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

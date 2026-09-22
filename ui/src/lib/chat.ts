@@ -201,6 +201,26 @@ export type Cancelled = {
 export const cancelTurn = (sessionId: string) =>
   api<Cancelled>(`/v1/agent-sessions/${sessionId}/cancel`, { method: 'POST' })
 
+/** What asking for a failed turn to run again achieved. */
+export type Retried = {
+  queued: boolean
+  state: 'queued' | 'not_failed' | 'no_turn'
+}
+
+/**
+ * Runs a failed turn again.
+ *
+ * The message is already stored and the turn that failed is a job against it,
+ * so this requeues that job. Sending the text a second time would ask the
+ * agent the same thing twice, which is what the retry button used to do by
+ * putting the words back in the composer while the failed message stayed in
+ * the transcript.
+ */
+export const retryTurn = (sessionId: string, messageId: string) =>
+  api<Retried>(`/v1/agent-sessions/${sessionId}/messages/${messageId}/retry`, {
+    method: 'POST',
+  })
+
 /**
  * One long-poll round trip.
  *
