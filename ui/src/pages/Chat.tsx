@@ -69,6 +69,17 @@ export default function Chat() {
   const canRename =
     state.status === 'authenticated' &&
     state.session.authorities.includes('sessions:update')
+  // Starting a conversation and saying something in one are separate grants,
+  // and a viewer holds neither. Both were checked only by the API, so the
+  // button was offered and threw, and the composer took a message that went
+  // nowhere -- the worse of the two, because somebody who types a paragraph
+  // and watches it vanish has lost work rather than been refused.
+  const canStart =
+    state.status === 'authenticated' &&
+    state.session.authorities.includes('sessions:create')
+  const canSend =
+    state.status === 'authenticated' &&
+    state.session.authorities.includes('gateway:invoke')
   // Which workspace the lists on screen describe, or null before the first
   // load finishes. Held as the workspace rather than a bare flag so that
   // "loaded" can be derived during render: a switch makes it stale the moment
@@ -239,7 +250,7 @@ export default function Chat() {
                 No agents yet. Ask an administrator to add one.
               </p>
             )
-          ) : (
+          ) : canStart ? (
             <div className="space-y-1">
               {agents.map((agent) => (
                 <button
@@ -252,6 +263,18 @@ export default function Chat() {
                 </button>
               ))}
             </div>
+          ) : (
+            // A badge rather than a sentence. The panel says "Start a session"
+            // and there is nothing under it; what a reader needs is to know
+            // that is the arrangement rather than a list that failed to load,
+            // and two words do that. The authority is in the tooltip for
+            // whoever is asking why.
+            <span
+              title="Starting a session needs the sessions:create authority"
+              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-surface-100 dark:bg-surface-800 text-surface-500 dark:text-surface-400"
+            >
+              Read-only
+            </span>
           )}
         </div>
         <div className="flex-1 overflow-auto p-2 space-y-1">
@@ -344,7 +367,8 @@ export default function Chat() {
         <div className="flex-1 min-h-0">
           <AssistantRuntimeProvider runtime={runtime}>
             <Thread
-              disabled={!active}
+              disabled={!active || !canSend}
+              readOnly={!!active && !canSend}
               stopping={stopping}
               focusRequest={focusRequest}
               sessionId={active}
