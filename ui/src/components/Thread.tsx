@@ -148,18 +148,24 @@ function UserMessage({ onRetry }: { onRetry?: (text: string) => void }) {
         <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
       </div>
       <MessageAge phrase={phrase} shown={shown} align="right" />
-      {/* In flight: the mark, breathing, which is the same mark the reply
-          wears once it starts arriving. Finished: a badge, or the button to
-          send it again. */}
-      {held ? (
-        <Working phase="held" label={held} />
-      ) : (
-        status && (
-          <StatusLine
-            status={status}
-            onRetry={onRetry && text ? () => onRetry(text) : undefined}
-          />
-        )
+      {/* Terminal states stay with the message they are about, on the right
+          where it sits. */}
+      {!held && status && (
+        <StatusLine
+          status={status}
+          onRetry={onRetry && text ? () => onRetry(text) : undefined}
+        />
+      )}
+      {/* In flight, the mark goes to the left instead: it is the same mark the
+          reply will wear, and the reply arrives on that side. Kept in one
+          place for the whole turn, so it reads as one object changing
+          character rather than something that crosses the pane when the first
+          token lands. `self-start` because this row is right-aligned for the
+          message itself. */}
+      {held && (
+        <span className="self-start">
+          <Working phase="held" label={held} />
+        </span>
       )}
     </MessagePrimitive.Root>
   )
