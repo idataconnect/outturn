@@ -48,23 +48,13 @@ pub fn observation_for(error: &super::llm::provider::ProviderError) -> policy::O
     use super::llm::provider::ProviderError::*;
     match error {
         Unavailable => policy::Observation::Unreachable,
-        Upstream(detail) if starts_with_client_error(detail) => policy::Observation::NotEvidence,
-        // A transport error arrives here too, with no status to read. It is
-        // the endpoint failing rather than answering, but one caller's
-        // truncated stream is not yet an outage, so it waits for company.
-        Upstream(_) => policy::Observation::Undetermined,
+        e if e.is_client_error() => policy::Observation::NotEvidence,
+        // A transport error arrives here too, carrying no status. It is the
+        // endpoint failing rather than answering, but one caller's truncated
+        // stream is not yet an outage, so it waits for company.
+        Upstream { .. } => policy::Observation::Undetermined,
         RateLimited | Translation(_) => policy::Observation::NotEvidence,
     }
-}
-
-/// Upstream errors are formatted as `"{status}: {body}"`, so the status is the
-/// leading token when there is one at all.
-fn starts_with_client_error(detail: &str) -> bool {
-    detail
-        .split(':')
-        .next()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-        .is_some_and(|status| (400..500).contains(&status) && status != 408 && status != 429)
 }
 
 /// Which circuit an endpoint's health is kept under.

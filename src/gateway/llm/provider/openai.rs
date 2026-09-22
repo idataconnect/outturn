@@ -49,12 +49,7 @@ impl OpenAiProvider {
     }
 
     async fn fail(response: reqwest::Response) -> ProviderError {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        if status.as_u16() == 429 {
-            return ProviderError::RateLimited;
-        }
-        ProviderError::Upstream(format!("{status}: {body}"))
+        ProviderError::from_response(response).await
     }
 }
 
@@ -73,7 +68,7 @@ impl LlmProvider for OpenAiProvider {
             .json(request)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -82,7 +77,7 @@ impl LlmProvider for OpenAiProvider {
         response
             .json()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))
+            .map_err(|e| ProviderError::transport(&e))
     }
 
     async fn chat_completion_stream(
@@ -104,7 +99,7 @@ impl LlmProvider for OpenAiProvider {
             .json(&streaming)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -115,7 +110,7 @@ impl LlmProvider for OpenAiProvider {
         // know the framing.
         let stream = response
             .bytes_stream()
-            .map_err(|e| ProviderError::Upstream(e.to_string()));
+            .map_err(|e| ProviderError::transport(&e));
 
         Ok(Box::pin(unwrap_sse(stream)))
     }

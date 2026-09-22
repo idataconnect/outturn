@@ -1620,13 +1620,17 @@ async fn what_a_provider_error_is_evidence_of() {
         Observation::NotEvidence
     );
     assert_eq!(
-        evidence(&ProviderError::Upstream(
-            "400: model does not support tools".into()
-        )),
+        evidence(&ProviderError::Upstream {
+            status: Some(400),
+            detail: "400: model does not support tools".into()
+        }),
         Observation::NotEvidence
     );
     assert_eq!(
-        evidence(&ProviderError::Upstream("404: no such model".into())),
+        evidence(&ProviderError::Upstream {
+            status: Some(404),
+            detail: "404: no such model".into()
+        }),
         Observation::NotEvidence
     );
 
@@ -1642,28 +1646,94 @@ async fn what_a_provider_error_is_evidence_of() {
     // counting on its own -- this is the case that used to take a provider
     // away from everybody because one agent kept sending something bad.
     assert_eq!(
-        evidence(&ProviderError::Upstream(
-            "503: upstream connect error".into()
-        )),
+        evidence(&ProviderError::Upstream {
+            status: Some(503),
+            detail: "503: upstream connect error".into()
+        }),
         Observation::Undetermined
     );
     assert_eq!(
-        evidence(&ProviderError::Upstream("500: internal error".into())),
+        evidence(&ProviderError::Upstream {
+            status: Some(500),
+            detail: "500: internal error".into()
+        }),
         Observation::Undetermined
     );
     // A transport error has no status to read, and a timeout is the provider
     // failing to answer rather than refusing. Both are failures; both still
     // want breadth before they mean an outage.
     assert_eq!(
-        evidence(&ProviderError::Upstream(
-            "error sending request for url".into()
-        )),
+        evidence(&ProviderError::Upstream {
+            status: None,
+            detail: "error sending request for url".into()
+        }),
         Observation::Undetermined
     );
     assert_eq!(
-        evidence(&ProviderError::Upstream("408: request timeout".into())),
+        evidence(&ProviderError::Upstream {
+            status: Some(408),
+            detail: "408: request timeout".into()
+        }),
         Observation::Undetermined
     );
+}
+
+#[test]
+fn a_client_error_is_told_apart_from_the_endpoint_being_unwell() {
+    use outturn::gateway::llm::provider::ProviderError;
+
+    // The request was wrong, so sending it to the next route changes nothing.
+    for status in [400, 401, 403, 404, 422] {
+        assert!(
+            ProviderError::Upstream {
+                status: Some(status),
+                detail: String::new()
+            }
+            .is_client_error(),
+            "{status} should end the walk"
+        );
+    }
+
+    // The endpoint asking to be retried, which is not the request's fault.
+    for status in [408, 429] {
+        assert!(
+            !ProviderError::Upstream {
+                status: Some(status),
+                detail: String::new()
+            }
+            .is_client_error(),
+            "{status} must stay retryable"
+        );
+    }
+
+    // It answered and failed: another route may well do better.
+    for status in [500, 502, 503] {
+        assert!(
+            !ProviderError::Upstream {
+                status: Some(status),
+                detail: String::new()
+            }
+            .is_client_error(),
+            "{status} must stay retryable"
+        );
+    }
+
+    // No answer at all, so nothing says the request was at fault. This is the
+    // case the old string-parsing could not express: a status was read out of
+    // the message text, so an error with no status and an error whose message
+    // merely began with digits were the same thing.
+    assert!(
+        !ProviderError::Upstream {
+            status: None,
+            detail: "400 bytes read before reset".into()
+        }
+        .is_client_error(),
+        "a transport error must not be read as a client error"
+    );
+
+    assert!(!ProviderError::RateLimited.is_client_error());
+    assert!(!ProviderError::Unavailable.is_client_error());
+    assert!(!ProviderError::Translation("bad shape".into()).is_client_error());
 }
 
 // -- Traffic routing -----------------------------------------------------------

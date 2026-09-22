@@ -41,21 +41,16 @@ impl LlmProvider for AnthropicProvider {
             .json(&anthropic_req)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            if status.as_u16() == 429 {
-                return Err(ProviderError::RateLimited);
-            }
-            return Err(ProviderError::Upstream(format!("{status}: {body}")));
+            return Err(ProviderError::from_response(resp).await);
         }
 
         let anthropic_resp: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         translate::anthropic_to_openai(&anthropic_resp)
             .map_err(|e| ProviderError::Translation(e.to_string()))
@@ -84,20 +79,15 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::Upstream(e.to_string()))?;
+            .map_err(|e| ProviderError::transport(&e))?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            if status.as_u16() == 429 {
-                return Err(ProviderError::RateLimited);
-            }
-            return Err(ProviderError::Upstream(format!("{status}: {text}")));
+            return Err(ProviderError::from_response(response).await);
         }
 
         let bytes = response
             .bytes_stream()
-            .map_err(|e| ProviderError::Upstream(e.to_string()));
+            .map_err(|e| ProviderError::transport(&e));
 
         // The state machine outlives each event, because what an event means
         // depends on the ones before it.
