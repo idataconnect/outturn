@@ -19,7 +19,21 @@ function Harness(props: {
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
     messages: props.messages ?? [],
-    convertMessage: (message) => message,
+    // The mark is worn by the newest reply, which the page's own runtime
+    // marks in `annotate`. Without it every fixture reply looks like an older
+    // one and draws nothing.
+    convertMessage: (message, index) => ({
+      ...message,
+      metadata: {
+        ...message.metadata,
+        custom: {
+          ...message.metadata?.custom,
+          newest:
+            message.role === 'assistant' &&
+            index === (props.messages ?? []).findLastIndex((m) => m.role === 'assistant'),
+        },
+      },
+    }),
     onNew: async () => {},
     isRunning: props.running,
     // `canCancel` is false without one, which is the whole of what decides
@@ -164,6 +178,36 @@ describe('saying a reply is still going', () => {
     render(<Harness messages={reply({ type: 'incomplete', reason: 'cancelled' })} />)
 
     expect(working()).not.toBeInTheDocument()
+  })
+
+  it('draws one mark when an older reply is the one still running', () => {
+    // A turn that crashed mid-generation leaves a reply the agent resumes
+    // when the next message arrives -- so the older reply runs while a newer
+    // one already exists. Drawn on `running || newest`, that was two marks at
+    // once: a settled line below and a travelling swell above it.
+    render(
+      <Harness
+        running
+        messages={[
+          { role: 'user', content: [{ type: 'text', text: 'first' }] },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'half an answ' }],
+            status: { type: 'running' },
+          },
+          { role: 'user', content: [{ type: 'text', text: 'second' }] },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'and the next' }],
+            status: { type: 'complete', reason: 'stop' },
+          },
+        ]}
+      />,
+    )
+
+    // The mark says where the conversation is, and that is its last reply
+    // whichever one the agent happens to be finishing.
+    expect(screen.queryAllByRole('status', { name: /Working|Finished/ })).toHaveLength(1)
   })
 })
 
