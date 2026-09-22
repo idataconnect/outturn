@@ -1,3 +1,8 @@
+# Development configuration. The password below is a known value, published in
+# this repository, and these manifests are not meant for a real cluster --
+# every overlay here is a local one, and scripts/deploy-prod.sh generates
+# production manifests separately and refuses to emit any published key.
+# See SECURITY.md.
 apiVersion: v1
 kind: Service
 metadata:

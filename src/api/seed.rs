@@ -26,8 +26,18 @@ pub async fn dev_seed(
 
     let email =
         std::env::var("OUTTURN_DEV_ADMIN_EMAIL").unwrap_or_else(|_| "admin@outturn.local".into());
-    let password =
-        std::env::var("OUTTURN_DEV_ADMIN_PASSWORD").unwrap_or_else(|_| "outturn-dev".into());
+    // No default. "outturn-dev" was one, and it is in this repository's
+    // git history, which makes it a password anybody can look up. The seed is
+    // already gated on OUTTURN_DEV_SEED and an empty users table, so the only
+    // thing a fallback bought was saving a developer one line in a script --
+    // against the chance of a reachable deployment whose admin password is
+    // published. Asking for it is cheaper than that.
+    let password = std::env::var("OUTTURN_DEV_ADMIN_PASSWORD").map_err(|_| {
+        anyhow::anyhow!(
+            "OUTTURN_DEV_SEED is set but OUTTURN_DEV_ADMIN_PASSWORD is not; \
+             run scripts/dev-secrets.sh, which generates one per clone"
+        )
+    })?;
 
     let admin = users
         .create(CreateUser {

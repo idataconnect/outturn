@@ -3,7 +3,7 @@ name = "outturn"
 version = "0.0.1"
 edition = "2024"
 resolver = "3"
-description = "Reserved"
+description = "A multiworkspace agent platform"
 license = "Apache-2.0"
 
 [lib]

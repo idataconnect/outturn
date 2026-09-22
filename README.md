@@ -4,6 +4,12 @@
 
 A multiworkspace agent platform.
 
+## Prerequisites
+
+Rust (stable, edition 2024), Node 22 or newer, `kubectl`, `skaffold`, and a
+container runtime. On a Mac, ollama as well. Everything else the build needs
+it fetches itself.
+
 ## Running locally on a Mac
 
 You need ollama (`brew install ollama`) and a local cluster. Docker Desktop's
@@ -125,3 +131,15 @@ A failing test leaves its schema behind to inspect.
 
 A missing environment variable fails rather than skipping. A skipped test that
 reports success would let a misconfigured CI run green having tested nothing.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the test tiers, the conventions, and
+what to open an issue about first. Security reports go through
+[SECURITY.md](SECURITY.md), privately, rather than the issue tracker -- it also
+explains why secret scanners flag this repository's early history, and why that
+is expected.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
