@@ -348,6 +348,95 @@ pub async fn live_turn_for_session(
     .map_err(internal)
 }
 
+/// What asking for a failed turn to run again achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requeued {
+    /// It was failed and is now pending. A runtime will take it.
+    Queued,
+    /// Not in a state that can be retried -- still running, already done, or
+    /// a turn that succeeded. Not an error: two people pressing the button, or
+    /// one pressing it twice, is a race nobody can avoid.
+    NotFailed,
+    /// No turn was ever recorded for that message.
+    Unknown,
+}
+
+/// The turn that answered a message, whatever became of it.
+///
+/// By message rather than by session, unlike `live_turn_for_session`: retrying
+/// is about one prompt that failed, and a session may have several.
+pub async fn turn_for_message(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    message_id: Uuid,
+) -> Result<Option<Uuid>, JobError> {
+    sqlx::query_scalar(
+        "select id from jobs \
+          where kind = 'chat.turn' \
+            and workspace_id = $1 \
+            and (payload->>'message_id')::uuid = $2 \
+          order by id desc \
+          limit 1",
+    )
+    .bind(workspace_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)
+}
+
+/// Puts a failed turn back in the queue.
+///
+/// The row is reused rather than a new job written, which is the whole point:
+/// the message is already stored, and a second job for it would have the agent
+/// answer a prompt nobody sent twice. What failed is the attempt, not the
+/// asking.
+///
+/// `attempts` goes back to zero rather than `max_attempts` going up. A turn
+/// that exhausted its retries and is being asked for again by a person is a
+/// new decision, not a continuation of the automatic ones -- and leaving the
+/// count would mean the second manual retry had fewer goes than the first.
+///
+/// Only `failed`. A running turn must not be duplicated onto another runtime,
+/// and a turn that succeeded has a reply somebody may be reading.
+pub async fn requeue_failed(pool: &PgPool, id: Uuid) -> Result<Requeued, JobError> {
+    let updated: Option<String> = sqlx::query_scalar(
+        "update jobs \
+            set state = 'pending', \
+                attempts = 0, \
+                last_error = null, \
+                lease_token = null, \
+                leased_until = null, \
+                cancel_requested_at = null, \
+                run_after = now(), \
+                updated_at = now() \
+          where id = $1 and state = 'failed' \
+          returning state",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+
+    if updated.is_some() {
+        return Ok(Requeued::Queued);
+    }
+
+    // Told apart so the caller can say which happened. A job that is not
+    // failed is a race; a job that is not there at all is a caller asking
+    // about something else.
+    let exists: Option<Uuid> = sqlx::query_scalar("select id from jobs where id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
+    Ok(if exists.is_some() {
+        Requeued::NotFailed
+    } else {
+        Requeued::Unknown
+    })
+}
+
 /// What asking for a job to stop achieved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cancelled {
