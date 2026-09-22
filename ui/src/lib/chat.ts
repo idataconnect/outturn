@@ -116,6 +116,15 @@ export type ChatEvent =
     }
   /** A reply is starting over: the pod running it was lost. */
   | { id: string; kind: 'chat.retry'; payload: { message_id: string; replies_to: string } }
+  /** A failed turn was put back on the queue, because somebody asked for it.
+   *  Distinct from `chat.retry`, which is the platform starting a turn over
+   *  by itself after losing the runtime: that one needs no button and says
+   *  so in the mark, while this one follows a person pressing one. */
+  | {
+      id: string
+      kind: 'chat.requeued'
+      payload: { message_id: string; job_id: string }
+    }
   /** The session was named, by a person or by the namer after its first turn. */
   | { id: string; kind: 'session.renamed'; payload: { title: string } }
 

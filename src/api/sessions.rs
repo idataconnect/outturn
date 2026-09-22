@@ -428,7 +428,7 @@ pub async fn retry_turn(
             &state.pool,
             claims.workspace_id,
             Some(id),
-            "chat.retrying",
+            "chat.requeued",
             serde_json::json!({ "job_id": job_id, "message_id": message_id }),
         )
         .await
