@@ -154,10 +154,11 @@ export function annotate(
       // turn, which a poll lands in often enough to see -- and reading that
       // as "over" declared the agent silent moments before it started
       // streaming, next to a stop button saying the opposite.
-      const jobOver =
-        m.job_state === 'succeeded' ||
-        m.job_state === 'failed' ||
-        m.job_state === 'cancelled'
+      //
+      // `failed` is not among them because it returned above; the compiler
+      // says so, which is how a fourth state written here out of symmetry
+      // was caught.
+      const jobOver = m.job_state === 'succeeded' || m.job_state === 'cancelled'
       if (jobOver && !retrying.has(reply.id)) {
         return { ...m, status: { kind: 'silent' } }
       }
