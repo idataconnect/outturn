@@ -37,6 +37,14 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/env
         value:
+          # Empty, and declared so a component has somewhere to write it. The
+          # API reads the same list the gateway does, for the other half of
+          # the same decision: the gateway decides whether a connection may go
+          # out, and the API decides whether a rule may name the host at all.
+          # Set on one and not the other and a host is reachable that no rule
+          # can be written for. See docs/egress.md.
+          - name: OUTTURN_INTERNAL_HOSTS
+            value: ""
           # The API is the only tier that signs anything. Generated per clone
           # by scripts/dev-secrets.sh, never committed: a key in the repository
           # is one every clone shares. A real deployment uses its own Secret --
