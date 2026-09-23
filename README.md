@@ -16,6 +16,39 @@ and nothing more.
 
 Rust, Axum, Tokio, PostgreSQL, WASM, Kubernetes. Apache-2.0.
 
+## Who this is for
+
+A company whose customers each need agents of their own, and who would
+otherwise build the tenancy, the sandbox and the security boundaries before
+writing a single feature.
+
+A workspace is whatever a tenant is in your product:
+
+- **A finance application** where each workspace is a customer, and their
+  agents reconcile transactions against the books they already keep with you.
+- **Property management software** where each workspace is a management
+  company, and their agents work on behalf of the associations they serve —
+  so one deployment carries many companies, each with many customers of their
+  own.
+- **A rental marketplace** where each workspace is an owner, and their agents
+  answer guests and manage a calendar.
+
+The shape is the same in all three: you run one platform, your customers get
+agents that reach their own systems, and nobody's agent can see anybody
+else's anything.
+
+That last part is what takes the time to build, and it is done. Isolation,
+per-tenant usage attribution, a WebAssembly sandbox that holds no credentials,
+deny-by-default egress with per-workspace rules, signed per-turn tokens, a
+circuit breaker that does not let one tenant's failures trip another's. The
+work left is the part that is yours: what your agents know, and what they can
+reach.
+
+## Take it for a spin
+
+[docs/take-it-for-a-spin.md](docs/take-it-for-a-spin.md) — half an hour, from a
+cold Mac to an agent booking rooms at a guesthouse you are also running.
+
 ## Prerequisites
 
 Rust (stable, edition 2024), Node 22 or newer, `kubectl`, `skaffold`, and a
