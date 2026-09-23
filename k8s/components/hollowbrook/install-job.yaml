@@ -14,6 +14,16 @@ kind: Job
 metadata:
   name: install-hollowbrook
 spec:
+  # Cleaned up shortly after it finishes.
+  #
+  # A Job's template is immutable, so a completed one cannot be updated -- and
+  # a changed skill means a new ConfigMap hash, which means a new template, and
+  # `kubectl apply` refuses with a page of diff. Letting it delete itself means
+  # the next apply creates rather than patches.
+  #
+  # Long enough to read the logs afterwards, short enough that a redeploy in
+  # the same sitting is not blocked by it.
+  ttlSecondsAfterFinished: 600
   # Retried a few times, because it waits on the API and a cluster coming up
   # cold can take longer than the wait allows.
   backoffLimit: 4

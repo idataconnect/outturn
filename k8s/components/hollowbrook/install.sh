@@ -57,28 +57,55 @@ token=$(curl -sf -D - -o /dev/null "$api/v1/login" \
 [ -n "$token" ] || { say "could not sign in"; exit 1; }
 auth="authorization: Bearer $token"
 
-# Already there: nothing to do, and nothing to overwrite.
-if curl -sf "$api/v1/skills" -H "$auth" | grep -q "\"slug\":\"$slug\""; then
-  say "already installed"
-  exit 0
-fi
+# Already there: update it rather than stopping.
+#
+# Stopping was the first version of this, and it meant an edited skill never
+# reached a cluster that had the old one -- the Job ran, said "already
+# installed", and left the workspace with prose nobody had written for months.
+# Whoever edits a skill and redeploys means for the edit to arrive.
+#
+# Prose changes by appending a version, never by overwriting one, so the
+# history of what an agent was told stays readable. The files are written over
+# in place, which is right for reference material: there is one current answer
+# to how an operation is called.
+existing=$(curl -sf "$api/v1/skills" -H "$auth" \
+  | jq -r ".[] | select(.slug == \"$slug\") | .id" | head -1)
 
 # The manifest is the skill body, and the detail is a file per operation --
 # see docs/openapi-wizard.md. A body is composed into the prompt on every
 # round of every turn, so an API written into one in full is paid for
 # continuously; the agent reads an operation's file only when it needs it.
 manifest=$(cat /skill/index.md)
-created=$(curl -sf "$api/v1/skills" -H "$auth" \
-  -H 'content-type: application/json' \
-  -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" \
-        '{slug: $slug, name: "Hollowbrook House",
-          description: "Rooms and bookings for the guesthouse.",
-          body: $body, hosts: [$host]}')") \
-  || { say "could not create the skill"; exit 1; }
 
-id=$(echo "$created" | jq -r .id)
-[ -n "$id" ] && [ "$id" != "null" ] || { say "created a skill with no id: $created"; exit 1; }
-say "created skill $id"
+if [ -n "$existing" ]; then
+  id="$existing"
+  # A version is only worth appending when the prose actually differs.
+  # Otherwise every redeploy grows the history by one identical entry, and the
+  # history stops being worth reading.
+  current=$(curl -sf "$api/v1/skills/$id/versions" -H "$auth" | jq -r '.[0].body // ""')
+  if [ "$current" = "$manifest" ]; then
+    say "already installed, and unchanged"
+  else
+    curl -sf "$api/v1/skills/$id/versions" -H "$auth" \
+      -H 'content-type: application/json' \
+      -d "$(jq -n --arg body "$manifest" \
+            '{body: $body, note: "installed by the component"}')" >/dev/null \
+      || { say "could not update the skill"; exit 1; }
+    say "updated skill $id"
+  fi
+else
+  created=$(curl -sf "$api/v1/skills" -H "$auth" \
+    -H 'content-type: application/json' \
+    -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" \
+          '{slug: $slug, name: "Hollowbrook House",
+            description: "Rooms and bookings for the guesthouse.",
+            body: $body, hosts: [$host]}')") \
+    || { say "could not create the skill"; exit 1; }
+
+  id=$(echo "$created" | jq -r .id)
+  [ -n "$id" ] && [ "$id" != "null" ] || { say "created a skill with no id: $created"; exit 1; }
+  say "created skill $id"
+fi
 
 # Declaring a host opens nothing. This is the second act: the workspace
 # allowing its agents to ask for it, which is an egress rule tagged with the
