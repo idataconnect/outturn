@@ -21,6 +21,11 @@ RUN mkdir -p tests && \
 COPY migrations/ migrations/
 # Read by wasmtime's bindgen! macro at compile time.
 COPY wit/ wit/
+# Embedded by include_str! at compile time: the Hollowbrook skill's manifest
+# and its file per operation. Copied rather than left to be read at runtime so
+# a missing one is a build failure here, instead of a skill whose manifest
+# points at a path an agent is told does not exist.
+COPY assets/skills/ assets/skills/
 # The agent component the runtime executes. Committed as a build artifact so
 # the image does not need the wasm toolchain.
 COPY assets/agent_default.wasm /agent_default.wasm
