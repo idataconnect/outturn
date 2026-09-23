@@ -108,29 +108,38 @@ mkdir -p "$generated"
   for feature in ${features[@]+"${features[@]}"}; do
     [[ -f "k8s/components/$feature/internal-host" ]] || continue
     while read -r entry; do
-      [[ -n "$entry" ]] || continue
+      # Blank lines and comments: the file says why that spelling and not
+      # another, which is worth more beside the value than in a README.
+      [[ -n "$entry" && "$entry" != \#* ]] || continue
       hosts="${hosts:+$hosts,}$entry"
     done <"k8s/components/$feature/internal-host"
   done
   if [[ -n "$hosts" ]]; then
     echo
     echo "patches:"
-    echo "  - target:"
-    echo "      kind: Deployment"
-    echo "      name: outturn-gateway"
-    echo "    patch: |"
-    echo "      apiVersion: apps/v1"
-    echo "      kind: Deployment"
-    echo "      metadata:"
-    echo "        name: outturn-gateway"
-    echo "      spec:"
-    echo "        template:"
-    echo "          spec:"
-    echo "            containers:"
-    echo "              - name: gateway"
-    echo "                env:"
-    echo "                  - name: OUTTURN_INTERNAL_HOSTS"
-    echo "                    value: \"$hosts\""
+    # Both tiers, because both halves of the decision read it: the gateway
+    # to decide whether a connection may go out, and the API to decide
+    # whether a rule may name the host at all. Set on one and not the other
+    # and they disagree -- the gateway would connect to a host no rule could
+    # be written for.
+    for tier in gateway api; do
+      echo "  - target:"
+      echo "      kind: Deployment"
+      echo "      name: outturn-$tier"
+      echo "    patch: |"
+      echo "      apiVersion: apps/v1"
+      echo "      kind: Deployment"
+      echo "      metadata:"
+      echo "        name: outturn-$tier"
+      echo "      spec:"
+      echo "        template:"
+      echo "          spec:"
+      echo "            containers:"
+      echo "              - name: $tier"
+      echo "                env:"
+      echo "                  - name: OUTTURN_INTERNAL_HOSTS"
+      echo "                    value: \"$hosts\""
+    done
   fi
 } >"$generated/kustomization.yaml"
 

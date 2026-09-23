@@ -59,6 +59,18 @@ impl Internal {
         Self { entries }
     }
 
+    /// The operator's list, read once.
+    ///
+    /// `from_env` logs what it found, which is right at startup and wrong on
+    /// every call: the rule validator asks this question whenever somebody
+    /// writes a rule, and a line per validation would bury the one that
+    /// matters. The environment does not change under a running process, so
+    /// reading it once is also the honest model of it.
+    pub fn shared() -> &'static Self {
+        static LIST: std::sync::OnceLock<Internal> = std::sync::OnceLock::new();
+        LIST.get_or_init(Self::from_env)
+    }
+
     pub fn from_env() -> Self {
         let list = Self::parse(&std::env::var("OUTTURN_INTERNAL_HOSTS").unwrap_or_default());
         if !list.is_empty() {
@@ -80,6 +92,21 @@ impl Internal {
     /// operator wrote too. A bare entry permits any port; one naming a port
     /// permits only that port, so `tickets.internal:8080` opens the ticketing
     /// API and not the database beside it.
+    /// Whether this host was opened at all, whatever port.
+    ///
+    /// For deciding that a rule *may* name it, which is a different question
+    /// from whether a particular request may go out -- a rule is about a host
+    /// and `allows` is about a connection. An operator who opened
+    /// `tickets:8080` has said `tickets` is a real service somebody may write
+    /// a rule for; whether port 9000 on it is reachable is settled later, by
+    /// `allows`, at the moment it is asked for.
+    pub fn names(&self, host: &str) -> bool {
+        let host = host.trim_matches(['[', ']']);
+        self.entries
+            .iter()
+            .any(|e| e.host.eq_ignore_ascii_case(host))
+    }
+
     pub fn allows(&self, host: &str, port: u16) -> bool {
         let host = host.trim_matches(['[', ']']);
         self.entries.iter().any(|e| {
@@ -136,6 +163,44 @@ impl Entry {
                 port: None,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod names_tests {
+    use super::*;
+
+    /// A bare name an operator opened is one a rule may name.
+    ///
+    /// The two halves of one decision: the gateway decides whether a
+    /// connection may go out, and the rule validator decides whether a host
+    /// may be written down at all. Before this they disagreed -- an operator
+    /// could open `tickets`, and no rule permitting `tickets` could be written
+    /// for the gateway to match, so the allowlist opened a path nothing could
+    /// use.
+    #[test]
+    fn a_host_is_named_whatever_port_was_opened() {
+        let list = Internal::parse("tickets:8080");
+        assert!(list.names("tickets"), "the host an operator opened");
+        // Whether port 9000 is reachable is `allows`, asked later, about a
+        // connection rather than about a rule.
+        assert!(list.allows("tickets", 8080));
+        assert!(!list.allows("tickets", 9000));
+    }
+
+    /// Nothing else is.
+    ///
+    /// The refusal exists to stop a workspace aiming the gateway at
+    /// `outturn-api`, and consulting the list must not become waiving it.
+    #[test]
+    fn a_host_nobody_opened_is_not_named() {
+        let list = Internal::parse("tickets:8080");
+        assert!(!list.names("outturn-api"));
+        assert!(!list.names(""));
+        assert!(
+            !Internal::parse("").names("tickets"),
+            "an empty list opens nothing"
+        );
     }
 }
 

@@ -128,6 +128,23 @@ pub fn host_matches(rule: &str, host: &str) -> bool {
     }
 }
 
+/// Whether an operator has opened this bare name.
+///
+/// A name with no dot can only be something in the network running this
+/// service, and naming it in `OUTTURN_INTERNAL_HOSTS` is exactly how an
+/// operator says that is intended. Refusing it regardless made the two halves
+/// of one decision disagree: the gateway would connect to `tickets`, and no
+/// rule permitting `tickets` could be written for it to match -- so the
+/// allowlist opened a path nothing could use.
+///
+/// Consulted rather than waived. A workspace still cannot invent `outturn-api`
+/// as a rule; it can only name what somebody outside it already opened, which
+/// is the distinction docs/egress.md draws and the reason the list is
+/// configuration rather than a table.
+fn opened_by_operator(host: &str) -> bool {
+    crate::gateway::egress::internal::Internal::shared().names(host)
+}
+
 /// Turns what someone typed into a rule, or explains why it is not one.
 ///
 /// Deliberately forgiving about form and strict about meaning. Someone adding
@@ -190,9 +207,9 @@ pub fn normalise_host(input: &str) -> Result<String, String> {
         return Ok(host);
     }
 
-    if !labels.contains('.') {
+    if !labels.contains('.') && !opened_by_operator(labels) {
         return Err(format!(
-            "{labels} has no domain, so it can only name something inside the network              running this service"
+            "{labels} has no domain, so it can only name something inside the network              running this service. An operator opens one by naming it in              OUTTURN_INTERNAL_HOSTS."
         ));
     }
 

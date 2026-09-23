@@ -1,1 +1,8 @@
+# The bare service name, which is what a cluster-internal caller writes and
+# what the resolver expands in its own namespace -- so this component works
+# wherever it is deployed rather than only in `default`.
+#
+# Naming it here is what makes it writable as an egress rule at all: the
+# validator refuses a host with no dot unless an operator opened it, which is
+# the same list the gateway connects against. Both tiers read it.
 outturn-hollowbrook:8084

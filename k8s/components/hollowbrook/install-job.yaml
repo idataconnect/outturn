@@ -25,11 +25,21 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: install
-          # curl and jq, and nothing else. The script is POSIX sh for the same
-          # reason: what it does should be legible to somebody adapting it for
-          # their own API.
-          image: ghcr.io/jqlang/jq:1.8.1
-          command: ["/bin/sh", "/install/install.sh"]
+          # Alpine plus the two tools, rather than an image that ships them.
+          # The official image is one a cluster is likely to have already, and
+          # what the Job needs is then visible here instead of inside
+          # somebody's Dockerfile -- which matters for a component meant to be
+          # copied and adapted.
+          #
+          # The cost is a package fetch each run. Acceptable for a Job that
+          # runs once at bring-up, and the alternative was the jq image, which
+          # is 842KB of jq and no shell at all: this failed with
+          # `stat /bin/sh: no such file or directory` before it ran a line.
+          image: alpine:3
+          command:
+            - /bin/sh
+            - -c
+            - apk add --no-cache curl jq >/dev/null && exec /bin/sh /install/install.sh
           env:
             - name: OUTTURN_API
               value: "http://outturn-api:8080"

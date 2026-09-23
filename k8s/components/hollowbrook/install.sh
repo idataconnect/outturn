@@ -29,30 +29,36 @@ while ! curl -sf "$api/healthz" >/dev/null 2>&1; do
 done
 
 # Signed in as the seeded admin. A real deployment would use a credential made
-# for whatever does this, with skills:write and egress rules -- not the
-# administrator -- but the dev seed's admin is who exists here.
-login=$(curl -sf "$api/v1/login" \
-  -H 'content-type: application/json' \
-  -d "{\"email\":\"${OUTTURN_ADMIN_EMAIL}\",\"password\":\"${OUTTURN_ADMIN_PASSWORD}\",\"workspace_id\":\"${OUTTURN_WORKSPACE_ID:-}\"}" \
-  -c /tmp/cookies -w '\n%{http_code}') || { say "could not sign in"; exit 1; }
-
-code=$(echo "$login" | tail -1)
-[ "$code" = "200" ] || { say "sign-in answered $code"; exit 1; }
-
-body=$(echo "$login" | sed '$d')
-status=$(echo "$body" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
-if [ "$status" = "select_workspace" ]; then
-  # More than one workspace and none named: take the first, which in a seeded
-  # cluster is the one the seed made.
-  ws=$(echo "$body" | sed -n 's/.*"workspaces":\[{"workspace_id":"\([^"]*\)".*/\1/p')
-  [ -n "$ws" ] || { say "signed in but no workspace to choose"; exit 1; }
-  curl -sf "$api/v1/session/workspace" -b /tmp/cookies -c /tmp/cookies \
-    -H 'content-type: application/json' -d "{\"workspace_id\":\"$ws\"}" >/dev/null \
-    || { say "could not select a workspace"; exit 1; }
+# for whatever does this -- skills:write and the authority to write an egress
+# rule, not an administrator -- but the dev seed's admin is who exists here.
+#
+# Two calls, and a bearer token rather than the cookie jar. The session arrives
+# as a Set-Cookie marked `Secure`, which browsers accept on localhost and curl
+# does not store over plain http at all, so a cookie jar here stays empty and
+# every call afterwards is a 401. The API expects this: "browsers send the
+# HttpOnly session cookie; service-to-service callers send a bearer token"
+# (src/api/router.rs). The token is the cookie's value, read out of the header.
+#
+# The first call asks which workspaces there are, because naming one is what
+# makes the second call return a session rather than a list.
+workspace="${OUTTURN_WORKSPACE_ID:-}"
+if [ -z "$workspace" ]; then
+  workspace=$(curl -sf "$api/v1/login" \
+    -H 'content-type: application/json' \
+    -d "{\"email\":\"${OUTTURN_ADMIN_EMAIL}\",\"password\":\"${OUTTURN_ADMIN_PASSWORD}\"}" \
+    | jq -r '.workspaces[0].workspace_id // empty')
+  [ -n "$workspace" ] || { say "signed in but there is no workspace to install into"; exit 1; }
 fi
 
+token=$(curl -sf -D - -o /dev/null "$api/v1/login" \
+  -H 'content-type: application/json' \
+  -d "{\"email\":\"${OUTTURN_ADMIN_EMAIL}\",\"password\":\"${OUTTURN_ADMIN_PASSWORD}\",\"workspace_id\":\"$workspace\"}" \
+  | grep -i '^set-cookie: outturn_session=' | sed 's/^[^=]*=//; s/;.*//')
+[ -n "$token" ] || { say "could not sign in"; exit 1; }
+auth="authorization: Bearer $token"
+
 # Already there: nothing to do, and nothing to overwrite.
-if curl -sf "$api/v1/skills" -b /tmp/cookies | grep -q "\"slug\":\"$slug\""; then
+if curl -sf "$api/v1/skills" -H "$auth" | grep -q "\"slug\":\"$slug\""; then
   say "already installed"
   exit 0
 fi
@@ -62,7 +68,7 @@ fi
 # round of every turn, so an API written into one in full is paid for
 # continuously; the agent reads an operation's file only when it needs it.
 manifest=$(cat /skill/index.md)
-created=$(curl -sf "$api/v1/skills" -b /tmp/cookies \
+created=$(curl -sf "$api/v1/skills" -H "$auth" \
   -H 'content-type: application/json' \
   -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" \
         '{slug: $slug, name: "Hollowbrook House",
@@ -77,7 +83,7 @@ say "created skill $id"
 # Declaring a host opens nothing. This is the second act: the workspace
 # allowing its agents to ask for it, which is an egress rule tagged with the
 # skill that wanted it.
-curl -sf -X POST "$api/v1/skills/$id/hosts/approve" -b /tmp/cookies >/dev/null \
+curl -sf -X POST "$api/v1/skills/$id/hosts/approve" -H "$auth" >/dev/null \
   || { say "could not approve $host"; exit 1; }
 say "approved $host"
 
@@ -87,9 +93,9 @@ say "approved $host"
 # Reached through a session because that is where the files endpoint lives,
 # though the key a workspace-scoped path resolves to names no session. A
 # throwaway one, named for what it is.
-agent=$(curl -sf "$api/v1/agents" -b /tmp/cookies | jq -r '.[0].id // empty')
+agent=$(curl -sf "$api/v1/agents" -H "$auth" | jq -r '.[0].id // empty')
 [ -n "$agent" ] || { say "no agent to open a session with"; exit 1; }
-session=$(curl -sf "$api/v1/agent-sessions" -b /tmp/cookies \
+session=$(curl -sf "$api/v1/agent-sessions" -H "$auth" \
   -H 'content-type: application/json' \
   -d "$(jq -n --arg a "$agent" '{agent_id: $a, title: "installing the Hollowbrook skill"}')" \
   | jq -r .id)
@@ -98,7 +104,7 @@ session=$(curl -sf "$api/v1/agent-sessions" -b /tmp/cookies \
 for file in /skill/*.md; do
   name=$(basename "$file")
   curl -sf -X PUT "$api/v1/agent-sessions/$session/files/workspace/api/hollowbrook/$name" \
-    -b /tmp/cookies -H 'content-type: text/markdown' --data-binary "@$file" >/dev/null \
+    -H "$auth" -H 'content-type: text/markdown' --data-binary "@$file" >/dev/null \
     || { say "could not upload $name"; exit 1; }
 done
 say "uploaded $(ls /skill/*.md | wc -l | tr -d ' ') files"
