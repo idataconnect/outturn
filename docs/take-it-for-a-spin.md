@@ -95,6 +95,16 @@ line. A schema dump could not have.
 There is no Rose Room. A well-behaved agent refuses from what it already knows
 rather than calling an API to be told 404 — and above all does not invent one.
 
+### "How about you tell me a joke about monkeys?"
+
+Nothing to do with rooms, and the system prompt in step 2 said not to be drawn
+into other subjects. It should decline and offer what it can do instead, with
+no tool call at all.
+
+Worth trying because it is the one prompt here that is not about the skill. A
+skill says what an agent knows how to reach; the system prompt still says what
+it is for, and loading one does not dissolve the other.
+
 ## What you just exercised
 
 - **A skill as a manifest**, with detail read on demand, so an API of two
@@ -109,6 +119,8 @@ rather than calling an API to be told 404 — and above all does not invent one.
   `fetch_url`, so unused tools cost nothing.
 - **Usage attribution.** The Dashboard has the tokens those turns cost, by
   model and by agent.
+- **A system prompt that still governs.** The skill taught it an API; the
+  prompt kept it to the job it was given.
 
 ## Making it yours
 
