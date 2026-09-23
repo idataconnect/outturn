@@ -47,6 +47,14 @@ store, `read_object`, `skill_version_hosts` and the files API are all in place.
 It is also what makes the fork below answerable with evidence rather than
 argument.
 
+And the premise now has evidence of its own. One run was written out by hand
+for Hollowbrook on 2026-09-22 -- `k8s/components/hollowbrook/skill/` is what a
+wizard run would produce -- and the agent read the detail file before calling,
+every time, including after the pattern was obvious. The whole design fails if
+a model guesses the call from a manifest line, so that is the assumption worth
+having tested before building on it. See *The shape, tried once* in
+[openapi-wizard.md](openapi-wizard.md).
+
 ### Platform-level egress list — an escape hatch, not a priority
 
 [egress.md](egress.md) — "An operator allowlist, by name".
@@ -298,6 +306,26 @@ stopping. Replacing it with a sentence then wrote the slug, which reaches the
 model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
+
+**Hollowbrook as a component, and one wizard run by hand** — 2026-09-22.
+`scripts/dev-mac.sh --with hollowbrook` brings the guesthouse up, opens its
+host, and installs a skill describing its API -- so the platform's own
+demonstration is one flag.
+
+The installation is a Job calling the public API rather than anything in the
+platform. The first version was a Rust module in `src/api/` with the skill
+embedded by `include_str!`, which worked and was the wrong answer: a customer
+wiring up their own service cannot add a module to outturn, and a fork to do it
+loses to every upgrade. What the Job does -- sign in, create a skill, approve
+its host, upload its files -- is what a customer does, using endpoints that
+already exist.
+
+It also found the two halves of one decision disagreeing.
+`OUTTURN_INTERNAL_HOSTS` let the gateway connect to a bare name like
+`tickets`, and the rule validator refused any host without a dot -- so an
+operator could open a path and nobody could write the rule that would use it.
+The validator consults the same list now, and the API reads it too, being the
+tier that validates.
 
 ## Undesigned, and wanted
 
