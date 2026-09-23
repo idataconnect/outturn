@@ -83,7 +83,7 @@ too rather than assuming it can pattern-match from the first.
 "Friday" is ambiguous, and it has no clock of its own. It should reach for
 `get_current_time` and resolve the date rather than guessing.
 
-### "Book the Orchard Room for Ben Upsavs please."
+### "Book the Orchard Room for John Smith please."
 
 The interesting one. `create_booking` takes a `room_id`, and you gave it a
 display name — and Hollowbrook's API is inconsistent about the field, calling
