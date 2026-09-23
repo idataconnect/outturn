@@ -140,13 +140,13 @@ of five operations and a file for each, installed by the component's Job.
 
 The question that mattered was whether a model reading a manifest line goes and
 reads the file, or guesses the call from the name. Everything here rests on it.
-Across four turns against a `qwen3.8:27b-mlx` agent, it read the detail file
+Across five turns against a `qwen3.8:27b-mlx` agent, it read the detail file
 first every time -- including the third, by which point it had seen the pattern
 twice and had every excuse to skip. It also called `load_tools` for
 `read_object` before the first of them, which is the same lazy-loading reflex a
 tier down.
 
-Five things beside that are worth recording, because each one is a place a
+Six things beside that are worth recording, because each one is a place a
 faithful rendering of a specification would have failed:
 
 - **An inconsistency the specification cannot hide.** `list_rooms` returns
@@ -168,6 +168,10 @@ faithful rendering of a specification would have failed:
   same person", and offered the three real rooms. Inventing a room is the
   failure this platform's own preamble exists to prevent, and this is that
   preamble working.
+- **A prompt that still governs.** Asked for a joke about monkeys, it declined
+  and offered what it could do instead, with no tool call. Loading a skill
+  teaches an agent what it can reach; it does not dissolve what the agent was
+  told it is for.
 
 What this does not yet say anything about is scale: five operations is where
 the split is least necessary, and a manifest for two hundred is the case the
