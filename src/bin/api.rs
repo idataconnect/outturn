@@ -123,29 +123,9 @@ async fn main() {
     let skills: Arc<dyn outturn::api::skill::SkillStore> =
         Arc::new(outturn::api::skill::PostgresSkillStore::new(pool.clone()));
 
-    let seeded = seed::dev_seed(&users, &workspaces, &roles)
+    seed::dev_seed(&users, &workspaces, &roles)
         .await
         .expect("dev seed");
-
-    // The guesthouse's skill, when an operator asked for it with
-    // `--with hollowbrook`. Into the workspace the seed just made, because
-    // that is the one somebody signing in will be looking at -- and only then:
-    // a cluster whose database already has accounts is not one to install a
-    // fixture's skill into behind somebody's back.
-    if let Some(seeded) = &seeded
-        && let Err(e) = outturn::api::hollowbrook::seed(
-            &skills,
-            storage.as_ref(),
-            seeded.workspace_id,
-            seeded.admin_id,
-        )
-        .await
-    {
-        // Said rather than fatal. The platform works without it; what is
-        // missing is a demonstration, and a pod that will not start is a worse
-        // answer to that than a line in the log.
-        tracing::error!(error = %e, "could not install the Hollowbrook skill");
-    }
 
     let validator = TokenValidator::from_env(outturn::auth::AUDIENCE_API).expect("token validator");
     let minter = TokenMinter::from_env().expect("token minter");
