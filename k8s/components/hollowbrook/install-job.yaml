@@ -1,0 +1,63 @@
+# Installs the skill that describes Hollowbrook's API, once, after the API is
+# up.
+#
+# A Job rather than anything in the platform. What it does is what a customer
+# does for their own service -- sign in, create a skill, approve its host,
+# upload its files -- using the endpoints outturn already publishes. Putting it
+# in the platform would mean a customer needed a fork to do the same thing, and
+# a fork loses to every upgrade.
+#
+# The script and the skill both come from a ConfigMap, so changing either is
+# changing a file in this component rather than rebuilding an image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: install-hollowbrook
+spec:
+  # Retried a few times, because it waits on the API and a cluster coming up
+  # cold can take longer than the wait allows.
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: install-hollowbrook
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: install
+          # curl and jq, and nothing else. The script is POSIX sh for the same
+          # reason: what it does should be legible to somebody adapting it for
+          # their own API.
+          image: ghcr.io/jqlang/jq:1.8.1
+          command: ["/bin/sh", "/install/install.sh"]
+          env:
+            - name: OUTTURN_API
+              value: "http://outturn-api:8080"
+            - name: OUTTURN_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-dev-secrets
+                  key: OUTTURN_DEV_ADMIN_EMAIL
+            - name: OUTTURN_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-dev-secrets
+                  key: OUTTURN_DEV_ADMIN_PASSWORD
+          volumeMounts:
+            - name: install
+              mountPath: /install
+            - name: skill
+              mountPath: /skill
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: install
+          configMap:
+            name: install-hollowbrook
+        - name: skill
+          configMap:
+            name: hollowbrook-skill
