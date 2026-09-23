@@ -3,7 +3,8 @@
 Turning a specification into something an agent can use, without paying for the
 specification on every turn.
 
-Designed, unbuilt.
+Designed, unbuilt -- but the shape it rests on has been tried by hand and
+held. See *The shape, tried once* below.
 
 ## Why this first
 
@@ -130,6 +131,47 @@ Response schemas are where a faithful rendering goes wrong most often. A
 specification describes every field of a resource; an agent needs the handful it
 will act on. The wizard should render the success shape at one level of depth
 and say that more is available, rather than inlining a nested object graph.
+
+## The shape, tried once
+
+Done by hand for Hollowbrook on 2026-09-22, before any of this was built:
+`k8s/components/hollowbrook/skill/` is one wizard run written out, a manifest
+of five operations and a file for each, installed by the component's Job.
+
+The question that mattered was whether a model reading a manifest line goes and
+reads the file, or guesses the call from the name. Everything here rests on it.
+Across four turns against a `qwen3.8:27b-mlx` agent, it read the detail file
+first every time -- including the third, by which point it had seen the pattern
+twice and had every excuse to skip. It also called `load_tools` for
+`read_object` before the first of them, which is the same lazy-loading reflex a
+tier down.
+
+Five things beside that are worth recording, because each one is a place a
+faithful rendering of a specification would have failed:
+
+- **An inconsistency the specification cannot hide.** `list_rooms` returns
+  `id`; `check_availability` returns the same thing as `room_id`; and
+  `create_booking` takes `room_id`. Asked to book "the Orchard Room" by its
+  display name, the agent sent the right id. The detail file flags the clash in
+  one line, which is the kind of line a schema dump does not contain.
+- **A convention stated once.** Money in pence and dates naming nights are in
+  the manifest, not repeated per operation, and both held across every call:
+  £260 for two nights at £130, and a 25th arrival with a 27th departure.
+- **A computed field used rather than recomputed.** `total_pence` is returned
+  "so you do not have to multiply", and it was taken rather than derived.
+- **A gap the agent noticed.** Asked for "Friday", it loaded `get_current_time`
+  and resolved the date rather than guessing one or asking which Friday.
+- **A call it declined to make.** Asked to book "the Rose Room", which does not
+  exist, it made no tool call at all: the room list was already in its context
+  from the first turn, so a request that was always going to 404 was refused
+  from what it already knew. It still resolved "the following Friday" and "the
+  same person", and offered the three real rooms. Inventing a room is the
+  failure this platform's own preamble exists to prevent, and this is that
+  preamble working.
+
+What this does not yet say anything about is scale: five operations is where
+the split is least necessary, and a manifest for two hundred is the case the
+*When the manifest itself is too large* section below exists for.
 
 ## Worked examples arrive later, and are observed rather than written
 
