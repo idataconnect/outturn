@@ -1,0 +1,22 @@
+Hollowbrook House is a guesthouse. You can read its rooms, find what is free
+for a stay, and make and look up bookings.
+
+Five operations. Each has a file saying how to call it; read the file for an
+operation before using it, with `read_object`. Do not guess a call from its
+name here — this list says what exists, not how to ask for it.
+
+- `list_rooms` — every room, with what it sleeps and what it costs a night.
+  Detail: `workspace/api/hollowbrook/list_rooms.md`
+- `check_availability` — which rooms are free for a stay, and what that stay
+  would cost. Detail: `workspace/api/hollowbrook/check_availability.md`
+- `list_bookings` — every booking currently held.
+  Detail: `workspace/api/hollowbrook/list_bookings.md`
+- `get_booking` — one booking, by the id given when it was made.
+  Detail: `workspace/api/hollowbrook/get_booking.md`
+- `create_booking` — reserve a room for a date range.
+  Detail: `workspace/api/hollowbrook/create_booking.md`
+
+Two things hold throughout, so they are said once here rather than in every
+file. Money is in pence, so £120 is `12000` and nothing is a decimal. Dates
+are `YYYY-MM-DD` and name nights: `arrival` is the first night and `departure`
+is the morning the guest leaves, so one night means a departure one day later.

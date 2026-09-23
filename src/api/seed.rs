@@ -6,22 +6,34 @@ use super::role::RoleStore;
 use super::user::{CreateUser, UserStore};
 use super::workspace::{CreateWorkspace, WorkspaceStore};
 
+/// What the seed made, for whatever wants to put something in it.
+///
+/// Returned rather than looked up again: the ids are in hand here, and a
+/// second lookup by slug would be a second thing to keep in step with what
+/// this function named.
+pub struct Seeded {
+    pub workspace_id: uuid::Uuid,
+    pub admin_id: uuid::Uuid,
+}
+
 /// Seeds a system admin and a starter workspace for local development.
 ///
 /// Runs only when OUTTURN_DEV_SEED is set and the users table is empty, so it
-/// is inert against any database that already has accounts.
+/// is inert against any database that already has accounts. `None` means it
+/// did not run, which is the ordinary case for any database with accounts in
+/// it.
 pub async fn dev_seed(
     users: &Arc<dyn UserStore>,
     workspaces: &Arc<dyn WorkspaceStore>,
     roles: &Arc<dyn RoleStore>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Seeded>> {
     if std::env::var("OUTTURN_DEV_SEED").is_err() {
-        return Ok(());
+        return Ok(None);
     }
 
     if !users.is_empty().await? {
         tracing::debug!("dev seed skipped: users already exist");
-        return Ok(());
+        return Ok(None);
     }
 
     let email =
@@ -68,5 +80,8 @@ pub async fn dev_seed(
         "dev seed created a system admin — never enable OUTTURN_DEV_SEED outside local development"
     );
 
-    Ok(())
+    Ok(Some(Seeded {
+        workspace_id: workspace.id,
+        admin_id: admin.id,
+    }))
 }
