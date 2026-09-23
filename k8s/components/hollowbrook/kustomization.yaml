@@ -26,3 +26,23 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 1
+  # Installs the skill that describes the API, its detail files, and the
+  # workspace's egress rule for the host -- see src/api/hollowbrook.rs. Read
+  # only by the seed, which also needs OUTTURN_DEV_SEED and an empty users
+  # table, so this cannot reach a database that already has accounts.
+  - target:
+      kind: Deployment
+      name: outturn-api
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: outturn-api
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: OUTTURN_SEED_HOLLOWBROOK
+                    value: "1"
