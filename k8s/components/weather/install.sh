@@ -1,23 +1,26 @@
 #!/bin/sh
-# Installs the Hollowbrook skill into the workspace, over the API.
+# Installs the weather skill into the workspace, over the API.
 #
-# This is the shape a customer's own integration takes. Nothing here is
-# privileged and nothing is patched into outturn: it signs in, calls the
-# endpoints the platform already publishes, and could be a script on somebody's
-# laptop instead of a Job. An integration that needed a Rust module in the
-# platform would need a fork, and a fork fights every upgrade -- which is the
-# argument ui/src/themes/README.md already makes about skinning, and it holds
-# here for the same reason.
+# The same script as k8s/components/hollowbrook/install.sh with a different
+# slug, host and skill directory -- copied rather than shared, which is the
+# honest shape for something meant to be taken and adapted. Two copies will
+# drift; a library a customer has to understand before writing their own is
+# worse.
+#
+# What it demonstrates that Hollowbrook does not: a public host over https,
+# which is the ordinary case. Hollowbrook needs the operator allowlist because
+# it is inside the cluster; api.open-meteo.com needs nothing but a workspace
+# rule, which this creates by declaring the host on the skill.
 #
 # Idempotent: a slug that already exists is left alone, so a restarted Job or a
 # redeployed component does not write a second copy.
 set -eu
 
 api="${OUTTURN_API:-http://outturn-api:8080}"
-slug=hollowbrook
-host="${HOLLOWBROOK_HOST:-outturn-hollowbrook:8084}"
+slug=weather
+host="${WEATHER_HOST:-api.open-meteo.com}"
 
-say() { echo "install-hollowbrook: $*" >&2; }
+say() { echo "install-weather: $*" >&2; }
 
 # The API has to be up. Not a race worth losing to: a Job that starts with the
 # deployment will usually get here first.
@@ -97,8 +100,8 @@ else
   created=$(curl -sf "$api/v1/skills" -H "$auth" \
     -H 'content-type: application/json' \
     -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" \
-          '{slug: $slug, name: "Hollowbrook House",
-            description: "Rooms and bookings for the guesthouse.",
+          '{slug: $slug, name: "Weather",
+            description: "Forecasts by coordinates.",
             body: $body, hosts: [$host]}')") \
     || { say "could not create the skill"; exit 1; }
 
@@ -130,7 +133,7 @@ session=$(curl -sf "$api/v1/agent-sessions" -H "$auth" \
 
 for file in /skill/*.md; do
   name=$(basename "$file")
-  curl -sf -X PUT "$api/v1/agent-sessions/$session/files/workspace/api/hollowbrook/$name" \
+  curl -sf -X PUT "$api/v1/agent-sessions/$session/files/workspace/api/weather/$name" \
     -H "$auth" -H 'content-type: text/markdown' --data-binary "@$file" >/dev/null \
     || { say "could not upload $name"; exit 1; }
 done

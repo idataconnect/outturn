@@ -1,4 +1,4 @@
-# Installs the skill that describes Hollowbrook's API, once, after the API is
+# Installs the skill that describes Weather's API, once, after the API is
 # up.
 #
 # A Job rather than anything in the platform. What it does is what a customer
@@ -12,7 +12,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: install-hollowbrook
+  name: install-weather
 spec:
   # Cleaned up shortly after it finishes.
   #
@@ -30,7 +30,7 @@ spec:
   template:
     metadata:
       labels:
-        app: install-hollowbrook
+        app: install-weather
     spec:
       restartPolicy: OnFailure
       containers:
@@ -77,7 +77,7 @@ spec:
       volumes:
         - name: install
           configMap:
-            name: install-hollowbrook
+            name: install-weather
         - name: skill
           configMap:
-            name: hollowbrook-skill
+            name: weather-skill

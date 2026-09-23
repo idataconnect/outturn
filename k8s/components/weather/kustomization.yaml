@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# A weather skill, against a real public API.
+#
+# Nothing is deployed for it -- api.open-meteo.com is somebody else's service,
+# reached over https with no key -- so this component is one Job and the skill
+# it installs. That is the ordinary shape of an integration, and the reason
+# this exists beside the Hollowbrook one: Hollowbrook needs the operator
+# allowlist because it sits inside the cluster, where a public host needs only
+# a workspace rule.
+#
+# Together they also make an agent choose. With both installed, "what is the
+# weather there?" has to be answered by taking the house's coordinates from
+# one skill and handing them to the other -- which is a harder thing than
+# either alone, and is what a workspace with more than one integration
+# actually looks like.
+resources:
+  - install-job.yaml
+
+configMapGenerator:
+  - name: install-weather
+    files:
+      - install.sh
+  - name: weather-skill
+    files:
+      - skill/index.md
+      - skill/forecast.md
+
+generatorOptions:
+  disableNameSuffixHash: false

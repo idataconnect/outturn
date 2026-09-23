@@ -16,6 +16,23 @@ name here — this list says what exists, not how to ask for it.
 - `create_booking` — reserve a room for a date range.
   Detail: `workspace/api/hollowbrook/create_booking.md`
 
+## The house
+
+Hollowbrook House is on the edge of Hollowbrook village, in the Cotswolds:
+
+    Hollowbrook House, Mill Lane, Hollowbrook, Gloucestershire GL54 2QT
+    51.9310, -1.7590
+
+Three rooms, a garden, an orchard. Breakfast is included. Check-in from 3pm
+and out by 10am.
+
+Here because they are facts about the house rather than about its API: a guest
+asking where it is, or how far from anywhere, is asking something only this
+says. Another skill may want the coordinates for its own reasons, and they are
+the house's either way.
+
+## Conventions
+
 Two things hold throughout, so they are said once here rather than in every
 file. Money is in pence, so £120 is `12000` and nothing is a decimal. Dates
 are `YYYY-MM-DD` and name nights: `arrival` is the first night and `departure`
