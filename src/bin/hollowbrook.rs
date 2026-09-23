@@ -50,6 +50,30 @@ struct Room {
     sleeps: u32,
     /// Pence, so nothing here does floating-point money.
     rate_pence: u32,
+    /// What the room is actually like, which `/rooms` deliberately does not
+    /// return.
+    ///
+    /// Two levels of detail, which is what most REST APIs do and what an agent
+    /// has to learn to navigate: the list carries enough to choose between
+    /// rooms, and `/rooms/{id}` carries everything about one. Returning this
+    /// from the list would make three descriptions arrive whenever somebody
+    /// asked what rooms there are, which is the cost the split exists to
+    /// avoid.
+    #[serde(skip_serializing)]
+    description: String,
+}
+
+/// A room with everything, for `/rooms/{id}`.
+///
+/// A separate shape rather than a flag on `Room`, so the field that the list
+/// must not return cannot be returned by it accidentally.
+#[derive(Debug, Clone, Serialize)]
+struct RoomDetail {
+    id: String,
+    name: String,
+    sleeps: u32,
+    rate_pence: u32,
+    description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,18 +162,34 @@ async fn main() {
                 name: "Garden Room".into(),
                 sleeps: 2,
                 rate_pence: 14_500,
+                description: "On the ground floor at the back of the house, with \
+                               its own door onto the walled garden. A double bed, \
+                               a small writing desk, and a shower room. Quiet, \
+                               and the easiest room to reach without stairs."
+                    .into(),
             },
             Room {
                 id: "orchard".into(),
                 name: "Orchard Room".into(),
                 sleeps: 2,
                 rate_pence: 13_000,
+                description: "First floor, and yes -- it looks out over the \
+                              orchard, which is old and not especially tidy. A \
+                              double bed and a bath rather than a shower. The \
+                              cheapest of the three, being the smallest."
+                    .into(),
             },
             Room {
                 id: "loft".into(),
                 name: "The Loft".into(),
                 sleeps: 4,
                 rate_pence: 19_500,
+                description: "The whole top floor, under the beams. A double \
+                              bed and two singles in a second room, so it takes \
+                              a family without anybody sleeping on a sofa. Low \
+                              doorways, and a steep staircase that is the reason \
+                              it is not suitable for everybody."
+                    .into(),
             },
         ],
         bookings: Mutex::new(Vec::new()),
@@ -162,6 +202,7 @@ async fn main() {
         .route("/readyz", get(|| async { "ok" }))
         .route("/openapi.json", get(openapi))
         .route("/rooms", get(list_rooms))
+        .route("/rooms/{id}", get(get_room))
         .route("/availability", get(availability))
         .route("/bookings", get(list_bookings).post(create_booking))
         .route("/bookings/{id}", get(get_booking))
@@ -188,6 +229,34 @@ fn marked<T: Serialize>(body: T) -> impl IntoResponse {
 
 async fn list_rooms(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
     marked(serde_json::json!({ "rooms": state.rooms }))
+}
+
+/// One room, with what it is actually like.
+///
+/// The description is here and not in the list, which is the shape most REST
+/// APIs have and the one an agent has to learn to navigate: enough to choose
+/// in the list, everything about one here.
+async fn get_room(State(state): State<Arc<Fixture>>, Path(id): Path<String>) -> impl IntoResponse {
+    match state.rooms.iter().find(|r| r.id == id) {
+        Some(room) => (
+            StatusCode::OK,
+            [(FIXTURE_HEADER, "hollowbrook")],
+            Json(RoomDetail {
+                id: room.id.clone(),
+                name: room.name.clone(),
+                sleeps: room.sleeps,
+                rate_pence: room.rate_pence,
+                description: room.description.clone(),
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            [(FIXTURE_HEADER, "hollowbrook")],
+            Json(serde_json::json!({ "error": "no such room" })),
+        )
+            .into_response(),
+    }
 }
 
 /// Which rooms are free for a stay.
@@ -449,6 +518,21 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
               "rate_pence": { "type": "integer", "description": "One night, in pence." }
             }
           },
+          "RoomDetail": {
+            "type": "object",
+            "description": "A room with what it is actually like, which the list does not carry.",
+            "required": ["id", "name", "sleeps", "rate_pence", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "sleeps": { "type": "integer" },
+              "rate_pence": { "type": "integer", "description": "One night, in pence." },
+              "description": {
+                "type": "string",
+                "description": "Where it is in the house, what is in it, what it overlooks."
+              }
+            }
+          },
           "Booking": {
             "type": "object",
             "required": [
@@ -497,7 +581,9 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
             "summary": "List every room, with what it sleeps and what it costs a night.",
             "description":
               "Every room the house has, whether or not it is free. Use `checkAvailability` \
-               to find out which are free for a stay.",
+               to find out which are free for a stay, and `getRoom` for what one is like -- \
+               the description is deliberately not here, so listing the rooms does not carry \
+               three of them.",
             "tags": ["rooms"],
             "responses": {
               "200": {
@@ -507,6 +593,30 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
                   "required": ["rooms"],
                   "properties": { "rooms": { "type": "array", "items": { "$ref": "#/components/schemas/Room" } } }
                 } } }
+              }
+            }
+          }
+        },
+        "/rooms/{id}": {
+          "get": {
+            "operationId": "getRoom",
+            "summary": "One room, with the full description of what it is like.",
+            "description":
+              "The description lives here rather than on /rooms, so listing the rooms \
+               does not carry three of them. Fetch this when somebody asks what a room \
+               is like, not to build a list.",
+            "tags": ["rooms"],
+            "parameters": [
+              { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+            ],
+            "responses": {
+              "200": {
+                "description": "The room.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoomDetail" } } }
+              },
+              "404": {
+                "description": "No room has that id.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
               }
             }
           }
@@ -688,11 +798,16 @@ mod tests {
         // The API an agent is given. `/healthz`, `/readyz` and `/openapi.json`
         // are how the cluster and the wizard find their way in rather than
         // things to call, and `/fixture/reset` is named for not being real.
-        let served: std::collections::BTreeSet<String> =
-            ["/rooms", "/availability", "/bookings", "/bookings/{id}"]
-                .into_iter()
-                .map(String::from)
-                .collect();
+        let served: std::collections::BTreeSet<String> = [
+            "/rooms",
+            "/rooms/{id}",
+            "/availability",
+            "/bookings",
+            "/bookings/{id}",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
 
         assert_eq!(
             described, served,

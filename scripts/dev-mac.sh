@@ -75,8 +75,12 @@ done
 generated=k8s/overlays/.generated
 mkdir -p "$generated"
 {
-  echo "# Written by scripts/dev-mac.sh. Not committed, and safe to delete:"
-  echo "# every run replaces it. Edit the base or the component instead."
+  echo "# Written by scripts/dev-mac.sh. Not committed: every run replaces it,"
+  echo "# and the base or the component is the thing to edit."
+  echo "#"
+  echo "# Do not delete it while skaffold is running. The dev loop renders this"
+  echo "# path on every rebuild, so removing it fails each one on a missing"
+  echo "# directory -- a long way from whatever removed it."
   echo "apiVersion: kustomize.config.k8s.io/v1beta1"
   echo "kind: Kustomization"
   echo

@@ -44,6 +44,7 @@ configMapGenerator:
     files:
       - skill/index.md
       - skill/list_rooms.md
+      - skill/get_room.md
       - skill/check_availability.md
       - skill/list_bookings.md
       - skill/get_booking.md

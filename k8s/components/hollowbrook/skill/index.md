@@ -1,12 +1,15 @@
 Hollowbrook House is a guesthouse. You can read its rooms, find what is free
 for a stay, and make and look up bookings.
 
-Five operations. Each has a file saying how to call it; read the file for an
+Six operations. Each has a file saying how to call it; read the file for an
 operation before using it, with `read_object`. Do not guess a call from its
 name here — this list says what exists, not how to ask for it.
 
 - `list_rooms` — every room, with what it sleeps and what it costs a night.
   Detail: `workspace/api/hollowbrook/list_rooms.md`
+- `get_room` — the full description of one room: where it is in the house,
+  what is in it, what it overlooks, and who it suits.
+  Detail: `workspace/api/hollowbrook/get_room.md`
 - `check_availability` — which rooms are free for a stay, and what that stay
   would cost. Detail: `workspace/api/hollowbrook/check_availability.md`
 - `list_bookings` — every booking currently held.
