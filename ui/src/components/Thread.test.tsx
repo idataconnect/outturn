@@ -28,6 +28,10 @@ function Harness(props: {
         ...message.metadata,
         custom: {
           ...message.metadata?.custom,
+          // The page's runtime sets this from the reply's job; a fixture may
+          // say it that way or on the message's own status.
+          live:
+            message.status?.type === 'running' || message.metadata?.custom?.live === true,
           newest:
             message.role === 'assistant' &&
             index === (props.messages ?? []).findLastIndex((m) => m.role === 'assistant'),
@@ -178,6 +182,36 @@ describe('saying a reply is still going', () => {
     render(<Harness messages={reply({ type: 'incomplete', reason: 'cancelled' })} />)
 
     expect(working()).not.toBeInTheDocument()
+  })
+
+  it('keeps the mark moving on a reply while a message queues behind it', () => {
+    // A message queued mid-reply wears the hourglass, not a second mark. And
+    // the reply keeps moving: assistant-ui marks only the thread's last
+    // message running, and the queued one is last, so reading its status
+    // settled the reply into its finished line mid-stream.
+    render(
+      <Harness
+        running
+        messages={[
+          { role: 'user', content: [{ type: 'text', text: 'first' }] },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'half an answ' }],
+            // No status of its own, as the page's runtime sends it.
+            metadata: { custom: { live: true } },
+          },
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'and also' }],
+            metadata: { custom: { status: { kind: 'steering' } } },
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.queryAllByRole('status', { name: /Working|Finished/ })).toHaveLength(1)
+    expect(screen.getByRole('status', { name: /Working/ })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: /^Queued/ })).toBeInTheDocument()
   })
 
   it('draws one mark when an older reply is the one still running', () => {

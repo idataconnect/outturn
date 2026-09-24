@@ -195,6 +195,11 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
   metadata: {
     custom: {
       status: message.status ?? null,
+      // Whether this reply's turn is still going, from its job. assistant-ui's
+      // own `running` is only ever on the last message in the thread, so a
+      // message queued below a streaming reply took it away and the reply's
+      // mark settled into its finished line mid-stream.
+      live: message.live === true,
       // A compaction summary is shown as one. It is stored as an assistant
       // message because that is what it is -- a model wrote it -- but it was
       // never said to the reader, and drawn as ordinary speech it reads as the

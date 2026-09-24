@@ -183,8 +183,8 @@ describe('the mark when the turn ends', () => {
       <Working phase="held" label="Waiting for the model" />,
     )
 
-    // `queued`, `steering` and `waiting` all move the same way, because they
-    // are the same news. What separates them is only ever said in words.
+    // `waiting` and `retrying` move the same way, because they are the same
+    // news. What separates them is only ever said in words.
     expect(getByRole('status')).toHaveAttribute('aria-label', 'Waiting for the model')
   })
 
