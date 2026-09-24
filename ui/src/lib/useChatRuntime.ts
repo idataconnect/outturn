@@ -13,6 +13,7 @@ import {
   sendMessage,
   type Delivery,
   type Message,
+  type MessagePart,
   type ToolCallRecord,
 } from './chat'
 
@@ -272,6 +273,97 @@ function parts(message: Annotated): ThreadMessageLike['content'] {
   return out as ThreadMessageLike['content']
 }
 
+/**
+ * Draws a reply as separate boxes wherever a message was handed to it
+ * mid-turn, with that message between them.
+ *
+ * One turn writes one reply, however many rounds it takes -- so a message the
+ * agent took at a round boundary is stored as a single reply that answers it,
+ * and sorted by id the message lands below that reply. What the reader should
+ * see is what happened: the reply so far, their message, and the rest as the
+ * answer to it. Only the drawing changes. The stored reply, and what the
+ * model is sent next turn, stay exactly as they were.
+ *
+ * Later boxes get ids derived from the reply's, which keep its timestamp.
+ * Only the last one wears the mark and the live state, since it is the one
+ * still being written.
+ */
+export function splitAtSteers(messages: Annotated[]): Annotated[] {
+  const byMessage = new Map(messages.map((m) => [m.id, m]))
+  // Only where the message is on this page; a split with nothing to show
+  // between its halves would be a break with no reason given.
+  const steerOf = (part: MessagePart) =>
+    part.type === 'steer' && byMessage.get(part.id)?.role === 'user' ? part.id : null
+  const placed = new Set(
+    messages.flatMap((m) =>
+      m.role === 'assistant' ? (m.metadata.parts ?? []).map(steerOf).filter((id) => id !== null) : [],
+    ),
+  )
+  if (placed.size === 0) return messages
+
+  const out: Annotated[] = []
+  for (const m of messages) {
+    if (placed.has(m.id)) continue
+    const parts = m.role === 'assistant' ? m.metadata.parts : undefined
+    if (!parts || !parts.some((p) => steerOf(p) !== null)) {
+      out.push(m)
+      continue
+    }
+
+    const segments: { parts: MessagePart[]; before: string | null }[] = [
+      { parts: [], before: null },
+    ]
+    for (const part of parts) {
+      const steer = steerOf(part)
+      if (steer !== null) segments.push({ parts: [], before: steer })
+      else if (part.type !== 'steer') segments[segments.length - 1].parts.push(part)
+    }
+
+    const calls = m.metadata.tool_calls ?? []
+    const inAnyPart = (id: string) => parts.some((p) => p.type === 'call' && p.id === id)
+    segments.forEach((segment, i) => {
+      const last = i === segments.length - 1
+      if (segment.before !== null) {
+        // Shown where it was taken, so it needs no badge saying so. But until
+        // the box after it has something in it, that box is not drawn, and
+        // nothing on screen would say the agent is working on it -- so the
+        // message says what a fresh prompt would.
+        const answering = last && m.live === true && segment.parts.length === 0
+        out.push({
+          ...byMessage.get(segment.before)!,
+          status: answering ? { kind: 'waiting' } : null,
+        })
+      }
+      // The host streams a blank line before a later round's first words.
+      // It separated rounds in one box; at the top of a new one it is space.
+      const firstText = segment.parts.findIndex((p) => p.type === 'text')
+      const own = segment.parts.map((p, j) =>
+        i > 0 && j === firstText && p.type === 'text'
+          ? { ...p, text: p.text.replace(/^\s+/, '') }
+          : p,
+      )
+      out.push({
+        ...m,
+        id: i === 0 ? m.id : `${m.id}:${i}`,
+        content: own.map((p) => (p.type === 'text' ? p.text : '')).join(''),
+        metadata: {
+          ...m.metadata,
+          parts: own,
+          // Each box draws its own calls. A call not yet in the parts -- read
+          // between the two live updates -- belongs to the one being written.
+          tool_calls: calls.filter(
+            (c) =>
+              own.some((p) => p.type === 'call' && p.id === c.id) || (last && !inAnyPart(c.id)),
+          ),
+        },
+        newest: last && m.newest,
+        live: last && m.live,
+      })
+    })
+  }
+  return out
+}
+
 /** Ids are UUIDv7, so lexical order is insertion order. */
 const byId = (a: Message, b: Message) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 
@@ -480,6 +572,23 @@ export function useChatRuntime(
           // and nothing is swapped when the turn completes.
           let gapped = false
           for (const event of result.events) {
+            // In the same pass as the text, so a message taken mid-turn lands
+            // between the words before it and the words answering it.
+            if (event.kind === 'chat.steer') {
+              const { message_id, id } = event.payload as { message_id: string; id: string }
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== message_id) return m
+                  const parts = m.metadata.parts ?? []
+                  if (parts.some((p) => p.type === 'steer' && p.id === id)) return m
+                  return {
+                    ...m,
+                    metadata: { ...m.metadata, parts: [...parts, { type: 'steer', id }] },
+                  }
+                }),
+              )
+              continue
+            }
             if (event.kind !== 'chat.delta') continue
             const { message_id, idx, text } = event.payload as {
               message_id: string
@@ -716,7 +825,7 @@ export function useChatRuntime(
   )
 
   const annotated = useMemo(
-    () => annotate(messages, retrying, failures),
+    () => splitAtSteers(annotate(messages, retrying, failures)),
     [messages, retrying, failures],
   )
 

@@ -86,7 +86,7 @@ impl PostgresChatStore {
                             order by e.id) as events \
                  from events e, bound \
                  where e.session_id = $1 \
-                   and e.kind in ('chat.delta', 'chat.tool', 'chat.tool_result') \
+                   and e.kind in ('chat.delta', 'chat.tool', 'chat.tool_result', 'chat.steer') \
                    and e.id <= bound.cursor \
                    and e.id > (select id from win order by id limit 1) \
                    and (e.payload->>'message_id')::uuid in ( \
@@ -182,6 +182,9 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
                 parts.push(serde_json::json!({ "type": "call", "id": call["id"] }));
                 calls.push(call.clone());
             }
+            Some("chat.steer") => {
+                parts.push(serde_json::json!({ "type": "steer", "id": payload["id"] }));
+            }
             Some("chat.tool_result") => {
                 if let Some(call) = calls.iter_mut().find(|c| c["id"] == payload["id"]) {
                     call["details"] = payload["details"].clone();
@@ -191,7 +194,7 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
             _ => {}
         }
     }
-    if calls.is_empty() {
+    if parts.iter().all(|p| p["type"] == "text") {
         return metadata;
     }
     let mut metadata = match metadata {
@@ -646,6 +649,24 @@ mod tests {
         assert_eq!(
             metadata["tool_calls"],
             json!([{ "id": "c1", "name": "fetch_url", "details": "200", "is_error": false }])
+        );
+    }
+
+    #[test]
+    fn a_message_taken_mid_turn_keeps_its_place() {
+        let events = json!([
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "load_tools" } } },
+            { "kind": "chat.steer", "payload": { "id": "u2" } },
+            { "kind": "chat.delta", "payload": { "text": "Here is more." } },
+        ]);
+
+        assert_eq!(
+            replay(json!({}), &events)["parts"],
+            json!([
+                { "type": "call", "id": "c1" },
+                { "type": "steer", "id": "u2" },
+                { "type": "text", "text": "Here is more." },
+            ])
         );
     }
 

@@ -20,6 +20,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 
 /// How the fake should answer the next request.
+/// The id the gateway gives the message it reports as sent mid-turn.
+pub const STEER_ID: &str = "01a0d324-7a4b-73e2-ac02-0057d28599a2";
+
 #[derive(Clone, Debug)]
 pub enum Behavior {
     /// Stream this text, split into chunks of a few characters.
@@ -241,7 +244,7 @@ async fn completions_stream(
             lines.push(format!(
                 "{}\n",
                 serde_json::json!({
-                    "outturn": { "pending": [{ "content": steer, "delivery": "steer" }] }
+                    "outturn": { "pending": [{ "id": STEER_ID, "content": steer, "delivery": "steer" }] }
                 })
             ));
             ndjson(lines)
@@ -262,7 +265,7 @@ async fn completions_stream(
                 lines.push(format!(
                     "{}\n",
                     serde_json::json!({
-                        "outturn": { "pending": [{ "content": steer, "delivery": "steer" }] }
+                        "outturn": { "pending": [{ "id": STEER_ID, "content": steer, "delivery": "steer" }] }
                     })
                 ));
             }

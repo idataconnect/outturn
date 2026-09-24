@@ -218,6 +218,7 @@ impl Puller {
             on_tool_result: Some(sinks.2),
             on_usage: Some(sinks.3),
             on_write: Some(sinks.4),
+            on_absorbed: Some(sinks.5),
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,
