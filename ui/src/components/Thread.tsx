@@ -11,6 +11,7 @@ import {
   CircleSlash,
   Copy,
   FileText,
+  Hourglass,
   Loader,
   Merge,
   Quote,
@@ -45,22 +46,23 @@ import { ApiError } from '../lib/api'
 /**
  * Whether a status is one the mark can draw as movement.
  *
- * `queued`, `steering` and `waiting` are all the same news to a reader --
- * something has your message and nothing has come back -- so they are all the
- * same movement, and what separates them goes in the label. `retrying` joins
- * them because it is also a turn still in flight; it says so in words rather
- * than by moving differently, since a reader cannot be expected to tell two
- * pulse rates apart and guess which means what.
+ * `waiting` is something has your message and nothing has come back.
+ * `retrying` joins it because it is also a turn in flight with nothing on
+ * screen yet; it says so in words rather than by moving differently, since a
+ * reader cannot be expected to tell two pulse rates apart and guess which
+ * means what.
+ *
+ * `queued` and `steering` are not among them. A message queued behind a reply
+ * sits under that reply, which is still wearing the mark -- drawing a second
+ * one under the prompt put two marks on screen, and taking the reply's away
+ * stopped it animating while it streamed. They keep the hourglass instead: a
+ * badge says "in line" without claiming to be where the conversation is.
  *
  * The rest are terminal, and a mark that draws movement has nothing true to
  * say about them. They stay as badges under the prompt.
  */
 function heldLabel(status: MessageStatus): string | null {
   switch (status.kind) {
-    case 'queued':
-      return 'Queued'
-    case 'steering':
-      return 'Queued: it will join the reply being written'
     case 'waiting':
       return 'Waiting for the model'
     case 'retrying':
@@ -125,6 +127,18 @@ function describe(status: MessageStatus): {
 } {
   const muted = 'text-surface-500 dark:text-surface-400'
   switch (status.kind) {
+    case 'queued':
+      return {
+        icon: <Hourglass size={14} aria-hidden />,
+        label: 'Queued',
+        tone: muted,
+      }
+    case 'steering':
+      return {
+        icon: <Hourglass size={14} aria-hidden />,
+        label: 'Queued: it will join the reply being written',
+        tone: muted,
+      }
     case 'absorbed':
       return {
         icon: <Merge size={14} aria-hidden />,
@@ -214,7 +228,10 @@ function AssistantMessage() {
   // the one after some text has arrived, where a tool call is being set up and
   // nothing streams. `StatusLine`'s `waiting` has ended by then, and without
   // this a half-finished reply is indistinguishable from a finished one.
-  const running = useAuiState((s) => s.message.status?.type === 'running')
+  // Read from the job rather than from `message.status`: assistant-ui marks
+  // only the thread's last message running, and a message queued behind this
+  // reply is last.
+  const running = useAuiState((s) => s.message.metadata.custom?.live === true)
   // The newest reply in the transcript, which is the only one that wears the
   // finished mark. Taken from the transcript rather than from what this tab
   // watched: a component only knows what it saw, so every reply it watched
