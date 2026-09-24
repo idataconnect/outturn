@@ -753,6 +753,70 @@ async fn streamed_session(
     (session.id, store)
 }
 
+/// A reply still being written is empty in its row, so a reload rebuilds it
+/// from its events. Rebuilding only the text dropped every tool call the turn
+/// had made so far, and the order they fell between the words, until the
+/// turn finished and stored them.
+#[tokio::test]
+async fn transcript_mid_turn_keeps_the_tool_calls_so_far() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    let reply = store
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("reply");
+
+    let feed = [
+        (
+            "chat.delta",
+            serde_json::json!({ "message_id": reply.id, "idx": 0, "text": "Checking." }),
+        ),
+        (
+            "chat.tool",
+            serde_json::json!({ "message_id": reply.id, "call": { "id": "c1", "name": "fetch_url" } }),
+        ),
+        (
+            "chat.tool_result",
+            serde_json::json!({ "message_id": reply.id, "id": "c1", "details": "200", "is_error": false }),
+        ),
+        (
+            "chat.delta",
+            serde_json::json!({ "message_id": reply.id, "idx": 1, "text": "\n\nIt is" }),
+        ),
+    ];
+    for (kind, payload) in feed {
+        events::append(pool, workspace, Some(session_id), kind, payload)
+            .await
+            .expect("event");
+    }
+
+    let history = store.messages(session_id).await.expect("history");
+    let message = &history.messages[0];
+    assert_eq!(message.content, "Checking.\n\nIt is");
+    assert_eq!(message.delta_next, 2);
+    assert_eq!(
+        message.metadata["parts"],
+        serde_json::json!([
+            { "type": "text", "text": "Checking." },
+            { "type": "call", "id": "c1" },
+            { "type": "text", "text": "\n\nIt is" },
+        ])
+    );
+    assert_eq!(message.metadata["tool_calls"][0]["details"], "200");
+
+    finish!(db);
+}
+
 /// A reply that was streamed and then completed must read back exactly once.
 ///
 /// The deltas stay in the event log after the turn ends. A client that loaded

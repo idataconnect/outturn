@@ -79,21 +79,27 @@ impl PostgresChatStore {
              ), \
              streamed as ( \
                  select (e.payload->>'message_id')::uuid as message_id, \
-                        count(*)::int as delta_next, \
-                        string_agg(e.payload->>'text', '' order by e.id) as text \
+                        (count(*) filter (where e.kind = 'chat.delta'))::int as delta_next, \
+                        coalesce(string_agg(e.payload->>'text', '' order by e.id) \
+                            filter (where e.kind = 'chat.delta'), '') as text, \
+                        jsonb_agg(jsonb_build_object('kind', e.kind, 'payload', e.payload) \
+                            order by e.id) as events \
                  from events e, bound \
-                 where e.session_id = $1 and e.kind = 'chat.delta' and e.id <= bound.cursor \
+                 where e.session_id = $1 \
+                   and e.kind in ('chat.delta', 'chat.tool', 'chat.tool_result') \
+                   and e.id <= bound.cursor \
                    and e.id > (select id from win order by id limit 1) \
                    and (e.payload->>'message_id')::uuid in ( \
                        select m.id from agent_messages m \
                        join win w on w.id = m.id \
-                       where m.role = 'assistant' and m.content = '') \
+                       where m.role = 'assistant' and m.content = '' \
+                         and not m.metadata ? 'tool_calls') \
                  group by 1 \
              ) \
              select m.id, m.session_id, m.role, m.metadata, \
                     case when m.content = '' then coalesce(s.text, '') else m.content end \
                         as content, \
-                    coalesce(s.delta_next, 0) as delta_next, \
+                    coalesce(s.delta_next, 0) as delta_next, s.events as streamed, \
                     m.model, m.prompt_tokens, m.completion_tokens, \
                     m.replies_to, m.absorbed_by, \
                     case when m.role = 'user' then ( \
@@ -127,11 +133,74 @@ impl PostgresChatStore {
         let has_more = rows.first().map(|r| r.get("has_more")).unwrap_or(false);
 
         Ok(History {
-            messages: rows.iter().map(read_message).collect(),
+            messages: rows
+                .iter()
+                .map(|row| {
+                    let mut message = read_message(row);
+                    if let Ok(Some(events)) =
+                        row.try_get::<Option<serde_json::Value>, _>("streamed")
+                    {
+                        message.metadata = replay(message.metadata, &events);
+                    }
+                    message
+                })
+                .collect(),
             cursor,
             has_more,
         })
     }
+}
+
+/// A reply still being written, rebuilt from the events it has produced.
+///
+/// Its row is empty until the turn ends, so the text comes back from the
+/// deltas -- and the tool calls, and the order they fell between the text,
+/// come back from the same events, folded the way the browser folds them
+/// live. Without this a reload mid-turn showed the words and lost every round
+/// of work between them, until the turn finished and put them all back.
+fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json::Value {
+    let mut calls: Vec<serde_json::Value> = Vec::new();
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    for event in events.as_array().into_iter().flatten() {
+        let payload = &event["payload"];
+        match event["kind"].as_str() {
+            Some("chat.delta") => {
+                let text = payload["text"].as_str().unwrap_or_default();
+                match parts.last_mut() {
+                    Some(last) if last["type"] == "text" => {
+                        let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
+                        last["text"] = serde_json::json!(joined);
+                    }
+                    _ => parts.push(serde_json::json!({ "type": "text", "text": text })),
+                }
+            }
+            Some("chat.tool") => {
+                let call = &payload["call"];
+                if calls.iter().any(|c| c["id"] == call["id"]) {
+                    continue;
+                }
+                parts.push(serde_json::json!({ "type": "call", "id": call["id"] }));
+                calls.push(call.clone());
+            }
+            Some("chat.tool_result") => {
+                if let Some(call) = calls.iter_mut().find(|c| c["id"] == payload["id"]) {
+                    call["details"] = payload["details"].clone();
+                    call["is_error"] = payload["is_error"].clone();
+                }
+            }
+            _ => {}
+        }
+    }
+    if calls.is_empty() {
+        return metadata;
+    }
+    let mut metadata = match metadata {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    metadata.insert("tool_calls".into(), serde_json::Value::Array(calls));
+    metadata.insert("parts".into(), serde_json::Value::Array(parts));
+    serde_json::Value::Object(metadata)
 }
 
 fn internal(e: sqlx::Error) -> ChatError {
@@ -544,5 +613,45 @@ impl ChatStore for PostgresChatStore {
         .map_err(internal)?;
 
         Ok(read_message(&row))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay;
+    use serde_json::json;
+
+    #[test]
+    fn a_reload_mid_turn_keeps_the_rounds_in_order() {
+        let events = json!([
+            { "kind": "chat.delta", "payload": { "text": "Let me " } },
+            { "kind": "chat.delta", "payload": { "text": "look." } },
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "fetch_url" } } },
+            { "kind": "chat.tool_result", "payload": { "id": "c1", "details": "200", "is_error": false } },
+            // A poll overlapping a reload can see the same call twice.
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "fetch_url" } } },
+            { "kind": "chat.delta", "payload": { "text": "\n\nIt says" } },
+        ]);
+
+        let metadata = replay(json!({}), &events);
+
+        assert_eq!(
+            metadata["parts"],
+            json!([
+                { "type": "text", "text": "Let me look." },
+                { "type": "call", "id": "c1" },
+                { "type": "text", "text": "\n\nIt says" },
+            ])
+        );
+        assert_eq!(
+            metadata["tool_calls"],
+            json!([{ "id": "c1", "name": "fetch_url", "details": "200", "is_error": false }])
+        );
+    }
+
+    #[test]
+    fn text_alone_leaves_the_metadata_as_it_was() {
+        let events = json!([{ "kind": "chat.delta", "payload": { "text": "hi" } }]);
+        assert_eq!(replay(json!({}), &events), json!({}));
     }
 }
