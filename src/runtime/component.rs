@@ -94,6 +94,10 @@ pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 /// Reports what a tool produced, for the reader rather than the model.
 pub type ToolResultSink = Arc<dyn Fn(&ToolOutcome) + Send + Sync>;
 
+/// Reports the messages the guest has just been handed mid-turn, by id, at
+/// the moment it took them -- which is where in the reply they belong.
+pub type AbsorbedSink = Arc<dyn Fn(&[uuid::Uuid]) + Send + Sync>;
+
 /// What one model call cost, and who served it.
 ///
 /// Reported per call rather than summed, because a bill is cut per call: a
@@ -153,6 +157,7 @@ pub struct AgentHost {
     on_tool_result: Option<ToolResultSink>,
     on_usage: Option<UsageSink>,
     on_write: Option<WriteSink>,
+    on_absorbed: Option<AbsorbedSink>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
     /// Tools the guest should offer without being asked, by name.
@@ -166,8 +171,9 @@ pub struct AgentHost {
     rounds_used: u32,
     /// What the user has said since this turn began, as reported by the
     /// gateway on the responses it was already sending. Drained when the guest
-    /// asks, so each message is injected once.
-    arrivals: Vec<Arrival>,
+    /// asks, so each message is injected once. Each keeps the id of the
+    /// message it came from, which the guest never sees.
+    arrivals: Vec<(Arrival, Option<uuid::Uuid>)>,
     /// Whether somebody has asked this turn to stop, as reported by the
     /// gateway on the same responses.
     ///
@@ -936,7 +942,16 @@ impl outturn::agent::host::Host for AgentHost {
     }
 
     async fn pending_input(&mut self) -> Vec<Arrival> {
-        std::mem::take(&mut self.arrivals)
+        let (arrivals, ids): (Vec<Arrival>, Vec<Option<uuid::Uuid>>) =
+            std::mem::take(&mut self.arrivals).into_iter().unzip();
+        // Reported here rather than when the gateway handed them over: this
+        // is the round boundary the guest chose, so it is where the reply
+        // actually changed course.
+        let ids: Vec<uuid::Uuid> = ids.into_iter().flatten().collect();
+        if let (Some(sink), false) = (&self.on_absorbed, ids.is_empty()) {
+            sink(&ids);
+        }
+        arrivals
     }
 
     async fn current_limits(&mut self) -> Limits {
@@ -1014,7 +1029,7 @@ async fn stream_completion(
     reply_id: &uuid::Uuid,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
-) -> anyhow::Result<(Completion, Vec<Arrival>, Served)> {
+) -> anyhow::Result<(Completion, Vec<(Arrival, Option<uuid::Uuid>)>, Served)> {
     use futures::StreamExt;
 
     let response = http
@@ -1066,7 +1081,7 @@ async fn stream_completion(
     // Tool calls arrive in fragments keyed by index, and the arguments are a
     // JSON string spread across chunks. Kept sparse by index rather than
     // pushed, since a provider is free to interleave two calls.
-    let mut arrivals: Vec<Arrival> = Vec::new();
+    let mut arrivals: Vec<(Arrival, Option<uuid::Uuid>)> = Vec::new();
 
     while let Some(bytes) = stream.next().await {
         buffer.push_str(std::str::from_utf8(&bytes?)?);
@@ -1113,10 +1128,19 @@ async fn stream_completion(
             if let Some(outturn) = chunk.get("outturn").filter(|o| !o.is_null()) {
                 if let Some(pending) = outturn["pending"].as_array() {
                     for message in pending {
-                        arrivals.push(Arrival {
-                            content: message["content"].as_str().unwrap_or_default().to_string(),
-                            delivery: message["delivery"].as_str().unwrap_or("steer").to_string(),
-                        });
+                        arrivals.push((
+                            Arrival {
+                                content: message["content"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                delivery: message["delivery"]
+                                    .as_str()
+                                    .unwrap_or("steer")
+                                    .to_string(),
+                            },
+                            message["id"].as_str().and_then(|id| id.parse().ok()),
+                        ));
                     }
                 }
                 // Sticky: a cancel is not withdrawn by a later round that does
@@ -1338,6 +1362,7 @@ pub struct RunOptions {
     pub on_tool_result: Option<ToolResultSink>,
     pub on_usage: Option<UsageSink>,
     pub on_write: Option<WriteSink>,
+    pub on_absorbed: Option<AbsorbedSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -1468,6 +1493,7 @@ impl AgentRunner {
             on_tool_result: options.on_tool_result,
             on_usage: options.on_usage,
             on_write: options.on_write,
+            on_absorbed: options.on_absorbed,
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.

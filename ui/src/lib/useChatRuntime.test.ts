@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { annotate, withQuote } from './useChatRuntime'
+import { annotate, splitAtSteers, withQuote } from './useChatRuntime'
 import type { Message } from './chat'
 
 /** A stored message, with only what `annotate` reads. */
@@ -177,5 +177,88 @@ describe('a reply that has not said anything yet', () => {
     // going nowhere, or a model that answered with nothing at all.
     expect(annotate(pair('succeeded'), new Set(), new Map()).find((m) => m.id === 'u1')?.status)
       .toMatchObject({ kind: 'silent' })
+  })
+})
+
+describe('a message taken into a reply mid-turn', () => {
+  // The shape of a real session: a question, a reply whose first round was a
+  // tool call, and a second question the agent took at that round boundary
+  // and answered in the rest of the same reply.
+  const session = () => [
+    message({ id: 'u1', role: 'user', content: 'What day is it?', job_state: 'succeeded' }),
+    message({
+      id: 'a1',
+      role: 'assistant',
+      replies_to: 'u1',
+      content: 'Checking.\n\nI can do lots.',
+      metadata: {
+        tool_calls: [
+          { id: 'c1', name: 'load_tools', action: 'Loading', details: '{}' },
+          { id: 'c2', name: 'get_current_time', action: 'Clock', details: '{}' },
+        ],
+        parts: [
+          { type: 'text', text: 'Checking.' },
+          { type: 'call', id: 'c1' },
+          { type: 'steer', id: 'u2' },
+          { type: 'call', id: 'c2' },
+          { type: 'text', text: '\n\nI can do lots.' },
+        ],
+      },
+    }),
+    message({
+      id: 'u2',
+      role: 'user',
+      content: 'What else can you do?',
+      absorbed_by: 'a1',
+      job_state: 'succeeded',
+    }),
+  ]
+  const drawn = (msgs: Message[]) => splitAtSteers(annotate(msgs, new Set(), new Map()))
+
+  it('is drawn between the reply so far and the rest of it', () => {
+    const out = drawn(session())
+
+    expect(out.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a1:1'])
+    expect(out[1].metadata.parts).toEqual([
+      { type: 'text', text: 'Checking.' },
+      { type: 'call', id: 'c1' },
+    ])
+    expect(out[1].metadata.tool_calls?.map((c) => c.id)).toEqual(['c1'])
+    // The round separator starts the new box rather than sitting above it.
+    expect(out[3].metadata.parts).toEqual([
+      { type: 'call', id: 'c2' },
+      { type: 'text', text: 'I can do lots.' },
+    ])
+    expect(out[3].metadata.tool_calls?.map((c) => c.id)).toEqual(['c2'])
+    // Where it sits says it was taken; a badge saying so as well is noise.
+    expect(out[2].status).toBeNull()
+  })
+
+  it('gives the mark and the live state only to the box being written', () => {
+    const msgs = session()
+    msgs[0].job_state = 'running'
+    const out = drawn(msgs)
+
+    expect(out.find((m) => m.id === 'a1')).toMatchObject({ newest: false, live: false })
+    expect(out.find((m) => m.id === 'a1:1')).toMatchObject({ newest: true, live: true })
+  })
+
+  it('says the agent is on it until the answer has begun', () => {
+    // Taken, but the model has not said anything back yet: the box after it
+    // is empty and not drawn, so the message carries the waiting mark.
+    const msgs = session()
+    msgs[0].job_state = 'running'
+    msgs[1].metadata.parts = msgs[1].metadata.parts!.slice(0, 3)
+    const out = drawn(msgs)
+
+    expect(out.find((m) => m.id === 'u2')?.status).toEqual({ kind: 'waiting' })
+  })
+
+  it('is left where it was when the message is not on the page', () => {
+    // Paging back can load a reply without the message it took; splitting
+    // around nothing would be a break with no reason shown.
+    const msgs = session().filter((m) => m.id !== 'u2')
+
+    expect(drawn(msgs).map((m) => m.id)).toEqual(['u1', 'a1'])
   })
 })

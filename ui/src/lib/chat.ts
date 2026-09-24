@@ -21,6 +21,10 @@ export type ToolCallRecord = {
 export type MessagePart =
   | { type: 'text'; text: string }
   | { type: 'call'; id: string }
+  /** The point a message the user sent mid-turn was handed to the agent,
+   *  naming that message. The reply is drawn split here, with the message
+   *  between its halves, since what follows is answering it. */
+  | { type: 'steer'; id: string }
 
 export type Message = {
   /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
@@ -94,6 +98,9 @@ export type ChatEvent =
         is_error: boolean
       }
     }
+  /** A message sent mid-turn was handed to the agent, at this point in the
+   *  reply. `id` is the user message; `message_id` the reply it joined. */
+  | { id: string; kind: 'chat.steer'; payload: { message_id: string; id: string } }
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
   /** The turn failed. `message_id` names the user message it was answering. */
   | { id: string; kind: 'chat.error'; payload: { message: string; message_id?: string } }

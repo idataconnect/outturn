@@ -62,6 +62,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_tool_result: None,
         on_usage: None,
         on_write: None,
+        on_absorbed: None,
         storage: None,
         workspace_id: Uuid::now_v7(),
         agent_id: Uuid::now_v7(),
@@ -686,19 +687,32 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
     })
     .await;
 
+    // Which message the guest was handed, reported when it took it -- the
+    // point the reply changed course, which is where the reader is shown it.
+    let absorbed = Arc::new(Mutex::new(Vec::<Uuid>::new()));
+    let mut options = options(&gateway, None);
+    options.on_absorbed = Some({
+        let absorbed = Arc::clone(&absorbed);
+        Arc::new(move |ids: &[Uuid]| absorbed.lock().expect("lock").extend_from_slice(ids))
+    });
+
     let runner = runner();
     let reply = runner
         .run(
             &component(),
             user("What day is it?"),
             String::new(),
-            options(&gateway, None),
+            options,
         )
         .await
         .expect("run")
         .0;
 
     assert_eq!(reply, "2026.");
+    assert_eq!(
+        *absorbed.lock().expect("lock"),
+        vec![common::fake_gateway::STEER_ID.parse::<Uuid>().unwrap()],
+    );
 
     // The second call carries the interruption, marked as having arrived
     // during the work rather than as an orderly next question.

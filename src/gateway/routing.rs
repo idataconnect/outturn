@@ -152,8 +152,9 @@ impl ProviderCache {
 /// A message the user sent while a turn was already running.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Pending {
-    /// Which message this was, so the browser can be told it was taken.
-    #[serde(skip)]
+    /// Which message this was, so the browser can be told it was taken --
+    /// and, carried on to the runtime, so the reply can record where in it
+    /// the message was handed to the agent.
     pub id: Uuid,
     pub content: String,
     pub delivery: String,

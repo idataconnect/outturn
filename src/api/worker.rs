@@ -521,6 +521,27 @@ impl Worker {
                 }
 
                 match serde_json::from_str::<ExecuteEvent>(&line) {
+                    Ok(ExecuteEvent::Absorbed { ids }) => {
+                        // Where the reply changed course. The stored text is
+                        // untouched -- it is still what streamed -- but the
+                        // reader is shown the message here, splitting the
+                        // reply around it, rather than below a reply that
+                        // went on to answer it.
+                        for id in ids {
+                            parts.push(serde_json::json!({"type": "steer", "id": id}));
+                            events::append(
+                                &self.pool,
+                                payload.workspace_id,
+                                Some(payload.session_id),
+                                "chat.steer",
+                                serde_json::json!({
+                                    "message_id": message_id,
+                                    "id": id,
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
                     Ok(ExecuteEvent::Delta { idx, text }) => {
                         match parts.last_mut() {
                             Some(p) if p["type"] == "text" => {

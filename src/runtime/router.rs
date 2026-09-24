@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::component::{
-    AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink, ToolSink,
-    UsageSink, WriteSink,
+    AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
+    ToolSink, UsageSink, WriteSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -162,6 +162,11 @@ pub enum ExecuteEvent {
         content: String,
         is_error: bool,
     },
+    /// The guest took messages the user sent mid-turn, at a round boundary.
+    /// Reported where it happened, so the reply can record the point its
+    /// course changed and the reader can see the message there rather than
+    /// below a reply that answered it.
+    Absorbed { ids: Vec<uuid::Uuid> },
     /// One model call finished, and this is what it cost. Emitted per call
     /// rather than summed at the end, so a turn that fails after three calls
     /// still bills for three, and a turn that fell back mid-way names both
@@ -224,7 +229,14 @@ pub enum ExecuteEvent {
 /// blocked, so they cannot wait for a slow reader.
 pub fn sinks_for(
     tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>,
-) -> (ProgressSink, ToolSink, ToolResultSink, UsageSink, WriteSink) {
+) -> (
+    ProgressSink,
+    ToolSink,
+    ToolResultSink,
+    UsageSink,
+    WriteSink,
+    AbsorbedSink,
+) {
     let progress: ProgressSink = {
         let tx = tx.clone();
         let index = std::sync::atomic::AtomicI64::new(0);
@@ -290,5 +302,19 @@ pub fn sinks_for(
         })
     };
 
-    (progress, on_tool, on_tool_result, on_usage, on_write)
+    let on_absorbed: AbsorbedSink = {
+        let tx = tx.clone();
+        Arc::new(move |ids: &[uuid::Uuid]| {
+            let _ = tx.send(ExecuteEvent::Absorbed { ids: ids.to_vec() });
+        })
+    };
+
+    (
+        progress,
+        on_tool,
+        on_tool_result,
+        on_usage,
+        on_write,
+        on_absorbed,
+    )
 }
