@@ -21,12 +21,30 @@ use outturn::auth::TokenMinter;
 use outturn::runtime::component::{AgentRunner, RunOptions};
 use uuid::Uuid;
 
-const DEV_SECRET: &str = "993c3d8e41668abaa0151de741215ef5bf5022b62bdb8468122df597c70d5887";
+/// The key the gateway under test trusts: this clone's, as
+/// `scripts/dev-secrets.sh` wrote it, unless the environment names another.
+/// A key written here would be one every clone shares, and one no local
+/// gateway accepts since each clone generates its own.
+fn token_secret() -> String {
+    if let Ok(secret) = std::env::var("OUTTURN_TOKEN_SECRET") {
+        return secret;
+    }
+    let file = std::fs::read_to_string("k8s/overlays/local/dev-secrets.env").expect(
+        "OUTTURN_TOKEN_SECRET unset and no k8s/overlays/local/dev-secrets.env; \
+         run scripts/dev-secrets.sh",
+    );
+    file.lines()
+        .find_map(|line| line.strip_prefix("OUTTURN_TOKEN_SECRET="))
+        .expect("no OUTTURN_TOKEN_SECRET in dev-secrets.env")
+        .trim()
+        .to_string()
+}
 
 fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
+    let secret = token_secret();
     let mut bytes = [0u8; 32];
     for i in 0..32 {
-        bytes[i] = u8::from_str_radix(&DEV_SECRET[i * 2..i * 2 + 2], 16).unwrap();
+        bytes[i] = u8::from_str_radix(&secret[i * 2..i * 2 + 2], 16).expect("hex secret");
     }
     let minter = TokenMinter::new(&bytes).expect("minter");
     // No egress rules are exercised by this suite, so the empty commitment is
@@ -45,8 +63,8 @@ async fn component_runs_a_turn_and_streams_progress() {
     // Panics rather than skipping: this suite only builds under the
     // integration-tests feature, so a missing gateway is a misconfiguration.
     let gateway_url = std::env::var("GATEWAY_URL").expect(
-        "GATEWAY_URL must be set, e.g. http://localhost:18091 with \
-         `kubectl port-forward svc/outturn-gateway 18091:8081` running",
+        "GATEWAY_URL must be set, e.g. http://localhost:18081, which \
+         `skaffold dev` forwards to the gateway",
     );
 
     let component = std::fs::read("assets/agent_default.wasm").expect("component");
@@ -81,7 +99,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 gateway_url,
                 gateway_token: dev_token(session_id, workspace_id),
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
-                    .unwrap_or_else(|_| "llama3.1".into()),
+                    .unwrap_or_else(|_| "qwen3.5".into()),
                 progress: Some(sink),
                 on_tool: None,
                 on_tool_result: None,
@@ -98,6 +116,8 @@ async fn component_runs_a_turn_and_streams_progress() {
                 temperature: None,
                 traffic_type: "assistant".into(),
                 max_tool_rounds: 100,
+                // As the runtime runs a turn: every tool behind the loader.
+                eager_tools: Vec::new(),
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 egress: Vec::new(),
