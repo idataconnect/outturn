@@ -4,11 +4,12 @@ A skill as a set of files rather than one body: which of them the prompt
 carries, which the agent reads when it needs them, and why the set has to be
 versioned as a whole.
 
-Partly built. A version carries files: stored by hash, listed with the
-version, carried forward by a body-only edit, copied by a fork, and readable
-through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An agent
-cannot read them yet -- the `skill/` scope below is the next step -- so
-Hollowbrook still writes its detail into `workspace/` scope.
+Built, except the UI. A version carries files: stored by hash, listed with
+the version, carried forward by a body-only edit, copied by a fork, and
+readable through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An
+agent reads them as `skill/<slug>/<path>`, from the version its binding
+resolved to, whatever its storage scopes. Hollowbrook still writes its detail
+into `workspace/` scope until its install script is moved over.
 
 ## Why a body is not enough
 
@@ -83,9 +84,13 @@ install script applies to the body today, applied to the whole set.
 read-only whatever the settings say. `scope::resolve` maps it against the
 version the turn actually resolved, not the live one: a pinned agent reads its
 pinned files, and a turn that started before an edit reads what it started
-with. That needs the turn's resolved skills to carry a slug, which
-`ResolvedSkill` does not yet. A skill the turn was not bound to does not
-resolve, so an agent cannot read the detail of skills it was not given.
+with. The API sends the turn a table of exactly those
+names and the content each resolves to (`skill_files` on the assignment); the
+runtime looks names up in it and decides nothing, as with the scopes. A skill
+the turn was not bound to is not in the table, so an agent cannot read the
+detail of skills it was not given. Two bound skills can share a slug -- the
+operator's and a workspace's own -- and then the one bound first is
+reachable and the other is logged.
 
 **Stored under the owning workspace**, scope-first as [storage.md](storage.md)
 requires, and untouched by the session lifecycle rule. An operator skill's

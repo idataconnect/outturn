@@ -68,6 +68,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         agent_id: Uuid::now_v7(),
         write_scopes: vec!["session".into(), "agent".into()],
         read_scopes: vec!["session".into(), "agent".into(), "workspace".into()],
+        skill_files: Vec::new(),
         timezone: None,
         reasoning_effort: None,
         temperature: None,
@@ -2054,4 +2055,127 @@ async fn an_eager_tool_needs_no_loading() {
         offered.contains(&"get_current_time"),
         "an eager tool is offered from the first round, got {offered:?}"
     );
+}
+
+// Skill files ------------------------------------------------------------------
+
+/// Runs one scripted tool call against a turn bound to one skill file, stored
+/// under a workspace other than the turn's -- the operator's case -- and
+/// returns what the tool answered.
+async fn with_skill_file(
+    store: Arc<outturn::runtime::storage::MemoryStorage>,
+    tool: &str,
+    arguments: &str,
+    read_scopes: Vec<String>,
+) -> String {
+    use outturn::runtime::storage::{StorageBackend, scope};
+
+    let operator = Uuid::now_v7();
+    store
+        .write(
+            &scope::skill_blob_key(operator, "abc123"),
+            0,
+            b"POST /bookings",
+        )
+        .await
+        .unwrap();
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: tool.into(),
+        arguments: arguments.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store);
+    options.read_scopes = read_scopes;
+    options.skill_files = vec![scope::SkillObject {
+        path: "skill/inn/book.md".into(),
+        workspace_id: operator,
+        sha256: "abc123".into(),
+        bytes: 14,
+    }];
+
+    runner()
+        .run(&component(), user("Go."), String::new(), options)
+        .await
+        .expect("run");
+    let requests = gateway.requests();
+    requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string()
+}
+
+/// A bound skill's file is readable by its skill path whatever the turn's
+/// scopes, from under the workspace that owns the skill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bound_skills_file_is_read_by_its_skill_path() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "read_object",
+        r#"{"path":"skill/inn/book.md","action":"Reading how to book"}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("POST /bookings"), "{result}");
+}
+
+/// Listing `skill/` shows the bound files, as the agent names them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_files_are_listed_under_skill() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "list_objects",
+        r#"{"prefix":"skill/","action":"Looking"}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("skill/inn/book.md"), "{result}");
+}
+
+/// A skill file is part of what the agent was told, and cannot be rewritten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skill_file_cannot_be_written() {
+    use outturn::runtime::storage::StorageBackend;
+
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store.clone(),
+        "write_object",
+        r#"{"path":"skill/inn/book.md","content":"GET /free-rooms","action":"Editing"}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("read-only"), "{result}");
+    let keys: Vec<String> = store
+        .list("")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(keys.len(), 1, "something was written: {keys:?}");
+}
+
+/// Only the files the turn was sent are reachable; a name outside the table
+/// is refused, and the refusal says what is there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skill_path_not_bound_is_refused() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "read_object",
+        r#"{"path":"skill/inn/cancel.md","action":"Reading"}"#,
+        vec!["session".into(), "agent".into(), "workspace".into()],
+    )
+    .await;
+    assert!(result.contains("skill/inn/book.md"), "{result}");
+    assert!(!result.contains("POST"), "{result}");
 }

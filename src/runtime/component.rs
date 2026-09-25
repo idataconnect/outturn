@@ -214,6 +214,8 @@ pub struct AgentHost {
     /// read with it, because a write extracts the file's text straight back
     /// out and "write but not read" would be a promise the host cannot keep.
     read_scopes: Vec<crate::runtime::storage::scope::Scope>,
+    /// The bound skills' files, by the name the guest reads them under.
+    skill_files: Vec<crate::runtime::storage::scope::SkillObject>,
     /// Hosts this workspace's agents may reach. Empty means none, which is what a
     /// workspace who has not thought about it has consented to.
     egress: Vec<crate::runtime::egress::EgressRule>,
@@ -280,6 +282,13 @@ impl AgentHost {
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
+        if let Some(tidied) = crate::runtime::storage::scope::skill_path(path) {
+            let tidied = tidied.map_err(|_| format!("path is not allowed: {path}"))?;
+            let file = self.skill_file(&tidied)?;
+            let key =
+                crate::runtime::storage::scope::skill_blob_key(file.workspace_id, &file.sha256);
+            return Ok((storage, key));
+        }
         // Here rather than in each caller: every way the guest reaches a file
         // resolves its path through this, including the ones that hand the
         // bytes to something else -- `describe_image` would otherwise let a
@@ -293,6 +302,30 @@ impl AgentHost {
                 _ => format!("path is not allowed: {path}"),
             })?;
         Ok((storage, resolved))
+    }
+
+    /// A bound skill's file, or an answer that says what is there instead.
+    fn skill_file(
+        &self,
+        path: &str,
+    ) -> Result<&crate::runtime::storage::scope::SkillObject, String> {
+        if let Some(f) = self.skill_files.iter().find(|f| f.path == path) {
+            return Ok(f);
+        }
+        use crate::runtime::storage::scope;
+        let slug = scope::skill_slug(path).unwrap_or("");
+        let dir = scope::skill_object_path(slug, "");
+        let siblings: Vec<&str> = self
+            .skill_files
+            .iter()
+            .filter(|f| f.path.starts_with(&dir))
+            .map(|f| f.path.as_str())
+            .collect();
+        Err(if siblings.is_empty() {
+            format!("no skill with files is called {slug:?} here")
+        } else {
+            format!("there is no {path}; {dir} holds {}", siblings.join(", "))
+        })
     }
 
     /// Whether this turn may read at `path`, by the scope it names.
@@ -311,6 +344,13 @@ impl AgentHost {
 
     /// Whether this turn may write at `path`, by the scope it names.
     fn may_write(&self, path: &str) -> Result<(), String> {
+        if crate::runtime::storage::scope::skill_path(path).is_some() {
+            return Err(
+                "skill/ holds the files of this agent's skills and is read-only. Write under \
+                 session/ or agent/ instead."
+                    .to_string(),
+            );
+        }
         let (scope, _) = crate::runtime::storage::scope::split(path).map_err(|e| e.to_string())?;
         if self.write_scopes.contains(&scope) {
             Ok(())
@@ -865,6 +905,23 @@ impl outturn::agent::host::Host for AgentHost {
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
+        // Skill files are listed from the table the turn arrived with, not
+        // from the bucket: the prefix they are stored under is by hash, and
+        // shared with versions this turn was not bound to.
+        let skill_entries = |under: &str| -> Vec<ObjectInfo> {
+            self.skill_files
+                .iter()
+                .filter(|f| f.path.starts_with(under))
+                .map(|f| ObjectInfo {
+                    path: f.path.clone(),
+                    size: f.bytes,
+                })
+                .collect()
+        };
+        if let Some(under) = scope::skill_path(&prefix) {
+            let under = under.map_err(|e| e.to_string())?;
+            return Ok(skill_entries(&under));
+        }
         // An empty prefix means "everything I have": the three scopes, each
         // listed under its own name.
         let prefixes: Vec<String> = if prefix.trim().is_empty() {
@@ -931,6 +988,9 @@ impl outturn::agent::host::Host for AgentHost {
                     size: text.get(&f.path).copied().unwrap_or(f.size),
                 })
             }));
+        }
+        if prefix.trim().is_empty() {
+            out.extend(skill_entries(scope::SKILL_ROOT));
         }
         Ok(out)
     }
@@ -1392,6 +1452,8 @@ pub struct RunOptions {
     pub write_scopes: Vec<String>,
     /// Scopes the guest may read. A superset of `write_scopes`.
     pub read_scopes: Vec<String>,
+    /// The bound skills' files, readable as `skill/<slug>/<path>`.
+    pub skill_files: Vec<crate::runtime::storage::scope::SkillObject>,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -1536,6 +1598,7 @@ impl AgentRunner {
                 .chain(options.write_scopes.iter())
                 .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
                 .collect(),
+            skill_files: options.skill_files,
             egress: options.egress,
             limits: wasmtime::StoreLimitsBuilder::new()
                 .memory_size(GUEST_MEMORY_LIMIT)

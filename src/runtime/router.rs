@@ -55,6 +55,11 @@ pub struct ExecuteRequest {
     /// that as the scopes it would have had.
     #[serde(default)]
     pub read_scopes: Vec<String>,
+    /// The files of the skills this turn was bound to, which the agent reads
+    /// as `skill/<slug>/<path>` whatever its scopes: they are part of what it
+    /// was told.
+    #[serde(default)]
+    pub skill_files: Vec<crate::runtime::storage::scope::SkillObject>,
     pub conversation: Vec<ConversationMessage>,
     #[serde(default)]
     pub system_prompt: String,

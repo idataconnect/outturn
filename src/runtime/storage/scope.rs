@@ -21,10 +21,65 @@
 //! agent/...    ->  agents/<workspace>/<agent>/...                kept while the agent exists
 //! session/...  ->  sessions/<workspace>/<agent>/<session>/...    swept
 //! ```
+//!
+//! `skill/<slug>/...` is not a scope of the space. It names the files of the
+//! skills a turn was bound to, read-only, and resolves only through the table
+//! the API sent with the turn ([`SkillObject`]) -- to
+//! `skills/<owning workspace>/<sha256>`, which may be the operator's.
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::StorageError;
+
+/// A file of a skill the turn was bound to, as the API resolved it. The
+/// runtime looks names up in this and decides nothing: which files a turn may
+/// read is settled where the bindings are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillObject {
+    /// As the guest names it: `skill/<slug>/<path>`.
+    pub path: String,
+    /// Whose prefix the content is under: the skill's owner, which for an
+    /// operator's skill is not the turn's workspace.
+    pub workspace_id: Uuid,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Where a skill file's content is stored.
+pub fn skill_blob_key(workspace_id: Uuid, sha256: &str) -> String {
+    format!("skills/{workspace_id}/{sha256}")
+}
+
+/// Where a guest finds a skill's files.
+pub const SKILL_ROOT: &str = "skill/";
+
+/// The name a guest reads a skill file by: `skill/<slug>/<path>`. An empty
+/// path names the skill's folder.
+pub fn skill_object_path(slug: &str, path: &str) -> String {
+    format!("{SKILL_ROOT}{slug}/{path}")
+}
+
+/// The path, tidied as a scope path is, if it names something under `skill/`;
+/// `None` if it does not, and an error if it does but climbs. `skill` alone is
+/// the root.
+pub fn skill_path(requested: &str) -> Option<Result<String, StorageError>> {
+    let path = requested.trim().trim_start_matches("./");
+    let rest = if path == "skill" {
+        ""
+    } else {
+        path.strip_prefix(SKILL_ROOT)?
+    };
+    Some(clean(rest).map(|rest| format!("{SKILL_ROOT}{rest}")))
+}
+
+/// The slug a tidied skill path names, if it names one.
+pub fn skill_slug(path: &str) -> Option<&str> {
+    path.strip_prefix(SKILL_ROOT)?
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+}
 
 /// Where a turn's files live: the three ids every scope is built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +149,8 @@ fn scope_hint(path: &str) -> StorageError {
     StorageError::Refused(format!(
         "paths start with session/, agent/ or workspace/. For something you are working on \
          now use session/{0}; for something this agent should keep use agent/{0}; for \
-         something the whole workspace shares use workspace/{0}.",
+         something the whole workspace shares use workspace/{0}. A skill's reference files \
+         are under skill/<its slug>/, as the skill names them.",
         path.trim_start_matches('/')
     ))
 }
@@ -194,6 +250,21 @@ mod tests {
             agent_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871aaa").unwrap(),
             session_id: Uuid::parse_str("01a06545-c926-7672-ae22-5971b4871bbb").unwrap(),
         }
+    }
+
+    #[test]
+    fn skill_paths_are_tidied_like_scope_paths() {
+        assert!(skill_path("session/x").is_none());
+        assert!(skill_path("skills/x").is_none());
+        assert_eq!(skill_path("skill").unwrap().unwrap(), "skill/");
+        assert_eq!(
+            skill_path("./skill/crm//./call.md").unwrap().unwrap(),
+            "skill/crm/call.md"
+        );
+        assert!(skill_path("skill/crm/../other/x.md").unwrap().is_err());
+        assert_eq!(skill_slug("skill/crm/call.md"), Some("crm"));
+        assert_eq!(skill_slug("skill/"), None);
+        assert_eq!(skill_object_path("crm", "call.md"), "skill/crm/call.md");
     }
 
     #[test]
