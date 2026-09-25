@@ -3,7 +3,7 @@
 A guesthouse that never was, running beside outturn, with a skill that lets an
 agent use its API.
 
-    scripts/dev-mac.sh --with hollowbrook
+    scripts/dev.sh --with hollowbrook        # scripts/dev-mac.sh on a Mac
 
 Three things happen. The deployment scales from the zero replicas the base
 leaves it at. `internal-host` is collected into `OUTTURN_INTERNAL_HOSTS`, which

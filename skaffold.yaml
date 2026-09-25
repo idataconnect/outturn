@@ -62,29 +62,11 @@ portForward:
     localPort: 15432
 
 profiles:
-  # Document extraction. `skaffold dev -p tika` brings up Apache Tika beside
-  # the rest and points the API at it; without it nothing is extracted and no
-  # part of the core images changes.
-  - name: tika
-    manifests:
-      kustomize:
-        paths:
-          - k8s/overlays/local-tika
-  # A sample OpenAPI service. `skaffold dev -p petstore` brings up Swagger
-  # Petstore beside the rest, for building against a real spec rather than one
-  # written to suit the thing consuming it. Nothing points at it: an agent
-  # reaches a host through the gateway, and the gateway refuses private
-  # addresses, so this serves a spec to read rather than an endpoint to call.
-  - name: petstore
-    manifests:
-      kustomize:
-        paths:
-          - k8s/overlays/local-petstore
-  # What scripts/dev-mac.sh deploys. The overlay is written by that script
-  # from the base and whichever components were asked for, because the
-  # alternative is one committed overlay per combination and nobody keeps
-  # four of those in step. Not useful on its own -- the path does not exist
-  # until the script has run.
+  # What scripts/dev.sh and scripts/dev-mac.sh deploy. The overlay is written
+  # by scripts/lib/dev.sh from a base and whichever components were asked for
+  # (`--with tika,petstore`), because the alternative is one committed overlay
+  # per combination and nobody keeps those in step. Not useful on its own --
+  # the path does not exist until a script has run.
   - name: generated
     manifests:
       kustomize:
@@ -93,7 +75,7 @@ profiles:
 
   # A Mac. `skaffold dev -p mac` reaches ollama on the host rather than across
   # the Linux Docker bridge, and defaults to qwen3.8:27b-mlx. scripts/dev-mac.sh
-  # checks ollama and the model first, then runs this.
+  # builds on the same overlay through `generated`, after checking ollama.
   - name: mac
     manifests:
       kustomize:

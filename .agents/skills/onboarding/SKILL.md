@@ -52,7 +52,7 @@ common failure -- a stopped Docker Desktop, a colima VM that was never
 started -- and the message should say which of the two it is.
 
 Do **not** create a cluster. Which cluster receives this is a decision, and
-`scripts/dev-mac.sh` already refuses to make it, saying so in the same words.
+`scripts/lib/dev.sh` already refuses to make it, saying so in the same words.
 
 ### 3. Whether images get pushed to Docker Hub
 
@@ -156,5 +156,5 @@ Point at what already exists rather than repeating it:
   `kubectl port-forward`, which models can call a tool, and why
   `reasoning_effort: "none"` makes a model look broken
 
-The first command is `scripts/dev-mac.sh` on a Mac, or `skaffold dev` on
+The first command is `scripts/dev-mac.sh` on a Mac, or `scripts/dev.sh` on
 Linux.

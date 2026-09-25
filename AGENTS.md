@@ -47,6 +47,7 @@ triggered without hitting Enter:
 
 ```bash
 scripts/dev.sh        # skaffold dev, Control API on :50052, nothing auto
+                      # --with tika,hollowbrook adds components
 scripts/build.sh      # in another terminal: one build-and-deploy round
 ```
 
@@ -96,8 +97,10 @@ Setting thinking to off will sometimes cause strange behavior around tool
 calling, such as increasing the number of pointless tool calls, and stopping
 the turn right after a tool call without continuing.
 
-On a Mac, `scripts/dev-mac.sh` runs the `mac` profile instead: ollama on the
-host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
+On a Mac, `scripts/dev-mac.sh` builds on the `local-mac` overlay instead:
+ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
+the default. Both scripts share `scripts/lib/dev.sh`, so `--with` and
+everything else behave the same on either.
 
 ## Tunables
 

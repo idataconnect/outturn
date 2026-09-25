@@ -3,11 +3,11 @@
 A forecast skill, against [Open-Meteo](https://open-meteo.com) — a real public
 API, free and without a key.
 
-    scripts/dev-mac.sh --with weather
+    scripts/dev.sh --with weather            # scripts/dev-mac.sh on a Mac
 
 Or with the guesthouse, which is the interesting combination:
 
-    scripts/dev-mac.sh --with hollowbrook,weather
+    scripts/dev.sh --with hollowbrook,weather
 
 ## Why both
 

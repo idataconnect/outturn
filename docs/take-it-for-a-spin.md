@@ -18,7 +18,7 @@ cluster.
 ## 1. Start it
 
 ```
-scripts/dev-mac.sh --with hollowbrook
+scripts/dev-mac.sh --with hollowbrook     # on Linux: scripts/dev.sh --with hollowbrook
 ```
 
 That pulls the model if it is missing, brings up outturn and Hollowbrook, opens
