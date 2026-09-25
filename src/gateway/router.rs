@@ -531,6 +531,110 @@ async fn chat_completions_stream(
         .take_pending(claims.workspace_id, claims.subject, reply_id(&headers))
         .await;
 
+    // Asked on a tick for as long as this request lives, from before the
+    // provider is called: a local model can spend minutes on a long prompt
+    // before its first byte, and a stop that waited for one would wait that
+    // long. Holds `Some` once stopped -- with the hold's reason where a hold
+    // rather than a person did it, carried to the turn so the transcript can
+    // say more than that the words ceased.
+    //
+    // Per request, not shared: two sessions streaming at once must not be
+    // able to stop one another. The task ends when nothing is listening.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(None::<Option<String>>);
+    {
+        let stopper = Arc::clone(&state);
+        let workspace_id = claims.workspace_id;
+        let session_id = claims.subject;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(CANCEL_POLL).await;
+                if stop_tx.is_closed() {
+                    return;
+                }
+                if stopper.cancel_requested(workspace_id, session_id).await {
+                    let _ = stop_tx.send(Some(None));
+                    return;
+                }
+                // A hold cuts the stream the same way a person pressing stop
+                // does. The turn is told which it was, because "you were
+                // stopped" and "the workspace was stopped" are different
+                // things to say afterwards.
+                if let Some(reason) = stopper.held_for(workspace_id, session_id).await {
+                    let _ = stop_tx.send(Some(Some(reason)));
+                    return;
+                }
+            }
+        });
+    }
+    let stopped = |rx: &tokio::sync::watch::Receiver<Option<Option<String>>>| {
+        let mut rx = rx.clone();
+        async move {
+            // A closed channel without a stop means nobody will ever send one.
+            if rx.wait_for(|v| v.is_some()).await.is_err() {
+                futures::future::pending::<()>().await;
+            }
+        }
+    };
+
+    // Appended after the provider's chunks, in the same framing. A caller that
+    // does not know this line exists ignores it, so an older runtime keeps
+    // working -- it simply does not steer.
+    //
+    // The cancel rides here rather than in a channel of its own for the same
+    // reason: cutting the stream stops the words, but only this tells the turn
+    // *why* they stopped, which is the difference between ending deliberately
+    // and looking like a provider that hung up.
+    let trailer = |pending: Vec<routing::Pending>,
+                   stop: Option<Option<String>>|
+     -> Option<axum::body::Bytes> {
+        let mut outturn = serde_json::Map::new();
+        if !pending.is_empty() {
+            outturn.insert("pending".into(), serde_json::json!(pending));
+        }
+        if let Some(held) = stop {
+            outturn.insert("cancelled".into(), serde_json::json!(true));
+            // Present only where a hold did it, so a turn can tell a person
+            // pressing stop from a kill switch.
+            if let Some(reason) = held {
+                outturn.insert("held".into(), serde_json::json!(reason));
+            }
+        }
+        // Nothing to say is not worth a line: an empty envelope still costs a
+        // reader a parse.
+        if outturn.is_empty() {
+            return None;
+        }
+        let line = serde_json::json!({ "outturn": outturn });
+        Some(axum::body::Bytes::from(format!("{line}\n")))
+    };
+
+    // Named so spend attaches to the endpoint that billed for it, which
+    // failover makes different from the one configured first.
+    let respond = |endpoint: String, body: axum::body::Body| -> Response {
+        (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-ndjson".to_string(),
+                ),
+                (
+                    axum::http::HeaderName::from_static("x-outturn-provider"),
+                    endpoint,
+                ),
+                // Whose credential paid. Every key is the operator's until
+                // workspaces can bring their own (docs/routing.md); the ledger
+                // carries the column from the start so the bill does not have
+                // to be re-derived when they can.
+                (
+                    axum::http::HeaderName::from_static("x-outturn-paid-by"),
+                    "operator".to_string(),
+                ),
+            ],
+            body,
+        )
+            .into_response()
+    };
+
     let mut last_error = None;
 
     for attempt in state.attempts(claims.workspace_id, &traffic).await {
@@ -544,7 +648,22 @@ async fn chat_completions_stream(
             request.model = model.clone();
         }
 
-        match provider.chat_completion_stream(&request).await {
+        // Dropping the call is the stop: it closes the connection, which is
+        // the only "never mind" a provider understands.
+        let called = tokio::select! {
+            called = provider.chat_completion_stream(&request) => called,
+            _ = stopped(&stop_rx) => {
+                let stop = stop_rx.borrow().clone();
+                let line = trailer(pending, stop);
+                let body = futures::stream::iter(line.map(Ok::<_, std::io::Error>));
+                return Ok(respond(
+                    provider.endpoint(),
+                    axum::body::Body::from_stream(body),
+                ));
+            }
+        };
+
+        match called {
             Ok(chunks) => {
                 // Recorded once the provider has accepted and begun
                 // streaming. A stream that dies partway is not seen here --
@@ -561,128 +680,27 @@ async fn chat_completions_stream(
                     Err(e) => Err(std::io::Error::other(e.to_string())),
                 });
 
-                // Stops relaying the moment somebody asks, and -- because
-                // ending the stream drops the provider's response body --
-                // closes the connection it was arriving on. That is the only
-                // stop a provider understands: there is no call to make that
-                // means "never mind", so hanging up is the request.
+                // Ends the moment a stop is seen, whether or not a chunk is
+                // arriving -- a provider gone quiet is exactly when somebody
+                // presses stop. Ending the stream drops the provider's
+                // response body and closes the connection it was arriving on.
                 //
                 // Best-effort by nature. A provider may finish generating and
                 // bill for it regardless, and nothing here can find out.
-                //
-                // Checked on a tick rather than per chunk: a token arrives
-                // every few milliseconds and a database round trip each time
-                // would cost more than the generation. Between ticks the
-                // stream keeps flowing, which is the latency this trades for.
-                // Per request, not shared: two sessions streaming at once must
-                // not be able to stop one another.
-                let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let watcher = Arc::clone(&flag);
-                let stopper = Arc::clone(&state);
-                let workspace_id = claims.workspace_id;
-                let session_id = claims.subject;
-                // Why it stopped, where a hold rather than a person stopped it.
-                // Carried to the turn so the transcript can say more than that
-                // the words ceased.
-                let held = Arc::new(std::sync::Mutex::new(None::<String>));
-                let noting = Arc::clone(&held);
+                let body = body.take_until(stopped(&stop_rx));
 
-                // One task asking, on a tick, for as long as the stream runs.
-                // It ends when the stream is dropped, because the flag it
-                // writes to is the only thing keeping it alive.
-                tokio::spawn(async move {
-                    loop {
-                        tokio::time::sleep(CANCEL_POLL).await;
-                        if Arc::strong_count(&watcher) == 1 {
-                            // Nothing is reading it any more: the stream has
-                            // ended, one way or another.
-                            return;
-                        }
-                        if stopper.cancel_requested(workspace_id, session_id).await {
-                            watcher.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return;
-                        }
-                        // A hold cuts the stream the same way a person pressing
-                        // stop does. The turn is told which it was, because
-                        // "you were stopped" and "the workspace was stopped"
-                        // are different things to say afterwards.
-                        if let Some(reason) = stopper.held_for(workspace_id, session_id).await {
-                            if let Ok(mut slot) = noting.lock() {
-                                *slot = Some(reason);
-                            }
-                            watcher.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                });
-
-                let cutter = Arc::clone(&flag);
-                let body = body.take_while(move |_| {
-                    std::future::ready(!cutter.load(std::sync::atomic::Ordering::Relaxed))
-                });
-
-                // Appended after the provider's chunks, in the same framing.
-                // A caller that does not know this line exists ignores it, so
-                // an older runtime keeps working -- it simply does not steer.
-                //
-                // The cancel rides here rather than in a channel of its own
-                // for the same reason: cutting the stream stops the words, but
-                // only this tells the turn *why* they stopped, which is the
-                // difference between ending deliberately and looking like a
-                // provider that hung up.
-                let announce = Arc::clone(&flag);
-                let trailer = futures::stream::once(async move {
-                    let mut outturn = serde_json::Map::new();
-                    if !pending.is_empty() {
-                        outturn.insert("pending".into(), serde_json::json!(pending));
-                    }
-                    if announce.load(std::sync::atomic::Ordering::Relaxed) {
-                        outturn.insert("cancelled".into(), serde_json::json!(true));
-                        // Present only where a hold did it, so a turn can tell
-                        // a person pressing stop from a kill switch.
-                        if let Some(reason) = held.lock().ok().and_then(|slot| slot.clone()) {
-                            outturn.insert("held".into(), serde_json::json!(reason));
-                        }
-                    }
-                    // Nothing to say is not worth a line: an empty envelope
-                    // still costs a reader a parse. Decided on the map rather
-                    // than on the length of what it serialises to, so that
-                    // whether a cancel reaches the turn does not depend on how
-                    // many spaces a serialiser happens to emit.
-                    if outturn.is_empty() {
-                        return None;
-                    }
-                    let line = serde_json::json!({ "outturn": outturn });
-                    Some(Ok(axum::body::Bytes::from(format!("{line}\n"))))
+                let rx = stop_rx.clone();
+                let tail = futures::stream::once(async move {
+                    let stop = rx.borrow().clone();
+                    trailer(pending, stop).map(Ok)
                 })
                 .filter_map(std::future::ready);
-                let body = body.chain(trailer);
+                let body = body.chain(tail);
 
-                // Named so spend attaches to the endpoint that billed for
-                // it, which failover makes different from the one configured
-                // first.
-                return Ok((
-                    [
-                        (
-                            axum::http::header::CONTENT_TYPE,
-                            "application/x-ndjson".to_string(),
-                        ),
-                        (
-                            axum::http::HeaderName::from_static("x-outturn-provider"),
-                            provider.endpoint(),
-                        ),
-                        // Whose credential paid. Every key is the operator's
-                        // until workspaces can bring their own (docs/routing.md);
-                        // the ledger carries the column from the start so the
-                        // bill does not have to be re-derived when they can.
-                        (
-                            axum::http::HeaderName::from_static("x-outturn-paid-by"),
-                            "operator".to_string(),
-                        ),
-                    ],
+                return Ok(respond(
+                    provider.endpoint(),
                     axum::body::Body::from_stream(body),
-                )
-                    .into_response());
+                ));
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "stream failed");
