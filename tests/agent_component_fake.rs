@@ -2179,3 +2179,36 @@ async fn a_skill_path_not_bound_is_refused() {
     assert!(result.contains("skill/inn/book.md"), "{result}");
     assert!(!result.contains("POST"), "{result}");
 }
+
+/// A model that reads a skill's operation names as tools and asks the loader
+/// for one is told what it is and where it is documented, rather than only
+/// that no such tool exists -- which a weaker model reads as the skill being
+/// broken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loading_a_skill_operation_points_at_its_file() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "load_tools",
+        r#"{"names":["book"]}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("skill/inn/book.md"), "{result}");
+    assert!(result.contains("fetch_url"), "{result}");
+}
+
+/// The same when the model skips the loader and calls the operation as if it
+/// were a tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calling_a_skill_operation_points_at_its_file() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "book",
+        r#"{"room":"orchard"}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("skill/inn/book.md"), "{result}");
+}

@@ -277,6 +277,50 @@ fn offered_tools(eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> Vec<Too
 
 /// Whether a tool may be called this round.
 ///
+/// Names the model took for tools that are really a bound skill's operations,
+/// each with the file that says how to call it.
+///
+/// A skill's manifest lists its operations by name, and a weaker model reads
+/// that list as tools and asks the loader for them. Told only "no such tool",
+/// it concludes the skill is broken; told where the operation is documented, it
+/// can go and read it. Found by listing `skill/` rather than by being told, so
+/// the guest needs nothing new from the host.
+fn skill_operations(names: &[String]) -> Vec<(String, String)> {
+    let Ok(files) = host::list_objects("skill/") else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter_map(|name| {
+            let file = format!("/{name}.md");
+            files
+                .iter()
+                .find(|f| f.path.ends_with(&file))
+                .map(|f| (name.clone(), f.path.clone()))
+        })
+        .collect()
+}
+
+/// What to say about those names, or nothing if there are none.
+fn operations_hint(names: &[String]) -> Option<String> {
+    let found = skill_operations(names);
+    if found.is_empty() {
+        return None;
+    }
+    Some(
+        found
+            .iter()
+            .map(|(name, path)| {
+                format!(
+                    "{name} is not a tool: it is an operation of a skill. Read {path} with \
+                     read_object, then make the call it describes with fetch_url."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// The loader is always callable; everything else has to be eager or loaded.
 fn is_offered(name: &str, eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> bool {
     name == LOAD_TOOLS || eager.contains(name) || loaded.contains(name)
@@ -330,12 +374,21 @@ fn load_tools(
         // a model told the call succeeded will go on to use tools it does
         // not have, and a reader watching the turn sees a tick against work
         // that did not happen.
+        //
+        // Where the names are a skill's operations, that leads: it is the
+        // thing to do next, and a list of tools that do not include them only
+        // confirms the wrong conclusion.
+        let hint = operations_hint(&missing);
+        let error = format!(
+            "no such tool: {}. Available: {}",
+            missing.join(", "),
+            available.join(", ")
+        );
         serde_json::json!({
-            "error": format!(
-                "no such tool: {}. Available: {}",
-                missing.join(", "),
-                available.join(", ")
-            ),
+            "error": match &hint {
+                Some(hint) => format!("{hint} ({error})"),
+                None => error,
+            },
             "no_such_tool": missing,
             "available": available,
         })
@@ -345,12 +398,15 @@ fn load_tools(
         // name was wrong, and a model told only about the failure would load
         // them again. Not an error: what was asked for partly happened, and
         // the turn can continue with what did load.
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "loaded": found,
             "no_such_tool": missing,
             "available": available,
-        })
-        .to_string()
+        });
+        if let Some(hint) = operations_hint(&missing) {
+            out["hint"] = serde_json::json!(hint);
+        }
+        out.to_string()
     }
 }
 
@@ -891,10 +947,11 @@ fn run_tool(
     // written without the schema they are meant to satisfy are not worth
     // honouring, and loading here would reward the guess.
     let content = if !is_offered(&call.name, eager, loaded) {
-        serde_json::json!({
-            "error": format!("{} is not loaded. Call {LOAD_TOOLS} first.", call.name),
-        })
-        .to_string()
+        // Unless it is no tool at all but a skill's operation, where sending
+        // the model to the loader is sending it round a loop.
+        let error = operations_hint(std::slice::from_ref(&call.name))
+            .unwrap_or_else(|| format!("{} is not loaded. Call {LOAD_TOOLS} first.", call.name));
+        serde_json::json!({ "error": error }).to_string()
     } else {
         match call.name.as_str() {
         LOAD_TOOLS => load_tools(&args, eager, loaded),
@@ -921,7 +978,13 @@ fn run_tool(
         }
         // Reported to the model rather than failing the turn: it can recover
         // by answering without the tool, where an error ends the conversation.
-        other => format!(r#"{{"error":"no such tool: {other}"}}"#),
+        other => {
+            let error = match operations_hint(&[other.to_string()]) {
+                Some(hint) => hint,
+                None => format!("no such tool: {other}"),
+            };
+            serde_json::json!({ "error": error }).to_string()
+        }
         }
     };
 
