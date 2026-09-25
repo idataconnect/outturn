@@ -1196,6 +1196,7 @@ impl Worker {
             agent_id: payload.agent_id,
             write_scopes: settings.write_scopes,
             read_scopes: settings.read_scopes,
+            skill_files: super::skill::objects_for_turn(&skills),
             conversation: {
                 // Sources come from the unmarked projection: `marked` inserts
                 // its one entry immediately before the final message, which is

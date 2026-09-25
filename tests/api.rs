@@ -3134,6 +3134,106 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
     );
 }
 
+/// A turn is handed the files of the version its agent is bound to -- the
+/// pinned one, not the live one -- under the workspace that owns them.
+#[tokio::test]
+async fn a_turn_is_handed_its_pinned_skill_files() {
+    use sha2::Digest;
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op5@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"Read skill/crm/call.md.",
+                "files":[{"path":"call.md","content":"GET /v1/accounts"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let skill_id = skill["id"].as_str().unwrap().to_string();
+    let v1 = skill["version_id"].as_str().unwrap().to_string();
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/skills/{skill_id}/versions"),
+            Some(&operator),
+            r#"{"body":"Read skill/crm/call.md.",
+                "files":[{"path":"call.md","content":"GET /v2/accounts"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&operator),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {operator}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"[{{"skill_id":"{skill_id}","version_id":"{v1}"}}]"#
+        )))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "binding refused: {body}");
+
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&operator),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    let session_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&operator),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "no work handed out: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let files = assignment["skill_files"].as_array().expect("skill_files");
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0]["path"], "skill/crm/call.md");
+    assert_eq!(
+        files[0]["sha256"],
+        hex::encode(sha2::Sha256::digest(b"GET /v1/accounts")),
+        "the turn was handed the live version's file, not the pinned one"
+    );
+    assert_eq!(
+        files[0]["workspace_id"],
+        outturn::api::usage::PLATFORM_WORKSPACE.to_string(),
+        "an operator's file lives under the operator's prefix"
+    );
+}
+
 /// The templates a workspace's roles are copied from must be ones the code can
 /// honour.
 ///

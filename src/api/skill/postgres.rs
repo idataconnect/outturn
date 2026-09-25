@@ -734,7 +734,8 @@ impl SkillStore for PostgresSkillStore {
                   where b.workspace_id = $1 and b.agent_id = $2
              ),
              picked as (
-                 select bd.position, 0 as tier, s.id as skill_id, s.name, s.kind,
+                 select bd.position, 0 as tier, s.id as skill_id, s.slug, s.workspace_id as owner,
+                        s.name, s.kind,
                         coalesce(bd.pinned, (select v.id from skill_versions v
                                               where v.skill_id = s.id
                                               order by v.ordinal desc limit 1)) as version_id
@@ -742,14 +743,15 @@ impl SkillStore for PostgresSkillStore {
                    join skills s on s.id = bd.skill_id
                   where s.retired_at is null
                  union all
-                 select bd.position, 1 as tier, o.id, o.name, o.kind,
+                 select bd.position, 1 as tier, o.id, o.slug, o.workspace_id, o.name, o.kind,
                         (select v.id from skill_versions v where v.skill_id = o.id
                           order by v.ordinal desc limit 1)
                    from bound bd
                    join skills o on o.base_skill_id = bd.skill_id
                   where o.workspace_id = $1 and o.kind = 'override' and o.retired_at is null
              )
-             select p.position, p.tier, p.skill_id, p.version_id, p.name, p.kind, v.body
+             select p.position, p.tier, p.skill_id, p.version_id, p.slug, p.owner, p.name, p.kind,
+                    v.body
                from picked p
                join skill_versions v on v.id = p.version_id
               order by p.position, p.tier",
@@ -760,16 +762,45 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(internal)?;
 
+        // Every version's files in one query rather than one per skill: this
+        // runs before each turn starts.
+        let versions: Vec<Uuid> = rows.iter().map(|r| r.get("version_id")).collect();
+        let mut files: std::collections::HashMap<Uuid, Vec<SkillFile>> = Default::default();
+        for f in sqlx::query(
+            "select version_id, path, sha256, bytes from skill_version_files \
+             where version_id = any($1) order by path",
+        )
+        .bind(&versions)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        {
+            files
+                .entry(f.get("version_id"))
+                .or_default()
+                .push(SkillFile {
+                    path: f.get("path"),
+                    sha256: f.get("sha256"),
+                    bytes: f.get("bytes"),
+                });
+        }
+
         Ok(rows
             .iter()
             .enumerate()
-            .map(|(i, r)| ResolvedSkill {
-                skill_id: r.get("skill_id"),
-                version_id: r.get("version_id"),
-                name: r.get("name"),
-                kind: SkillKind::parse(r.get::<String, _>("kind").as_str()),
-                body: r.get("body"),
-                position: i as i32,
+            .map(|(i, r)| {
+                let version_id: Uuid = r.get("version_id");
+                ResolvedSkill {
+                    skill_id: r.get("skill_id"),
+                    version_id,
+                    slug: r.get("slug"),
+                    owner: r.get("owner"),
+                    name: r.get("name"),
+                    kind: SkillKind::parse(r.get::<String, _>("kind").as_str()),
+                    body: r.get("body"),
+                    files: files.get(&version_id).cloned().unwrap_or_default(),
+                    position: i as i32,
+                }
             })
             .collect())
     }

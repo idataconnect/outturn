@@ -18,7 +18,7 @@ pub const MAX_FILES: usize = 500;
 /// Where a file's content lives: under the workspace that owns the version,
 /// by hash, so identical content is stored once per workspace.
 pub fn blob_key(workspace_id: Uuid, sha256: &str) -> String {
-    format!("skills/{workspace_id}/{sha256}")
+    crate::runtime::storage::scope::skill_blob_key(workspace_id, sha256)
 }
 
 /// Checks the set and hashes each file, returning what the store records

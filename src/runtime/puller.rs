@@ -261,6 +261,7 @@ impl Puller {
             } else {
                 request.read_scopes
             },
+            skill_files: request.skill_files,
             idle_timeout: self.idle_timeout,
             egress: request.egress,
         };

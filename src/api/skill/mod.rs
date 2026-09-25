@@ -9,6 +9,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::runtime::storage::scope;
+
 /// What a skill is: prose in its own right, or instructions layered over one.
 ///
 /// An override is not bound to an agent and never stands alone. It belongs to
@@ -178,10 +180,53 @@ pub struct Binding {
 pub struct ResolvedSkill {
     pub skill_id: Uuid,
     pub version_id: Uuid,
+    pub slug: String,
+    /// The workspace that owns the skill, which is whose prefix its files are
+    /// under.
+    pub owner: Uuid,
     pub name: String,
     pub kind: SkillKind,
     pub body: String,
+    pub files: Vec<SkillFile>,
     pub position: i32,
+}
+
+/// The skills whose files a turn can reach: standalone ones, and of those
+/// sharing a slug -- the operator's and a workspace's own can -- the one bound
+/// first. Overrides carry no files.
+fn with_reachable_files(skills: &[ResolvedSkill]) -> Vec<&ResolvedSkill> {
+    let mut seen = std::collections::HashSet::new();
+    skills
+        .iter()
+        .filter(|s| s.kind == SkillKind::Standalone && !s.files.is_empty())
+        .filter(|s| seen.insert(s.slug.as_str()))
+        .collect()
+}
+
+/// The files of a turn's skills, named as the agent reads them. A skill whose
+/// slug another bound skill already took is logged rather than merged.
+pub fn objects_for_turn(skills: &[ResolvedSkill]) -> Vec<scope::SkillObject> {
+    let reachable = with_reachable_files(skills);
+    for s in skills.iter().filter(|s| !s.files.is_empty()) {
+        if !reachable.iter().any(|r| std::ptr::eq(*r, s)) {
+            tracing::warn!(
+                slug = %s.slug,
+                skill_id = %s.skill_id,
+                "two bound skills share a slug; the later one's files are unreachable"
+            );
+        }
+    }
+    reachable
+        .into_iter()
+        .flat_map(|s| {
+            s.files.iter().map(|f| scope::SkillObject {
+                path: scope::skill_object_path(&s.slug, &f.path),
+                workspace_id: s.owner,
+                sha256: f.sha256.clone(),
+                bytes: f.bytes as u64,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -435,6 +480,7 @@ pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
     }
     out.push_str("# Skills");
 
+    let with_files = with_reachable_files(skills);
     for skill in skills {
         out.push_str("\n\n## ");
         out.push_str(skill.name.trim());
@@ -446,6 +492,13 @@ pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
             );
         }
         out.push_str(skill.body.trim());
+        if with_files.iter().any(|s| std::ptr::eq(*s, skill)) {
+            out.push_str(&format!(
+                "\n\nThis skill's reference files are under `{}`, read-only. Read one \
+                 with read_object when the skill says to.",
+                scope::skill_object_path(&skill.slug, "")
+            ));
+        }
     }
     out
 }
@@ -534,13 +587,51 @@ mod tests {
         assert!(!composed.contains("outturn"), "{composed}");
     }
 
+    #[test]
+    fn a_skill_with_files_says_where_they_are() {
+        let mut inn = skill("Inn", "Book rooms.", SkillKind::Standalone);
+        inn.files = vec![SkillFile {
+            path: "book.md".into(),
+            sha256: "x".into(),
+            bytes: 1,
+        }];
+        let plain = skill("Plain", "Be kind.", SkillKind::Standalone);
+        let composed = compose("", &[inn, plain]);
+        assert!(composed.contains("`skill/inn/`"), "{composed}");
+        assert_eq!(composed.matches("reference files").count(), 1, "{composed}");
+    }
+
+    #[test]
+    fn a_shared_slug_reaches_the_skill_bound_first() {
+        let file = |content: &str| SkillFile {
+            path: "call.md".into(),
+            sha256: content.into(),
+            bytes: 1,
+        };
+        let mut ours = skill("CRM", "", SkillKind::Standalone);
+        ours.owner = Uuid::from_u128(1);
+        ours.files = vec![file("ours")];
+        let mut theirs = skill("CRM", "", SkillKind::Standalone);
+        theirs.owner = Uuid::from_u128(2);
+        theirs.files = vec![file("theirs")];
+
+        let objects = objects_for_turn(&[ours, theirs]);
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].path, "skill/crm/call.md");
+        assert_eq!(objects[0].sha256, "ours");
+        assert_eq!(objects[0].workspace_id, Uuid::from_u128(1));
+    }
+
     fn skill(name: &str, body: &str, kind: SkillKind) -> ResolvedSkill {
         ResolvedSkill {
             skill_id: Uuid::nil(),
             version_id: Uuid::nil(),
+            slug: name.to_lowercase(),
+            owner: Uuid::nil(),
             name: name.into(),
             kind,
             body: body.into(),
+            files: Vec::new(),
             position: 0,
         }
     }
