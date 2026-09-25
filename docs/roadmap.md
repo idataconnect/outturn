@@ -55,6 +55,17 @@ a model guesses the call from a manifest line, so that is the assumption worth
 having tested before building on it. See *The shape, tried once* in
 [openapi-wizard.md](openapi-wizard.md).
 
+### Skills as bundles
+
+[skill-bundles.md](skill-bundles.md).
+
+A skill version as a body plus a set of files, versioned together and read
+through a `skill/` scope resolved against the version the turn bound. Today the
+detail sits in `workspace/` scope beside it: overwritten in place while the
+body is versioned, owned by nothing, editable by anyone with workspace storage
+write, and unreachable for an operator's skill. Worth doing before the wizard,
+which should write into this shape rather than fix the current one in place.
+
 ### Platform-level egress list — an escape hatch, not a priority
 
 [egress.md](egress.md) — "An operator allowlist, by name".

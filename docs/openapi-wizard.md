@@ -69,6 +69,10 @@ what the categories below are for.
 
 ### Where the files go
 
+Where they go today. [skill-bundles.md](skill-bundles.md) moves them into the
+skill itself, versioned with the manifest, and the wizard should write into
+that shape once it exists.
+
 `workspace/` scope, which is **read-only to an agent by default**
 ([storage.md](storage.md)) -- the right default for reference material an agent
 consults and must never rewrite. It is also shared, so one wizard run serves
@@ -275,16 +279,28 @@ credential itself never touches the wizard, the skill or the specification, as
 
 ## Where it runs
 
-An API endpoint, with the existing skills UI around it. A workspace supplies a
-specification -- a URL to fetch or a file to upload -- and receives a proposed
-skill to review and save.
+An API endpoint, with the existing skills UI around it. **The operator is who
+runs it.** The expected shape is a platform defining its integrations once --
+supplying a specification, a URL to fetch or a file to upload, and receiving a
+proposed skill -- and its workspaces binding the result, the way they already
+bind the operator's other skills. A workspace running the wizard for an API of
+its own may come later or never, and nothing here should be built as if it were
+the main case.
 
-Proposed rather than saved, because a generated skill is a draft. The workspace
-sees the manifest it is about to carry on every turn, and the host list it is
-about to be asked to allow, before either becomes real.
+That is also why the output cannot live in `workspace/` scope: an operator's
+skill sits in the platform workspace, and files in the platform workspace's
+scope are unreachable from every other one. The wizard writes a skill bundle
+([skill-bundles.md](skill-bundles.md)), whose files belong to the skill and
+resolve wherever it is bound.
 
-**Parsing is the hazardous part.** A specification is untrusted input from a
-workspace, parsed in the API tier, and the failure modes are the ordinary ones
+Proposed rather than saved, because a generated skill is a draft. Whoever runs
+it sees the manifest every bound agent will carry on every turn, and the host
+list each workspace will be asked to allow, before either becomes real.
+
+**Parsing is the hazardous part.** A specification is untrusted input --
+fetched from somewhere the operator does not control even when the operator is
+the one asking, and from a workspace if that ever comes -- parsed in the API
+tier, and the failure modes are the ordinary ones
 for structured formats: deeply nested structures, enormous documents, `$ref`
 cycles. Bound the document size, bound the recursion depth when resolving
 references, refuse rather than truncate, and do it before any of it is
