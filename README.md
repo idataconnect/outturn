@@ -87,9 +87,11 @@ scripts/dev-mac.sh --with tika          # plus document extraction
 scripts/dev-mac.sh --with tika,petstore
 ```
 
-`--with` takes anything in `k8s/components`. They are kustomize components,
-so they compose: the script writes an overlay listing whichever were asked
-for, and adding a third component needs no change to the script. The overlay
+`--with` takes anything in `k8s/components`, and `scripts/dev.sh` on Linux
+takes it too -- both scripts are thin wrappers over `scripts/lib/dev.sh`.
+They are kustomize components, so they compose: the script writes an overlay
+listing whichever were asked for, and adding a third component needs no
+change to the script. The overlay
 is generated rather than committed because the alternative is one per
 combination -- and two features already make four.
 

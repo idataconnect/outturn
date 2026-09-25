@@ -21,8 +21,7 @@ resources:
 # JSON Patch cannot append to a string -- so a second component opening a host
 # would overwrite the first rather than join it, and whichever lost would be
 # unreachable with nothing said about why. The overlay carries the whole list
-# instead: scripts/dev-mac.sh writes it from the components asked for, and
-# k8s/overlays/local-petstore sets it for a standalone run.
+# instead: scripts/lib/dev.sh writes it from the components asked for.
 #
 # What a component may safely bring is its own service and its own
 # configuration, which is what this and the tika component do.
