@@ -161,6 +161,8 @@ pub(super) async fn authorities_of(
     Ok(granted)
 }
 
+/// Refuses the request unless the caller holds `authority`: `Ok` to go on,
+/// 403 otherwise.
 pub(super) async fn require(
     state: &ApiState,
     claims: &SessionClaims,
@@ -176,7 +178,8 @@ pub(super) async fn require(
     }
 }
 
-/// The same question, asked about one agent.
+/// `require`, for an action on one agent: 403 unless the caller holds
+/// `authority` and may reach `agent_id`.
 ///
 /// Two checks rather than one: whether the caller holds the authority at all,
 /// and whether anybody narrowed them to a set of agents this one is not in. An

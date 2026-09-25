@@ -20,10 +20,7 @@ fn internal(e: sqlx::Error) -> InhibitorError {
 
 /// The scope columns, as the level says to read them.
 ///
-/// The check constraint guarantees the columns a level needs are present, so a
-/// row that does not match one is a row the database should not hold -- said
-/// outright rather than guessed at, because guessing here means a hold that
-/// covers something other than what it says.
+/// The check constraint guarantees the columns a level needs are present.
 fn read_scope(row: &PgRow) -> Result<Scope, InhibitorError> {
     let level: String = row.get("level");
     let workspace_id: Option<Uuid> = row.get("workspace_id");
@@ -99,10 +96,7 @@ macro_rules! select_inhibitors {
 /// polled at.
 ///
 /// Returns the rows rather than a verdict, so the caller runs them through
-/// `decide` like every other checkpoint. Answering "the strongest one" here
-/// would be a second implementation of the join, and the two would disagree
-/// about the reason the moment two holds applied at once -- which is exactly
-/// what `decide` exists to prevent.
+/// `decide` like every other checkpoint.
 ///
 /// A free function rather than a trait method because the gateway has a pool
 /// and nothing else: it is a tier without stores, and giving it one to reach
