@@ -27,6 +27,11 @@ a triage agent beside an HR agent. Writing implies reading: the vocabulary has
 no way to say otherwise, and a write extracts the file's text straight back
 out.
 
+A skill version's files sit under a fourth prefix, `skills/<workspace>/<sha256>`,
+written through the skills API rather than the files API and never swept: a
+version is immutable, and what it said has to stay readable
+([skill-bundles.md](skill-bundles.md)).
+
 Session files are swept by a lifecycle rule the runtime installs on the bucket
 at startup, after `OUTTURN_SESSION_FILE_TTL_DAYS` (default 30). One rule for
 every workspace, because the scope is the prefix.

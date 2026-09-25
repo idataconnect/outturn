@@ -1488,6 +1488,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/skills/{id}/versions/{version_id}",
             get(super::skills::get_version),
         )
+        .route(
+            "/v1/skills/{id}/versions/{version_id}/files/{*path}",
+            get(super::skills::get_version_file),
+        )
         .route("/v1/skills/{id}/fork", post(super::skills::fork_skill))
         .route(
             "/v1/skills/{id}/hosts/approve",

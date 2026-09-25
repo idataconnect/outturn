@@ -4,8 +4,11 @@ A skill as a set of files rather than one body: which of them the prompt
 carries, which the agent reads when it needs them, and why the set has to be
 versioned as a whole.
 
-Designed, unbuilt. What exists is one body per version, and the Hollowbrook
-component working around that by writing its detail into `workspace/` scope.
+Partly built. A version carries files: stored by hash, listed with the
+version, carried forward by a body-only edit, copied by a fork, and readable
+through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An agent
+cannot read them yet -- the `skill/` scope below is the next step -- so
+Hollowbrook still writes its detail into `workspace/` scope.
 
 ## Why a body is not enough
 

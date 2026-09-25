@@ -3,14 +3,80 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use uuid::Uuid;
 
 use crate::auth::Authority;
 
+use super::files::{storage, storage_failed};
 use super::router::{ApiError, ApiState, authorize};
-use super::skill::{Binding, CreateSkill, ForkSkill, NewVersion, Skill, SkillVersion, UpdateSkill};
+use super::skill::{
+    Binding, CreateSkill, ForkSkill, NewFile, NewVersion, Skill, SkillFile, SkillVersion,
+    UpdateSkill, blob_key, prepare,
+};
+
+/// Uploads a version's files under the workspace that will own it, before the
+/// rows naming them are written: a failure between the two leaves a blob
+/// nothing references, never a row naming a blob that is not there.
+async fn store_files(
+    state: &ApiState,
+    owner: Uuid,
+    files: Vec<NewFile>,
+) -> Result<Vec<SkillFile>, ApiError> {
+    let prepared = prepare(files)?;
+    if prepared.is_empty() {
+        return Ok(Vec::new());
+    }
+    let store = storage(state)?;
+    for (file, bytes) in &prepared {
+        store
+            .write(&blob_key(owner, &file.sha256), 0, bytes)
+            .await
+            .map_err(storage_failed)?;
+    }
+    Ok(prepared.into_iter().map(|(f, _)| f).collect())
+}
+
+/// `create` for either owner.
+async fn create_in(
+    state: &ApiState,
+    workspace: Uuid,
+    author: Uuid,
+    mut input: CreateSkill,
+) -> Result<Skill, ApiError> {
+    let files = store_files(state, workspace, std::mem::take(&mut input.files)).await?;
+    Ok(state
+        .skills
+        .create(workspace, author, input, &files)
+        .await?)
+}
+
+/// `add_version` for either owner, answering 200 rather than 201 when nothing
+/// changed and no version was appended.
+async fn add_version_in(
+    state: &ApiState,
+    workspace: Uuid,
+    id: Uuid,
+    author: Uuid,
+    mut input: NewVersion,
+) -> Result<(StatusCode, SkillVersion), ApiError> {
+    let files = match input.files.take() {
+        Some(f) => Some(store_files(state, workspace, f).await?),
+        None => None,
+    };
+    let (version, appended) = state
+        .skills
+        .add_version(workspace, id, author, input, files.as_deref())
+        .await?;
+    let status = if appended {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, version))
+}
 
 /// The workspace's own skills and the operator's, which it may override.
 pub async fn list_skills(
@@ -27,10 +93,7 @@ pub async fn create_skill(
     Json(input): Json<CreateSkill>,
 ) -> Result<(StatusCode, Json<Skill>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsWrite).await?;
-    let skill = state
-        .skills
-        .create(claims.workspace_id, claims.subject, input)
-        .await?;
+    let skill = create_in(&state, claims.workspace_id, claims.subject, input).await?;
     tracing::info!(
         actor = %claims.subject,
         workspace_id = %claims.workspace_id,
@@ -122,6 +185,33 @@ pub async fn get_version(
     ))
 }
 
+/// One file of a version, as it was published.
+pub async fn get_version_file(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((id, version_id, path)): Path<(Uuid, Uuid, String)>,
+) -> Result<Response, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
+    let skill = state.skills.get(claims.workspace_id, id).await?;
+    let version = state
+        .skills
+        .version(claims.workspace_id, id, version_id)
+        .await?;
+    let file = version.files.iter().find(|f| f.path == path).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("no file {path} in this version"),
+    ))?;
+    let bytes = storage(&state)?
+        .read(
+            &blob_key(skill.workspace_id, &file.sha256),
+            0,
+            file.bytes as u32,
+        )
+        .await
+        .map_err(storage_failed)?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response())
+}
+
 /// Publishes a new version, which is the only way prose changes.
 ///
 /// A rollback comes through here too, carrying the old body forward: there is
@@ -134,18 +224,18 @@ pub async fn add_version(
     Json(input): Json<NewVersion>,
 ) -> Result<(StatusCode, Json<SkillVersion>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsWrite).await?;
-    let version = state
-        .skills
-        .add_version(claims.workspace_id, id, claims.subject, input)
-        .await?;
-    tracing::info!(
-        actor = %claims.subject,
-        workspace_id = %claims.workspace_id,
-        skill_id = %id,
-        ordinal = version.ordinal,
-        "skill version published"
-    );
-    Ok((StatusCode::CREATED, Json(version)))
+    let (status, version) =
+        add_version_in(&state, claims.workspace_id, id, claims.subject, input).await?;
+    if status == StatusCode::CREATED {
+        tracing::info!(
+            actor = %claims.subject,
+            workspace_id = %claims.workspace_id,
+            skill_id = %id,
+            ordinal = version.ordinal,
+            "skill version published"
+        );
+    }
+    Ok((status, Json(version)))
 }
 
 /// Takes a copy of somebody else's skill, keeping only a note of where it came
@@ -157,6 +247,32 @@ pub async fn fork_skill(
     Json(input): Json<ForkSkill>,
 ) -> Result<(StatusCode, Json<Skill>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsWrite).await?;
+
+    // The copy's files must be this workspace's to keep, so an operator's
+    // skill forked here has its content copied rather than referenced.
+    let source = state.skills.get(claims.workspace_id, id).await?;
+    let version_id = input
+        .version_id
+        .or(source.version_id)
+        .ok_or((StatusCode::NOT_FOUND, "skill has no version".to_string()))?;
+    let taken = state
+        .skills
+        .version(claims.workspace_id, id, version_id)
+        .await?;
+    if source.workspace_id != claims.workspace_id && !taken.files.is_empty() {
+        let store = storage(&state)?;
+        for f in &taken.files {
+            let bytes = store
+                .read(&blob_key(source.workspace_id, &f.sha256), 0, f.bytes as u32)
+                .await
+                .map_err(storage_failed)?;
+            store
+                .write(&blob_key(claims.workspace_id, &f.sha256), 0, &bytes)
+                .await
+                .map_err(storage_failed)?;
+        }
+    }
+
     let skill = state
         .skills
         .fork(claims.workspace_id, id, claims.subject, input)
@@ -249,10 +365,7 @@ pub async fn create_platform_skill(
 ) -> Result<(StatusCode, Json<Skill>), ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
-    let skill = state
-        .skills
-        .create(workspace, claims.subject, input)
-        .await?;
+    let skill = create_in(&state, workspace, claims.subject, input).await?;
     tracing::info!(actor = %claims.subject, skill_id = %skill.id, "platform skill created");
     Ok((StatusCode::CREATED, Json(skill)))
 }
@@ -276,17 +389,16 @@ pub async fn add_platform_version(
 ) -> Result<(StatusCode, Json<SkillVersion>), ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
-    let version = state
-        .skills
-        .add_version(workspace, id, claims.subject, input)
-        .await?;
-    tracing::info!(
-        actor = %claims.subject,
-        skill_id = %id,
-        ordinal = version.ordinal,
-        "platform skill version published"
-    );
-    Ok((StatusCode::CREATED, Json(version)))
+    let (status, version) = add_version_in(&state, workspace, id, claims.subject, input).await?;
+    if status == StatusCode::CREATED {
+        tracing::info!(
+            actor = %claims.subject,
+            skill_id = %id,
+            ordinal = version.ordinal,
+            "platform skill version published"
+        );
+    }
+    Ok((status, Json(version)))
 }
 
 /// Withdrawing an operator's skill leaves every workspace already using it

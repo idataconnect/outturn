@@ -1,4 +1,7 @@
+mod files;
 mod postgres;
+
+pub use files::{MAX_FILE_BYTES, MAX_FILES, blob_key, prepare};
 
 pub use postgres::PostgresSkillStore;
 
@@ -83,6 +86,7 @@ pub struct SkillVersion {
     pub note: String,
     pub based_on_version_id: Option<Uuid>,
     pub hosts: Vec<String>,
+    pub files: Vec<SkillFile>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -102,6 +106,10 @@ pub struct CreateSkill {
     /// Hosts this skill will reach. Names them; opens nothing.
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// Files the first version carries. Stored by the handler, which passes
+    /// the store what it wrote; the store never sees content.
+    #[serde(default)]
+    pub files: Vec<NewFile>,
 }
 
 /// Fields omitted are left unchanged. The body is not here: prose changes by
@@ -121,6 +129,26 @@ pub struct NewVersion {
     /// so a version that drops one says so by leaving it out.
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// The files this version carries, in full. Omitted keeps the previous
+    /// version's, so editing the body alone does not strip them.
+    #[serde(default)]
+    pub files: Option<Vec<NewFile>>,
+}
+
+/// A file as sent. Text, because a skill's files are prose an agent reads.
+#[derive(Debug, Deserialize)]
+pub struct NewFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// A file a version carries. The content is in the object store under
+/// `blob_key` of the owning workspace and this hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkillFile {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +221,7 @@ pub trait SkillStore: Send + Sync {
         workspace_id: Uuid,
         author: Uuid,
         input: CreateSkill,
+        files: &[SkillFile],
     ) -> Result<Skill, SkillError>;
     async fn update(
         &self,
@@ -203,13 +232,18 @@ pub trait SkillStore: Send + Sync {
     /// Appends a version, which is how prose changes and how a rollback is
     /// recorded: the caller sends the old body forward rather than moving
     /// anything back.
+    ///
+    /// `files` of `None` carries the previous version's forward. A version
+    /// identical to the live one in body, hosts and files is not appended; the
+    /// live one is returned with `false`, so a redeploy grows no history.
     async fn add_version(
         &self,
         workspace_id: Uuid,
         id: Uuid,
         author: Uuid,
         input: NewVersion,
-    ) -> Result<SkillVersion, SkillError>;
+        files: Option<&[SkillFile]>,
+    ) -> Result<(SkillVersion, bool), SkillError>;
     async fn versions(&self, workspace_id: Uuid, id: Uuid)
     -> Result<Vec<SkillVersion>, SkillError>;
     async fn version(
@@ -218,8 +252,9 @@ pub trait SkillStore: Send + Sync {
         id: Uuid,
         version_id: Uuid,
     ) -> Result<SkillVersion, SkillError>;
-    /// Copies a version's body into a skill of this workspace's own, keeping
-    /// only a record of where it came from.
+    /// Copies a version's body and file list into a skill of this workspace's
+    /// own, keeping only a record of where it came from. The caller copies the
+    /// file content first when the source belongs to another workspace.
     async fn fork(
         &self,
         workspace_id: Uuid,
