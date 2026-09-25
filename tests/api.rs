@@ -2515,6 +2515,38 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
     );
 }
 
+/// A version read back lists the hosts it declared, not an empty list.
+#[tokio::test]
+async fn a_version_read_back_names_its_hosts() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"inn","name":"Inn","body":"x","hosts":["api.inn.example"]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = skill["id"].as_str().unwrap();
+    let v = skill["version_id"].as_str().unwrap();
+
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions"), Some(&admin))
+        .await;
+    let list: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(list[0]["hosts"][0], "api.inn.example", "{body}");
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions/{v}"), Some(&admin))
+        .await;
+    let one: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(one["hosts"][0], "api.inn.example", "{body}");
+}
+
 /// A version's files are part of it: listed with it, readable as published, and
 /// unchanged by later versions.
 #[tokio::test]

@@ -94,6 +94,17 @@ where
         .collect())
 }
 
+async fn hosts_of<'e, E>(executor: E, version_id: Uuid) -> Result<Vec<String>, SkillError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query_scalar("select host from skill_version_hosts where version_id = $1 order by host")
+        .bind(version_id)
+        .fetch_all(executor)
+        .await
+        .map_err(internal)
+}
+
 /// Files are prose about the base's API in an override's hands, and an
 /// override speaks about its base rather than replacing any of it.
 fn refuse_override_files(is_override: bool, files: &[SkillFile]) -> Result<(), SkillError> {
@@ -400,13 +411,7 @@ impl SkillStore for PostgresSkillStore {
 
         if let Some(live) = &live {
             let live_id: Uuid = live.get("id");
-            let mut live_hosts: Vec<String> =
-                sqlx::query_scalar("select host from skill_version_hosts where version_id = $1")
-                    .bind(live_id)
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(internal)?;
-            live_hosts.sort();
+            let live_hosts = hosts_of(&mut *tx, live_id).await?;
             let mut new_hosts = hosts.clone();
             new_hosts.sort();
             let live_files = files_of(&mut *tx, live_id).await?;
@@ -472,6 +477,7 @@ impl SkillStore for PostgresSkillStore {
         .map_err(internal)?;
         let mut versions: Vec<SkillVersion> = rows.iter().map(read_version).collect();
         for v in &mut versions {
+            v.hosts = hosts_of(&self.pool, v.id).await?;
             v.files = files_of(&self.pool, v.id).await?;
         }
         Ok(versions)
@@ -494,6 +500,7 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(internal)?;
         let mut version = row.as_ref().map(read_version).ok_or(SkillError::NotFound)?;
+        version.hosts = hosts_of(&self.pool, version.id).await?;
         version.files = files_of(&self.pool, version.id).await?;
         Ok(version)
     }
