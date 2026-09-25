@@ -66,6 +66,16 @@ body is versioned, owned by nothing, editable by anyone with workspace storage
 write, and unreachable for an operator's skill. Worth doing before the wizard,
 which should write into this shape rather than fix the current one in place.
 
+### Prompt caching
+
+[caching.md](caching.md).
+
+Anthropic caches only what a request marks, and nothing is marked, so every
+turn on it is uncached input. Four breakpoints, each a cascade setting: the
+instructions, the compacted history and the last completed turn on by default,
+the current tool loop off. Compaction has to cut in batches for any of it to
+hold, so that belongs in the same change.
+
 ### Platform-level egress list — an escape hatch, not a priority
 
 [egress.md](egress.md) — "An operator allowlist, by name".

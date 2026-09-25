@@ -139,6 +139,11 @@ the row and moves on every call. With a per-credential breaker the row is
 skipped for the cooldown instead, which is cheaper and is the backoff the
 provider asked for.
 
+## Caching
+
+Which parts of a prompt a provider is asked to cache is in
+[caching.md](caching.md). Per provider, since only Anthropic needs asking.
+
 ## Attribution
 
 Every call is a row in the usage ledger (see [usage.md](usage.md)) naming the

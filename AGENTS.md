@@ -658,6 +658,11 @@ the shape that works from the first turn. Compact against a fraction of the
 window rather than the whole of it, leaving room for the reply, for tool
 results arriving mid-turn, and for the compaction call itself.
 
+Compact with hysteresis: cut to a mark well below the budget in one step, then
+leave the prefix alone. Trimming a little every turn changes the start of the
+history on every request, and a provider's prompt cache misses from there on
+each time -- see [docs/caching.md](docs/caching.md).
+
 Nothing counts tokens anywhere in this codebase. A per-model tokeniser is a
 dependency that is wrong for every model it was not built for; bytes over a
 conservative budget is approximate in the safe direction, and being wrong costs
