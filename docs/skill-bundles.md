@@ -8,8 +8,8 @@ Built, except the UI. A version carries files: stored by hash, listed with
 the version, carried forward by a body-only edit, copied by a fork, and
 readable through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An
 agent reads them as `skill/<slug>/<path>`, from the version its binding
-resolved to, whatever its storage scopes. Hollowbrook still writes its detail
-into `workspace/` scope until its install script is moved over.
+resolved to, whatever its storage scopes. Hollowbrook's component installs
+this way.
 
 ## Why a body is not enough
 
@@ -144,10 +144,14 @@ The same rule as the wizard's applies to the files a split produces: each
 readable in one `read_object` call, named so the path can be derived from the
 body, and no URL in the body for a weaker model to mistake for a tool name.
 
-## What this changes for Hollowbrook
+## What this changed for Hollowbrook
 
-Its install script uploads the files with the version instead of through a
-throwaway session, drops `index.md` from the file set because it is the body,
-and the manifest's paths become `skill/hollowbrook/<operation>.md`. Nothing
-about the prose changes, which is the point: the shape was right, and only
-where it was stored was not.
+Its install script publishes the files with the version instead of through a
+throwaway session, leaves `index.md` out of the file set because it is the
+body, and the manifest's paths became `skill/hollowbrook/<operation>.md`.
+Nothing about the prose changed: the shape was right, and only where it was
+stored was not.
+
+Tried on 2026-09-25 against `gemini-3.7-flash`: asked what a booking needs, the
+agent loaded `read_object`, read `skill/hollowbrook/create_booking.md`, and
+asked for exactly the four fields that file marks as required.

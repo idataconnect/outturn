@@ -28,7 +28,9 @@ adapted rather than reused as-is.
 ## The skill
 
 `skill/index.md` is the manifest and becomes the skill body; the rest are one
-file per operation, uploaded to `workspace/api/hollowbrook/`.
+file per operation, published with it as files of the same version
+([docs/skill-bundles.md](../../../docs/skill-bundles.md)). An agent reads them
+as `skill/hollowbrook/<operation>.md`.
 
 That split is [docs/openapi-wizard.md](../../../docs/openapi-wizard.md). A
 skill body is composed into the system prompt on every round of every turn, so

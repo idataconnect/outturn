@@ -69,20 +69,14 @@ what the categories below are for.
 
 ### Where the files go
 
-Where they go today. [skill-bundles.md](skill-bundles.md) moves them into the
-skill itself, versioned with the manifest, and the wizard should write into
-that shape once it exists.
-
-`workspace/` scope, which is **read-only to an agent by default**
-([storage.md](storage.md)) -- the right default for reference material an agent
-consults and must never rewrite. It is also shared, so one wizard run serves
-every agent in the workspace rather than being copied per agent.
-
-A layout that reads well in a listing and in a path:
+Into the skill itself, as files of the same version as the manifest
+([skill-bundles.md](skill-bundles.md)). An agent reads them as
+`skill/<slug>/<path>`, read-only whatever its scopes, and an operator's skill
+brings them to every workspace that binds it.
 
 ```
-workspace/api/<service>/index.md          the manifest, mirrored from the skill body
-workspace/api/<service>/<operation>.md    one file per operation
+body                                      the manifest
+skill/<service>/<operation>.md            one file per operation
 ```
 
 For a large API this grows one level, described under *When the manifest itself
@@ -101,7 +95,7 @@ point -- a line that tried to be sufficient would be the specification again.
 
 ```
 - `create_booking` — Reserve a room for a date range. Detail:
-  workspace/api/hollowbrook/create_booking.md
+  skill/hollowbrook/create_booking.md
 ```
 
 A name, a sentence, a path. The name is derived from `operationId` where the
@@ -231,9 +225,9 @@ So the same trade is made once more. The skill body carries **categories**, and
 each category has its own manifest file listing the operations in it:
 
 ```
-workspace/api/<service>/index.md          categories, one line each
-workspace/api/<service>/<category>.md     the operations in that category
-workspace/api/<service>/<operation>.md    one operation
+body                                      categories, one line each
+skill/<service>/<category>.md             the operations in that category
+skill/<service>/<operation>.md            one operation
 ```
 
 An agent asked about an unpaid invoice reads the receivables manifest and

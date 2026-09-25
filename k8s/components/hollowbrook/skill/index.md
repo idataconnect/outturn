@@ -6,18 +6,18 @@ operation before using it, with `read_object`. Do not guess a call from its
 name here — this list says what exists, not how to ask for it.
 
 - `list_rooms` — every room, with what it sleeps and what it costs a night.
-  Detail: `workspace/api/hollowbrook/list_rooms.md`
+  Detail: `skill/hollowbrook/list_rooms.md`
 - `get_room` — the full description of one room: where it is in the house,
   what is in it, what it overlooks, and who it suits.
-  Detail: `workspace/api/hollowbrook/get_room.md`
+  Detail: `skill/hollowbrook/get_room.md`
 - `check_availability` — which rooms are free for a stay, and what that stay
-  would cost. Detail: `workspace/api/hollowbrook/check_availability.md`
+  would cost. Detail: `skill/hollowbrook/check_availability.md`
 - `list_bookings` — every booking currently held.
-  Detail: `workspace/api/hollowbrook/list_bookings.md`
+  Detail: `skill/hollowbrook/list_bookings.md`
 - `get_booking` — one booking, by the id given when it was made.
-  Detail: `workspace/api/hollowbrook/get_booking.md`
+  Detail: `skill/hollowbrook/get_booking.md`
 - `create_booking` — reserve a room for a date range.
-  Detail: `workspace/api/hollowbrook/create_booking.md`
+  Detail: `skill/hollowbrook/create_booking.md`
 
 ## The house
 
