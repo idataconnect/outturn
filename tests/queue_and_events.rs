@@ -3291,3 +3291,160 @@ async fn session_with_agent(pool: &sqlx::PgPool, workspace: Uuid) -> (Uuid, Uuid
 
     (session.id, agent_id, user_id)
 }
+
+// Stopping a silent provider -------------------------------------------------
+
+/// A provider that goes quiet: before it answers at all, which is a local
+/// model working through a long prompt, or after its first chunk, which is a
+/// model thinking.
+struct Silent {
+    after_first_chunk: bool,
+}
+
+#[async_trait::async_trait]
+impl outturn::gateway::llm::provider::LlmProvider for Silent {
+    fn provider(&self) -> outturn::gateway::llm::provider::Provider {
+        outturn::gateway::llm::provider::Provider::Mock
+    }
+
+    async fn chat_completion(
+        &self,
+        _: &outturn::gateway::llm::types::ChatCompletionRequest,
+    ) -> Result<
+        outturn::gateway::llm::types::ChatCompletionResponse,
+        outturn::gateway::llm::provider::ProviderError,
+    > {
+        Err(outturn::gateway::llm::provider::ProviderError::Unavailable)
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        _: &outturn::gateway::llm::types::ChatCompletionRequest,
+    ) -> Result<
+        futures::stream::BoxStream<
+            'static,
+            Result<
+                outturn::gateway::llm::types::StreamChunk,
+                outturn::gateway::llm::provider::ProviderError,
+            >,
+        >,
+        outturn::gateway::llm::provider::ProviderError,
+    > {
+        use futures::StreamExt;
+        use outturn::gateway::llm::types::{Delta, StreamChoice, StreamChunk};
+        if !self.after_first_chunk {
+            futures::future::pending::<()>().await;
+        }
+        let first = StreamChunk {
+            id: "silent".into(),
+            object: "chat.completion.chunk".into(),
+            created: 0,
+            model: "silent".into(),
+            choices: vec![StreamChoice {
+                index: 0,
+                delta: Delta {
+                    content: Some("Thinking".into()),
+                    ..Default::default()
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+            service_tier: None,
+        };
+        Ok(futures::stream::once(async move { Ok(first) })
+            .chain(futures::stream::pending())
+            .boxed())
+    }
+
+    fn endpoint(&self) -> String {
+        "silent".into()
+    }
+}
+
+/// Streams a turn through the gateway against a silent provider, stops it
+/// through the job store, and returns what the caller received -- or panics if
+/// the stop never arrived.
+async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
+    use tower::ServiceExt;
+
+    let (db, workspace_id) = setup().await;
+    let pool = db.pool.clone();
+    let session_id = Uuid::now_v7();
+    let job_id = jobs::enqueue(
+        &pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": session_id }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    jobs::claim(&pool, &["chat.turn"], 1, Duration::from_secs(60))
+        .await
+        .expect("claim");
+
+    let seed = [9u8; 32];
+    let validator = outturn::auth::TokenValidator::new(
+        &outturn::auth::TokenMinter::public_key_of(&seed),
+        outturn::auth::AUDIENCE_GATEWAY,
+    )
+    .expect("validator");
+    let token = outturn::auth::TokenMinter::new(&seed)
+        .expect("minter")
+        .mint_turn(
+            session_id,
+            workspace_id,
+            outturn::egress::commit::empty_root(),
+        )
+        .expect("token");
+    let state = outturn::gateway::GatewayState::new(
+        vec![std::sync::Arc::new(Silent { after_first_chunk })],
+        validator,
+    )
+    .with_health(pool.clone());
+    let app = outturn::gateway::routes(std::sync::Arc::new(state));
+
+    let stopper = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        jobs::request_cancel(&pool, job_id).await.expect("cancel");
+    });
+
+    let request = axum::http::Request::post("/v1/chat/completions/stream")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"model":"silent","messages":[{"role":"user","content":"hi"}]}"#,
+        ))
+        .unwrap();
+    let read = async {
+        let response = app.oneshot(request).await.expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8_lossy(&bytes).to_string()
+    };
+    let body = tokio::time::timeout(Duration::from_secs(10), read)
+        .await
+        .expect("the stop never reached a provider that had gone quiet");
+    stopper.await.unwrap();
+    drop(db);
+    body
+}
+
+/// A local model can spend minutes on a long prompt before its first byte.
+/// Stopping then has to end the call, not wait for the model to speak.
+#[tokio::test]
+async fn a_stop_reaches_a_provider_that_has_not_answered() {
+    let body = stop_a_silent_stream(false).await;
+    assert!(body.contains("\"cancelled\":true"), "{body}");
+}
+
+/// The same once the stream has begun and then gone quiet.
+#[tokio::test]
+async fn a_stop_reaches_a_stream_that_has_gone_quiet() {
+    let body = stop_a_silent_stream(true).await;
+    assert!(body.contains("Thinking"), "{body}");
+    assert!(body.contains("\"cancelled\":true"), "{body}");
+}
