@@ -279,6 +279,11 @@ every round of every turn and a real specification is megabytes. The agent
 reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
+A skill as a body plus files versioned together, rather than a body with its
+detail loose in `workspace/` scope, is designed but unbuilt in
+[docs/skill-bundles.md](docs/skill-bundles.md) — the Hollowbrook split works,
+but only the body is versioned, and nothing owns the files.
+
 How somebody finds out their skill is not working is designed but unbuilt, in
 [docs/skill-evaluation.md](docs/skill-evaluation.md) — a skill that documents
 its call the way an API's own docs do ("GET https://…") reads fine to a capable
