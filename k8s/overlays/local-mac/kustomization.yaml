@@ -51,16 +51,3 @@ patches:
                 env:
                   - name: OPENAI_BASE_URL
                     value: "http://host.docker.internal:11434"
-  - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: outturn-runtime
-      spec:
-        template:
-          spec:
-            containers:
-              - name: runtime
-                env:
-                  - name: OUTTURN_DEFAULT_MODEL
-                    value: "qwen3.8:27b-mlx"

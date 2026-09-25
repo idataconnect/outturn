@@ -98,8 +98,10 @@ async fn component_runs_a_turn_and_streams_progress() {
                 session_id,
                 gateway_url,
                 gateway_token: dev_token(session_id, workspace_id),
+                // Named by whoever runs this, since it is their model and
+                // possibly their money: nothing here picks one for them.
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
-                    .unwrap_or_else(|_| "qwen3.5".into()),
+                    .expect("OUTTURN_DEFAULT_MODEL must name the model to run against"),
                 progress: Some(sink),
                 on_tool: None,
                 on_tool_result: None,

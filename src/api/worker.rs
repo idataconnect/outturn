@@ -1183,7 +1183,7 @@ impl Worker {
 
         // Resolved once: the prompt has to name the same model the request asks
         // for, or the agent is told one thing and served by another.
-        let model = model_for(&agent.policy);
+        let model = model_for(&agent.policy)?;
 
         // Composed before the conversation is built, because a summary is
         // written against it: what the agent was told to do is what decides
@@ -1742,7 +1742,7 @@ impl Worker {
             .set_message_content(
                 reply_id,
                 &reply.content,
-                Some(&model_for(&agent.policy)),
+                model_for(&agent.policy).ok().as_deref(),
                 reply.provider.as_deref(),
                 reply.usage,
                 metadata,
@@ -1802,13 +1802,19 @@ fn traffic_type_for(policy: &serde_json::Value) -> String {
         .to_string()
 }
 
-fn model_for(policy: &serde_json::Value) -> String {
+/// The agent's model, or the operator's where the agent names none.
+///
+/// Nothing further. A model written into the code is one nobody chose: it
+/// answers every turn of a deployment that forgot to configure one, silently,
+/// and names whatever that deployment serves. Refusing says what is missing.
+fn model_for(policy: &serde_json::Value) -> anyhow::Result<String> {
     policy
         .get("model")
         .and_then(|m| m.as_str())
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into())
+        .or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("no model: the agent names none and OUTTURN_DEFAULT_MODEL is not set")
         })
 }
 

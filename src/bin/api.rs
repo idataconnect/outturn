@@ -202,6 +202,16 @@ async fn main() {
     // Unnamed conversations are given a title after their first turn, by a
     // model reached through the gateway. Absent OUTTURN_GATEWAY_URL this
     // logs once and sessions stay "New Session" until somebody names them.
+    // Not fatal: an agent that names its model runs without it. But every
+    // agent that does not will fail its turns, and nothing is named, so the
+    // one place an operator is sure to look is told at once.
+    if std::env::var("OUTTURN_DEFAULT_MODEL").is_err() {
+        tracing::warn!(
+            "OUTTURN_DEFAULT_MODEL is not set: agents that name no model will refuse \
+             their turns, and sessions will not be named"
+        );
+    }
+
     outturn::api::naming::spawn(
         pool.clone(),
         chat.clone(),
