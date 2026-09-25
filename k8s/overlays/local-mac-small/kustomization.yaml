@@ -27,16 +27,3 @@ patches:
                 env:
                   - name: OUTTURN_DEFAULT_MODEL
                     value: "qwen3.5"
-  - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: outturn-runtime
-      spec:
-        template:
-          spec:
-            containers:
-              - name: runtime
-                env:
-                  - name: OUTTURN_DEFAULT_MODEL
-                    value: "qwen3.5"

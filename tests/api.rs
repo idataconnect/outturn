@@ -1598,7 +1598,11 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
         .await;
 
     let (status, body) = h
-        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
@@ -1885,7 +1889,11 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .await;
 
     let (_, body) = h
-        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
         .await;
     let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
     let (status, body) = h
@@ -2823,7 +2831,7 @@ async fn a_turn_is_composed_from_its_skills_and_the_versions_are_recorded() {
         .post(
             "/v1/agents",
             Some(&operator),
-            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
         )
         .await;
     let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
@@ -3724,7 +3732,7 @@ async fn a_hold_that_cut_a_turn_latches_the_session_even_once_released() {
         .post(
             "/v1/agents",
             Some(&admin),
-            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
         )
         .await;
     let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
@@ -3852,7 +3860,7 @@ async fn a_held_turn_that_then_failed_still_latches() {
         .post(
             "/v1/agents",
             Some(&admin),
-            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
         )
         .await;
     let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
@@ -3933,7 +3941,7 @@ async fn a_turn_that_finished_normally_does_not_latch() {
         .post(
             "/v1/agents",
             Some(&admin),
-            r#"{"name":"A","slug":"a","system_prompt":"Be brief."}"#,
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
         )
         .await;
     let agent_id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]

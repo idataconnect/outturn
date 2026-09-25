@@ -101,15 +101,17 @@ host through `host.docker.internal`, and **qwen3.8:27b-mlx** as the default.
 
 ## Tunables
 
-Environment variables, all optional, all with defaults in the code beside the
-constant they replace.
+Environment variables, all optional. All but one have defaults in the code
+beside the constant they replace; the model does not, because a model written
+into the code is one nobody chose, answering every turn of a deployment that
+forgot to set one.
 
 | Variable | Tier | Bounds |
 |---|---|---|
 | `OUTTURN_MAX_CONCURRENT_TURNS` | runtime | Turns one pod carries before answering 503 |
 | `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
-| `OUTTURN_DEFAULT_MODEL` | api, runtime | Model when an agent names none |
+| `OUTTURN_DEFAULT_MODEL` | api | Model when an agent names none. Unset, such an agent refuses its turns and sessions go unnamed |
 
 Three are required rather than tunable, and each tier gets only the one it
 needs:

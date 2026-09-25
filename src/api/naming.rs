@@ -100,7 +100,12 @@ pub fn spawn(
         tracing::info!("no OUTTURN_GATEWAY_URL; sessions will not be named");
         return;
     };
-    let model = std::env::var("OUTTURN_DEFAULT_MODEL").unwrap_or_else(|_| "llama3.1".into());
+    // The operator's model, since naming belongs to no agent. None configured
+    // means none chosen, and a name is not worth guessing one for.
+    let Ok(model) = std::env::var("OUTTURN_DEFAULT_MODEL") else {
+        tracing::info!("no OUTTURN_DEFAULT_MODEL; sessions will not be named");
+        return;
+    };
 
     tokio::spawn(async move {
         let client = reqwest::Client::new();

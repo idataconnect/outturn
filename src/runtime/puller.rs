@@ -60,7 +60,6 @@ pub struct Puller {
     pub storage: Option<Arc<dyn super::storage::StorageBackend>>,
     pub gateway_url: String,
     pub admission: Arc<Admission>,
-    pub default_model: String,
     pub idle_timeout: Duration,
 }
 
@@ -212,7 +211,10 @@ impl Puller {
             session_id: request.session_id,
             gateway_url: self.gateway_url.clone(),
             gateway_token: assignment.gateway_token,
-            default_model: request.model.unwrap_or_else(|| self.default_model.clone()),
+            // Resolved by the API, which knows the agent and the operator's
+            // setting. None here is a turn nobody chose a model for, refused
+            // below rather than served by one this pod made up.
+            default_model: request.model.clone().unwrap_or_default(),
             progress: Some(sinks.0),
             on_tool: Some(sinks.1),
             on_tool_result: Some(sinks.2),
@@ -266,7 +268,15 @@ impl Puller {
         let runner = Arc::clone(&self.runner);
         let module = Arc::clone(&self.agent_module);
         let prompt = request.system_prompt;
+        let unnamed = request.model.is_none();
         tokio::spawn(async move {
+            if unnamed {
+                let _ = tx.send(ExecuteEvent::Failed {
+                    message: "no model: the turn names none".into(),
+                    held: None,
+                });
+                return;
+            }
             let outcome = runner.run(&module, conversation, prompt, options).await;
             let _ = match outcome {
                 Ok((content, cost, held)) => tx.send(ExecuteEvent::Done {
