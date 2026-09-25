@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::api::usage::PLATFORM_WORKSPACE;
 
 use super::{
-    Binding, CreateSkill, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError, SkillKind,
-    SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
+    Binding, CreateSkill, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError, SkillFile,
+    SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
 };
 
 pub struct PostgresSkillStore {
@@ -49,6 +49,58 @@ async fn write_hosts(
             .execute(&mut **tx)
             .await
             .map_err(internal)?;
+    }
+    Ok(())
+}
+
+async fn write_files(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    version_id: Uuid,
+    files: &[SkillFile],
+) -> Result<(), SkillError> {
+    for f in files {
+        sqlx::query(
+            "insert into skill_version_files (version_id, path, sha256, bytes) values ($1, $2, $3, $4)",
+        )
+        .bind(version_id)
+        .bind(&f.path)
+        .bind(&f.sha256)
+        .bind(f.bytes)
+        .execute(&mut **tx)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
+}
+
+async fn files_of<'e, E>(executor: E, version_id: Uuid) -> Result<Vec<SkillFile>, SkillError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows = sqlx::query(
+        "select path, sha256, bytes from skill_version_files where version_id = $1 order by path",
+    )
+    .bind(version_id)
+    .fetch_all(executor)
+    .await
+    .map_err(internal)?;
+    Ok(rows
+        .iter()
+        .map(|r| SkillFile {
+            path: r.get("path"),
+            sha256: r.get("sha256"),
+            bytes: r.get("bytes"),
+        })
+        .collect())
+}
+
+/// Files are prose about the base's API in an override's hands, and an
+/// override speaks about its base rather than replacing any of it.
+fn refuse_override_files(is_override: bool, files: &[SkillFile]) -> Result<(), SkillError> {
+    if is_override && !files.is_empty() {
+        return Err(SkillError::Invalid(
+            "an override cannot carry files; it speaks about its base's".into(),
+        ));
     }
     Ok(())
 }
@@ -144,6 +196,7 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
         note: row.get("note"),
         based_on_version_id: row.get("based_on_version_id"),
         hosts: Vec::new(),
+        files: Vec::new(),
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
     }
@@ -183,6 +236,7 @@ impl SkillStore for PostgresSkillStore {
         workspace_id: Uuid,
         author: Uuid,
         input: CreateSkill,
+        files: &[SkillFile],
     ) -> Result<Skill, SkillError> {
         validate_slug(&input.slug)?;
         validate_name(&input.name)?;
@@ -192,6 +246,7 @@ impl SkillStore for PostgresSkillStore {
         } else {
             SkillKind::Standalone
         };
+        refuse_override_files(kind == SkillKind::Override, files)?;
 
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
@@ -255,6 +310,7 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(internal)?;
         write_hosts(&mut tx, first, &hosts).await?;
+        write_files(&mut tx, first, files).await?;
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await
@@ -296,7 +352,8 @@ impl SkillStore for PostgresSkillStore {
         id: Uuid,
         author: Uuid,
         input: NewVersion,
-    ) -> Result<SkillVersion, SkillError> {
+        files: Option<&[SkillFile]>,
+    ) -> Result<(SkillVersion, bool), SkillError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
         let skill =
@@ -307,11 +364,12 @@ impl SkillStore for PostgresSkillStore {
                 .await
                 .map_err(internal)?
                 .ok_or(SkillError::NotFound)?;
+        let base: Option<Uuid> = skill.get("base_skill_id");
 
         // An override's every version records the base it was written against,
         // so a later edit of the base can be reported against this one rather
         // than against whatever the override said when it was first written.
-        let based_on: Option<Uuid> = match skill.get::<Option<Uuid>, _>("base_skill_id") {
+        let based_on: Option<Uuid> = match base {
             Some(base) => sqlx::query_scalar(
                 "select id from skill_versions where skill_id = $1 order by ordinal desc limit 1",
             )
@@ -323,7 +381,47 @@ impl SkillStore for PostgresSkillStore {
             None => None,
         };
 
+        let live = sqlx::query(
+            "select id, skill_id, ordinal, body, note, based_on_version_id, created_by, created_at \
+             from skill_versions where skill_id = $1 order by ordinal desc limit 1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal)?;
+
         let hosts = clean_hosts(&input.hosts)?;
+        let files: Vec<SkillFile> = match (files, &live) {
+            (Some(f), _) => f.to_vec(),
+            (None, Some(live)) => files_of(&mut *tx, live.get("id")).await?,
+            (None, None) => Vec::new(),
+        };
+        refuse_override_files(base.is_some(), &files)?;
+
+        if let Some(live) = &live {
+            let live_id: Uuid = live.get("id");
+            let mut live_hosts: Vec<String> =
+                sqlx::query_scalar("select host from skill_version_hosts where version_id = $1")
+                    .bind(live_id)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(internal)?;
+            live_hosts.sort();
+            let mut new_hosts = hosts.clone();
+            new_hosts.sort();
+            let live_files = files_of(&mut *tx, live_id).await?;
+            if live.get::<String, _>("body") == input.body
+                && live_hosts == new_hosts
+                && live_files == files
+                && live.get::<Option<Uuid>, _>("based_on_version_id") == based_on
+            {
+                let mut version = read_version(live);
+                version.hosts = live_hosts;
+                version.files = live_files;
+                return Ok((version, false));
+            }
+        }
+
         let version_id = Uuid::now_v7();
         let row = sqlx::query(
             "insert into skill_versions (id, workspace_id, skill_id, ordinal, body, note, based_on_version_id, created_by) \
@@ -344,6 +442,7 @@ impl SkillStore for PostgresSkillStore {
         .map_err(internal)?;
 
         write_hosts(&mut tx, version_id, &hosts).await?;
+        write_files(&mut tx, version_id, &files).await?;
         sqlx::query("update skills set updated_at = now() where id = $1")
             .bind(id)
             .execute(&mut *tx)
@@ -353,7 +452,8 @@ impl SkillStore for PostgresSkillStore {
         tx.commit().await.map_err(internal)?;
         let mut version = read_version(&row);
         version.hosts = hosts;
-        Ok(version)
+        version.files = files;
+        Ok((version, true))
     }
 
     async fn versions(
@@ -370,7 +470,11 @@ impl SkillStore for PostgresSkillStore {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(rows.iter().map(read_version).collect())
+        let mut versions: Vec<SkillVersion> = rows.iter().map(read_version).collect();
+        for v in &mut versions {
+            v.files = files_of(&self.pool, v.id).await?;
+        }
+        Ok(versions)
     }
 
     async fn version(
@@ -389,7 +493,9 @@ impl SkillStore for PostgresSkillStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        row.as_ref().map(read_version).ok_or(SkillError::NotFound)
+        let mut version = row.as_ref().map(read_version).ok_or(SkillError::NotFound)?;
+        version.files = files_of(&self.pool, version.id).await?;
+        Ok(version)
     }
 
     async fn fork(
@@ -433,11 +539,12 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(|e| map_write_error(e, &input.slug))?;
 
+        let first = Uuid::now_v7();
         sqlx::query(
             "insert into skill_versions (id, workspace_id, skill_id, ordinal, body, note, created_by) \
              values ($1, $2, $3, 1, $4, $5, $6)",
         )
-        .bind(Uuid::now_v7())
+        .bind(first)
         .bind(workspace_id)
         .bind(id)
         .bind(&taken.body)
@@ -446,6 +553,7 @@ impl SkillStore for PostgresSkillStore {
         .execute(&mut *tx)
         .await
         .map_err(internal)?;
+        write_files(&mut tx, first, &taken.files).await?;
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await

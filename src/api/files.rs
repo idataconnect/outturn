@@ -98,14 +98,16 @@ async fn space_for(
     })
 }
 
-fn storage(state: &ApiState) -> Result<Arc<dyn crate::runtime::storage::StorageBackend>, ApiError> {
+pub(super) fn storage(
+    state: &ApiState,
+) -> Result<Arc<dyn crate::runtime::storage::StorageBackend>, ApiError> {
     state.storage.clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "object storage is not configured".into(),
     ))
 }
 
-fn storage_failed(e: crate::runtime::storage::StorageError) -> ApiError {
+pub(super) fn storage_failed(e: crate::runtime::storage::StorageError) -> ApiError {
     use crate::runtime::storage::StorageError;
     match e {
         StorageError::NotFound => (StatusCode::NOT_FOUND, "no such file".into()),

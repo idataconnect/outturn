@@ -2515,6 +2515,184 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
     );
 }
 
+/// A version's files are part of it: listed with it, readable as published, and
+/// unchanged by later versions.
+#[tokio::test]
+async fn a_skill_versions_its_files_with_its_body() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"inn","name":"Inn","body":"Read inn/book.md first.",
+                "files":[{"path":"book.md","content":"POST /bookings, v1"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "create: {body}");
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = skill["id"].as_str().unwrap().to_string();
+    let v1 = skill["version_id"].as_str().unwrap().to_string();
+
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions/{v1}"), Some(&admin))
+        .await;
+    let version: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(version["files"][0]["path"], "book.md", "{body}");
+
+    // A body edit that says nothing about files keeps them.
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{id}/versions"),
+            Some(&admin),
+            r#"{"body":"Read book.md before booking."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body edit: {body}");
+    let v2: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v2["files"][0]["path"], "book.md",
+        "files were dropped: {body}"
+    );
+
+    // Changing a file appends a version, and the old one still reads as it was.
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{id}/versions"),
+            Some(&admin),
+            r#"{"body":"Read book.md before booking.",
+                "files":[{"path":"book.md","content":"POST /bookings, v2"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "file edit: {body}");
+    let v3: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let v3_id = v3["id"].as_str().unwrap().to_string();
+
+    let (status, body) = h
+        .get(
+            &format!("/v1/skills/{id}/versions/{v1}/files/book.md"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "POST /bookings, v1");
+    let (_, body) = h
+        .get(
+            &format!("/v1/skills/{id}/versions/{v3_id}/files/book.md"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(body, "POST /bookings, v2");
+
+    // Sending the live version again appends nothing.
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{id}/versions"),
+            Some(&admin),
+            r#"{"body":"Read book.md before booking.",
+                "files":[{"path":"book.md","content":"POST /bookings, v2"}]}"#,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an identical version was appended: {body}"
+    );
+    let same: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(same["id"], v3["id"]);
+
+    // A path that climbs is refused rather than cleaned up.
+    let (status, _) = h
+        .post(
+            &format!("/v1/skills/{id}/versions"),
+            Some(&admin),
+            r#"{"body":"x","files":[{"path":"../other/x.md","content":"x"}]}"#,
+        )
+        .await;
+    assert!(
+        status.is_client_error(),
+        "a climbing path was accepted: {status}"
+    );
+}
+
+/// An operator's skill reaches a workspace with its files, including through a
+/// fork, and a workspace's override cannot carry files of its own.
+#[tokio::test]
+async fn an_operators_skill_files_reach_the_workspace() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op3@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"See crm/call.md.",
+                "files":[{"path":"call.md","content":"GET /v1/accounts"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let base: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let base_id = base["id"].as_str().unwrap().to_string();
+    let base_v = base["version_id"].as_str().unwrap().to_string();
+
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, body) = h
+        .get(
+            &format!("/v1/skills/{base_id}/versions/{base_v}/files/call.md"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "GET /v1/accounts");
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{base_id}/fork"),
+            Some(&admin),
+            r#"{"slug":"crm-mine","name":"CRM (mine)"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "fork: {body}");
+    let fork: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let fork_id = fork["id"].as_str().unwrap().to_string();
+    let fork_v = fork["version_id"].as_str().unwrap().to_string();
+    let (status, body) = h
+        .get(
+            &format!("/v1/skills/{fork_id}/versions/{fork_v}/files/call.md"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "the fork lost its file: {body}");
+    assert_eq!(body, "GET /v1/accounts");
+
+    let (status, _) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            &format!(
+                r#"{{"slug":"crm-ours","name":"Ours","body":"v2 here.","base_skill_id":"{base_id}",
+                    "files":[{{"path":"call.md","content":"GET /v2/accounts"}}]}}"#
+            ),
+        )
+        .await;
+    assert!(
+        status.is_client_error(),
+        "an override carried files: {status}"
+    );
+}
+
 /// An override composes after the prose it speaks about, and applies wherever
 /// its base is used without being bound itself.
 #[tokio::test]
