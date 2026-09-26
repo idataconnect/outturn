@@ -21,10 +21,12 @@
 //! the fallback rather than the mechanism, because a system that invalidates
 //! by default is one where nobody ever finds out which path was lying.
 
+mod bus;
 mod postgres;
 #[cfg(test)]
 mod tests;
 
+pub use bus::{ActionBus, ActionHint};
 pub use postgres::{CHANNEL, PostgresActionStore};
 
 use async_trait::async_trait;
@@ -159,6 +161,21 @@ impl State {
 }
 
 /// What to raise.
+///
+/// `payload` is rendered by the queue without a second fetch, which is the
+/// point of it -- but it is therefore read by everybody the item is targeted
+/// at, and the queue applies no agent narrowing. Narrowing (`api::scope`)
+/// confines a person to named agents and governs `Sessions*` and
+/// `StorageAgent*`; an action item has no agent, so there is nothing here for
+/// `Reach::covers` to test, and the read is right not to try.
+///
+/// The consequence is a rule for producers rather than a check here: put in
+/// `payload` only what every target may see whatever they are scoped to. What
+/// an agent said belongs behind `event_id`, where the events read applies
+/// `Visible` -- see the comment in `api::events::poll`, which is about exactly
+/// this: a person refused a transcript must not be served the same words by
+/// another route. A producer that copies an agent's question in here is that
+/// route.
 #[derive(Debug, Clone)]
 pub struct NewItem {
     pub kind: String,
@@ -313,6 +330,14 @@ pub trait ActionStore: Send + Sync {
     /// count is a scan whose cost grows with somebody else's backlog. The
     /// caller renders `cap` as "and more" rather than as a total.
     async fn count_for_user_everywhere(&self, user_id: Uuid, cap: i64) -> Result<i64, ActionError>;
+
+    /// The roles this person currently holds, by workspace, for matching a
+    /// hint against without reading the database per announcement.
+    ///
+    /// Read once when a request parks rather than per hint: a pod fanning one
+    /// announcement out to a hundred waiters must not turn that into a hundred
+    /// queries.
+    async fn roles_of(&self, user_id: Uuid) -> Result<Vec<Uuid>, ActionError>;
 
     /// Announces a change so connected clients refetch.
     ///
