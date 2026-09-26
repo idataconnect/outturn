@@ -117,6 +117,10 @@ required-features = ["integration-tests"]
 name = "queue_and_events"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "action_queue"
+required-features = ["integration-tests"]
+
 # Drives the real component against a real gateway and whatever model it
 # routes to. `live-providers` rather than `integration-tests` for the reason
 # that flag exists: the gateway a developer has running may be pointed at a
