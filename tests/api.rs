@@ -6608,3 +6608,593 @@ async fn a_waiting_read_returns_the_current_queue_when_nothing_happens() {
 
     h.db.cleanup().await;
 }
+
+// --- approvals ------------------------------------------------------------
+//
+// The whole path: a conversation is held, somebody is asked, they answer, and
+// the parked turn is given back. See docs/approvals.md.
+
+/// A POST carrying the session cookie a login returned.
+async fn post_with_cookie(
+    h: &Harness,
+    uri: &str,
+    cookie: &str,
+    body: &str,
+) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("cookie", format!("outturn_session={cookie}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    h.send(req).await
+}
+
+/// An agent and a conversation with one message in it, so a turn exists.
+async fn a_held_conversation(h: &Harness, workspace: Uuid, cookie: &str) -> (Uuid, Uuid) {
+    let agent = h
+        .agents
+        .create(
+            workspace,
+            outturn::api::agent::CreateAgent {
+                name: "Front Desk".into(),
+                slug: "front-desk".into(),
+                description: String::new(),
+                system_prompt: String::new(),
+                policy: None,
+            },
+        )
+        .await
+        .expect("create agent");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/agent-sessions")
+        .header("cookie", format!("outturn_session={cookie}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "agent_id": agent.id, "title": "t" }).to_string(),
+        ))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::CREATED, "session: {body}");
+    let session: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    (agent.id, session)
+}
+
+#[tokio::test]
+async fn an_approval_holds_the_conversation_and_asks_somebody() {
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("admin role");
+
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session,
+            "requires": "charge",
+            "reason": "£180 to payment account PA-4471",
+            "roles": [role],
+            "payload": { "amount_pence": 18000, "booking_id": "b-8812" }
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let raised: Value = serde_json::from_str(&body).expect("json");
+
+    // A suspended hold, which nothing in this codebase took before.
+    let strength: String = sqlx::query_scalar("select strength from inhibitors where id = $1")
+        .bind(
+            raised["inhibitor_id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        )
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("hold");
+    assert_eq!(strength, "suspended");
+
+    // And it is in the asked role's queue, with what they need to decide.
+    let (status, body) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let queue: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(queue["items"].as_array().unwrap().len(), 1);
+    assert_eq!(queue["items"][0]["kind"], "approval.charge");
+    assert_eq!(queue["items"][0]["payload"]["amount_pence"], 18000);
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_approval_addressed_to_nobody_is_refused() {
+    // It would park the conversation for ever, and the orphan is only findable
+    // by somebody who thinks to look.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    let (status, _) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session,
+            "requires": "charge",
+            "reason": "£180",
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Nothing was held.
+    let holds: i64 = sqlx::query_scalar("select count(*) from inhibitors")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(holds, 0, "a refused approval left a hold behind");
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_approval_needs_a_reason_somebody_can_act_on() {
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("role");
+
+    let (status, _) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "  ", "roles": [role]
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_conversation_in_another_workspace_cannot_be_held() {
+    // Otherwise a caller could park somebody else's conversation by id.
+    let h = harness().await;
+    let mine = h.make_workspace("Mine", "mine").await;
+    let theirs = h.make_workspace("Theirs", "theirs").await;
+    let their_admin = h
+        .login_as("them@test.invalid", None, Some((theirs, "admin")))
+        .await;
+    let (_, their_session) = a_held_conversation(&h, theirs, &their_admin).await;
+
+    let my_admin = h
+        .login_as("me@test.invalid", None, Some((mine, "admin")))
+        .await;
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(mine)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("role");
+
+    let (status, _) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &my_admin,
+        &serde_json::json!({
+            "session_id": their_session,
+            "requires": "charge",
+            "reason": "£180",
+            "roles": [role]
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn approving_releases_the_hold_and_gives_the_turn_back() {
+    // The end of the path, and the reason parking exists.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (agent, session) = a_held_conversation(&h, workspace, &admin).await;
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("role");
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£180", "roles": [role]
+        })
+        .to_string(),
+    )
+    .await;
+    let raised: Value = serde_json::from_str(&body).expect("json");
+    let item = raised["id"].as_str().unwrap();
+    let hold: Uuid = raised["inhibitor_id"].as_str().unwrap().parse().unwrap();
+
+    // A turn parked under this conversation, as the worker would have left one.
+    let job = outturn::jobs::enqueue(
+        &h.db.pool,
+        workspace,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": workspace, "session_id": session,
+            "agent_id": agent, "message_id": Uuid::now_v7(),
+        }),
+        None,
+        Some(&format!("session:{session}")),
+        outturn::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    let claimed = outturn::jobs::claim(
+        &h.db.pool,
+        &["chat.turn"],
+        1,
+        std::time::Duration::from_secs(45),
+    )
+    .await
+    .expect("claim");
+    outturn::jobs::park(&h.db.pool, job, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let answered: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(answered["resumed"], 1, "the parked turn was not given back");
+
+    // The hold is gone and the turn is claimable again.
+    let still: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
+        .bind(hold)
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(still, 0, "approving left the hold on");
+    let state: String = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(job)
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("state");
+    assert_eq!(state, "pending");
+
+    // And it has left the queue.
+    let (_, body) = get_with_cookie(&h, "/v1/action-items/count", &admin).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["count"], 0);
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn declining_leaves_the_hold_on() {
+    // Nothing has changed about whether the work may proceed, so releasing the
+    // hold would let it run having been refused.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("role");
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£4000", "roles": [role]
+        })
+        .to_string(),
+    )
+    .await;
+    let raised: Value = serde_json::from_str(&body).expect("json");
+    let item = raised["id"].as_str().unwrap();
+    let hold: Uuid = raised["inhibitor_id"].as_str().unwrap().parse().unwrap();
+
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &admin,
+        r#"{"approved":false,"note":"too much for a first-time guest"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["resumed"], 0);
+
+    let still: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
+        .bind(hold)
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(still, 1, "declining released the hold");
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn answering_twice_is_refused() {
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+    let role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("role");
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£180", "roles": [role]
+        })
+        .to_string(),
+    )
+    .await;
+    let item = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (first, _) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(first, StatusCode::OK);
+
+    // Answered once already: the second is told it lost rather than silently
+    // overwriting the first decision.
+    let (second, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &admin,
+        r#"{"approved":false}"#,
+    )
+    .await;
+    assert_eq!(second, StatusCode::CONFLICT, "{body}");
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn somebody_without_the_authority_cannot_answer() {
+    // The two-user case: one may approve, the other may not, and it is an
+    // authority rather than a prop.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("manager@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    // A role with everything an operator needs and no approvals:answer.
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/roles",
+        &admin,
+        r#"{"name":"desk","authorities":["sessions:read","sessions:create","agents:read"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let desk_role: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£180",
+            "roles": [desk_role]
+        })
+        .to_string(),
+    )
+    .await;
+    let item = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let clerk = h
+        .login_as("clerk@test.invalid", None, Some((workspace, "desk")))
+        .await;
+
+    // It is in their queue -- they are who was asked --
+    let (status, body) = get_with_cookie(&h, "/v1/action-items", &clerk).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the asked role did not see it"
+    );
+
+    // -- and they still may not answer it.
+    let (status, _) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &clerk,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_approval_somebody_was_not_asked_about_is_not_theirs_to_answer() {
+    // Targeting would be decorative if any holder of approvals:answer could
+    // answer anything.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("manager@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    // Addressed to a role nobody in this test holds.
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/roles",
+        &admin,
+        r#"{"name":"finance","authorities":["approvals:answer"]}"#,
+    )
+    .await;
+    let finance: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£180", "roles": [finance]
+        })
+        .to_string(),
+    )
+    .await;
+    let item = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Another person who holds approvals:answer through a different role, and
+    // who has an approval of their own waiting -- so their queue is not empty.
+    // Without that, a lookup that ignored the id entirely would still refuse
+    // this, and the test would pass while proving nothing.
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/roles",
+        &admin,
+        r#"{"name":"ops","authorities":["approvals:answer","sessions:read"]}"#,
+    )
+    .await;
+    let ops_role: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let other = h
+        .login_as("ops@test.invalid", None, Some((workspace, "ops")))
+        .await;
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "refund", "reason": "£20",
+            "roles": [ops_role]
+        })
+        .to_string(),
+    )
+    .await;
+    let theirs = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(theirs, item, "the two approvals must be different items");
+    // Left unanswered on purpose. Their queue has to be non-empty *at the
+    // moment of the refusal below*, or a lookup that ignored the id and took
+    // whatever was first would find nothing and refuse for the wrong reason --
+    // which is exactly what an earlier version of this test did.
+    let (status, body) = get_with_cookie(&h, "/v1/action-items", &other).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let queue = serde_json::from_str::<Value>(&body).unwrap();
+    assert_eq!(
+        queue["items"].as_array().unwrap().len(),
+        1,
+        "the second reader should have exactly their own waiting: {body}"
+    );
+    assert_eq!(queue["items"][0]["id"], theirs);
+
+    let (status, _) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &other,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "somebody answered an approval they were not asked about"
+    );
+
+    h.db.cleanup().await;
+}

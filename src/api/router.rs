@@ -1429,6 +1429,8 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
+        .route("/v1/approvals", post(super::approvals::request))
+        .route("/v1/approvals/{id}/answer", post(super::approvals::answer))
         .route("/v1/action-items", get(super::actions_api::queue))
         .route("/v1/action-items/count", get(super::actions_api::badge))
         .route(

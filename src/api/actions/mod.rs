@@ -331,6 +331,24 @@ pub trait ActionStore: Send + Sync {
     /// caller renders `cap` as "and more" rather than as a total.
     async fn count_for_user_everywhere(&self, user_id: Uuid, cap: i64) -> Result<i64, ActionError>;
 
+    /// Whether one item that is no longer open was ever this person's to
+    /// answer, and what became of it.
+    ///
+    /// The queue reads only what is open, so an item settled a moment ago is
+    /// absent from it -- and a caller needs "already decided" told apart from
+    /// "never yours", which is what two people answering at once produces. Same
+    /// targeting rule as the queue, because a bare read by id would answer for
+    /// items the caller was never asked about.
+    ///
+    /// `None` means it is not theirs, or does not exist. The two are one answer
+    /// on purpose: an item somebody was never asked about is one they have no
+    /// business learning the existence of.
+    async fn settled_for_user(
+        &self,
+        user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Option<State>, ActionError>;
+
     /// The roles this person currently holds, by workspace, for matching a
     /// hint against without reading the database per announcement.
     ///
