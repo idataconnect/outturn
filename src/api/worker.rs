@@ -391,7 +391,7 @@ pub(super) struct TurnOutcome {
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
-    /// The prose an agent is given beside its own prompt.
+    /// The instructions an agent is given beside its own prompt.
     pub skills: Arc<dyn super::skill::SkillStore>,
     pub chat: Arc<dyn ChatStore>,
     /// Where every model call is written down, as it is reported.

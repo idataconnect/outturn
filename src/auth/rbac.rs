@@ -76,7 +76,7 @@ pub enum Authority {
     /// Files belonging to one agent's work.
     StorageAgentRead,
     StorageAgentWrite,
-    /// Skills: the prose an agent is given beside its system prompt.
+    /// Skills: the instructions an agent is given beside its system prompt.
     ///
     /// Reading covers the operator's skills as well as the workspace's own,
     /// since a workspace cannot decide whether to override one it cannot see.

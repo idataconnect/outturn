@@ -28,8 +28,19 @@ installs a skill describing its API.
 In another terminal:
 
 ```
-cd ui && npm run dev
+cd ui && VITE_THEME=hollowbrook VITE_BRAND_NAME='Hollowbrook House' \
+  VITE_BRAND_LOGO=/hollowbrook-logo.svg npm run dev
 ```
+
+Those three are why the next half hour looks like a guesthouse's own software
+rather than like outturn. Vite reads them at build time, so they are set on the
+command that starts it rather than configured in the app -- which is also why
+`--with hollowbrook` cannot set them for you: the UI runs on the host and the
+component installs into the cluster. `ui/src/themes/README.md` has the rest.
+
+Plain `npm run dev` gives you outturn's own look, which is worth seeing once:
+anything that survives both is genuinely coming from a token, which is what the
+second theme exists to prove.
 
 Open http://localhost:3000 and sign in as `admin@outturn.local`. The password
 is this clone's own — `scripts/dev-secrets.sh --print` shows it.
@@ -130,5 +141,8 @@ calls outturn's public endpoints — create a skill, approve its host, upload it
 files. Nothing privileged, and nothing patched into the platform, so replacing
 `skill/` with your own service's operations is most of the work.
 
-The same goes for the look: `ui/src/themes/` is one file per brand, and
-`VITE_THEME` picks it. Skinning outturn is not forking it.
+The same goes for the look, which step 1 already had you run: `ui/src/themes/`
+is one file per brand and `VITE_THEME` picks it, while `VITE_BRAND_NAME`,
+`VITE_BRAND_LOGO` and `VITE_BRAND_TAGLINE` carry the name and the mark. Skinning
+outturn is not forking it -- `src/lib/brand.ts` says why those are build
+variables rather than source, and `Logo.tsx` is the one place the mark is drawn.

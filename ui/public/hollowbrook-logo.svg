@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img"
+     aria-label="Hollowbrook House">
+  <!--
+    Hollowbrook House. Not a real customer: the fixture exists so that "the
+    tokens are complete" is checkable by looking, and so is "the mark is
+    configuration rather than source". See src/themes/hollowbrook.css.
+
+    A gable over a brook, in the theme's own terracotta and sage rather than in
+    outturn's teal, so a mark that quietly stayed behind on a theme switch is
+    visible at a glance. Hand-written rather than exported, because it has to
+    read at 24px in a sidebar and that is the only size it is ever drawn at.
+
+    Colours are literal rather than tokens. An img element gets no CSS from the
+    page embedding it, so a var() here would resolve to nothing.
+  -->
+  <path d="M4 15 16 5l12 10v1h-3v11h-6v-7h-6v7H7V16H4z"
+        fill="oklch(0.58 0.14 40)"/>
+  <!-- The brook: two strokes rather than one, so it reads as water at 24px. -->
+  <path d="M5 26q3-2 5.5 0T16 26t5.5 0T27 26" fill="none"
+        stroke="oklch(0.62 0.06 150)" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M5 29q3-2 5.5 0T16 29t5.5 0T27 29" fill="none"
+        stroke="oklch(0.62 0.06 150)" stroke-width="1.2" stroke-linecap="round"
+        opacity="0.6"/>
+</svg>
