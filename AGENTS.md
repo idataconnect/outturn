@@ -360,6 +360,12 @@ document is about. They are refused the same way a reply cut off at the token
 limit has always been refused — see the truncation guard in
 `agents/default/src/lib.rs`.
 
+Words this codebase uses in a particular way are in
+[docs/glossary.md](docs/glossary.md) -- worth a look before a design
+conversation, since a few are easy to misread. "Bundle" is one skill shipped as
+a body plus its files, not a set of related skills; a *skill package* is the
+reserved name for that second thing, which does not exist.
+
 ## Invariants worth knowing before you change things
 
 These are load-bearing. Each has already caused a visible bug.

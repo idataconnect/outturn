@@ -108,6 +108,32 @@ speaks about its base's files the way it speaks about its base's body, and does
 not replace them. Whether an override should be able to add files of its own
 is a question to answer when somebody needs it.
 
+## The public convention, and where this parts from it
+
+The body/name/description shape is deliberately the same as the Agent Skills
+convention a `SKILL.md` follows -- a description that decides relevance, a body
+paid for when it is loaded -- because that is the same problem with the same
+answer, and this repo has one of those files itself for the agent that works on
+it (`.agents/skills/onboarding/SKILL.md`). A body written for one pastes in here
+usefully, which is the point of not inventing a different shape.
+
+What does not carry across is most of what makes these governable, so this is a
+family resemblance rather than a claim of compatibility:
+
+- **A skill here is a row, not a directory.** Versions, overrides, forks,
+  retirement and the hosts it declares are the substance of it, and a file has
+  nowhere to put them. Dropping a directory in would not work.
+- **`allowed-tools` has no meaning.** What a tenant's agent may reach is an
+  egress rule and a set of host imports, decided outside anything the skill can
+  say. A declaration in a file would be a permission that is not one.
+- **The frontmatter below is ours**, on a per-operation file -- a level the
+  convention has no equivalent of, since it has no notion of a body plus files
+  versioned as one unit.
+
+The two also serve different readers. `.agents/skills/` is for an agent working
+on this codebase, with a filesystem and a shell; a skill here is prose for a
+tenant's agent, which has neither.
+
 ## Frontmatter, and what may live in it
 
 A file may open with YAML between `---` fences. Today one key is defined --
