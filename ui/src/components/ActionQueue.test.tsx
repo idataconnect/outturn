@@ -17,7 +17,7 @@ function item(over: Partial<ActionItem> = {}): ActionItem {
   return {
     id: idAt(NOW - 5 * 60_000),
     workspace_id: 'w1',
-    kind: 'hitl.approval',
+    kind: 'approval.charge',
     event_id: null,
     payload: { question: 'Refund order 8812?' },
     state: 'pending',
@@ -43,7 +43,7 @@ describe('an empty queue', () => {
 describe('a waiting item', () => {
   it('names what it is and what it is about', () => {
     render(<ActionQueue items={[item()]} now={NOW} />)
-    expect(screen.getByText('Approval needed')).toBeInTheDocument()
+    expect(screen.getByText('Charge to approve')).toBeInTheDocument()
     expect(screen.getByText(/Refund order 8812\?/)).toBeInTheDocument()
   })
 
@@ -57,13 +57,13 @@ describe('a waiting item', () => {
 
   it('renders a kind nobody wrote a label for', () => {
     // A new producer must not be a blank row.
-    render(<ActionQueue items={[item({ kind: 'hitl.budget_override' })]} now={NOW} />)
+    render(<ActionQueue items={[item({ kind: 'approval.budget_override' })]} now={NOW} />)
     expect(screen.getByText('Budget override')).toBeInTheDocument()
   })
 
   it('shows no summary when the payload has no line worth showing', () => {
     render(<ActionQueue items={[item({ payload: {} })]} now={NOW} />)
-    expect(screen.getByText('Approval needed')).toBeInTheDocument()
+    expect(screen.getByText('Charge to approve')).toBeInTheDocument()
   })
 
   it('ignores a payload field of the wrong type', () => {
@@ -144,7 +144,7 @@ describe('opening an item', () => {
     render(<ActionQueue items={[item()]} onOpen={onOpen} now={NOW} />)
     await userEvent.click(screen.getByRole('button'))
     expect(onOpen).toHaveBeenCalledTimes(1)
-    expect(onOpen.mock.calls[0][0].kind).toBe('hitl.approval')
+    expect(onOpen.mock.calls[0][0].kind).toBe('approval.charge')
   })
 
   it('opens from the keyboard, since a div with a button role gets nothing free', async () => {

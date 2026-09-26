@@ -712,6 +712,37 @@ pub async fn resume_parked(
     Ok(resumed)
 }
 
+/// Gives back whatever a hold of this scope parked.
+///
+/// The one place the mapping from a hold's scope to a resume's breadth lives.
+/// Both callers -- releasing a hold by hand, and answering an approval -- had
+/// their own copy of it, and the second derived the session from a denormalised
+/// copy in the queue item's payload instead of from the hold. That copy is there
+/// for the reader; as control flow a missing key becomes `(None, None)`, which
+/// `resume_parked` reads as every parked turn in the workspace. One function, so
+/// there is nothing to diverge and nothing to fail open.
+///
+/// A platform hold resumes nothing here: it is not a workspace's to release, and
+/// nothing reaches this with one.
+pub async fn resume_for_scope(
+    pool: &PgPool,
+    scope: &crate::api::inhibitor::Scope,
+) -> Result<u64, JobError> {
+    use crate::api::inhibitor::Scope;
+    match scope {
+        Scope::Platform => Ok(0),
+        Scope::Workspace { workspace_id } => resume_parked(pool, *workspace_id, None, None).await,
+        Scope::Agent {
+            workspace_id,
+            agent_id,
+        } => resume_parked(pool, *workspace_id, Some(*agent_id), None).await,
+        Scope::Session {
+            workspace_id,
+            session_id,
+        } => resume_parked(pool, *workspace_id, None, Some(*session_id)).await,
+    }
+}
+
 /// Returns jobs whose lease expired to the pending pool.
 ///
 /// This is what makes a crashed worker recoverable: the claim is a lease, not

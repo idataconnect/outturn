@@ -331,8 +331,8 @@ pub trait ActionStore: Send + Sync {
     /// caller renders `cap` as "and more" rather than as a total.
     async fn count_for_user_everywhere(&self, user_id: Uuid, cap: i64) -> Result<i64, ActionError>;
 
-    /// Whether one item that is no longer open was ever this person's to
-    /// answer, and what became of it.
+    /// What became of one item that is no longer open, if it was ever this
+    /// person's to answer.
     ///
     /// The queue reads only what is open, so an item settled a moment ago is
     /// absent from it -- and a caller needs "already decided" told apart from
@@ -340,9 +340,13 @@ pub trait ActionStore: Send + Sync {
     /// targeting rule as the queue, because a bare read by id would answer for
     /// items the caller was never asked about.
     ///
-    /// `None` means it is not theirs, or does not exist. The two are one answer
-    /// on purpose: an item somebody was never asked about is one they have no
-    /// business learning the existence of.
+    /// `None` means it is not theirs, does not exist, or is still open. The
+    /// first two are one answer on purpose: an item somebody was never asked
+    /// about is one they have no business learning the existence of. The third
+    /// is in there because a still-open item is the queue's answer to give, and
+    /// reporting it here would have a caller whose queue is longer than the scan
+    /// told "this approval was already pending" -- a conflict about a state that
+    /// is not a conflict, on an item they cannot then answer.
     async fn settled_for_user(
         &self,
         user_id: Uuid,

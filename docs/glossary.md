@@ -46,9 +46,9 @@ per-workspace answer; `Visible` is that answer as a query filter.
 
 ## Skills
 
-**Skill** — prose an agent is given beside its system prompt. A row, not a file:
-it has a slug, versions, and possibly a base it overrides or a skill it was
-forked from.
+**Skill** — instructions an agent is given beside its system prompt. A row,
+not a file: it has a slug, versions, and possibly a base it overrides or a skill
+it was forked from.
 
 **Body** — the part composed into the system prompt on every round of every
 turn, so everything in it is paid for continuously.
@@ -112,6 +112,13 @@ The queue is a read model; the hold is the truth of whether it is still open.
 
 **Target** — who an action item waits on: a role or a user. Stored as the role,
 never expanded to its members, so membership changes need no queue writes.
+
+**Kind** — what an action item is, as `family.act`. An approval is
+`approval.<act>`, built by the server from the `requires` of its frontmatter, so
+`requires: charge` becomes `approval.charge`. Not `hitl.*`: that spelling was in
+the component and the fixtures while the only producer emitted `approval.*`, so
+every real row rendered with the fallback label and the wrong glyph, and the
+tests agreed with each other rather than with the code.
 
 **Approval** — a person's yes to an act an agent is about to take. Declared in
 frontmatter, answered from the queue, and worth a capability the retry carries.
