@@ -20,6 +20,14 @@ pub struct Job {
 
 /// A claimed job. Dropping this does not release the lease — the reaper
 /// reclaims it once `leased_until` passes.
+/// What parking a job did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parked {
+    Parked,
+    /// Not running, or held by another claim. Nothing was written.
+    NotHeld,
+}
+
 #[derive(Debug, Clone)]
 pub struct JobHandle {
     pub job: Job,
@@ -314,9 +322,15 @@ pub async fn is_running(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
 /// reader has: somebody pressing stop knows which conversation they are
 /// watching, not which row in a queue is answering it.
 ///
-/// Only pending and running qualify. A finished turn is not stoppable, and
+/// Pending, running and parked qualify. A finished turn is not stoppable, and
 /// picking the newest keeps a session that has queued several from stopping
 /// an older one by accident.
+///
+/// Parked is in that list because a turn waiting on an approval that is never
+/// going to come is exactly what somebody wants to abandon, and leaving it out
+/// would mean the only way out of a pending approval is to answer it. It sorts
+/// last: a session holding both a streaming turn and a parked one is showing
+/// the streaming one, and that is what stop means.
 pub async fn live_turn_for_session(
     pool: &PgPool,
     workspace_id: Uuid,
@@ -337,8 +351,8 @@ pub async fn live_turn_for_session(
           where kind = 'chat.turn' \
             and workspace_id = $1 \
             and (payload->>'session_id')::uuid = $2 \
-            and state in ('pending', 'running') \
-          order by case state when 'running' then 0 else 1 end, id \
+            and state in ('pending', 'running', 'parked') \
+          order by case state when 'running' then 0 when 'pending' then 1 else 2 end, id \
           limit 1",
     )
     .bind(workspace_id)
@@ -453,7 +467,9 @@ pub enum Cancelled {
 /// Asks for a job to stop.
 ///
 /// A pending job is cancelled outright: no runtime has it, so there is nobody
-/// to tell and nothing in flight to unwind. A running one gets the request
+/// to tell and nothing in flight to unwind. A parked one is in the same
+/// position -- it ran, was refused by a hold, and is waiting rather than
+/// executing -- so it is cancelled outright too. A running one gets the request
 /// recorded against it instead -- the work is happening in another process,
 /// possibly on another machine, and the only honest thing this can do is
 /// write down that somebody asked.
@@ -466,10 +482,12 @@ pub async fn request_cancel(pool: &PgPool, id: Uuid) -> Result<Cancelled, JobErr
     let state: Option<String> = sqlx::query_scalar(
         "update jobs \
             set cancel_requested_at = coalesce(cancel_requested_at, now()), \
-                state = case when state = 'pending' then 'cancelled' else state end, \
-                leased_until = case when state = 'pending' then null else leased_until end, \
+                state = case when state in ('pending', 'parked') then 'cancelled' \
+                             else state end, \
+                leased_until = case when state in ('pending', 'parked') then null \
+                                    else leased_until end, \
                 updated_at = now() \
-          where id = $1 and state in ('pending', 'running') \
+          where id = $1 and state in ('pending', 'running', 'parked') \
       returning state",
     )
     .bind(id)
@@ -599,6 +617,99 @@ pub async fn release(
         Some(_) => Ok(Released::Queued),
         None => Err(JobError::NotFound),
     }
+}
+
+/// Parks a running turn that is waiting on a person.
+///
+/// The turn ran, was refused by a suspended hold, and will run again when the
+/// hold lifts. None of the other states says that: it is not an outcome, not
+/// pending -- nothing should claim it until somebody releases the hold -- and
+/// not running, since no runtime holds it and no lease is being renewed.
+///
+/// The lease is dropped, which is what keeps the reaper away from it: a parked
+/// turn may sit for days, and a reaper that saw it would hand the same turn out
+/// again every lease period.
+///
+/// `attempts` is given back, for the reason `release` gives back its own: being
+/// paused is not a failed try, and a turn suspended three times must not fail
+/// on the fourth for want of attempts it never spent.
+///
+/// `token` as for `complete`: only the holder of the current lease may park the
+/// job, or a pod whose lease lapsed would park work another pod is running.
+pub async fn park(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<Parked, JobError> {
+    let state: Option<String> = sqlx::query_scalar(
+        "update jobs set \
+             state = 'parked', \
+             attempts = greatest(attempts - 1, 0), \
+             leased_until = null, \
+             lease_token = null, \
+             updated_at = now() \
+         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2) \
+         returning state",
+    )
+    .bind(id)
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+
+    match state.as_deref() {
+        Some(_) => Ok(Parked::Parked),
+        // Not running, or somebody else's lease. Either way this caller is not
+        // the one that may park it, and saying so beats reporting success.
+        None => Ok(Parked::NotHeld),
+    }
+}
+
+/// Gives parked turns back to the queue.
+///
+/// Called when a hold is released. Scoped the way the hold was: a session hold
+/// parked turns in one conversation, an agent hold parked them across all of
+/// that agent's, and a workspace hold across the workspace. Passing the wrong
+/// breadth either leaves turns parked for ever or wakes turns another hold is
+/// still covering.
+///
+/// Waking one another hold still covers is the safe direction, and deliberately
+/// so: the turn runs, `inhibited` evaluates every hold again, and it parks a
+/// second time. Costing a claim is better than the alternative, which is
+/// tracking which hold parked which turn and getting it wrong when two overlap.
+///
+/// `where state = 'parked'` is what makes two releases of the same hold safe:
+/// the first moves the rows and the second finds none, so a turn cannot be
+/// queued twice by two people releasing at once.
+///
+/// `run_after` is set to now rather than left where it was: a turn parked an
+/// hour ago with a delay from its original enqueue would otherwise wait out a
+/// schedule that has nothing to do with why it stopped.
+pub async fn resume_parked(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    agent_id: Option<Uuid>,
+    session_id: Option<Uuid>,
+) -> Result<u64, JobError> {
+    // Null-guarded rather than four statements: the columns are in the payload
+    // rather than indexed separately, so none of these is a different plan --
+    // unlike the events read, where the partial index made it one.
+    let resumed = sqlx::query(
+        "update jobs set \
+             state = 'pending', \
+             run_after = now(), \
+             last_error = null, \
+             updated_at = now() \
+         where state = 'parked' \
+           and workspace_id = $1 \
+           and ($2::uuid is null or (payload->>'agent_id')::uuid = $2) \
+           and ($3::uuid is null or (payload->>'session_id')::uuid = $3)",
+    )
+    .bind(workspace_id)
+    .bind(agent_id)
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .map_err(internal)?
+    .rows_affected();
+
+    Ok(resumed)
 }
 
 /// Returns jobs whose lease expired to the pending pool.

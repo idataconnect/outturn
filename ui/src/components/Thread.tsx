@@ -67,6 +67,8 @@ function heldLabel(status: MessageStatus): string | null {
       return 'Waiting for the model'
     case 'retrying':
       return 'Starting over: the runtime was lost'
+    case 'held':
+      return 'Paused: waiting on a person'
     default:
       return null
   }

@@ -2064,7 +2064,10 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         models.contains(&"qwen") && models.contains(&"claude-sonnet-5"),
         "{body}"
     );
-    assert_eq!(summary["by_account"][0]["key"], "shipper-northvale", "{body}");
+    assert_eq!(
+        summary["by_account"][0]["key"], "shipper-northvale",
+        "{body}"
+    );
     assert_eq!(
         summary["by_workspace"][0]["label"], "Acme",
         "the workspace was not named: {body}"

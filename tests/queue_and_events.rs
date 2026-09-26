@@ -3448,3 +3448,415 @@ async fn a_stop_reaches_a_stream_that_has_gone_quiet() {
     assert!(body.contains("Thinking"), "{body}");
     assert!(body.contains("\"cancelled\":true"), "{body}");
 }
+
+// --- parking a turn that is waiting on a person ----------------------------
+
+/// A chat turn queued for a session, so parking has something real to park.
+async fn queue_turn(pool: &PgPool, workspace: Uuid, session: Uuid, agent: Uuid) -> Uuid {
+    jobs::enqueue(
+        pool,
+        workspace,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": workspace,
+            "session_id": session,
+            "agent_id": agent,
+            "message_id": Uuid::now_v7(),
+        }),
+        None,
+        Some(&format!("session:{session}")),
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue")
+}
+
+async fn state_of(pool: &PgPool, id: Uuid) -> String {
+    sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("state")
+}
+
+#[tokio::test]
+async fn a_parked_turn_keeps_its_job_instead_of_completing_it() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1);
+    let token = claimed[0].job.lease_token;
+
+    assert_eq!(
+        jobs::park(pool, id, token).await.expect("park"),
+        jobs::Parked::Parked
+    );
+    assert_eq!(state_of(pool, id).await, "parked");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_parked_turn_is_not_claimed_again_until_it_is_resumed() {
+    // The whole point: nothing should hand it out while it waits.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let again = jobs::claim(pool, &["chat.turn"], 10, Duration::from_secs(45))
+        .await
+        .expect("claim again");
+    assert!(
+        again.iter().all(|h| h.job.id != id),
+        "a parked turn was handed out again"
+    );
+
+    let resumed = jobs::resume_parked(pool, workspace, None, Some(session))
+        .await
+        .expect("resume");
+    assert_eq!(resumed, 1);
+    assert_eq!(state_of(pool, id).await, "pending");
+
+    let after = jobs::claim(pool, &["chat.turn"], 10, Duration::from_secs(45))
+        .await
+        .expect("claim after resume");
+    assert!(
+        after.iter().any(|h| h.job.id == id),
+        "a resumed turn was not claimable"
+    );
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_parked_turn_does_not_hold_its_sessions_queue_closed() {
+    // The hazard inhibitors.md names: a parked turn must not block the next
+    // turn in the same conversation, or a suspension would freeze the session
+    // rather than pause one turn.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let first = queue_turn(pool, workspace, session, agent).await;
+    let second = queue_turn(pool, workspace, session, agent).await;
+
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    assert_eq!(claimed[0].job.id, first, "the older turn should go first");
+    jobs::park(pool, first, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    // The serial key is the same, and the first turn is parked rather than
+    // running, so the second must now be claimable.
+    let next = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim second");
+    assert_eq!(next.len(), 1, "a parked turn blocked its session's queue");
+    assert_eq!(next[0].job.id, second);
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn parking_gives_back_the_attempt_it_used() {
+    // A turn suspended repeatedly must not exhaust its retries by waiting.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    for _ in 0..5 {
+        let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1, "a turn stopped being claimable");
+        jobs::park(pool, id, claimed[0].job.lease_token)
+            .await
+            .expect("park");
+        jobs::resume_parked(pool, workspace, None, Some(session))
+            .await
+            .expect("resume");
+    }
+
+    let attempts: i32 = sqlx::query_scalar("select attempts from jobs where id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("attempts");
+    assert_eq!(
+        attempts, 0,
+        "parking spent attempts it should have given back"
+    );
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn the_reaper_leaves_a_parked_turn_alone() {
+    // What excludes it is `state = 'running'` in the reaper, not the dropped
+    // lease -- checked by removing the drop, which this test does not notice.
+    // It is kept for the reaper that one day widens its filter, and the lease
+    // is asserted separately below.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_millis(1))
+        .await
+        .expect("claim");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    // Well past the lease it was claimed with.
+    let (reaped, _) = jobs::reap_abandoned(pool).await.expect("reap");
+    assert_eq!(reaped, 0, "the reaper took a parked turn");
+    assert_eq!(state_of(pool, id).await, "parked");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn parking_drops_the_lease() {
+    // Asserted directly, because the reaper test above passes whether or not
+    // this happens. A parked turn holds no lease: nothing is renewing one, and
+    // a stale `leased_until` on a turn that may wait for days is a claim that
+    // reads as live to anything looking at leases rather than at state.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, Uuid::now_v7()).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    assert!(claimed[0].job.lease_token.is_some(), "a claim should lease");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let (until, token): (Option<chrono::DateTime<chrono::Utc>>, Option<Uuid>) =
+        sqlx::query_as("select leased_until, lease_token from jobs where id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("lease");
+    assert!(until.is_none(), "a parked turn kept its lease expiry");
+    assert!(token.is_none(), "a parked turn kept its lease token");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn only_the_lease_holder_may_park() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+
+    // Somebody else's token: a pod whose lease lapsed must not park work the
+    // current holder is running.
+    assert_eq!(
+        jobs::park(pool, id, Some(Uuid::now_v7()))
+            .await
+            .expect("park"),
+        jobs::Parked::NotHeld
+    );
+    assert_eq!(state_of(pool, id).await, "running");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn resuming_twice_queues_a_turn_once() {
+    // Two people releasing the same hold at once.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    assert_eq!(
+        jobs::resume_parked(pool, workspace, None, Some(session))
+            .await
+            .expect("first"),
+        1
+    );
+    assert_eq!(
+        jobs::resume_parked(pool, workspace, None, Some(session))
+            .await
+            .expect("second"),
+        0,
+        "a second release queued the turn again"
+    );
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_resume_scoped_to_an_agent_leaves_other_agents_parked() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let mine = Uuid::now_v7();
+    let theirs = Uuid::now_v7();
+    let my_session = Uuid::now_v7();
+    let their_session = Uuid::now_v7();
+
+    let first = queue_turn(pool, workspace, my_session, mine).await;
+    let second = queue_turn(pool, workspace, their_session, theirs).await;
+    // Claimed in one batch: the two have different serial keys, so both are
+    // admitted together and a claim per job would find the second already
+    // taken by the first call.
+    let claimed = jobs::claim(pool, &["chat.turn"], 10, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 2, "both turns should be claimable at once");
+    for handle in &claimed {
+        jobs::park(pool, handle.job.id, handle.job.lease_token)
+            .await
+            .expect("park");
+    }
+
+    let resumed = jobs::resume_parked(pool, workspace, Some(mine), None)
+        .await
+        .expect("resume one agent");
+    assert_eq!(resumed, 1);
+    assert_eq!(state_of(pool, first).await, "pending");
+    assert_eq!(
+        state_of(pool, second).await,
+        "parked",
+        "an agent-scoped resume woke another agent's turn"
+    );
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_workspace_scoped_resume_wakes_everything_in_it() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let one = Uuid::now_v7();
+    let two = Uuid::now_v7();
+
+    let first = queue_turn(pool, workspace, one, Uuid::now_v7()).await;
+    let second = queue_turn(pool, workspace, two, Uuid::now_v7()).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 10, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    for handle in &claimed {
+        jobs::park(pool, handle.job.id, handle.job.lease_token)
+            .await
+            .expect("park");
+    }
+
+    let resumed = jobs::resume_parked(pool, workspace, None, None)
+        .await
+        .expect("resume workspace");
+    assert_eq!(resumed, 2);
+    assert_eq!(state_of(pool, first).await, "pending");
+    assert_eq!(state_of(pool, second).await, "pending");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_parked_turn_can_be_stopped() {
+    // A turn waiting on an approval that is never coming has to be abandonable
+    // without answering it.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+    let agent = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, agent).await;
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let found = jobs::live_turn_for_session(pool, workspace, session)
+        .await
+        .expect("live turn");
+    assert_eq!(found, Some(id), "a parked turn was not stoppable");
+
+    // Cancelled outright, like a pending one: no runtime holds it, so there is
+    // nobody to tell.
+    assert_eq!(
+        jobs::request_cancel(pool, id).await.expect("cancel"),
+        jobs::Cancelled::BeforeItRan
+    );
+    assert_eq!(state_of(pool, id).await, "cancelled");
+
+    finish!(db);
+}
+
+#[tokio::test]
+async fn a_parked_turn_is_not_counted_as_claimable_work() {
+    // job_backlog drives the autoscaler, and a parked turn cannot be claimed by
+    // any pod -- so asking for capacity to run it would hold pods open for work
+    // nobody can take.
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let session = Uuid::now_v7();
+
+    let id = queue_turn(pool, workspace, session, Uuid::now_v7()).await;
+    let before: i64 = sqlx::query_scalar(
+        "select coalesce(sum(claimable), 0)::bigint from job_backlog where kind = 'chat.turn'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("backlog");
+    assert!(before >= 1, "the queued turn was not counted");
+
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(45))
+        .await
+        .expect("claim");
+    jobs::park(pool, id, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let after: i64 = sqlx::query_scalar(
+        "select coalesce(sum(claimable), 0)::bigint from job_backlog where kind = 'chat.turn'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("backlog");
+    assert_eq!(after, 0, "a parked turn was counted as claimable work");
+
+    finish!(db);
+}

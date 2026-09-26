@@ -136,12 +136,12 @@ generating these carries a `reason`, a `held_by` and a scope.
 
 What remains, in order:
 
-1. **Suspension.** Nothing takes a suspended hold today: both endpoints write
-   `Strength::Stopped`, and the `Verdict::Suspended` arm declines a turn without
-   latching -- the job completes, nothing is requeued, and there is nothing to
-   resume. Parking a turn so it can be given back when the hold lifts is the
-   work, and it interacts with the serial key: a parked turn must not hold its
-   session's queue closed while it waits.
+1. ~~**Suspension.**~~ Built. A suspended verdict parks the job rather than
+   completing it, and releasing the hold gives it back, scoped the way the hold
+   was. The serial key needed no change -- the claim excludes keys that are
+   `running` -- and there is a test that fails if that ever widens to parked.
+   What still cannot happen is a suspended hold being *taken*: both endpoints
+   write `Strength::Stopped`.
 2. **`approvals:answer`**, the authority for *may this person answer approvals
    at all*. Ordinary, and held by whoever a workspace decides.
 3. **The producer.** Something that takes a suspended hold and raises a queue

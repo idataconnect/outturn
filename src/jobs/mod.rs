@@ -1,9 +1,10 @@
 mod store;
 
 pub use store::{
-    Cancelled, Job, JobError, JobHandle, Released, Requeued, cancel_requested, claim, complete,
-    enqueue, extend_lease, fail, get, holds_lease, is_running, live_turn_for_session,
-    mark_cancelled, reap_abandoned, release, request_cancel, requeue_failed, turn_for_message,
+    Cancelled, Job, JobError, JobHandle, Parked, Released, Requeued, cancel_requested, claim,
+    complete, enqueue, extend_lease, fail, get, holds_lease, is_running, live_turn_for_session,
+    mark_cancelled, park, reap_abandoned, release, request_cancel, requeue_failed, resume_parked,
+    turn_for_message,
 };
 
 use std::time::Duration;

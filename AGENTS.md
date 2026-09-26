@@ -317,15 +317,29 @@ rather than stored. Stopping is built: the strength and verdict model,
 `decide`, a Postgres store, `/v1/inhibitors`, and enforcement in the worker and
 the gateway.
 
-Suspension is not, and the sense in which it is not is narrow enough to be
-worth stating. Nothing can take a suspended hold -- both endpoints hardcode
-`Strength::Stopped`, so `Strength::Suspended` exists in the enum, its parser,
-the verdict mapping and the unit tests, and nowhere else. The
-`Verdict::Suspended` arm in `worker::inhibited` is reachable only by a row
-written straight to the database, and what it does there is refuse the turn
-without latching: no requeue, no parked state, the job completes and the next
-turn re-evaluates. So a suspension declines rather than parks, which is why
-human-in-the-loop is a build rather than a wiring-up.
+Suspension now parks. A suspended verdict moves the job to `parked` -- a sixth
+state -- dropping its lease so the reaper leaves it, and giving back the attempt
+it spent so a turn suspended repeatedly does not fail for want of retries.
+Releasing the hold calls `jobs::resume_parked`, scoped the way the hold was, and
+the turn runs again and re-evaluates every hold: one another hold still covers
+parks a second time, which costs a claim and is the right way round to be wrong.
+`prepare_turn` returns `Prepared::{Run, Nothing, Park}` rather than an `Option`,
+so the call site cannot fold parking back into "nothing to do" -- which is what
+made `resumable` a promise with nothing behind it.
+
+What is still missing is what *takes* a suspended hold: both endpoints hardcode
+`Strength::Stopped`, so a suspended row is still only made by hand. That is the
+`approvals:answer` authority and the producer, in
+[docs/action-queue.md](docs/action-queue.md).
+
+`parked` is a job state, so it is enumerated in the places the invariant below
+warns about: the accounted-for list in `chat::postgres` (left out, the first
+message sent while an approval is pending wedges the session), the stop button's
+lookup and its index, `request_cancel` (cancelled outright, like a pending job --
+no runtime holds it), and the browser's `job_state` union, where it renders as
+`held` so a reload says what the live `chat.held` event said. `job_backlog` is
+deliberately untouched: a parked turn cannot be claimed, so counting it would
+ask for pods to run work nobody can take.
 
 Who gets asked once a request is pending, and how they find out, is in
 [docs/action-queue.md](docs/action-queue.md) -- partly built, ahead of the advice
