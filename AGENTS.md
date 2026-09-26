@@ -219,9 +219,9 @@ bundle them, a token carries role names only, and the API resolves them on
 every request through a per-workspace cache invalidated over LISTEN/NOTIFY.
 
 Tenancy, whose credential pays and what is attributed are written up in
-[docs/tenancy.md](docs/tenancy.md) — the short version being that `workspace_id`
-is the isolation boundary and stays that way, with organizations added above it
-rather than nesting beneath it.
+[docs/workspaces.md](docs/workspaces.md) — the short version being that
+`workspace_id` is the isolation boundary and stays that way, with organizations
+added above it rather than nesting beneath it.
 
 Storage layout and retention are written up separately, in
 [docs/storage.md](docs/storage.md) — including why the object prefixes are
