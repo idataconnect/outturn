@@ -1901,7 +1901,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
             "/v1/agent-sessions",
             Some(&admin),
             &format!(
-                r#"{{"agent_id":"{}","title":"","account":"hoa-sunnyvale"}}"#,
+                r#"{{"agent_id":"{}","title":"","account":"shipper-northvale"}}"#,
                 agent["id"].as_str().expect("id")
             ),
         )
@@ -1909,7 +1909,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     let session: serde_json::Value = serde_json::from_str(&body).expect("session");
     assert_eq!(
-        session["account"], "hoa-sunnyvale",
+        session["account"], "shipper-northvale",
         "the account was not stored: {body}"
     );
     let session_id = session["id"].as_str().expect("id");
@@ -1954,7 +1954,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let first = &page["entries"][0];
     assert_eq!(first["round"], 0);
     assert_eq!(first["model"], "qwen");
-    assert_eq!(first["account"], "hoa-sunnyvale");
+    assert_eq!(first["account"], "shipper-northvale");
     assert_eq!(first["session_id"], session_id);
     assert_eq!(first["credential_owner"], "operator");
     assert_eq!(first["prompt_tokens"], 10);
@@ -2064,7 +2064,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         models.contains(&"qwen") && models.contains(&"claude-sonnet-5"),
         "{body}"
     );
-    assert_eq!(summary["by_account"][0]["key"], "hoa-sunnyvale", "{body}");
+    assert_eq!(summary["by_account"][0]["key"], "shipper-northvale", "{body}");
     assert_eq!(
         summary["by_workspace"][0]["label"], "Acme",
         "the workspace was not named: {body}"
@@ -2078,7 +2078,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     let page: serde_json::Value = serde_json::from_str(&body).expect("page");
     for entry in page["entries"].as_array().expect("entries") {
         assert_eq!(
-            entry["account"], "hoa-sunnyvale",
+            entry["account"], "shipper-northvale",
             "a row the session produced lost its account label: {entry}"
         );
         // Every row a session produced bills to that session's agent, whoever
