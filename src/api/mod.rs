@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod agent;
 mod agents;
 pub mod chat;
