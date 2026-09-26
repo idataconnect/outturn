@@ -108,6 +108,22 @@ speaks about its base's files the way it speaks about its base's body, and does
 not replace them. Whether an override should be able to add files of its own
 is a question to answer when somebody needs it.
 
+## Frontmatter, and what may live in it
+
+A file may open with YAML between `---` fences. Today one key is defined --
+`approval`, in [approvals.md](approvals.md) -- and the reason it belongs here
+rather than anywhere else is everything this document argues: a version is
+immutable and published whole, so what a rule said on a date is recorded rather
+than inferred; it is written under `SkillsWrite` rather than
+`StorageWorkspaceWrite`, so prose that governs behaviour is not editable through
+the path meant for spreadsheets; and the agent reads it through a scope that is
+read-only, resolved against the version its turn bound.
+
+A file with no frontmatter is an ordinary file, which is nearly all of them. The
+fences are not a place for anything a *model* should read: the prose is what the
+agent is told, and a declaration in frontmatter is for the platform. Anything
+the model needs to know belongs in the body where it can see it.
+
 ## When to split
 
 Recommended past a size, not required. Splitting has a cost of its own: the
