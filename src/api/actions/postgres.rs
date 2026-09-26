@@ -471,6 +471,16 @@ impl ActionStore for PostgresActionStore {
         Ok(count)
     }
 
+    async fn roles_of(&self, user_id: Uuid) -> Result<Vec<Uuid>, ActionError> {
+        let roles: Vec<Uuid> =
+            sqlx::query_scalar("select role_id from user_workspace_roles where user_id = $1")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(roles)
+    }
+
     async fn deliver(&self, workspace_id: Uuid, delivery: Delivery) -> Result<(), ActionError> {
         // A delivery that names nothing wakes every client showing a queue to
         // refetch an unchanged answer. Cheap to check, and the check is the

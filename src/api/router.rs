@@ -45,6 +45,12 @@ pub struct ApiState {
     pub(super) runtime_key: crate::auth::RuntimeKey,
     pub(super) pool: sqlx::PgPool,
     pub(super) bus: crate::events::EventBus,
+    /// What is waiting on a person to do something about it. Built from the
+    /// pool rather than injected: it holds nothing but the pool, and the
+    /// constructor already takes a handle per dependency.
+    pub(super) actions: Arc<dyn super::actions::ActionStore>,
+    /// Wakes queue long polls when something concerning their reader lands.
+    pub(super) action_bus: super::actions::ActionBus,
     /// Fires on shutdown so parked long polls return instead of holding the
     /// drain open for their full timeout.
     pub(super) shutdown: Arc<tokio::sync::Notify>,
@@ -101,6 +107,8 @@ impl ApiState {
             auth,
             minter,
             runtime_key,
+            actions: Arc::new(super::actions::PostgresActionStore::new(pool.clone())),
+            action_bus: super::actions::ActionBus::spawn(pool.clone()),
             pool,
             bus,
             shutdown,
@@ -1400,6 +1408,8 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/session", get(session_info))
         .route("/v1/events", get(super::events::poll))
+        .route("/v1/action-items", get(super::actions_api::queue))
+        .route("/v1/action-items/count", get(super::actions_api::badge))
         .route(
             "/v1/egress-rules",
             get(list_egress_rules).post(create_egress_rule),
