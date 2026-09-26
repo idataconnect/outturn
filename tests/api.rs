@@ -7198,3 +7198,111 @@ async fn an_approval_somebody_was_not_asked_about_is_not_theirs_to_answer() {
 
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn answering_needs_the_authority_in_the_items_own_workspace() {
+    // The queue read is global by design, so an item can come from a workspace
+    // the token was not minted for -- and the authority has to be resolved
+    // there rather than against whichever workspace the caller happens to be
+    // signed into. Otherwise holding approvals:answer in one workspace
+    // authorises payments in every other one the person belongs to.
+    let h = harness().await;
+    let armed = h.make_workspace("Armed", "armed").await;
+    let unarmed = h.make_workspace("Unarmed", "unarmed").await;
+
+    // Each workspace's own admin, since a session is created in the workspace
+    // the token names.
+    let armed_admin = h
+        .login_as("armed@test.invalid", None, Some((armed, "admin")))
+        .await;
+    let unarmed_admin = h
+        .login_as("unarmed@test.invalid", None, Some((unarmed, "admin")))
+        .await;
+    let (_, session) = a_held_conversation(&h, unarmed, &unarmed_admin).await;
+
+    // The role carrying approvals:answer lives in `armed`.
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/roles",
+        &armed_admin,
+        r#"{"name":"finance","authorities":["approvals:answer","sessions:read"]}"#,
+    )
+    .await;
+    assert!(body.contains("finance"), "{body}");
+
+    // And the targeted role in `unarmed` carries no such authority.
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/roles",
+        &unarmed_admin,
+        r#"{"name":"desk","authorities":["sessions:read"]}"#,
+    )
+    .await;
+    let desk: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (_, body) = post_with_cookie(
+        &h,
+        "/v1/approvals",
+        &unarmed_admin,
+        &serde_json::json!({
+            "session_id": session, "requires": "charge", "reason": "£4000",
+            "roles": [desk]
+        })
+        .to_string(),
+    )
+    .await;
+    let item = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // One person in both workspaces: finance in `armed`, desk in `unarmed`.
+    let split = h
+        .login_as("split@test.invalid", None, Some((armed, "finance")))
+        .await;
+    let split_id: Uuid = sqlx::query_scalar(
+        "select u.id from users u join user_identities i on i.user_id = u.id \
+         where i.provider_subject = 'split@test.invalid'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the split user");
+    h.users
+        .grant_workspace_role(split_id, unarmed, "desk")
+        .await
+        .expect("grant desk in the other workspace");
+
+    // It is in their queue -- the read is global and they hold the targeted
+    // role there.
+    let (status, body) = get_with_cookie(&h, "/v1/action-items", &split).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the global read should have reached the other workspace: {body}"
+    );
+
+    // And they must not be able to answer it: their approvals:answer is in
+    // `armed`, and this item is `unarmed`'s.
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &split,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an authority held in another workspace authorised this: {body}"
+    );
+
+    h.db.cleanup().await;
+}

@@ -108,14 +108,14 @@ async fn a_raised_item_reaches_the_targeted_user() {
     let user = make_user(&db.pool).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
 
     let queue = store.queue_for_user(ws, user).await.expect("queue");
     assert_eq!(queue.len(), 1);
     assert_eq!(queue[0].id, id);
-    assert_eq!(queue[0].kind, "hitl.approval");
+    assert_eq!(queue[0].kind, "approval.charge");
     assert_eq!(queue[0].state, State::Pending);
 
     db.cleanup().await;
@@ -131,7 +131,7 @@ async fn a_raised_item_reaches_everyone_holding_the_targeted_role() {
     grant(&db.pool, bob, ws, role).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -148,7 +148,7 @@ async fn an_item_does_not_reach_someone_outside_the_role() {
     let outsider = make_user(&db.pool).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -163,7 +163,7 @@ async fn an_item_with_no_targets_is_refused_before_it_is_written() {
     let (db, ws, store) = setup().await;
 
     let err = store
-        .raise(ws, item("hitl.approval", vec![]))
+        .raise(ws, item("approval.charge", vec![]))
         .await
         .unwrap_err();
     assert!(matches!(err, ActionError::Invalid(_)));
@@ -191,7 +191,7 @@ async fn joining_a_role_shows_items_raised_before_you_joined() {
     let latecomer = make_user(&db.pool).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
     assert_eq!(store.count_for_user(ws, latecomer).await.unwrap(), 0);
@@ -212,7 +212,7 @@ async fn leaving_a_role_takes_its_items_out_of_your_queue() {
     grant(&db.pool, leaver, ws, role).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
     assert_eq!(store.count_for_user(ws, leaver).await.unwrap(), 1);
@@ -230,7 +230,7 @@ async fn an_item_raised_into_an_empty_role_is_not_lost() {
     let role = make_role(&db.pool, ws, "approvers").await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -260,7 +260,7 @@ async fn an_item_targeted_at_you_and_at_your_role_counts_once() {
         .raise(
             ws,
             item(
-                "hitl.approval",
+                "approval.charge",
                 vec![Target::Role(role), Target::User(user)],
             ),
         )
@@ -279,7 +279,7 @@ async fn settled_items_leave_the_count() {
     let user = make_user(&db.pool).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
     assert_eq!(store.count_for_user(ws, user).await.unwrap(), 1);
@@ -308,11 +308,11 @@ async fn a_queue_counts_only_its_own_workspace() {
         .expect("other workspace");
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
     store
-        .raise(other, item("hitl.approval", vec![Target::User(user)]))
+        .raise(other, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise elsewhere");
 
@@ -336,7 +336,7 @@ async fn one_answer_wins_and_the_other_is_told_it_lost() {
     grant(&db.pool, bob, ws, role).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -381,7 +381,7 @@ async fn an_item_cannot_be_settled_as_pending() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
 
@@ -401,7 +401,7 @@ async fn settling_leaves_an_item_readable_with_its_outcome() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
 
@@ -433,7 +433,7 @@ async fn adding_a_target_escalates_an_open_item() {
     grant(&db.pool, manager, ws, second).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(first)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(first)]))
         .await
         .expect("raise");
     assert_eq!(store.count_for_user(ws, manager).await.unwrap(), 0);
@@ -457,7 +457,7 @@ async fn adding_a_target_twice_is_not_an_error() {
     grant(&db.pool, user, ws, role).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -505,7 +505,7 @@ async fn removing_a_target_leaves_the_item_for_everyone_else() {
         .raise(
             ws,
             item(
-                "hitl.approval",
+                "approval.charge",
                 vec![Target::Role(role), Target::User(named)],
             ),
         )
@@ -535,7 +535,7 @@ async fn a_role_target_and_a_user_target_with_the_same_id_are_distinct() {
         .raise(
             ws,
             item(
-                "hitl.approval",
+                "approval.charge",
                 vec![Target::Role(role), Target::User(user)],
             ),
         )
@@ -570,7 +570,7 @@ async fn removing_the_last_target_orphans_the_item_rather_than_hiding_it() {
     let user = make_user(&db.pool).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
     store
@@ -595,7 +595,7 @@ async fn deleting_a_role_orphans_the_items_it_was_the_only_target_of() {
     let role = make_role(&db.pool, ws, "approvers").await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -620,7 +620,7 @@ async fn a_settled_item_with_no_targets_is_not_an_orphan() {
     let user = make_user(&db.pool).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
     store
@@ -644,7 +644,7 @@ async fn an_expired_item_is_swept_out_of_the_queue() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
 
-    let mut expiring = item("hitl.approval", vec![Target::User(user)]);
+    let mut expiring = item("approval.charge", vec![Target::User(user)]);
     expiring.expires_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
     store.raise(ws, expiring).await.expect("raise");
 
@@ -664,12 +664,12 @@ async fn the_sweep_leaves_items_that_have_not_expired() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
 
-    let mut later = item("hitl.approval", vec![Target::User(user)]);
+    let mut later = item("approval.charge", vec![Target::User(user)]);
     later.expires_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
     store.raise(ws, later).await.expect("raise");
     // And one with no expiry at all.
     store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("raise");
 
@@ -685,7 +685,7 @@ async fn the_sweep_is_bounded_by_its_limit() {
     let user = make_user(&db.pool).await;
 
     for _ in 0..3 {
-        let mut expiring = item("hitl.approval", vec![Target::User(user)]);
+        let mut expiring = item("approval.charge", vec![Target::User(user)]);
         expiring.expires_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
         store.raise(ws, expiring).await.expect("raise");
     }
@@ -750,7 +750,7 @@ async fn raising_an_item_announces_it_to_its_targets() {
         .expect("listen");
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -820,7 +820,7 @@ async fn a_rolled_back_raise_announces_nothing() {
         .await
         .expect("listen");
 
-    let _ = store.raise(ws, item("hitl.approval", vec![])).await;
+    let _ = store.raise(ws, item("approval.charge", vec![])).await;
 
     let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), listener.recv()).await;
     assert!(quiet.is_err(), "a refused raise announced anyway");
@@ -858,13 +858,13 @@ async fn a_global_count_spans_only_the_workspaces_you_hold_a_role_in() {
     let their_role = make_role(&db.pool, theirs, "approvers").await;
 
     store
-        .raise(mine, item("hitl.approval", vec![Target::Role(my_role)]))
+        .raise(mine, item("approval.charge", vec![Target::Role(my_role)]))
         .await
         .expect("mine");
     store
         .raise(
             theirs,
-            item("hitl.approval", vec![Target::Role(their_role)]),
+            item("approval.charge", vec![Target::Role(their_role)]),
         )
         .await
         .expect("theirs");
@@ -903,7 +903,7 @@ async fn a_global_read_never_returns_another_tenants_row() {
     // the row names them, and only the workspace set says it is not theirs to
     // see.
     store
-        .raise(theirs, item("hitl.approval", vec![Target::User(user)]))
+        .raise(theirs, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("direct target elsewhere");
     // And one addressed to a role over there, which is the case the workspace
@@ -911,12 +911,12 @@ async fn a_global_read_never_returns_another_tenants_row() {
     store
         .raise(
             theirs,
-            item("hitl.approval", vec![Target::Role(their_role)]),
+            item("approval.charge", vec![Target::Role(their_role)]),
         )
         .await
         .expect("role target elsewhere");
     let ours = store
-        .raise(mine, item("hitl.approval", vec![Target::Role(my_role)]))
+        .raise(mine, item("approval.charge", vec![Target::Role(my_role)]))
         .await
         .expect("mine");
 
@@ -945,11 +945,11 @@ async fn losing_your_last_role_in_a_workspace_removes_it_from_the_global_count()
 
     // One targeted at the role, one at the person directly.
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("role item");
     store
-        .raise(ws, item("hitl.approval", vec![Target::User(user)]))
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
         .await
         .expect("direct item");
     assert_eq!(store.count_for_user_everywhere(user, 500).await.unwrap(), 2);
@@ -986,11 +986,11 @@ async fn a_role_you_do_not_hold_does_not_reach_you() {
     grant(&db.pool, agent, ws, support).await;
 
     let refund = store
-        .raise(ws, item("hitl.refund", vec![Target::Role(finance)]))
+        .raise(ws, item("approval.refund", vec![Target::Role(finance)]))
         .await
         .expect("refund");
     let escalation = store
-        .raise(ws, item("hitl.escalation", vec![Target::Role(support)]))
+        .raise(ws, item("approval.escalation", vec![Target::Role(support)]))
         .await
         .expect("escalation");
 
@@ -1039,7 +1039,7 @@ async fn an_item_named_to_one_person_reaches_nobody_else_in_the_workspace() {
     grant(&db.pool, colleague, ws, role).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::User(named)]))
+        .raise(ws, item("approval.charge", vec![Target::User(named)]))
         .await
         .expect("named");
 
@@ -1071,7 +1071,7 @@ async fn belonging_to_a_workspace_is_not_enough_to_see_its_items() {
     grant(&db.pool, reader, ws, readers).await;
 
     store
-        .raise(ws, item("hitl.approval", vec![Target::Role(approvers)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(approvers)]))
         .await
         .expect("raise");
 
@@ -1103,11 +1103,11 @@ async fn losing_one_role_of_several_keeps_the_others() {
     grant(&db.pool, both, ws, support).await;
 
     store
-        .raise(ws, item("hitl.refund", vec![Target::Role(finance)]))
+        .raise(ws, item("approval.refund", vec![Target::Role(finance)]))
         .await
         .expect("refund");
     let escalation = store
-        .raise(ws, item("hitl.escalation", vec![Target::Role(support)]))
+        .raise(ws, item("approval.escalation", vec![Target::Role(support)]))
         .await
         .expect("escalation");
     assert_eq!(store.count_for_user_everywhere(both, 500).await.unwrap(), 2);
@@ -1143,7 +1143,7 @@ async fn two_people_in_one_role_both_see_it_until_one_answers() {
     grant(&db.pool, bob, ws, role).await;
 
     let id = store
-        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
         .await
         .expect("raise");
 
@@ -1182,7 +1182,7 @@ async fn the_global_cap_bounds_the_badge() {
 
     for _ in 0..7 {
         store
-            .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+            .raise(ws, item("approval.charge", vec![Target::Role(role)]))
             .await
             .expect("raise");
     }
@@ -1206,7 +1206,7 @@ async fn the_global_listing_is_bounded_and_oldest_first() {
     for _ in 0..5 {
         raised.push(
             store
-                .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+                .raise(ws, item("approval.charge", vec![Target::Role(role)]))
                 .await
                 .expect("raise"),
         );
@@ -1220,6 +1220,137 @@ async fn the_global_listing_is_bounded_and_oldest_first() {
         .map(|i| i.id)
         .collect();
     assert_eq!(page, raised[..3].to_vec());
+
+    db.cleanup().await;
+}
+
+// --- settled items, and whose they were -----------------------------------
+//
+// `settled_for_user` is the third copy of the membership-and-target predicate,
+// and the only one whose divergence is a disclosure rather than a wrong number:
+// it is what stands between answering an approval and learning the state of one
+// in a workspace the reader has no role in. The other two copies are asserted
+// together by the visibility tests above; these are for this one.
+
+#[tokio::test]
+async fn a_settled_item_reports_its_outcome_to_somebody_it_was_waiting_on() {
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let user = make_user(&db.pool).await;
+    grant(&db.pool, user, ws, role).await;
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
+        .await
+        .expect("raise");
+    // Open, so it is not settled yet.
+    assert_eq!(store.settled_for_user(user, id).await.unwrap(), None);
+
+    store
+        .settle(ws, id, State::Resolved, Some(user))
+        .await
+        .expect("settle");
+    assert_eq!(
+        store.settled_for_user(user, id).await.unwrap(),
+        Some(State::Resolved)
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_settled_item_says_nothing_to_somebody_in_another_workspace() {
+    // The membership half of the predicate. Without it, answering would report
+    // "already resolved" for an arbitrary id, which is an existence oracle
+    // across tenants.
+    let (db, mine, store) = setup().await;
+    let outsider = make_user(&db.pool).await;
+    let my_role = make_role(&db.pool, mine, "approvers").await;
+    grant(&db.pool, outsider, mine, my_role).await;
+
+    let theirs = Uuid::now_v7();
+    sqlx::query("insert into workspaces (id, name, slug) values ($1, $2, $3)")
+        .bind(theirs)
+        .bind(format!("T{theirs}"))
+        .bind(format!("t-{}", theirs.simple()))
+        .execute(&db.pool)
+        .await
+        .expect("their workspace");
+    let their_role = make_role(&db.pool, theirs, "approvers").await;
+
+    let id = store
+        .raise(
+            theirs,
+            item("approval.charge", vec![Target::Role(their_role)]),
+        )
+        .await
+        .expect("raise");
+    store
+        .settle(theirs, id, State::Resolved, None)
+        .await
+        .expect("settle");
+
+    assert_eq!(
+        store.settled_for_user(outsider, id).await.unwrap(),
+        None,
+        "a settled item in another workspace was reported"
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_settled_item_says_nothing_to_somebody_it_was_not_waiting_on() {
+    // The target half. A colleague in the same workspace, holding a role that
+    // was not asked, must learn nothing about it.
+    let (db, ws, store) = setup().await;
+    let asked = make_role(&db.pool, ws, "finance").await;
+    let other = make_role(&db.pool, ws, "support").await;
+    let colleague = make_user(&db.pool).await;
+    grant(&db.pool, colleague, ws, other).await;
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::Role(asked)]))
+        .await
+        .expect("raise");
+    store
+        .settle(ws, id, State::Resolved, None)
+        .await
+        .expect("settle");
+
+    assert_eq!(
+        store.settled_for_user(colleague, id).await.unwrap(),
+        None,
+        "an item addressed to another role was reported"
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn losing_the_role_hides_what_became_of_an_item() {
+    // Membership is the tenancy check, and it is read now rather than when the
+    // item was settled.
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let leaver = make_user(&db.pool).await;
+    grant(&db.pool, leaver, ws, role).await;
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::Role(role)]))
+        .await
+        .expect("raise");
+    store
+        .settle(ws, id, State::Cancelled, Some(leaver))
+        .await
+        .expect("settle");
+    assert_eq!(
+        store.settled_for_user(leaver, id).await.unwrap(),
+        Some(State::Cancelled)
+    );
+
+    revoke(&db.pool, leaver, ws, role).await;
+    assert_eq!(store.settled_for_user(leaver, id).await.unwrap(), None);
 
     db.cleanup().await;
 }

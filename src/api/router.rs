@@ -25,8 +25,8 @@ pub struct ApiState {
     pub(super) users: Arc<dyn UserStore>,
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) agents: Arc<dyn AgentStore>,
-    /// Prose an agent is given beside its system prompt, and which of it each
-    /// agent gets.
+    /// Instructions an agent is given beside its system prompt, and which of
+    /// them each agent gets.
     pub(super) skills: Arc<dyn super::skill::SkillStore>,
     pub(super) chat: Arc<dyn ChatStore>,
     /// What a workspace's roles mean. Consulted on every authorised request.
@@ -177,6 +177,45 @@ pub(super) async fn require(
     authority: Authority,
 ) -> Result<(), ApiError> {
     if authorities_of(state, claims).await?.contains(&authority) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
+    }
+}
+
+/// `require`, against a workspace other than the token's.
+///
+/// Every other route acts on the workspace its token names, so `require` reads
+/// `claims.workspace_id` and that is the whole of it. The action queue is the
+/// exception: it reads across every workspace the person belongs to, so an item
+/// it hands back may be one the token was not minted for -- and resolving the
+/// authority against the token would mean holding it in one workspace
+/// authorised the act in all of them.
+///
+/// Roles are resolved per workspace by name (`authorities_for`), so the same
+/// role name carrying different authorities in two workspaces is the ordinary
+/// case rather than a corner: this asks what those names mean *there*.
+///
+/// Platform authorities still count, because they are not a workspace's to
+/// grant or withhold.
+pub(super) async fn require_in(
+    state: &ApiState,
+    claims: &SessionClaims,
+    workspace_id: Uuid,
+    authority: Authority,
+) -> Result<(), ApiError> {
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(workspace_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    if granted.contains(&authority) {
         Ok(())
     } else {
         Err((
@@ -1227,17 +1266,9 @@ async fn release_inhibitor(
     // Scoped the way the hold was, and re-evaluated when the turn runs: a turn
     // another hold still covers parks again, which costs a claim and is the
     // right way round to be wrong.
-    let (agent_id, session_id) = match held.scope {
-        super::inhibitor::Scope::Agent { agent_id, .. } => (Some(agent_id), None),
-        super::inhibitor::Scope::Session { session_id, .. } => (None, Some(session_id)),
-        // A workspace hold parked turns anywhere in it; a platform hold is not
-        // reachable here, since the workspace check above refused it.
-        _ => (None, None),
-    };
-    let resumed =
-        crate::jobs::resume_parked(&state.pool, claims.workspace_id, agent_id, session_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let resumed = crate::jobs::resume_for_scope(&state.pool, &held.scope)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     tracing::warn!(
         workspace_id = %claims.workspace_id,

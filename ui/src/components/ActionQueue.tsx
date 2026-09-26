@@ -165,10 +165,12 @@ function Expiry({ at, now }: { at: string; now: number }) {
  */
 function label(kind: string): string {
   switch (kind) {
-    case 'hitl.approval':
-      return 'Approval needed'
+    case 'approval.charge':
+      return 'Charge to approve'
     default:
-      // `hitl.something_else` reads better than the raw key, and says enough.
+      // `approval.something_else` reads better than the raw key, and says
+      // enough: the producer builds the kind from the act it is asking about
+      // (`requires` in docs/approvals.md), so the last segment is that word.
       return kind.split('.').at(-1)?.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) ?? kind
   }
 }
@@ -180,10 +182,10 @@ function label(kind: string): string {
  * during render is a new type on every render as far as React is concerned, so
  * the icon unmounts and remounts each time.
  */
-const ICONS = { hitl: ShieldQuestion, other: CircleUser } as const
+const ICONS = { approval: ShieldQuestion, other: CircleUser } as const
 
 function iconKey(kind: string): keyof typeof ICONS {
-  return kind.startsWith('hitl.') ? 'hitl' : 'other'
+  return kind.startsWith('approval.') ? 'approval' : 'other'
 }
 
 /**

@@ -483,6 +483,7 @@ impl ActionStore for PostgresActionStore {
         let state: Option<String> = sqlx::query_scalar(
             "select i.state from action_items i \
              where i.id = $2 \
+               and i.state <> 'pending' \
                and exists (select 1 from user_workspace_roles m \
                            where m.workspace_id = i.workspace_id and m.user_id = $1) \
                and exists ( \

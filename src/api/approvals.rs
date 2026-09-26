@@ -28,7 +28,7 @@ use crate::auth::Authority;
 
 use super::actions::{NewItem, Target};
 use super::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
-use super::router::{ApiError, ApiState, authorize};
+use super::router::{ApiError, ApiState, authenticate, authorize, require_in};
 
 #[derive(Debug, Deserialize)]
 pub struct RequestApproval {
@@ -221,7 +221,12 @@ pub async fn answer(
     Path(item_id): Path<Uuid>,
     Json(input): Json<AnswerApproval>,
 ) -> Result<Json<Answered>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::ApprovalsAnswer).await?;
+    // Authenticated here and authorised below, once the item is known, because
+    // the queue reads across workspaces: the authority has to be resolved in the
+    // *item's* workspace rather than the token's. Checked against the token it
+    // would mean approvals:answer in one workspace authorised payments in every
+    // other one the person belongs to -- which it did, until a test said so.
+    let claims = authenticate(&state, &headers)?;
 
     // Read through the caller's own queue rather than by id alone: an item
     // addressed to a role they do not hold is not theirs to answer, and reading
@@ -260,6 +265,15 @@ pub async fn answer(
         }
     };
 
+    // Now that the item is known, and before anything is written.
+    require_in(
+        &state,
+        &claims,
+        item.workspace_id,
+        Authority::ApprovalsAnswer,
+    )
+    .await?;
+
     let held: Option<Uuid> = item
         .payload
         .get("inhibitor_id")
@@ -296,15 +310,17 @@ pub async fn answer(
         && let Some(id) = held
     {
         let inhibitors = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+
+        // Read for its scope before it is released, because the scope is what
+        // says how wide the resume should be -- and the hold is the authority on
+        // that, not the copy of `session_id` in the payload. Those copies are
+        // for the reader; using one as control flow means a missing key becomes
+        // `(None, None)`, which `resume_parked` reads as *every parked turn in
+        // the workspace*. Failing open on a lost field is the wrong direction,
+        // and `release_inhibitor` already derives this properly.
+        let scope = inhibitors.get(id).await?.scope;
         inhibitors.release(id).await?;
-        // The parked turn, given back. Scoped to the session the hold was
-        // on, which is where the work is.
-        let session = item
-            .payload
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<Uuid>().ok());
-        resumed = crate::jobs::resume_parked(&state.pool, item.workspace_id, None, session)
+        resumed = crate::jobs::resume_for_scope(&state.pool, &scope)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }

@@ -13,7 +13,8 @@ export type ActionItem = {
   /** Which workspace it belongs to. Shown per row, because the queue spans
    *  every workspace the reader has a role in. */
   workspace_id: string
-  /** What kind of thing is waiting, e.g. `hitl.approval`. */
+  /** What kind of thing is waiting. An approval is `approval.<act>`,
+   *  built by the server from what it is asking about. */
   kind: string
   /** The event that produced it, where one did. */
   event_id: string | null

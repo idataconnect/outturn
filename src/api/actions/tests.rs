@@ -6,7 +6,7 @@ fn id(n: u8) -> Uuid {
 
 fn item(targets: Vec<Target>) -> NewItem {
     NewItem {
-        kind: "hitl.approval".into(),
+        kind: "approval.charge".into(),
         event_id: None,
         payload: serde_json::json!({}),
         targets,
