@@ -143,7 +143,9 @@ What remains, in order:
    What still cannot happen is a suspended hold being *taken*: both endpoints
    write `Strength::Stopped`.
 2. **`approvals:answer`**, the authority for *may this person answer approvals
-   at all*. Ordinary, and held by whoever a workspace decides.
+   at all*. Ordinary, and held by whoever a workspace decides. What a yes is
+   worth once given, and what declares that an operation needs one, is
+   [approvals.md](approvals.md).
 3. **The producer.** Something that takes a suspended hold and raises a queue
    item naming it. Only now is it clear what that item carries.
 4. **Answering**, which releases the hold and lets the parked turn resume.

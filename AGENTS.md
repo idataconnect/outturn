@@ -341,8 +341,12 @@ no runtime holds it), and the browser's `job_state` union, where it renders as
 deliberately untouched: a parked turn cannot be claimed, so counting it would
 ask for pods to run work nobody can take.
 
-Who gets asked once a request is pending, and how they find out, is in
-[docs/action-queue.md](docs/action-queue.md) -- partly built, ahead of the advice
+What declares that an operation needs approving, and what a yes is worth once
+given, is in [docs/approvals.md](docs/approvals.md) -- the rule lives in the
+skill file that documents the operation, as frontmatter, because
+skill-bundles.md made those files versioned, immutable and writable only under
+`SkillsWrite`. Who gets asked once a request is pending, and how they find out,
+is in [docs/action-queue.md](docs/action-queue.md) -- partly built, ahead of the advice
 in inhibitors.md that said to wait for something to notify about. The queue
 exists with role-valued targeting and one read across every workspace a person
 belongs to; what it still points at is an event rather than the hold, and it

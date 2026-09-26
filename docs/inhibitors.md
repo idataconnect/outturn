@@ -314,8 +314,13 @@ this codebase twice: an egress rule records the skill whose declaration opened
 it, and a turn carries a gateway token minted for that turn alone. A grant with
 provenance, narrow in extent, is the pattern.
 
-**What the capability covers is the open question.** A single request, a
-predicate over requests, or an authority conferred for a while. It does not
+**What the capability covers** is designed in
+[approvals.md](approvals.md), which settles the default at one call and its
+retries, keyed as `docs/idempotency.md` derives keys, with a wider extent offered
+by the skill and ticked by the approver rather than inferred. What follows was
+the reasoning that got there, and the test in it is the one that decides whether
+an offer is honest. A single request, a predicate over requests, or an authority
+conferred for a while. It does not
 block the work below, because a single-request key is the narrowest case of a
 scoped one: if the key carries a scope from the start, widening it later
 reshapes nothing.
@@ -443,7 +448,10 @@ at an event rather than at the hold and carries a lifecycle column the hold
 should own. That document settles which is the truth -- the hold -- and what has
 to change when suspension arrives.
 
-**The approval *rule* waits for something to point at.** HITL's mechanism --
+**The approval *rule* waits for something to point at.** Now it has one:
+[approvals.md](approvals.md) puts the declaration in the skill file that
+documents the operation, which skill-bundles.md made versioned, immutable and
+editable only under the skill's own authorities. HITL's mechanism --
 suspend, hold, resume -- is independent of what triggers it and can be built
 whenever. How an integration's endpoint declares that it needs approval is not:
 designing that without a single real endpoint in front of you is how a schema
