@@ -11,7 +11,7 @@ model relationship, and three arrangements have to work on one gateway:
 
 1. **Operator-provided.** The operator holds every key, routes as it likes for
    cost and reliability, and bills workspaces for usage or folds it into the
-   price. An HOA management platform whose workflows are certified against one
+   price. A freight brokerage platform whose quoting is certified against one
    model works this way.
 2. **Workspace brings a key.** The workspace pays their provider directly and pays
    the operator only for hosting. A customer-service workspace with its own

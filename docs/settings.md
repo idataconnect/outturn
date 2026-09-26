@@ -18,9 +18,9 @@ is noise and a value nothing names cannot be set.
 The rows hold overrides, one per level that has chosen to differ:
 
 ```
-system   (operator)   temperature = 0.3     the default everyone inherits
-workspace   (HOA Co)     temperature = 0.1     override on: a row exists
-agent    (Invoicer)   --                    override off: no row, inherits
+system      (operator)   temperature = 0.3     the default everyone inherits
+workspace   (Kestrel)    temperature = 0.1     override on: a row exists
+agent       (Invoicer)   --                    override off: no row, inherits
 ```
 
 Resolution walks up: the agent's row, else the workspace's, else the system's,

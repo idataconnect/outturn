@@ -26,10 +26,10 @@ A workspace is whatever a tenant is in your product:
 
 - **A finance application** where each workspace is a customer, and their
   agents reconcile transactions against the books they already keep with you.
-- **Property management software** where each workspace is a management
-  company, and their agents work on behalf of the associations they serve —
-  so one deployment carries many companies, each with many customers of their
-  own.
+- **Freight brokerage software** where each workspace is a brokerage, and
+  their agents quote loads and chase carriers on behalf of the shippers they
+  serve — so one deployment carries many brokerages, each with many customers
+  of their own.
 - **A rental marketplace** where each workspace is an owner, and their agents
   answer guests and manage a calendar.
 

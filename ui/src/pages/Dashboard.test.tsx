@@ -87,7 +87,7 @@ function fixture() {
     by_workspace: [{ key: 'w1', label: 'Acme', calls: 4, tokens: 1000 }],
     by_model: [{ key: 'qwen3.5', label: null, calls: 4, tokens: 1000 }],
     by_agent: [{ key: 'a1', label: 'Helper', calls: 4, tokens: 1000 }],
-    by_account: [{ key: 'hoa-sunnyvale', label: null, calls: 4, tokens: 1000 }],
+    by_account: [{ key: 'shipper-northvale', label: null, calls: 4, tokens: 1000 }],
     by_source: [
       { key: 'reported', label: null, calls: 3, tokens: 750 },
       { key: 'unknown', label: null, calls: 1, tokens: 250 },

@@ -44,13 +44,13 @@ returns the same rows every time it is run.
 ## The account label
 
 A session may carry an `account`: free text the workspace sets when opening the
-conversation, meaning whatever the workspace's business means by it -- an HOA, a
-customer number, a matter. The platform never interprets it. The ledger copies
-it onto every row the session produces -- the agent's own rounds, and the
-naming and compaction done on that session's behalf -- so a workspace can join
-its bill to its own records without the platform knowing what those records
-are. Those last two wrote a null for a while: spend a workspace could see on
-its bill and could not put against any of its customers.
+conversation, meaning whatever the workspace's business means by it -- a
+shipper, a customer number, a matter. The platform never interprets it. The
+ledger copies it onto every row the session produces -- the agent's own rounds,
+and the naming and compaction done on that session's behalf -- so a workspace
+can join its bill to its own records without the platform knowing what those
+records are. Those last two wrote a null for a while: spend a workspace could
+see on its bill and could not put against any of its customers.
 
 ## The platform workspace
 
