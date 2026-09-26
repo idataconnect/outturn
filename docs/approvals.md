@@ -136,7 +136,11 @@ Two questions that look like one, per
 [inhibitors.md](inhibitors.md#who-may-approve-and-of-what).
 
 *May this person answer approvals at all* is an ordinary authority,
-`approvals:answer`, held by whoever a workspace decides.
+`approvals:answer`, held by whoever a workspace decides. It goes to `admin` in
+the templates and deliberately not to `operator`: an operator builds and runs
+the agents that raise these, and the default should not be the one where the
+person who wrote the agent signs off its charges. A workspace that wants that
+can add it, which is the point of roles being the workspace's own.
 
 *Is the approver entitled to the thing approved* depends on who owns the
 concept. Where the authority is ours, requiring it is right and its absence is a
@@ -157,10 +161,21 @@ changing.
 
 Two halves, and only the first is being built now.
 
-**An explicit request.** `POST /v1/approvals` raises one: a suspended hold
-scoped to the session, and a queue item naming it. That is enough for the
-mechanism to be real end to end -- held, queued, answered, resumed -- and it is
-what the demo drives.
+**An explicit request.** Built. `POST /v1/approvals` raises one: a suspended
+hold scoped to the session, and a queue item naming it. `POST
+/v1/approvals/{id}/answer` answers it, and an approval releases the hold, which
+gives the parked turn back.
+
+Three things in there are worth knowing before changing them. Raising takes
+`agents:inhibit` and answering takes `approvals:answer`, because asking and
+answering are opposite acts and sharing an authority would make anybody who may
+approve a payment able to park any conversation. An answer finds its item
+through the caller's *own queue*, so an approval somebody was not asked about is
+not theirs to answer however senior they are -- and an item that is no longer
+open is told apart from one that was never theirs, because "already decided" is
+what two people answering at once produces. A decline leaves the hold on: the
+turn stays parked, which is honest, since nothing has changed about whether the
+work may proceed.
 
 **The automatic gate**, later. The gateway is the only tier that sees every
 outbound request, holds the credential, and can refuse before anything is spent;

@@ -87,6 +87,22 @@ pub enum Authority {
     /// Reading the usage ledger: what was spent, by whom, for which customer.
     UsageRead,
     GatewayInvoke,
+    /// Answering an approval an agent is waiting on.
+    ///
+    /// Whether somebody may answer approvals at all, which is a different
+    /// question from whether they are entitled to the thing being approved --
+    /// see docs/approvals.md. Where that thing is one of ours, requiring the
+    /// matching authority is right and its absence is a real escalation. Where
+    /// it belongs to a remote system -- taking money in somebody's payment API
+    /// -- it is not ours to check: the vocabulary here is fixed and
+    /// code-defined, and a customer's idea of who may charge a card was never
+    /// in it.
+    ///
+    /// Separate from `WorkspacesInhibit` and `AgentsInhibit`, which are about
+    /// stopping work. Answering an approval releases a hold and lets work
+    /// proceed, and somebody trusted to halt an agent is not thereby the right
+    /// person to authorise a payment.
+    ApprovalsAnswer,
     /// Taking turns off the queue and reporting what they produced.
     ///
     /// Held by no workspace role, however senior. A turn handed out carries the
@@ -129,12 +145,14 @@ impl Authority {
         Authority::UsageRead,
         Authority::WorkspacesInhibit,
         Authority::AgentsInhibit,
+        Authority::ApprovalsAnswer,
         Authority::GatewayInvoke,
         Authority::WorkTake,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Authority::ApprovalsAnswer => "approvals:answer",
             Authority::WorkspacesCreate => "workspaces:create",
             Authority::WorkspacesRead => "workspaces:read",
             Authority::WorkspacesUpdate => "workspaces:update",
@@ -201,6 +219,7 @@ impl Authority {
             Authority::SkillsRead => "See skills, the workspace's own and the operator's",
             Authority::SkillsWrite => "Write skills, and override or fork the operator's",
             Authority::UsageRead => "Read the usage ledger",
+            Authority::ApprovalsAnswer => "Answer approvals an agent is waiting on",
             Authority::WorkspacesInhibit => "Stop and restart everything this workspace runs",
             Authority::AgentsInhibit => "Stop and restart one agent",
             Authority::GatewayInvoke => "Call a model",

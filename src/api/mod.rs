@@ -2,6 +2,7 @@ pub mod actions;
 mod actions_api;
 pub mod agent;
 mod agents;
+pub mod approvals;
 pub mod chat;
 pub mod egress;
 mod events;

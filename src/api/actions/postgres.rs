@@ -471,6 +471,43 @@ impl ActionStore for PostgresActionStore {
         Ok(count)
     }
 
+    async fn settled_for_user(
+        &self,
+        user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Option<State>, ActionError> {
+        // The same two `exists` clauses as the global read, minus the state
+        // filter: one admits the workspace through membership, the other
+        // matches the target. Dropping either would answer for somebody else's
+        // item, which is the whole reason this is not a read by id.
+        let state: Option<String> = sqlx::query_scalar(
+            "select i.state from action_items i \
+             where i.id = $2 \
+               and exists (select 1 from user_workspace_roles m \
+                           where m.workspace_id = i.workspace_id and m.user_id = $1) \
+               and exists ( \
+                   select 1 from action_targets t \
+                   where t.workspace_id = i.workspace_id and t.item_id = i.id \
+                     and (t.user_id = $1 or exists ( \
+                           select 1 from user_workspace_roles r \
+                           where r.user_id = $1 \
+                             and r.workspace_id = i.workspace_id \
+                             and r.role_id = t.role_id)))",
+        )
+        .bind(user_id)
+        .bind(item_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        match state {
+            Some(s) => State::parse(&s)
+                .map(Some)
+                .ok_or_else(|| ActionError::Internal(format!("unknown action item state {s:?}"))),
+            None => Ok(None),
+        }
+    }
+
     async fn roles_of(&self, user_id: Uuid) -> Result<Vec<Uuid>, ActionError> {
         let roles: Vec<Uuid> =
             sqlx::query_scalar("select role_id from user_workspace_roles where user_id = $1")
