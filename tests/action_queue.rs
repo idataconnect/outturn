@@ -964,3 +964,262 @@ async fn losing_your_last_role_in_a_workspace_removes_it_from_the_global_count()
 
     db.cleanup().await;
 }
+
+// --- one workspace, several people ----------------------------------------
+//
+// The workspace boundary is held by the schema: every key carries
+// `workspace_id`, and a query that forgets it fails loudly or returns nothing.
+// The boundary between two people *inside* one workspace is held by nothing but
+// the role comparison in the read, and a mistake there is quiet -- somebody
+// else's decision in your queue, in a workspace you do belong to. These are
+// the tests for that one, and none of them needs a second workspace.
+
+#[tokio::test]
+async fn a_role_you_do_not_hold_does_not_reach_you() {
+    let (db, ws, store) = setup().await;
+    let finance = make_role(&db.pool, ws, "finance").await;
+    let support = make_role(&db.pool, ws, "support").await;
+
+    let accountant = make_user(&db.pool).await;
+    let agent = make_user(&db.pool).await;
+    grant(&db.pool, accountant, ws, finance).await;
+    grant(&db.pool, agent, ws, support).await;
+
+    let refund = store
+        .raise(ws, item("hitl.refund", vec![Target::Role(finance)]))
+        .await
+        .expect("refund");
+    let escalation = store
+        .raise(ws, item("hitl.escalation", vec![Target::Role(support)]))
+        .await
+        .expect("escalation");
+
+    let theirs: Vec<Uuid> = store
+        .queue_for_user_everywhere(accountant, 50)
+        .await
+        .expect("accountant")
+        .iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(theirs, vec![refund], "finance saw support's work");
+
+    let ours: Vec<Uuid> = store
+        .queue_for_user_everywhere(agent, 50)
+        .await
+        .expect("agent")
+        .iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(ours, vec![escalation], "support saw finance's work");
+
+    assert_eq!(
+        store
+            .count_for_user_everywhere(accountant, 500)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.count_for_user_everywhere(agent, 500).await.unwrap(),
+        1
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_item_named_to_one_person_reaches_nobody_else_in_the_workspace() {
+    // A colleague in the same workspace, holding the same role, must not see an
+    // item addressed to somebody by name.
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let named = make_user(&db.pool).await;
+    let colleague = make_user(&db.pool).await;
+    grant(&db.pool, named, ws, role).await;
+    grant(&db.pool, colleague, ws, role).await;
+
+    store
+        .raise(ws, item("hitl.approval", vec![Target::User(named)]))
+        .await
+        .expect("named");
+
+    assert_eq!(
+        store.count_for_user_everywhere(named, 500).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_for_user_everywhere(colleague, 500)
+            .await
+            .unwrap(),
+        0,
+        "a colleague saw an item addressed to somebody by name"
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn belonging_to_a_workspace_is_not_enough_to_see_its_items() {
+    // The failure a workspace-only check would pass: somebody who genuinely
+    // belongs here, holding a role, and an item addressed to neither them nor
+    // their role.
+    let (db, ws, store) = setup().await;
+    let approvers = make_role(&db.pool, ws, "approvers").await;
+    let readers = make_role(&db.pool, ws, "readers").await;
+    let reader = make_user(&db.pool).await;
+    grant(&db.pool, reader, ws, readers).await;
+
+    store
+        .raise(ws, item("hitl.approval", vec![Target::Role(approvers)]))
+        .await
+        .expect("raise");
+
+    assert_eq!(
+        store.count_for_user_everywhere(reader, 500).await.unwrap(),
+        0,
+        "workspace membership alone admitted an item"
+    );
+    assert!(
+        store
+            .queue_for_user_everywhere(reader, 50)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn losing_one_role_of_several_keeps_the_others() {
+    // Revocation must withdraw that role's items and no more -- the narrow
+    // version of the workspace-wide test above.
+    let (db, ws, store) = setup().await;
+    let finance = make_role(&db.pool, ws, "finance").await;
+    let support = make_role(&db.pool, ws, "support").await;
+    let both = make_user(&db.pool).await;
+    grant(&db.pool, both, ws, finance).await;
+    grant(&db.pool, both, ws, support).await;
+
+    store
+        .raise(ws, item("hitl.refund", vec![Target::Role(finance)]))
+        .await
+        .expect("refund");
+    let escalation = store
+        .raise(ws, item("hitl.escalation", vec![Target::Role(support)]))
+        .await
+        .expect("escalation");
+    assert_eq!(store.count_for_user_everywhere(both, 500).await.unwrap(), 2);
+
+    revoke(&db.pool, both, ws, finance).await;
+
+    let left: Vec<Uuid> = store
+        .queue_for_user_everywhere(both, 50)
+        .await
+        .expect("queue")
+        .iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(
+        left,
+        vec![escalation],
+        "revoking one role changed the other"
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn two_people_in_one_role_both_see_it_until_one_answers() {
+    // The shared queue: a role's item is everybody's until it is settled, and
+    // then it is nobody's. The per-user reads are what this asserts, since the
+    // settle path is already covered against `count_for_user`.
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let alice = make_user(&db.pool).await;
+    let bob = make_user(&db.pool).await;
+    grant(&db.pool, alice, ws, role).await;
+    grant(&db.pool, bob, ws, role).await;
+
+    let id = store
+        .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+        .await
+        .expect("raise");
+
+    assert_eq!(
+        store.count_for_user_everywhere(alice, 500).await.unwrap(),
+        1
+    );
+    assert_eq!(store.count_for_user_everywhere(bob, 500).await.unwrap(), 1);
+
+    store
+        .settle(ws, id, State::Resolved, Some(alice))
+        .await
+        .expect("alice answers");
+
+    assert_eq!(
+        store.count_for_user_everywhere(alice, 500).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        store.count_for_user_everywhere(bob, 500).await.unwrap(),
+        0,
+        "an answered item stayed in a colleague's queue"
+    );
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_global_cap_bounds_the_badge() {
+    // The badge is rendered as "and more" past the cap, so it must stop
+    // counting there rather than report a total.
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let user = make_user(&db.pool).await;
+    grant(&db.pool, user, ws, role).await;
+
+    for _ in 0..7 {
+        store
+            .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+            .await
+            .expect("raise");
+    }
+
+    assert_eq!(store.count_for_user_everywhere(user, 3).await.unwrap(), 3);
+    assert_eq!(store.count_for_user_everywhere(user, 500).await.unwrap(), 7);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_global_listing_is_bounded_and_oldest_first() {
+    // UUIDv7 ids sort by creation, so the limit takes the oldest -- the ones
+    // waiting longest, which is the right end of a queue to serve.
+    let (db, ws, store) = setup().await;
+    let role = make_role(&db.pool, ws, "approvers").await;
+    let user = make_user(&db.pool).await;
+    grant(&db.pool, user, ws, role).await;
+
+    let mut raised = Vec::new();
+    for _ in 0..5 {
+        raised.push(
+            store
+                .raise(ws, item("hitl.approval", vec![Target::Role(role)]))
+                .await
+                .expect("raise"),
+        );
+    }
+
+    let page: Vec<Uuid> = store
+        .queue_for_user_everywhere(user, 3)
+        .await
+        .expect("page")
+        .iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(page, raised[..3].to_vec());
+
+    db.cleanup().await;
+}
