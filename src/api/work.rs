@@ -149,12 +149,28 @@ pub async fn take(
                 // Nothing left to do: the prompt was answered inside the turn
                 // it interrupted. The job is done rather than abandoned, and
                 // the runtime is not troubled with it.
-                Ok(None) => {
+                Ok(crate::api::worker::Prepared::Nothing) => {
                     let _ =
                         jobs::complete(&state.pool, handle.job.id, handle.job.lease_token).await;
                     continue;
                 }
-                Ok(Some(request)) => {
+                // A hold refused it, and it is being kept rather than
+                // finished. Parked rather than released: a release counts
+                // towards MAX_RELEASES and fails the job past it, which is
+                // right for "no pod had room" and wrong for a wait that may
+                // last days. Parked rather than completed, which is what the
+                // suspended verdict used to do -- announcing a resumption with
+                // nothing left to resume.
+                //
+                // The lease goes with it, so the reaper leaves it alone. What
+                // gives it back is `resume_parked`, when somebody releases the
+                // hold.
+                Ok(crate::api::worker::Prepared::Park) => {
+                    let _ = jobs::park(&state.pool, handle.job.id, handle.job.lease_token).await;
+                    continue;
+                }
+                Ok(crate::api::worker::Prepared::Run(request)) => {
+                    let request = *request;
                     let gateway_token = match mint_for(
                         &state,
                         payload.session_id,

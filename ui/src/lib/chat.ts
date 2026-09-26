@@ -52,7 +52,14 @@ export type Message = {
   absorbed_by?: string | null
   /** On a user message, where the job answering it is. Only the transcript
    *  read fills this; afterwards the events say. */
-  job_state?: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | null
+  job_state?:
+    | 'pending'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+    | 'cancelled'
+    | 'parked'
+    | null
 }
 
 /**

@@ -1219,9 +1219,30 @@ async fn release_inhibitor(
     require(&state, &claims, needed).await?;
 
     store.release(id).await?;
+
+    // Turns this hold parked are given back now, rather than waiting for
+    // somebody to say something. That is what `resumable` promised on the
+    // `chat.held` event, and until parking existed nothing kept it.
+    //
+    // Scoped the way the hold was, and re-evaluated when the turn runs: a turn
+    // another hold still covers parks again, which costs a claim and is the
+    // right way round to be wrong.
+    let (agent_id, session_id) = match held.scope {
+        super::inhibitor::Scope::Agent { agent_id, .. } => (Some(agent_id), None),
+        super::inhibitor::Scope::Session { session_id, .. } => (None, Some(session_id)),
+        // A workspace hold parked turns anywhere in it; a platform hold is not
+        // reachable here, since the workspace check above refused it.
+        _ => (None, None),
+    };
+    let resumed =
+        crate::jobs::resume_parked(&state.pool, claims.workspace_id, agent_id, session_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     tracing::warn!(
         workspace_id = %claims.workspace_id,
         actor = %claims.subject,
+        resumed,
         "a hold was released"
     );
     Ok(StatusCode::NO_CONTENT)

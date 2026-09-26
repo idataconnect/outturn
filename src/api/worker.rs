@@ -409,6 +409,21 @@ pub struct Worker {
     pub gateway_url: Option<String>,
 }
 
+/// What preparing a turn concluded.
+///
+/// Three outcomes, because a turn that is being kept is neither ready nor
+/// finished. Folding `Park` into "nothing to do" is what let a suspension
+/// announce `resumable` and then complete the job, leaving nothing to resume.
+#[derive(Debug)]
+pub(super) enum Prepared {
+    /// Hand this to a runtime.
+    Run(Box<crate::runtime::router::ExecuteRequest>),
+    /// Complete the job: there is nothing left to answer.
+    Nothing,
+    /// Keep the job. A hold refused it, and releasing the hold gives it back.
+    Park,
+}
+
 impl Worker {
     /// Gives up on a turn: clears the reply nothing will fill, and says so.
     ///
@@ -921,12 +936,7 @@ impl Worker {
     async fn inhibited(
         &self,
         payload: &ChatTurnPayload,
-    ) -> anyhow::Result<
-        Result<
-            Option<super::chat::Stopped>,
-            anyhow::Result<Option<crate::runtime::router::ExecuteRequest>>,
-        >,
-    > {
+    ) -> anyhow::Result<Result<Option<super::chat::Stopped>, anyhow::Result<Prepared>>> {
         use super::inhibitor::Verdict;
 
         // A stopped session stays stopped until a person says something. Not
@@ -963,7 +973,7 @@ impl Worker {
                     session_id = %payload.session_id,
                     "a stopped session declined work that no person asked for"
                 );
-                return Ok(Err(Ok(None)));
+                return Ok(Err(Ok(Prepared::Nothing)));
             }
         }
 
@@ -1027,23 +1037,25 @@ impl Worker {
                     reason = %why,
                     "a turn was stopped before it ran"
                 );
-                Ok(Err(Ok(None)))
+                Ok(Err(Ok(Prepared::Nothing)))
             }
-            // Nothing takes a suspended hold yet -- that arrives with
-            // human-in-the-loop. Until then it is treated as a stop without the
-            // latch: the turn does not run, and the next one re-evaluates.
+            // A suspension pauses rather than declines: the turn is kept and
+            // given back to the queue when the hold lifts. It takes no latch,
+            // because there is no fragment to explain and nothing for a person
+            // to restart -- releasing the hold is what restarts it.
             Verdict::Suspended => {
                 let why = decision.why();
                 tracing::info!(
                     session_id = %payload.session_id,
-                    "a turn was suspended before it ran"
+                    reason = %why,
+                    "a turn was parked waiting on a hold"
                 );
-                // Resumable: a suspension takes no latch, so the next turn
-                // re-evaluates and runs the moment the hold lifts.
+                // Resumable: releasing the hold gives this turn back to the
+                // queue, rather than waiting for somebody to say something.
                 if payload.user_id.is_some() {
                     self.announce_hold(payload, &why, true).await;
                 }
-                Ok(Err(Ok(None)))
+                Ok(Err(Ok(Prepared::Park)))
             }
         }
     }
@@ -1052,14 +1064,15 @@ impl Worker {
     ///
     /// All of it touches the database -- the agent, the transcript, the egress
     /// rules, the reply the turn will stream into -- so it happens on this
-    /// tier whichever way the turn is going to reach a runtime. Returns None
-    /// when the turn has nothing left to do, which is not a failure: a steered
-    /// message was answered inside the turn it interrupted, and answering it
-    /// again would produce a second reply to a question already addressed.
-    pub(super) async fn prepare_turn(
-        &self,
-        payload: &ChatTurnPayload,
-    ) -> anyhow::Result<Option<crate::runtime::router::ExecuteRequest>> {
+    /// tier whichever way the turn is going to reach a runtime.
+    ///
+    /// Three outcomes rather than two. `Nothing` is a turn with nothing left to
+    /// do, which is not a failure: a steered message was answered inside the
+    /// turn it interrupted, and answering it again would produce a second reply
+    /// to a question already addressed. `Park` is a turn a suspended hold
+    /// refused, which has to be kept rather than completed -- completing it is
+    /// what made `resumable` a promise nothing could keep.
+    pub(super) async fn prepare_turn(&self, payload: &ChatTurnPayload) -> anyhow::Result<Prepared> {
         let agent = self
             .agents
             .get(payload.workspace_id, payload.agent_id)
@@ -1076,7 +1089,7 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("absorbed: {e}"))?
         {
-            return Ok(None);
+            return Ok(Prepared::Nothing);
         }
 
         // Before anything is read or written for this turn. A hold that
@@ -1190,81 +1203,83 @@ impl Worker {
         // which parts of a conversation mattered.
         let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
 
-        Ok(Some(crate::runtime::router::ExecuteRequest {
-            session_id: payload.session_id,
-            workspace_id: payload.workspace_id,
-            agent_id: payload.agent_id,
-            write_scopes: settings.write_scopes,
-            read_scopes: settings.read_scopes,
-            skill_files: super::skill::objects_for_turn(&skills),
-            conversation: {
-                // Sources come from the unmarked projection: `marked` inserts
-                // its one entry immediately before the final message, which is
-                // past anything a summary cuts at, so the indices a cut uses
-                // mean the same in both.
-                let (projected, sources) = projected_with_sources(&history);
-                let projected = marked(projected, restarting_from.as_ref());
+        Ok(Prepared::Run(Box::new(
+            crate::runtime::router::ExecuteRequest {
+                session_id: payload.session_id,
+                workspace_id: payload.workspace_id,
+                agent_id: payload.agent_id,
+                write_scopes: settings.write_scopes,
+                read_scopes: settings.read_scopes,
+                skill_files: super::skill::objects_for_turn(&skills),
+                conversation: {
+                    // Sources come from the unmarked projection: `marked` inserts
+                    // its one entry immediately before the final message, which is
+                    // past anything a summary cuts at, so the indices a cut uses
+                    // mean the same in both.
+                    let (projected, sources) = projected_with_sources(&history);
+                    let projected = marked(projected, restarting_from.as_ref());
 
-                // Over budget is where compaction begins. A summary is tried
-                // first because it loses less: the early turns become a
-                // paragraph rather than disappearing. It is a model call the
-                // user did not ask for, so it happens only when the
-                // alternative is losing the messages outright.
-                let projected = self
-                    .summarised(
-                        &projected,
-                        &sources,
-                        &system_prompt,
-                        settings.context_budget,
-                        payload.session_id,
-                        payload.workspace_id,
-                        payload.agent_id,
-                        &model,
-                    )
-                    .await
-                    .unwrap_or(projected);
+                    // Over budget is where compaction begins. A summary is tried
+                    // first because it loses less: the early turns become a
+                    // paragraph rather than disappearing. It is a model call the
+                    // user did not ask for, so it happens only when the
+                    // alternative is losing the messages outright.
+                    let projected = self
+                        .summarised(
+                            &projected,
+                            &sources,
+                            &system_prompt,
+                            settings.context_budget,
+                            payload.session_id,
+                            payload.workspace_id,
+                            payload.agent_id,
+                            &model,
+                        )
+                        .await
+                        .unwrap_or(projected);
 
-                // Then the floor underneath it. Whatever a summary did not
-                // save, this drops -- and when there is no model to ask, or
-                // the summary itself would not fit, this is the whole of what
-                // happens.
-                let (projected, trimmed) =
-                    super::chat::trim::to_fit(projected, settings.context_budget);
-                if !trimmed.is_empty() {
-                    // Said out loud: a turn that quietly lost half its history
-                    // is one nobody can explain afterwards, and these numbers
-                    // are what say whether the budget is set anywhere near
-                    // right.
-                    tracing::info!(
-                        session_id = %payload.session_id,
-                        workspace_id = %payload.workspace_id,
-                        results_dropped = trimmed.results_dropped,
-                        messages_dropped = trimmed.messages_dropped,
-                        was = trimmed.was,
-                        now = trimmed.now,
-                        budget = settings.context_budget,
-                        "conversation trimmed to fit"
-                    );
-                }
-                projected
-                    .into_iter()
-                    .map(serde_json::from_value)
-                    .collect::<Result<_, _>>()?
+                    // Then the floor underneath it. Whatever a summary did not
+                    // save, this drops -- and when there is no model to ask, or
+                    // the summary itself would not fit, this is the whole of what
+                    // happens.
+                    let (projected, trimmed) =
+                        super::chat::trim::to_fit(projected, settings.context_budget);
+                    if !trimmed.is_empty() {
+                        // Said out loud: a turn that quietly lost half its history
+                        // is one nobody can explain afterwards, and these numbers
+                        // are what say whether the budget is set anywhere near
+                        // right.
+                        tracing::info!(
+                            session_id = %payload.session_id,
+                            workspace_id = %payload.workspace_id,
+                            results_dropped = trimmed.results_dropped,
+                            messages_dropped = trimmed.messages_dropped,
+                            was = trimmed.was,
+                            now = trimmed.now,
+                            budget = settings.context_budget,
+                            "conversation trimmed to fit"
+                        );
+                    }
+                    projected
+                        .into_iter()
+                        .map(serde_json::from_value)
+                        .collect::<Result<_, _>>()?
+                },
+                // Composed with the model that will serve this turn, so an agent
+                // asked what it is has something true to read rather than a gap to
+                // fill.
+                system_prompt,
+                model: Some(model.clone()),
+                timezone: payload.timezone.clone(),
+                reasoning_effort: settings.reasoning_effort,
+                temperature: settings.temperature,
+                traffic_type: Some(traffic_type_for(&agent.policy)),
+                max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
+                reply_id: placeholder.message.id,
+                egress,
+                egress_commitment,
             },
-            // Composed with the model that will serve this turn, so an agent
-            // asked what it is has something true to read rather than a gap to
-            // fill.
-            system_prompt,
-            model: Some(model.clone()),
-            timezone: payload.timezone.clone(),
-            reasoning_effort: settings.reasoning_effort,
-            temperature: settings.temperature,
-            traffic_type: Some(traffic_type_for(&agent.policy)),
-            max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
-            reply_id: placeholder.message.id,
-            egress,
-            egress_commitment,
-        }))
+        )))
     }
 
     /// Replaces the early part of a conversation with a summary of it, when it

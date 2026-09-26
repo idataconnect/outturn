@@ -63,13 +63,20 @@ Still to come: suspension. Nothing takes a suspended hold -- `POST
 arm exists and refuses a turn like a stop but without latching: the job
 completes, nothing is requeued, and the next turn re-evaluates.
 
-That last part is the gap rather than a detail. A suspension is meant to pause
-where the conversation is consistent and resume from there of its own accord --
-which is why it needs no marker, there being no fragment to explain. What it
-does today is decline, leaving nothing to resume. Parking a turn so it can be
-given back to the queue when the hold lifts is the work, and it interacts with
-the serial key: a parked turn must not hold its session's queue closed while it
-waits.
+That last part was the gap and is now closed. A suspension pauses where the
+conversation is consistent and resumes of its own accord -- which is why it
+needs no marker, there being no fragment to explain. The turn moves to `parked`,
+a job state of its own, and releasing the hold gives it back.
+
+The serial key was the hazard worth naming, and it turned out to need no change:
+the claim excludes keys that are `running`, so a parked turn never held its
+session's queue closed. There is a test that fails if that exclusion ever widens
+to cover parked, because a suspension that froze the whole conversation would be
+worse than the decline it replaced.
+
+What still cannot happen is a suspended hold being *taken*: both endpoints write
+`Strength::Stopped`. Who may answer an approval, and what raises one, is in
+[action-queue.md](action-queue.md).
 
 A reader looking at a paused conversation is told, and by its own event. A
 refused turn is declined before a placeholder exists, so without one the message

@@ -37,6 +37,10 @@ export type MessageStatus =
   | { kind: 'retrying' }
   /** Taken into a turn already running; answered there, not separately. */
   | { kind: 'absorbed' }
+  /** Paused by a hold -- an approval, a spend cap -- and waiting to carry on.
+   *  The `chat.held` event says this while the reader is watching; this is how
+   *  a reload says it too, since the event is long gone by then. */
+  | { kind: 'held' }
   /** The turn finished and the reply is empty: the agent said nothing. Not a
    *  failure -- nothing went wrong that anyone recorded -- but the reader is
    *  owed an explanation rather than a spinner that never stops. */
@@ -163,6 +167,14 @@ export function annotate(
       if (jobOver && !retrying.has(reply.id)) {
         return { ...m, status: { kind: 'silent' } }
       }
+      // Parked before `waiting`, because a parked turn has exactly the shape
+      // `waiting` is for -- a reply with nothing in it -- and nothing is
+      // working on it. Left out, a reader who reloads while an approval is
+      // pending watches a spinner for the model, which is not what is being
+      // waited on.
+      if (m.job_state === 'parked') {
+        return { ...m, status: { kind: 'held' } }
+      }
       return { ...m, status: { kind: retrying.has(reply.id) ? 'retrying' : 'waiting' } }
     }
 
@@ -171,6 +183,8 @@ export function annotate(
         return { ...m, status: { kind: replyInProgress ? 'steering' : 'queued' } }
       case 'running':
         return { ...m, status: { kind: 'waiting' } }
+      case 'parked':
+        return { ...m, status: { kind: 'held' } }
       default:
         // Answered long ago, or nothing was ever queued for it. Either way
         // there is nothing to report.

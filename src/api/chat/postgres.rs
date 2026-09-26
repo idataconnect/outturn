@@ -573,11 +573,17 @@ impl ChatStore for PostgresChatStore {
         // before its first token leaves exactly the shape this looks for -- an
         // empty reply, no running job -- and reading that as abandonment
         // wedges the session in the same way, by a different route.
+        //
+        // `parked` is in it for that reason: a turn waiting on a person has an
+        // empty reply and is not running, and it is the one state here that is
+        // *expected* to sit that way for hours. Left out, the first message
+        // somebody sends while an approval is pending is refused, and the
+        // conversation they were trying to unblock is the one that wedges.
         let abandoned: Option<Uuid> = sqlx::query_scalar(
             "select m.id from agent_messages m \
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
-                   and j.state in ('pending', 'running', 'succeeded', 'cancelled') \
+                   and j.state in ('pending', 'running', 'succeeded', 'cancelled', 'parked') \
              where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
                and coalesce(jsonb_array_length(m.metadata->'tool_calls'), 0) = 0 \
                and j.id is null \
