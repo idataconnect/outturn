@@ -293,7 +293,10 @@ does not. That is what a gate is.
 ## Human in the loop
 
 HITL is an inhibitor of strength `suspended`, held by a pending request and
-released when somebody answers it. It is not a tool result. A denial delivered
+released when somebody answers it. It is not a tool result. Which is what makes
+the hold the truth of whether a request is still open, rather than a column
+somewhere else saying so -- see [action-queue.md](action-queue.md) for who gets
+asked and how they find out. A denial delivered
 as a tool result launders a governance decision through the model's context,
 where the model can narrate it, misreport it or carry on -- and a gate that only
 fires when a tool happens to be called is not a gate.
@@ -425,6 +428,13 @@ time, against checkpoints that have never fired.
 **Notifications after that.** They look independent and are not: until
 inhibitors exist there is nothing to notify about, and what the notification
 system has to carry is decided by what generates the events.
+
+Partly built ahead of that advice, and [action-queue.md](action-queue.md)
+records what it cost: the queue that shows a person what is waiting on them
+exists, with role-valued targeting and one read across workspaces, but it points
+at an event rather than at the hold and carries a lifecycle column the hold
+should own. That document settles which is the truth -- the hold -- and what has
+to change when suspension arrives.
 
 **The approval *rule* waits for something to point at.** HITL's mechanism --
 suspend, hold, resume -- is independent of what triggers it and can be built

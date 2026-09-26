@@ -327,6 +327,15 @@ without latching: no requeue, no parked state, the job completes and the next
 turn re-evaluates. So a suspension declines rather than parks, which is why
 human-in-the-loop is a build rather than a wiring-up.
 
+Who gets asked once a request is pending, and how they find out, is in
+[docs/action-queue.md](docs/action-queue.md) -- partly built, ahead of the advice
+in inhibitors.md that said to wait for something to notify about. The queue
+exists with role-valued targeting and one read across every workspace a person
+belongs to; what it still points at is an event rather than the hold, and it
+carries a lifecycle column the hold should own. That document settles which is
+the truth and what changes when suspension lands. Nothing should start reading
+`action_items.state` as the answer to whether a request is open.
+
 A round cut partway is therefore untrusted in full: its tool calls may carry
 arguments truncated mid-JSON, and running one is precisely the outcome that
 document is about. They are refused the same way a reply cut off at the token
