@@ -376,6 +376,12 @@ What is actually missing:
 3. **The inbox itself**, and what a workspace can say about which kinds
    reach it.
 
+The other half of an inbox -- what is waiting on the reader rather than what
+happened -- is [action-queue.md](action-queue.md), which is partly built. The
+two are separate on purpose: an event stays true and is read or unread, while a
+decision somebody owes is open until it is settled and leaves the queue when a
+colleague answers rather than when the reader looks.
+
 Not `QueueItemPrimitive`, which renders assistant-ui's own composer queue --
 the lanes this project deliberately leaves empty, because a message is
 persisted the moment it is sent and a browser-held copy would be a second
