@@ -52,9 +52,16 @@ the detail files, beside the method and an instruction to use `fetch_url`.
 
 ## What is still manual
 
-**The look.** `VITE_THEME=hollowbrook` and the `VITE_BRAND_*` variables reskin
-the UI, but the UI is not in the cluster — it is `npm run dev` on the host, and
-Vite reads those at build time.
+**The look.** The UI is not in the cluster -- it is `npm run dev` on the host,
+and Vite reads these at build time, so this component cannot set them:
+
+```
+cd ui && VITE_THEME=hollowbrook VITE_BRAND_NAME='Hollowbrook House' \
+  VITE_BRAND_LOGO=/hollowbrook-logo.svg npm run dev
+```
+
+`docs/take-it-for-a-spin.md` starts the UI that way, so somebody following the
+walkthrough sees it without having to find this file.
 
 **Binding the skill to an agent.** Installed into the workspace, not bound:
 which agents get it is a decision, and this component does not make it.

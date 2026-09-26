@@ -45,7 +45,7 @@ export default function Skills() {
         <div>
           <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Skills</h1>
           <p className="mt-2 text-surface-600 dark:text-surface-400">
-            Prose an agent is given beside its own prompt. The operator's reach every
+            Instructions an agent is given beside its own prompt. The operator's reach every
             workspace; yours are your own, and can vary theirs without editing it.
           </p>
         </div>

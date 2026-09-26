@@ -1,7 +1,7 @@
 import { api } from './api'
 
 /**
- * A skill is prose an agent is given beside its system prompt.
+ * A skill is instructions an agent is given beside its system prompt.
  *
  * Two things own one: the operator, whose skills reach every workspace, and a
  * workspace itself. Which it is shows in `workspace_id`, so a page compares it
