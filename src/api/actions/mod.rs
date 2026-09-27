@@ -116,6 +116,9 @@ pub struct ActionItem {
     pub event_id: Option<Uuid>,
     pub payload: serde_json::Value,
     pub state: State,
+    /// What whoever settled it wanted recorded. Absent on an open item, and on a
+    /// settlement that came with no explanation.
+    pub resolved_note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -330,6 +333,34 @@ pub trait ActionStore: Send + Sync {
     /// count is a scan whose cost grows with somebody else's backlog. The
     /// caller renders `cap` as "and more" rather than as a total.
     async fn count_for_user_everywhere(&self, user_id: Uuid, cap: i64) -> Result<i64, ActionError>;
+
+    /// Settles an item, lifts the hold it was waiting on, and gives back
+    /// whatever that hold had parked -- in one transaction.
+    ///
+    /// Three writes that must not come apart. Done separately, a release that
+    /// failed after the settle committed left the item answered and the turn
+    /// parked with no way back: `settle` refuses anything not pending, so it
+    /// cannot be answered again; the queue reads only open items, so no UI can
+    /// offer it; and nothing else moves a job out of `parked`, since the reaper
+    /// looks only at `running`. The conversation stayed silent and the only route
+    /// out was an operator releasing the hold by id, with nothing anywhere saying
+    /// that was needed.
+    ///
+    /// `hold` is optional because an item may name none -- an approval raised
+    /// before the hold existed, or one whose payload lost the id. Then this is a
+    /// settle and nothing else, which is honest: there is nothing to lift.
+    ///
+    /// Returns how many parked turns were given back.
+    async fn settle_and_release(
+        &self,
+        workspace_id: Uuid,
+        item_id: Uuid,
+        state: State,
+        resolved_by: Option<Uuid>,
+        // Kept rather than logged. See `resolved_note` on `ActionItem`.
+        note: Option<&str>,
+        hold: Option<Uuid>,
+    ) -> Result<u64, ActionError>;
 
     /// What became of one item that is no longer open, if it was ever this
     /// person's to answer.

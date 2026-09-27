@@ -200,9 +200,11 @@ pub struct AnswerApproval {
     /// True approves, false declines. Both settle the item; only one lets the
     /// work proceed.
     pub approved: bool,
-    /// What the answerer wants recorded. Optional on an approval, because "yes"
-    /// needs no explanation; a decline without one leaves the agent unable to
-    /// say why, which is worth encouraging but not worth refusing over.
+    /// What the answerer wants recorded, kept on the item beside who settled it
+    /// and when. Optional: "yes" needs no explanation, and a decline without one
+    /// leaves the agent unable to say why -- worth encouraging, not worth
+    /// refusing over, since an answer nobody could give for want of a sentence is
+    /// worse than an answer with no sentence.
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -280,13 +282,20 @@ pub async fn answer(
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse().ok());
 
-    // Settled first. If this is the losing half of two people answering at
-    // once, `settle` says so and the hold is left for the winner's release to
-    // deal with -- releasing it here would let the turn run on the strength of
-    // an answer that lost.
-    state
+    // Settled, the hold lifted and the parked turn given back, in one
+    // transaction. Separately, a release that failed after the settle committed
+    // left the item answered and the turn parked with no way back: nothing can
+    // answer it again, no queue offers it, and nothing else moves a job out of
+    // `parked`. The conversation stayed silent and only an operator releasing the
+    // hold by id could free it, with nothing saying so.
+    //
+    // A decline passes no hold, which is what keeps the conversation paused:
+    // nothing has changed about whether the work may proceed, and lifting the
+    // hold would let it run having been refused. Stopping the turn is the way out
+    // that says so.
+    let resumed = state
         .actions
-        .settle(
+        .settle_and_release(
             item.workspace_id,
             item.id,
             if input.approved {
@@ -295,6 +304,8 @@ pub async fn answer(
                 super::actions::State::Cancelled
             },
             Some(claims.subject),
+            input.note.as_deref(),
+            if input.approved { held } else { None },
         )
         .await
         .map_err(|e| match e {
@@ -304,30 +315,6 @@ pub async fn answer(
             ),
             other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
         })?;
-
-    let mut resumed = 0;
-    if input.approved
-        && let Some(id) = held
-    {
-        let inhibitors = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
-
-        // Read for its scope before it is released, because the scope is what
-        // says how wide the resume should be -- and the hold is the authority on
-        // that, not the copy of `session_id` in the payload. Those copies are
-        // for the reader; using one as control flow means a missing key becomes
-        // `(None, None)`, which `resume_parked` reads as *every parked turn in
-        // the workspace*. Failing open on a lost field is the wrong direction,
-        // and `release_inhibitor` already derives this properly.
-        let scope = inhibitors.get(id).await?.scope;
-        inhibitors.release(id).await?;
-        resumed = crate::jobs::resume_for_scope(&state.pool, &scope)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
-    // A decline leaves the hold on. The turn stays parked and the conversation
-    // stays quiet, which is honest: nothing has changed about whether the work
-    // may proceed, and releasing the hold would let it run having been refused.
-    // Whoever declined can stop the turn, which is the way out that says so.
 
     tracing::info!(
         workspace_id = %item.workspace_id,

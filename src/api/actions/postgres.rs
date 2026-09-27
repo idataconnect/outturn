@@ -44,6 +44,7 @@ fn read_item(row: &sqlx::postgres::PgRow) -> Result<ActionItem, ActionError> {
         event_id: row.try_get("event_id").ok().flatten(),
         payload: row.get("payload"),
         state,
+        resolved_note: row.try_get("resolved_note").ok().flatten(),
         created_at: row.get("created_at"),
         expires_at: row.try_get("expires_at").ok().flatten(),
     })
@@ -326,7 +327,7 @@ impl ActionStore for PostgresActionStore {
         // yesterday, with no queue row written when membership changes.
         let rows = sqlx::query(
             "select distinct i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
-                    i.state, i.created_at, i.expires_at \
+                    i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              join action_targets t \
                on t.workspace_id = i.workspace_id and t.item_id = i.id \
@@ -352,7 +353,7 @@ impl ActionStore for PostgresActionStore {
     ) -> Result<Vec<ActionItem>, ActionError> {
         let rows = sqlx::query(
             "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
-                    i.state, i.created_at, i.expires_at \
+                    i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              join action_targets t \
                on t.workspace_id = i.workspace_id and t.item_id = i.id \
@@ -413,7 +414,7 @@ impl ActionStore for PostgresActionStore {
         // fifty rows. As `exists`, the limit stops the work early.
         let rows = sqlx::query(
             "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
-                    i.state, i.created_at, i.expires_at \
+                    i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              where i.state = 'pending' \
                and exists (select 1 from user_workspace_roles m \
@@ -469,6 +470,129 @@ impl ActionStore for PostgresActionStore {
         .await
         .map_err(internal)?;
         Ok(count)
+    }
+
+    async fn settle_and_release(
+        &self,
+        workspace_id: Uuid,
+        item_id: Uuid,
+        state: State,
+        resolved_by: Option<Uuid>,
+        note: Option<&str>,
+        hold: Option<Uuid>,
+    ) -> Result<u64, ActionError> {
+        if state.is_open() {
+            return Err(ActionError::Invalid(
+                "settling an item requires a state that is not pending".into(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+
+        // The same conditional update `settle` uses, and for the same reason:
+        // two people answering at once produce one winner and one NotPending
+        // rather than a silently overwritten decision. Inside the transaction
+        // now, so the loser's release never happens either.
+        let updated = sqlx::query(
+            "update action_items set state = $3, resolved_by = $4, \
+                    resolved_note = $5, resolved_at = now() \
+             where workspace_id = $1 and id = $2 and state = 'pending'",
+        )
+        .bind(workspace_id)
+        .bind(item_id)
+        .bind(state.as_str())
+        .bind(resolved_by)
+        .bind(note)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?
+        .rows_affected();
+
+        if updated == 0 {
+            let existing: Option<String> = sqlx::query_scalar(
+                "select state from action_items where workspace_id = $1 and id = $2",
+            )
+            .bind(workspace_id)
+            .bind(item_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal)?;
+
+            return Err(match existing.as_deref().and_then(State::parse) {
+                Some(s) => ActionError::NotPending(s.as_str()),
+                None => ActionError::NotFound,
+            });
+        }
+
+        let mut resumed = 0;
+        if let Some(hold) = hold {
+            // Read for its scope before it goes, because the scope is what says
+            // how wide the resume should be. The hold is the authority on that,
+            // not a copy of the session id somewhere else.
+            let scope: Option<(String, Option<Uuid>, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+                "select level, workspace_id, agent_id, session_id from inhibitors \
+                     where id = $1",
+            )
+            .bind(hold)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(internal)?;
+
+            // A hold that is already gone is not an error. Somebody released it
+            // by hand between the queue read and here, and what this call is for
+            // -- the work no longer being held -- is already true.
+            if let Some((level, held_workspace, agent_id, session_id)) = scope {
+                sqlx::query("delete from inhibitors where id = $1")
+                    .bind(hold)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal)?;
+
+                // Scoped as the hold was. A platform hold resumes nothing: it is
+                // not a workspace's to lift, and nothing addresses one here.
+                let held_workspace = held_workspace.unwrap_or(workspace_id);
+                let (agent, session) = match level.as_str() {
+                    "agent" => (agent_id, None),
+                    "session" => (None, session_id),
+                    "workspace" => (None, None),
+                    _ => (None, None),
+                };
+                if level != "platform" {
+                    resumed = sqlx::query(
+                        "update jobs set \
+                             state = 'pending', \
+                             run_after = now(), \
+                             last_error = null, \
+                             updated_at = now() \
+                         where state = 'parked' \
+                           and workspace_id = $1 \
+                           and ($2::uuid is null or (payload->>'agent_id')::uuid = $2) \
+                           and ($3::uuid is null or (payload->>'session_id')::uuid = $3)",
+                    )
+                    .bind(held_workspace)
+                    .bind(agent)
+                    .bind(session)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal)?
+                    .rows_affected();
+                }
+            }
+        }
+
+        let targets = targets_of(&mut tx, workspace_id, item_id).await?;
+        announce(
+            &mut tx,
+            workspace_id,
+            &Delivery::Targeted {
+                item_ids: vec![item_id],
+                targets,
+            },
+        )
+        .await?;
+
+        tx.commit().await.map_err(internal)?;
+        Ok(resumed)
     }
 
     async fn settled_for_user(
@@ -561,7 +685,7 @@ impl ActionStore for PostgresActionStore {
     ) -> Result<Vec<ActionItem>, ActionError> {
         let rows = sqlx::query(
             "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
-                    i.state, i.created_at, i.expires_at \
+                    i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              where i.workspace_id = $1 and i.state = 'pending' \
                and not exists (select 1 from action_targets t \

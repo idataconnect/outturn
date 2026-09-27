@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::api::usage::PLATFORM_WORKSPACE;
 
 use super::{
-    Binding, CreateSkill, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError, SkillFile,
-    SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
+    Binding, CreateSkill, DeclaredGate, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError,
+    SkillFile, SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
 };
 
 pub struct PostgresSkillStore {
@@ -50,6 +50,70 @@ async fn write_hosts(
             .await
             .map_err(internal)?;
     }
+    Ok(())
+}
+
+/// Records what a version's files declare needs approving.
+///
+/// Derived here, where the content is in hand, rather than when a turn runs: a
+/// file's content lives in the object store by hash, so a turn computing this
+/// would read every bound skill's every file before its first token. A version is
+/// immutable, so what it declares cannot change after this.
+///
+/// The host comes from the version's own declared hosts. A skill declaring one
+/// host gates that host; a skill declaring several gates the request shape on each
+/// of them, because the file says "POST /charges" and not which of its hosts --
+/// and gating all of them is the direction that refuses too much rather than too
+/// little.
+async fn write_gates(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    version_id: Uuid,
+    hosts: &[String],
+    gates: &[DeclaredGate],
+) -> Result<(), SkillError> {
+    for rule in gates {
+        for host in hosts {
+            sqlx::query(
+                "insert into skill_version_gates \
+                 (version_id, path, requires, host, method, path_pattern, identified_by) \
+                 values ($1, $2, $3, $4, $5, $6, $7) on conflict do nothing",
+            )
+            .bind(version_id)
+            .bind(&rule.path)
+            .bind(&rule.requires)
+            .bind(host)
+            .bind(&rule.method)
+            .bind(&rule.path_pattern)
+            .bind(rule.identified_by.as_deref())
+            .execute(&mut **tx)
+            .await
+            .map_err(internal)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies a version's gates onto a new version.
+///
+/// For a fork and for a body-only edit, which carry files forward without their
+/// content: the declaration belongs to the files, so it travels with them.
+async fn copy_gates(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    from: Uuid,
+    to: Uuid,
+) -> Result<(), SkillError> {
+    sqlx::query(
+        "insert into skill_version_gates \
+         (version_id, path, requires, host, method, path_pattern, identified_by) \
+         select $2, path, requires, host, method, path_pattern, identified_by \
+         from skill_version_gates where version_id = $1 \
+         on conflict do nothing",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await
+    .map_err(internal)?;
     Ok(())
 }
 
@@ -248,6 +312,7 @@ impl SkillStore for PostgresSkillStore {
         author: Uuid,
         input: CreateSkill,
         files: &[SkillFile],
+        gates: &[DeclaredGate],
     ) -> Result<Skill, SkillError> {
         validate_slug(&input.slug)?;
         validate_name(&input.name)?;
@@ -322,6 +387,7 @@ impl SkillStore for PostgresSkillStore {
         .map_err(internal)?;
         write_hosts(&mut tx, first, &hosts).await?;
         write_files(&mut tx, first, files).await?;
+        write_gates(&mut tx, first, &hosts, gates).await?;
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await
@@ -364,6 +430,7 @@ impl SkillStore for PostgresSkillStore {
         author: Uuid,
         input: NewVersion,
         files: Option<&[SkillFile]>,
+        gates: &[DeclaredGate],
     ) -> Result<(SkillVersion, bool), SkillError> {
         let mut tx = self.pool.begin().await.map_err(internal)?;
 
@@ -402,6 +469,10 @@ impl SkillStore for PostgresSkillStore {
         .map_err(internal)?;
 
         let hosts = clean_hosts(&input.hosts)?;
+        // Whether this version brings files of its own, which decides whether its
+        // declarations are the ones given or the previous version's carried
+        // forward.
+        let files_given = files.is_some();
         let files: Vec<SkillFile> = match (files, &live) {
             (Some(f), _) => f.to_vec(),
             (None, Some(live)) => files_of(&mut *tx, live.get("id")).await?,
@@ -448,6 +519,13 @@ impl SkillStore for PostgresSkillStore {
 
         write_hosts(&mut tx, version_id, &hosts).await?;
         write_files(&mut tx, version_id, &files).await?;
+        // New files bring their own declarations; a body-only edit carries the
+        // previous version's files forward, so its gates come with them.
+        if files_given {
+            write_gates(&mut tx, version_id, &hosts, gates).await?;
+        } else if let Some(previous) = based_on {
+            copy_gates(&mut tx, previous, version_id).await?;
+        }
         sqlx::query("update skills set updated_at = now() where id = $1")
             .bind(id)
             .execute(&mut *tx)
@@ -561,6 +639,8 @@ impl SkillStore for PostgresSkillStore {
         .await
         .map_err(internal)?;
         write_files(&mut tx, first, &taken.files).await?;
+        // A fork copies the file list, so it copies what those files declare.
+        copy_gates(&mut tx, taken.id, first).await?;
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await

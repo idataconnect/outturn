@@ -24,6 +24,15 @@ pub struct GatewayFetch {
     pub body: Option<String>,
     /// The rule this turn is using, and the API's word that it is genuine.
     pub proof: commit::Proof,
+    /// What the API said gates this turn, passed on unchanged.
+    ///
+    /// Carried in full rather than as a proof, unlike the rule above: a rule is a
+    /// permission this request wants and proves, while a gate is an obligation the
+    /// gateway has to know all of before it can say a request matches none. This
+    /// tier does not read it, choose it or check it -- it relays it, and the
+    /// gateway checks it against the commitment in the turn token, so nothing
+    /// here could usefully rewrite it.
+    pub gates: crate::egress::gate::Gates,
 }
 
 /// What came back.
@@ -118,6 +127,7 @@ mod tests {
         let proof = commit::prove(workspace, &rules, &rules[0]).expect("in the set");
 
         let body = serde_json::to_string(&GatewayFetch {
+            gates: crate::egress::gate::Gates::none(),
             method: "GET".into(),
             url: "https://host0.example.com/".into(),
             headers: Vec::new(),

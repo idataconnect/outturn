@@ -55,6 +55,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
     RunOptions {
         session_id: Uuid::now_v7(),
         gateway_url: gateway.url.clone(),
+        gates: outturn::egress::gate::Gates::none(),
         gateway_token: "test-token".into(),
         default_model: "fake".into(),
         progress,

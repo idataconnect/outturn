@@ -157,6 +157,7 @@ The charge needed somebody's say-so, and that somebody is you.
 ---
 approval:
   requires: charge
+  matches: POST /charges
   covers: booking
   identified_by: booking_id
 ---
@@ -167,6 +168,15 @@ operation -- versioned with the skill, immutable once published, and editable
 only under `skills:write`. [docs/approvals.md](approvals.md) is why there
 rather than on the agent, in a setting, or on the egress rule that permits the
 host.
+
+And the gateway is what stopped the charge, not the agent's good manners. When
+the skill was published, the API recorded that `POST /charges` on Hollowbrook's
+host needs a "charge"; when the turn started, it hashed that into the turn
+token; and when the agent asked the gateway to make the call, the gateway
+checked the rules it was offered against that hash and refused. A runtime that
+dropped the rule from its copy gets nowhere, because the copy it can rewrite is
+not the one the token vouches for -- the same move that makes egress rules worth
+anything.
 
 The request is waiting in the action queue, addressed to a role rather than to
 a person: who may approve a charge is a question about the house's own

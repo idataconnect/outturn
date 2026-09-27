@@ -6,3 +6,4 @@
 //! proof a request carries to show a rule is one the API vouched for.
 
 pub mod commit;
+pub mod gate;

@@ -133,6 +133,10 @@ pub struct AgentHost {
     table: ResourceTable,
     gateway_url: String,
     gateway_token: String,
+    /// What the API said gates this turn. Relayed to the gateway with every
+    /// outbound request and read by nothing here: it is checked against the
+    /// commitment in the turn token, which this tier cannot write.
+    gates: crate::egress::gate::Gates,
     default_model: String,
     http: reqwest::Client,
     progress: Option<ProgressSink>,
@@ -659,6 +663,7 @@ impl outturn::agent::host::Host for AgentHost {
                 headers: request.headers,
                 body: request.body,
                 proof,
+                gates: self.gates.clone(),
             },
         )
         .await?;
@@ -1416,6 +1421,7 @@ pub struct RunOptions {
     pub session_id: uuid::Uuid,
     pub gateway_url: String,
     pub gateway_token: String,
+    pub gates: crate::egress::gate::Gates,
     pub default_model: String,
     pub progress: Option<ProgressSink>,
     pub on_tool: Option<ToolSink>,
@@ -1548,6 +1554,7 @@ impl AgentRunner {
             table: ResourceTable::new(),
             gateway_url: options.gateway_url,
             gateway_token: options.gateway_token,
+            gates: options.gates,
             default_model: options.default_model,
             http: crate::http_client::streaming_client(options.idle_timeout),
             progress: options.progress,

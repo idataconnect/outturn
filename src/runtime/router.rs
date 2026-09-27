@@ -100,6 +100,15 @@ pub struct ExecuteRequest {
     /// performed on data it was handed would prove nothing. The gateway reads
     /// the committed root out of the signed token instead.
     pub egress_commitment: crate::egress::commit::Hash,
+    /// What this tier committed to over the turn's gates -- the requests it may
+    /// not make without somebody's word. Travels beside the egress commitment
+    /// and is signed into the same token; see `egress::gate`.
+    pub gate_commitment: crate::egress::commit::Hash,
+    /// The gates themselves, for the gateway to check against that commitment.
+    ///
+    /// Sent rather than proven one at a time, because a request has to be shown
+    /// to match *none* of them and a Merkle proof cannot show absence.
+    pub gates: crate::egress::gate::Gates,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

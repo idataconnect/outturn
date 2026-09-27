@@ -189,6 +189,11 @@ async fn run_one(
         session_id,
         job.workspace_id,
         crate::egress::commit::empty_root(),
+        // Nothing is gated, and said rather than left absent: a missing claim is
+        // refused, because defaulted to empty it would mean nothing is gated on
+        // every turn. Naming reaches the model and nothing else, so there is
+        // nothing here to gate.
+        crate::egress::gate::Gates::none().root(job.workspace_id),
     )?;
     let request = ChatCompletionRequest {
         model: model.to_string(),

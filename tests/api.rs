@@ -2383,7 +2383,12 @@ async fn only_the_runtime_key_takes_work() {
 
     let turn = h
         .minter
-        .mint_turn(Uuid::now_v7(), acme, outturn::egress::commit::empty_root())
+        .mint_turn(
+            Uuid::now_v7(),
+            acme,
+            outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(acme),
+        )
         .expect("token");
     let (status, body) = h.post("/v1/work", Some(&turn), "{}").await;
     assert_eq!(

@@ -72,6 +72,19 @@ pub struct SessionClaims {
     /// of its own to say so. Whoever needs one asks with `egress_commitment()`,
     /// which refuses rather than defaults.
     pub egress_commitment: Option<commit::Hash>,
+    /// What the API committed to over this turn's *gates* -- the requests it may
+    /// not make without somebody's word (`egress::gate`).
+    ///
+    /// A second claim rather than folded into the one above, because the two
+    /// answer opposite questions and a stripped claim must fail in opposite
+    /// directions. An egress rule is a permission: absence means refused, and
+    /// one commitment covering both would let a stripped gate set read as
+    /// "nothing is gated", which is exactly the answer a forger would choose.
+    ///
+    /// `None` means the claim was absent, which the gateway refuses. "Nothing
+    /// gates this turn" is `Gates::none()`, which has a root of its own and is
+    /// signed.
+    pub gate_commitment: Option<commit::Hash>,
 }
 
 impl SessionClaims {
@@ -93,6 +106,18 @@ impl SessionClaims {
     pub fn egress_commitment(&self) -> Result<commit::Hash, AuthError> {
         self.egress_commitment.ok_or(AuthError::Invalid)
     }
+
+    /// The gate commitment, for the tier deciding whether a request may go out
+    /// without an approval.
+    ///
+    /// Refuses when absent, as its neighbour does, and the direction matters more
+    /// here: a missing egress commitment means no request can prove a rule and
+    /// everything is refused, which is safe. A missing gate commitment, defaulted
+    /// to the empty set, would mean *nothing* is gated and every request goes
+    /// out -- so absence has to be a refusal rather than a default.
+    pub fn gate_commitment(&self) -> Result<commit::Hash, AuthError> {
+        self.gate_commitment.ok_or(AuthError::Invalid)
+    }
 }
 
 /// The claim names as they appear in the payload.
@@ -100,6 +125,7 @@ const SUBJECT: &str = "sub";
 const WORKSPACE: &str = "wid";
 const SCOPE: &str = "scp";
 const EGRESS: &str = "egr";
+const GATES: &str = "gat";
 /// Footer claim naming which public key signed the token, so verifiers can
 /// hold more than one during a rotation.
 const KEY_ID: &str = "kid";
@@ -177,6 +203,7 @@ impl TokenMinter {
             workspace_id,
             roles,
             None,
+            None,
             Duration::from_secs(SESSION_TOKEN_LIFETIME_SECS),
         )
     }
@@ -195,6 +222,7 @@ impl TokenMinter {
         chat_session_id: Uuid,
         workspace_id: Uuid,
         egress_commitment: commit::Hash,
+        gate_commitment: commit::Hash,
     ) -> Result<String, AuthError> {
         self.mint_with_lifetime(
             AUDIENCE_GATEWAY,
@@ -202,6 +230,7 @@ impl TokenMinter {
             workspace_id,
             &[Role::Turn.to_string()],
             Some(egress_commitment),
+            Some(gate_commitment),
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
         )
     }
@@ -213,6 +242,7 @@ impl TokenMinter {
         workspace_id: Uuid,
         roles: &[String],
         egress_commitment: Option<commit::Hash>,
+        gate_commitment: Option<commit::Hash>,
         lifetime: Duration,
     ) -> Result<String, AuthError> {
         use chrono::SecondsFormat;
@@ -249,6 +279,11 @@ impl TokenMinter {
             let egr_json =
                 serde_json::to_value(committed).map_err(|e| AuthError::Internal(e.to_string()))?;
             claims.add_additional(EGRESS, egr_json).map_err(internal)?;
+        }
+        if let Some(committed) = gate_commitment {
+            let gat_json =
+                serde_json::to_value(committed).map_err(|e| AuthError::Internal(e.to_string()))?;
+            claims.add_additional(GATES, gat_json).map_err(internal)?;
         }
 
         // `kid` is a registered footer claim, so it goes in through the
@@ -374,12 +409,22 @@ impl TokenValidator {
                 Some(serde_json::from_value(value.clone()).map_err(|_| AuthError::Invalid)?)
             }
         };
+        // The same reading, and the same refusal of a malformed claim. Absence
+        // stays None for `gate_commitment()` to refuse: defaulted to the empty
+        // set it would mean nothing is gated.
+        let gate_commitment: Option<commit::Hash> = match parsed.get(GATES) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                Some(serde_json::from_value(value.clone()).map_err(|_| AuthError::Invalid)?)
+            }
+        };
 
         Ok(SessionClaims {
             subject,
             workspace_id,
             roles,
             egress_commitment,
+            gate_commitment,
         })
     }
 }
@@ -434,6 +479,7 @@ impl RuntimeKey {
             workspace_id: Uuid::nil(),
             roles: vec![Role::Runtime.to_string()],
             egress_commitment: None,
+            gate_commitment: None,
         }
     }
 }
@@ -523,7 +569,12 @@ mod tests {
         );
 
         let turn = minter
-            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+            .mint_turn(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                commit::empty_root(),
+                crate::egress::gate::Gates::none().root(Uuid::nil()),
+            )
             .expect("mint");
         assert!(gateway.validate(&turn).is_ok());
         assert!(
@@ -539,7 +590,12 @@ mod tests {
         let claims = gateway
             .validate(
                 &minter
-                    .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+                    .mint_turn(
+                        Uuid::now_v7(),
+                        Uuid::now_v7(),
+                        commit::empty_root(),
+                        crate::egress::gate::Gates::none().root(Uuid::nil()),
+                    )
                     .expect("mint"),
             )
             .expect("valid");
@@ -582,6 +638,7 @@ mod tests {
                 Uuid::now_v7(),
                 &["viewer".to_string()],
                 None,
+                None,
                 Duration::from_secs(0),
             )
             .expect("mint");
@@ -603,7 +660,12 @@ mod tests {
         );
 
         let turn = minter
-            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), committed)
+            .mint_turn(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                committed,
+                crate::egress::gate::Gates::none().root(Uuid::nil()),
+            )
             .expect("mint");
         let claims = gateway.validate(&turn).expect("valid");
         assert_eq!(claims.egress_commitment().expect("committed"), committed);
@@ -619,7 +681,12 @@ mod tests {
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
 
         let turn = minter
-            .mint_turn(Uuid::now_v7(), Uuid::now_v7(), commit::empty_root())
+            .mint_turn(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                commit::empty_root(),
+                crate::egress::gate::Gates::none().root(Uuid::nil()),
+            )
             .expect("mint");
         let claims = gateway.validate(&turn).expect("valid");
         assert_eq!(

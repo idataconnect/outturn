@@ -24,11 +24,15 @@ async fn store_files(
     state: &ApiState,
     owner: Uuid,
     files: Vec<NewFile>,
-) -> Result<Vec<SkillFile>, ApiError> {
+) -> Result<(Vec<SkillFile>, Vec<super::skill::DeclaredGate>), ApiError> {
     let prepared = prepare(files)?;
     if prepared.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
+    // Read before the content goes, since that is the only moment it is in hand:
+    // afterwards the bytes are in the object store under a hash, and parsing a
+    // declaration would mean fetching them back. See `docs/approvals.md`.
+    let gates = super::skill::declared_gates(&prepared);
     let store = storage(state)?;
     for (file, bytes) in &prepared {
         store
@@ -36,7 +40,7 @@ async fn store_files(
             .await
             .map_err(storage_failed)?;
     }
-    Ok(prepared.into_iter().map(|(f, _)| f).collect())
+    Ok((prepared.into_iter().map(|(f, _)| f).collect(), gates))
 }
 
 /// `create` for either owner.
@@ -46,10 +50,10 @@ async fn create_in(
     author: Uuid,
     mut input: CreateSkill,
 ) -> Result<Skill, ApiError> {
-    let files = store_files(state, workspace, std::mem::take(&mut input.files)).await?;
+    let (files, gates) = store_files(state, workspace, std::mem::take(&mut input.files)).await?;
     Ok(state
         .skills
-        .create(workspace, author, input, &files)
+        .create(workspace, author, input, &files, &gates)
         .await?)
 }
 
@@ -62,13 +66,18 @@ async fn add_version_in(
     author: Uuid,
     mut input: NewVersion,
 ) -> Result<(StatusCode, SkillVersion), ApiError> {
-    let files = match input.files.take() {
-        Some(f) => Some(store_files(state, workspace, f).await?),
-        None => None,
+    let (files, gates) = match input.files.take() {
+        Some(f) => {
+            let (files, gates) = store_files(state, workspace, f).await?;
+            (Some(files), gates)
+        }
+        // No files of its own, so no declarations of its own: the previous
+        // version's files carry forward and their gates with them.
+        None => (None, Vec::new()),
     };
     let (version, appended) = state
         .skills
-        .add_version(workspace, id, author, input, files.as_deref())
+        .add_version(workspace, id, author, input, files.as_deref(), &gates)
         .await?;
     let status = if appended {
         StatusCode::CREATED

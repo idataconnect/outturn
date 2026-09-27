@@ -3397,6 +3397,7 @@ async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
             session_id,
             workspace_id,
             outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(workspace_id),
         )
         .expect("token");
     let state = outturn::gateway::GatewayState::new(
