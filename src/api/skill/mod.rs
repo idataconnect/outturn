@@ -209,8 +209,6 @@ fn with_reachable_files(skills: &[ResolvedSkill]) -> Vec<&ResolvedSkill> {
         .collect()
 }
 
-/// The files of a turn's skills, named as the agent reads them. A skill whose
-/// slug another bound skill already took is logged rather than merged.
 /// The gates a turn's skills declare, as the API commits to them.
 ///
 /// Read from what publishing recorded rather than by parsing the files again: the
@@ -253,6 +251,8 @@ pub async fn gates_for_turn(
     Ok(crate::egress::gate::Gates::of(gates))
 }
 
+/// The files of a turn's skills, named as the agent reads them. A skill whose
+/// slug another bound skill already took is logged rather than merged.
 pub fn objects_for_turn(skills: &[ResolvedSkill]) -> Vec<scope::SkillObject> {
     let reachable = with_reachable_files(skills);
     for s in skills.iter().filter(|s| !s.files.is_empty()) {

@@ -125,12 +125,30 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
     let mut h = Sha256::new();
     h.update(TAG_LEAF);
     h.update(workspace_id.as_bytes());
-    for field in [
-        Some(rule.host.as_str()),
-        rule.header.as_deref(),
-        rule.credential_env.as_deref(),
-    ] {
-        // A present-but-empty field and an absent one are different rules.
+    hash_fields(
+        &mut h,
+        [
+            Some(rule.host.as_str()),
+            rule.header.as_deref(),
+            rule.credential_env.as_deref(),
+        ],
+    );
+    Hash(h.finalize().into())
+}
+
+/// Hashes a field list into `h`, length-prefixed.
+///
+/// Shared with `super::gate`, which commits to its own kind of leaf over the same
+/// tree. Two copies of this loop is how one of them ends up with a different byte
+/// order or a different present-versus-absent tag -- which is exactly what
+/// happened: the gate leaf was retyped rather than called, and came out
+/// big-endian where this is little-endian. Harmless while each tree only compares
+/// against itself, and the signature of copied hashing code either way.
+///
+/// `None` is a field that is absent, which is a different leaf from one that is
+/// present and empty.
+pub(super) fn hash_fields<'a>(h: &mut Sha256, fields: impl IntoIterator<Item = Option<&'a str>>) {
+    for field in fields {
         match field {
             Some(value) => {
                 h.update([1u8]);
@@ -140,7 +158,53 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
             None => h.update([0u8]),
         }
     }
+}
+
+/// One interior node, under a caller's own tag.
+///
+/// Shared for the reason `hash_fields` is: the tag is what separates two trees,
+/// and everything else about combining a pair has to be the same in both or a
+/// security fix lands in one.
+pub(super) fn node_with(tag: &[u8], left: &Hash, right: &Hash) -> Hash {
+    let mut h = Sha256::new();
+    h.update(tag);
+    h.update(left.0);
+    h.update(right.0);
     Hash(h.finalize().into())
+}
+
+/// The empty set, under a caller's own tag.
+pub(super) fn empty_root_with(tag: &[u8]) -> Hash {
+    let mut h = Sha256::new();
+    h.update(tag);
+    Hash(h.finalize().into())
+}
+
+/// A tree over any leaves, under a caller's own tags.
+///
+/// The one implementation of the shape, because the shape is a security choice:
+/// an odd level is carried up rather than duplicated, and duplicating is the
+/// well-known bug -- `[a, b, c]` and `[a, b, c, c]` would share a root, so one
+/// commitment vouches for two sets. Two copies of this means a fix to one and not
+/// the other, and on the gate side a forged-equal root lets a *reduced* set pass,
+/// which is a charge going out unapproved.
+pub(super) fn root_with(node_tag: &[u8], empty_tag: &[u8], leaves: &[Hash]) -> Hash {
+    if leaves.is_empty() {
+        return empty_root_with(empty_tag);
+    }
+    let mut level = leaves.to_vec();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut pairs = level.chunks_exact(2);
+        for pair in &mut pairs {
+            next.push(node_with(node_tag, &pair[0], &pair[1]));
+        }
+        if let [odd] = pairs.remainder() {
+            next.push(*odd);
+        }
+        level = next;
+    }
+    level[0]
 }
 
 fn node(left: &Hash, right: &Hash) -> Hash {
@@ -189,22 +253,7 @@ pub fn root(workspace_id: Uuid, rules: &[EgressRule]) -> Hash {
 /// duplicated leaf lets a different rule set hash to the same root, which is a
 /// second set of rules the same commitment vouches for.
 fn root_of(leaves: &[Hash]) -> Hash {
-    if leaves.is_empty() {
-        return empty_root();
-    }
-    let mut level = leaves.to_vec();
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut pairs = level.chunks_exact(2);
-        for pair in &mut pairs {
-            next.push(node(&pair[0], &pair[1]));
-        }
-        if let [odd] = pairs.remainder() {
-            next.push(*odd);
-        }
-        level = next;
-    }
-    level[0]
+    root_with(TAG_NODE, TAG_EMPTY, leaves)
 }
 
 /// One step up the tree: a sibling, and which side it is on.

@@ -526,57 +526,43 @@ impl ActionStore for PostgresActionStore {
 
         let mut resumed = 0;
         if let Some(hold) = hold {
-            // Read for its scope before it goes, because the scope is what says
-            // how wide the resume should be. The hold is the authority on that,
-            // not a copy of the session id somewhere else.
-            let scope: Option<(String, Option<Uuid>, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+            // Read for its scope before it goes, because the scope is what says how
+            // wide the resume should be -- the hold is the authority on that, not a
+            // copy of the session id somewhere else.
+            //
+            // Through `inhibitor::read_scope` rather than matching the level here.
+            // An inline copy mapped an unknown level to `(None, None)`, and that
+            // means *every parked turn in the workspace*: the fail-open direction,
+            // saved only by a check constraint and a `level != "platform"` guard.
+            // `read_scope` refuses a row whose level and columns disagree, which is
+            // the behaviour a fifth level should inherit rather than rediscover.
+            let row = sqlx::query(
                 "select level, workspace_id, agent_id, session_id from inhibitors \
-                     where id = $1",
+                 where id = $1",
             )
             .bind(hold)
             .fetch_optional(&mut *tx)
             .await
             .map_err(internal)?;
 
-            // A hold that is already gone is not an error. Somebody released it
-            // by hand between the queue read and here, and what this call is for
-            // -- the work no longer being held -- is already true.
-            if let Some((level, held_workspace, agent_id, session_id)) = scope {
+            // A hold somebody already released by hand is not an error: what this
+            // call is for -- the work no longer being held -- is already true.
+            if let Some(row) = row {
+                let scope = crate::api::inhibitor::postgres::read_scope(&row)
+                    .map_err(|e| ActionError::Internal(e.to_string()))?;
+
                 sqlx::query("delete from inhibitors where id = $1")
                     .bind(hold)
                     .execute(&mut *tx)
                     .await
                     .map_err(internal)?;
 
-                // Scoped as the hold was. A platform hold resumes nothing: it is
-                // not a workspace's to lift, and nothing addresses one here.
-                let held_workspace = held_workspace.unwrap_or(workspace_id);
-                let (agent, session) = match level.as_str() {
-                    "agent" => (agent_id, None),
-                    "session" => (None, session_id),
-                    "workspace" => (None, None),
-                    _ => (None, None),
-                };
-                if level != "platform" {
-                    resumed = sqlx::query(
-                        "update jobs set \
-                             state = 'pending', \
-                             run_after = now(), \
-                             last_error = null, \
-                             updated_at = now() \
-                         where state = 'parked' \
-                           and workspace_id = $1 \
-                           and ($2::uuid is null or (payload->>'agent_id')::uuid = $2) \
-                           and ($3::uuid is null or (payload->>'session_id')::uuid = $3)",
-                    )
-                    .bind(held_workspace)
-                    .bind(agent)
-                    .bind(session)
-                    .execute(&mut *tx)
+                // The one mapping from a hold's scope to a resume's breadth, on
+                // this transaction so the settle, the release and the resume commit
+                // together or not at all.
+                resumed = crate::jobs::resume_for_scope(&mut *tx, &scope)
                     .await
-                    .map_err(internal)?
-                    .rows_affected();
-                }
+                    .map_err(|e| ActionError::Internal(e.to_string()))?;
             }
         }
 
