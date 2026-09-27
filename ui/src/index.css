@@ -258,3 +258,28 @@
   }
 }
 
+
+/*
+ * Streamed text fading in, one span per commit -- see lib/streamFade.ts.
+ *
+ * One letter, and plain CSS rather than a utility, because a long reply is a
+ * thousand of these and the class is repeated on every one. An animation
+ * rather than a transition: a transition needs a value to change from, and
+ * a span that has just mounted has none. Only mounting runs it, so text
+ * already on screen does not fade again when the message re-renders.
+ */
+@keyframes outturn-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.f {
+  animation: outturn-fade-in 0.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .f {
+    animation: none;
+  }
+}
