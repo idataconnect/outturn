@@ -44,6 +44,19 @@ shape is what is being tried: whether a model that has read a manifest line
 goes and reads the file, rather than guessing the call from the name, is what
 the wizard rests on.
 
+**Charging needs a person.** `charge_payment_account` declares
+`approval: requires: charge` in its frontmatter, which is the one operation here
+that money moves through. What that means, and why the rule lives in the
+operation's own file rather than on the agent or in a setting, is
+[docs/approvals.md](../../../docs/approvals.md).
+
+**No card numbers, anywhere.** A *payment account number* -- `pa_4471` --
+stands for a card the house holds, and no endpoint returns the card. That is
+not squeamishness: a transcript is replayed to a model on every later turn, so
+a card number that reached one would be in every subsequent prompt for the life
+of the conversation. The fixture has a test asserting nothing it serves contains
+a run of digits long enough to be a card.
+
 **The manifest names no URL.** A skill documenting its call the way an API
 reference does reads correctly to a capable model and gets called as a tool
 name by a weaker one — see
