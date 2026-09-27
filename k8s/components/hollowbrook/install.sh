@@ -9,8 +9,9 @@
 # argument ui/src/themes/README.md already makes about skinning, and it holds
 # here for the same reason.
 #
-# Idempotent: a slug that already exists is left alone, so a restarted Job or a
-# redeployed component does not write a second copy.
+# Idempotent: a skill that already exists gets a new version only if its files
+# changed, and an agent that already exists is left alone, so a restarted Job or
+# a redeployed component writes no second copy of either.
 set -eu
 
 api="${OUTTURN_API:-http://outturn-api:8080}"
@@ -120,5 +121,56 @@ fi
 call -X POST "$api/v1/skills/$id/hosts/approve" -H "$auth" >/dev/null \
   || { say "could not approve $host"; exit 1; }
 say "approved $host"
+
+# An agent to try it with, so the walkthrough starts at a conversation rather
+# than at a form. Bound to this skill and nothing else: which of a workspace's
+# own agents get the skill is still the workspace's decision, and this only
+# makes the one it would otherwise have had to make by hand.
+#
+# Created once and then left alone. Unlike the skill, which is this
+# component's to keep current, the agent is somebody's to edit -- a prompt
+# rewritten in the UI must survive the next redeploy, and an agent removed
+# comes back, which is the price of not tracking whether it was ever made.
+#
+# Except an agent with no skills at all, which is given this one. Creating and
+# binding are two calls, and a Job retried between them would otherwise find
+# the agent, leave it alone, and leave it unable to do the one thing it was
+# made for. Somebody who removed every skill on purpose gets this one back on
+# the next redeploy, which is the cheaper of the two ways to be wrong.
+agent_slug=front-desk
+agents=$(call "$api/v1/agents" -H "$auth") || { say "could not list agents"; exit 1; }
+agent=$(echo "$agents" | jq -r ".[] | select(.slug == \"$agent_slug\") | .id" | head -1)
+
+if [ -n "$agent" ]; then
+  bound=$(call "$api/v1/agents/$agent/skills" -H "$auth") \
+    || { say "could not read agent $agent's skills"; exit 1; }
+  if [ "$(echo "$bound" | jq length)" -gt 0 ]; then
+    say "agent $agent already exists; leaving it as it is"
+  else
+    call -X PUT "$api/v1/agents/$agent/skills" -H "$auth" \
+      -H 'content-type: application/json' \
+      -d "$(jq -n --arg id "$id" '[{skill_id: $id}]')" >/dev/null \
+      || { say "could not give agent $agent the skill"; exit 1; }
+    say "agent $agent had no skills; gave it this one"
+  fi
+else
+  prompt=$(cat "${PROMPT_FILE:-/install/system-prompt.txt}")
+  created=$(call "$api/v1/agents" -H "$auth" \
+    -H 'content-type: application/json' \
+    -d "$(jq -n --arg slug "$agent_slug" --arg prompt "$prompt" \
+          '{slug: $slug, name: "Front desk",
+            description: "Bookings and payments for the staff of Hollowbrook House.",
+            system_prompt: $prompt}')") \
+    || { say "could not create the agent"; exit 1; }
+  agent=$(echo "$created" | jq -r .id)
+  [ -n "$agent" ] && [ "$agent" != "null" ] || { say "created an agent with no id"; exit 1; }
+
+  # PUT replaces the whole list, which is safe only because the agent is new.
+  call -X PUT "$api/v1/agents/$agent/skills" -H "$auth" \
+    -H 'content-type: application/json' \
+    -d "$(jq -n --arg id "$id" '[{skill_id: $id}]')" >/dev/null \
+    || { say "could not give agent $agent the skill"; exit 1; }
+  say "created agent $agent with the skill"
+fi
 
 say "done"

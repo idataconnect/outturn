@@ -8,7 +8,7 @@ agent use its API.
 Three things happen. The deployment scales from the zero replicas the base
 leaves it at. `internal-host` is collected into `OUTTURN_INTERNAL_HOSTS`, which
 is what lets the gateway reach a private address at all. And a Job installs the
-skill.
+skill, and an agent to try it with.
 
 ## Why the Job
 
@@ -63,6 +63,19 @@ name by a weaker one — see
 [docs/skill-evaluation.md](../../../docs/skill-evaluation.md). URLs appear in
 the detail files, beside the method and an instruction to use `fetch_url`.
 
+## The agent
+
+The Job also creates **Front desk** (`front-desk`), with
+`system-prompt.txt` as its prompt and this skill bound, so the walkthrough
+starts at a conversation rather than at a form. Only that agent: which of a
+workspace's own agents get the skill is still the workspace's decision.
+
+It is made once and then left alone, because a prompt edited in the UI must
+survive the next redeploy. The one exception is an agent with no skills at
+all, which is given this one -- creating and binding are two calls, and a Job
+retried between them would otherwise leave an agent that cannot do what it
+was made for.
+
 ## What is still manual
 
 **The look.** The UI is not in the cluster -- it is `npm run dev` on the host,
@@ -75,6 +88,3 @@ cd ui && VITE_THEME=hollowbrook VITE_BRAND_NAME='Hollowbrook House' \
 
 `docs/take-it-for-a-spin.md` starts the UI that way, so somebody following the
 walkthrough sees it without having to find this file.
-
-**Binding the skill to an agent.** Installed into the workspace, not bound:
-which agents get it is a decision, and this component does not make it.

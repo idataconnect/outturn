@@ -36,10 +36,15 @@ resources:
 # The script and the skill as files rather than a wall of YAML, so they can be
 # read, diffed and adapted. A customer copying this component for their own API
 # replaces what is in skill/ and edits little else.
+#
+# Every file in skill/ has to be listed here: the Job installs what the
+# ConfigMap holds, and a file left out is a skill published without it, with
+# nothing said.
 configMapGenerator:
   - name: install-hollowbrook
     files:
       - install.sh
+      - system-prompt.txt
   - name: hollowbrook-skill
     files:
       - skill/index.md
@@ -49,6 +54,8 @@ configMapGenerator:
       - skill/list_bookings.md
       - skill/get_booking.md
       - skill/create_booking.md
+      - skill/list_payment_accounts.md
+      - skill/charge_payment_account.md
 
 # Named for their content, so editing a file makes a new ConfigMap and the Job
 # picks it up. Without this a changed skill would be a ConfigMap nothing

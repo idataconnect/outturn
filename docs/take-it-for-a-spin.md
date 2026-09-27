@@ -24,7 +24,7 @@ scripts/dev-mac.sh --with hollowbrook     # on Linux: scripts/dev.sh --with holl
 
 That pulls the model if it is missing, brings up outturn and Hollowbrook, opens
 Hollowbrook's host on the gateway's operator allowlist, and runs a Job that
-installs a skill describing its API.
+installs a skill describing its API and an agent that uses it.
 
 In another terminal:
 
@@ -46,9 +46,10 @@ second theme exists to prove.
 Open http://localhost:3000 and sign in as `admin@outturn.local`. The password
 is this clone's own — `scripts/dev-secrets.sh --print` shows it.
 
-## 2. Make an agent
+## 2. Meet the agent
 
-**Agents → New agent.** Give it a name and this system prompt:
+The same Job made one: **Front desk**, under **Agents**, with this system
+prompt and the Hollowbrook House skill already enabled:
 
 ```
 You help the staff of Hollowbrook House, a guesthouse, with bookings and
@@ -69,18 +70,25 @@ rather than who is in it. A prompt written as though the guest were typing
 describes somebody this platform has nowhere to put, and the conversation
 reads oddly ever after.
 
-## 3. Give it the skill
+The prompt is yours to edit from here: the Job made the agent once and leaves
+it alone on every redeploy after. It lives in
+`k8s/components/hollowbrook/system-prompt.txt` if you want to change what a
+fresh cluster starts with.
 
-On the agent's page, under **Skills**, enable **Hollowbrook House**.
+## 3. The skill it was given
+
+On the agent's page, under **Skills**, **Hollowbrook House** is enabled.
 
 The skill was installed by the Job in step 1, along with an egress rule
 permitting `outturn-hollowbrook:8084`. Without that rule the agent would be
 refused at the gateway however well it understood the API — the rule is the
-permission and the skill is only the knowledge.
+permission and the skill is only the knowledge. Any other agent you make in
+this workspace can have the skill by enabling it there; the Job only bound it
+to the one it made.
 
 ## 4. Talk to it
 
-**Sessions → start one with your agent.** Then, in order:
+**Sessions → start one with Front desk.** Then, in order:
 
 ### "What rooms do you have?"
 
