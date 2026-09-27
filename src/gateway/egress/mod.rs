@@ -425,7 +425,7 @@ mod gating {
     fn gate() -> Gate {
         Gate {
             requires: "charge".into(),
-            host: "outturn-hollowbrook:8084".into(),
+            host: "outturn-hollowbrook".into(),
             method: "POST".into(),
             path: "/charges".into(),
             identified_by: Some("booking_id".into()),
@@ -470,7 +470,7 @@ mod gating {
         let gates = Gates::of(vec![gate()]);
         assert!(
             gates
-                .covering("outturn-hollowbrook:8084", "POST", "/charges")
+                .covering("outturn-hollowbrook", "POST", "/charges")
                 .is_some()
         );
         // The same path on another host, the same host with another method, and
@@ -478,12 +478,12 @@ mod gating {
         assert!(gates.covering("example.com", "POST", "/charges").is_none());
         assert!(
             gates
-                .covering("outturn-hollowbrook:8084", "GET", "/charges")
+                .covering("outturn-hollowbrook", "GET", "/charges")
                 .is_none()
         );
         assert!(
             gates
-                .covering("outturn-hollowbrook:8084", "POST", "/bookings")
+                .covering("outturn-hollowbrook", "POST", "/bookings")
                 .is_none()
         );
     }

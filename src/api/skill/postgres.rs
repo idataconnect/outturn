@@ -71,6 +71,21 @@ async fn write_gates(
     hosts: &[String],
     gates: &[DeclaredGate],
 ) -> Result<(), SkillError> {
+    // A declaration with no host to hang it on stores nothing, and a version that
+    // stored nothing is a version the gateway cannot gate -- while its file says
+    // the operation is gated, and a reader believes it. Refused rather than
+    // written, because the alternative is the quiet failure this whole mechanism
+    // is arranged against, and because the fix is one line in the publish: say
+    // which host the operation is on.
+    if !gates.is_empty() && hosts.is_empty() {
+        let paths: Vec<&str> = gates.iter().map(|g| g.path.as_str()).collect();
+        return Err(SkillError::Invalid(format!(
+            "{} declares an approval but this version names no host, so nothing \
+             could enforce it; add the host the operation is on",
+            paths.join(", ")
+        )));
+    }
+
     for rule in gates {
         for host in hosts {
             sqlx::query(

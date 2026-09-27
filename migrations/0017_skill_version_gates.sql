@@ -26,8 +26,15 @@ create table skill_version_gates (
     -- The body field naming the unit a wider grant may span. Null when the
     -- declaration offered no `covers`.
     identified_by  text,
+    -- `requires` is in the key because one file may declare more than one act
+    -- about the same operation -- charging and refunding a booking are documented
+    -- together often enough. The sibling tables key on `(version_id, <one
+    -- column>)` because a version has one host per host and one file per path;
+    -- here a path is not unique on its own.
     primary key (version_id, path, requires)
 );
 
--- The read is per version, when a turn resolves its skills.
-create index skill_version_gates_version_idx on skill_version_gates (version_id);
+-- No index of its own. The read is per version, and the primary key above already
+-- leads with `version_id`, so it is served -- the sibling tables index their
+-- *other* column because their keys lead with the version too, and the reverse
+-- lookup is the one that needs help. Nothing here looks a gate up by host.

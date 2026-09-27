@@ -687,6 +687,25 @@ pub async fn resume_parked(
     agent_id: Option<Uuid>,
     session_id: Option<Uuid>,
 ) -> Result<u64, JobError> {
+    resume_parked_on(pool, workspace_id, agent_id, session_id).await
+}
+
+/// `resume_parked` on an executor the caller holds.
+///
+/// For a caller inside a transaction -- answering an approval settles the item,
+/// lifts the hold and gives the turn back, and those three must commit together or
+/// not at all. Generic rather than duplicated: the null-guarded `(None, None)`
+/// means *every* parked turn in the workspace, so a second copy of this statement
+/// is a second place that can fail open.
+pub async fn resume_parked_on<'e, E>(
+    executor: E,
+    workspace_id: Uuid,
+    agent_id: Option<Uuid>,
+    session_id: Option<Uuid>,
+) -> Result<u64, JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     // Null-guarded rather than four statements: the columns are in the payload
     // rather than indexed separately, so none of these is a different plan --
     // unlike the events read, where the partial index made it one.
@@ -704,7 +723,7 @@ pub async fn resume_parked(
     .bind(workspace_id)
     .bind(agent_id)
     .bind(session_id)
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(internal)?
     .rows_affected();
@@ -724,22 +743,27 @@ pub async fn resume_parked(
 ///
 /// A platform hold resumes nothing here: it is not a workspace's to release, and
 /// nothing reaches this with one.
-pub async fn resume_for_scope(
-    pool: &PgPool,
+pub async fn resume_for_scope<'e, E>(
+    executor: E,
     scope: &crate::api::inhibitor::Scope,
-) -> Result<u64, JobError> {
+) -> Result<u64, JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     use crate::api::inhibitor::Scope;
     match scope {
         Scope::Platform => Ok(0),
-        Scope::Workspace { workspace_id } => resume_parked(pool, *workspace_id, None, None).await,
+        Scope::Workspace { workspace_id } => {
+            resume_parked_on(executor, *workspace_id, None, None).await
+        }
         Scope::Agent {
             workspace_id,
             agent_id,
-        } => resume_parked(pool, *workspace_id, Some(*agent_id), None).await,
+        } => resume_parked_on(executor, *workspace_id, Some(*agent_id), None).await,
         Scope::Session {
             workspace_id,
             session_id,
-        } => resume_parked(pool, *workspace_id, None, Some(*session_id)).await,
+        } => resume_parked_on(executor, *workspace_id, None, Some(*session_id)).await,
     }
 }
 

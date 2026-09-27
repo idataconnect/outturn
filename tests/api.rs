@@ -7311,3 +7311,66 @@ async fn answering_needs_the_authority_in_the_items_own_workspace() {
 
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn a_gate_declaration_with_no_host_is_refused_at_publish() {
+    // The file would say an operation is gated and nothing could gate it: the
+    // gate rows are written per declared host, so a version naming none stores
+    // nothing, `gates_for_turn` returns the empty set, and the charge goes out.
+    // That is the quiet failure the whole mechanism is arranged against, and the
+    // fix is one line in the publish -- so it is refused rather than accepted.
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+
+    let body = serde_json::json!({
+        "slug": "charging",
+        "name": "Charging",
+        "body": "One operation. Read charge.md before using it.",
+        "files": [{
+            "path": "charge.md",
+            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n",
+        }],
+    })
+    .to_string();
+
+    let (status, message) = post_with_cookie(&h, "/v1/skills", &admin, &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(
+        message.contains("names no host"),
+        "the refusal should say what is missing: {message}"
+    );
+
+    // And the same skill with a host publishes.
+    let with_host = serde_json::json!({
+        "slug": "charging",
+        "name": "Charging",
+        "body": "One operation. Read charge.md before using it.",
+        // A public name, since a cluster-internal one needs the operator allowlist
+        // and this test is about gates rather than about egress.
+        "hosts": ["api.hollowbrook.test"],
+        "files": [{
+            "path": "charge.md",
+            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n",
+        }],
+    })
+    .to_string();
+    let (status, message) = post_with_cookie(&h, "/v1/skills", &admin, &with_host).await;
+    assert_eq!(status, StatusCode::CREATED, "{message}");
+
+    // Stored as the egress matcher spells it, which is what the gateway compares
+    // against -- `normalise_host` strips a port and lower-cases, so a gate written
+    // from the host as typed would never match the request.
+    let host: String = sqlx::query_scalar(
+        "select host from skill_version_gates \
+         where path = 'charge.md' and requires = 'charge'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("a gate row");
+    assert_eq!(host, "api.hollowbrook.test");
+
+    h.db.cleanup().await;
+}
