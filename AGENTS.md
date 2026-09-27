@@ -99,8 +99,17 @@ the turn right after a tool call without continuing.
 
 On a Mac, `scripts/dev-mac.sh` builds on the `local-mac` overlay instead:
 ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
-the default. Both scripts share `scripts/lib/dev.sh`, so `--with` and
+the suggestion. Both scripts share `scripts/lib/dev.sh`, so `--with` and
 everything else behave the same on either.
+
+Which model, its context window and `context_budget` are this machine's
+answers rather than the overlay's: asked on the first run, kept in the
+gitignored `k8s/overlays/local/dev-machine.env`, and changed with
+`scripts/dev-setup.sh --reconfigure`. With ollama the model is served as a tag
+of its own, `outturn/<model>-ctx<window>`, carrying the window as `num_ctx`.
+That tag is the only thing that sets the window whatever
+`OLLAMA_CONTEXT_LENGTH` the server started with. See
+[docs/local-development.md](docs/local-development.md).
 
 ## Tunables
 

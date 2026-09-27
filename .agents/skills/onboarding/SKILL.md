@@ -102,15 +102,19 @@ so a cluster without it comes up healthy and fails on the first message.
 curl -sf http://localhost:11434/api/version
 ```
 
-Which model should be there depends on the profile, and AGENTS.md is emphatic
-about which: **qwen3.5** on Linux, **qwen3.8:27b-mlx** on a Mac. Read the
-value out of the overlay rather than repeating it here -- `scripts/dev-mac.sh`
-shows the awk that does it -- so this skill cannot drift from what the cluster
-asks for.
+Which model is this machine's answer, not this skill's: the first run of the
+dev script asks and keeps it. Read it rather than repeating a name here, so
+this skill cannot drift from what the cluster asks for:
 
-Report the size before suggesting a pull. qwen3.8 is 18-23GB loaded and was
-chosen on a 64GB M4; on a 32GB machine it is tight beside the cluster's VM,
-and `scripts/dev-mac.sh --small` exists for that.
+```bash
+scripts/dev-setup.sh --show
+```
+
+With no answers yet it prints the suggestions, which is what a first run
+would offer. The dev script pulls the model itself, so there is nothing to
+pull by hand. Report the size if the machine looks tight. qwen3.8 is 18-23GB
+loaded and was chosen on a 64GB M4, and on a 32GB machine the suggestion is
+already qwen3.5. See docs/local-development.md.
 
 ### 6. This clone's keys
 
@@ -133,8 +137,9 @@ scripts/dev-secrets.sh --print  # the admin password
 Worth a note, not a gate. Four images build from a Rust workspace and the
 model wants most of a machine's memory. If `kubectl top nodes` answers, report
 it; metrics-server is often absent on kind, and its absence is not a problem
-to fix. Never fail a setup on this -- a tight machine still runs, and
-`--small` is the answer when it does not.
+to fix. Never fail a setup on this -- a tight machine still runs, and a
+smaller model (`scripts/dev-setup.sh --reconfigure`) is the answer when it
+does not.
 
 ## Someone else's cluster
 
