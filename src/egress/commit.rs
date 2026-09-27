@@ -208,11 +208,7 @@ pub(super) fn root_with(node_tag: &[u8], empty_tag: &[u8], leaves: &[Hash]) -> H
 }
 
 fn node(left: &Hash, right: &Hash) -> Hash {
-    let mut h = Sha256::new();
-    h.update(TAG_NODE);
-    h.update(left.0);
-    h.update(right.0);
-    Hash(h.finalize().into())
+    node_with(TAG_NODE, left, right)
 }
 
 /// The commitment for a workspace that allows nothing.
@@ -223,9 +219,7 @@ fn node(left: &Hash, right: &Hash) -> Hash {
 /// choose, and the one the rest of the system treats as safe. Every turn
 /// carries a commitment, and this is what it says when the list is empty.
 pub fn empty_root() -> Hash {
-    let mut h = Sha256::new();
-    h.update(TAG_EMPTY);
-    Hash(h.finalize().into())
+    empty_root_with(TAG_EMPTY)
 }
 
 /// Rules in the order the tree is built over, which is sorted and deduplicated.
@@ -236,7 +230,18 @@ pub fn empty_root() -> Hash {
 /// than assumed. Sorting by the whole leaf rather than by host keeps it
 /// deterministic even if a host ever appears twice.
 fn leaves(workspace_id: Uuid, rules: &[EgressRule]) -> Vec<Hash> {
-    let mut leaves: Vec<Hash> = rules.iter().map(|r| leaf(workspace_id, r)).collect();
+    ordered(rules.iter().map(|r| leaf(workspace_id, r)).collect())
+}
+
+/// Leaves in the order a tree is built over them: sorted, and deduplicated.
+///
+/// Shared with `super::gate`, and the dedup is why. It is not tidiness: under the
+/// carry-up shape `[a, b, c]` and `[a, b, c, c]` hash alike, so without it one
+/// commitment vouches for two sets. Two copies of this line means one of them
+/// losing it, and on the gate side a set that hashes equal while being *smaller* is
+/// a gate vanishing -- a charge going out unapproved. There is a test on each side
+/// now; there was a test on one.
+pub(super) fn ordered(mut leaves: Vec<Hash>) -> Vec<Hash> {
     leaves.sort_unstable_by_key(|h| h.0);
     leaves.dedup_by(|a, b| a.0 == b.0);
     leaves

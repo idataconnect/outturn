@@ -52,14 +52,34 @@ pub async fn hosts_from_skills(
     pool: &PgPool,
     workspace_id: Uuid,
 ) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
+    let hosts: Vec<String> = sqlx::query_scalar(
         "select host from egress_rules \
          where workspace_id = $1 and enabled and from_skill_id is not null \
          order by host",
     )
     .bind(workspace_id)
     .fetch_all(pool)
-    .await
+    .await?;
+
+    // A wildcard is never exempt, however it got here.
+    //
+    // Approving a skill's hosts takes `settings:update`, which is also what sets
+    // `approve_new_hosts` -- so whoever turns the ceiling on can exempt a host from
+    // it, and `normalise_host` permits a wildcard over a domain. Declaring
+    // `*.example.com` in a skill and approving it would exempt every host under it
+    // from every turn: not an escalation across an authority boundary, but a wider
+    // door than the setting reads as having. (`*.com` is refused already, since
+    // `com` has no domain of its own, so the class is bounded -- not small.)
+    //
+    // So the exemption is for a host somebody named. A wildcard names a class, and
+    // consenting to a class is the permission-dialog hazard `docs/approvals.md`
+    // spends its `covers` section on: approving the instance you were shown is not
+    // approving the class it belongs to. A workspace wanting the class exempt can
+    // say so host by host.
+    Ok(hosts
+        .into_iter()
+        .filter(|host| !host.contains('*'))
+        .collect())
 }
 
 /// A rule as a workspace sees it.

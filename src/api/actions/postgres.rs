@@ -168,66 +168,17 @@ impl ActionStore for PostgresActionStore {
         state: State,
         resolved_by: Option<Uuid>,
     ) -> Result<(), ActionError> {
-        if state.is_open() {
-            return Err(ActionError::Invalid(
-                "settling an item requires a state that is not pending".into(),
-            ));
-        }
-
-        let mut tx = self.pool.begin().await.map_err(internal)?;
-
-        // `where state = 'pending'` in the update rather than a read first:
-        // two people answering at once both pass a check-then-write, and only
-        // one passes this. The loser learns it lost instead of overwriting the
-        // winner's answer.
-        let updated = sqlx::query(
-            "update action_items set state = $3, resolved_by = $4, resolved_at = now() \
-             where workspace_id = $1 and id = $2 and state = 'pending'",
-        )
-        .bind(workspace_id)
-        .bind(item_id)
-        .bind(state.as_str())
-        .bind(resolved_by)
-        .execute(&mut *tx)
-        .await
-        .map_err(internal)?
-        .rows_affected();
-
-        if updated == 0 {
-            // Tell the two cases apart: an item that was never there and an
-            // item somebody else already settled are different problems.
-            let existing: Option<String> = sqlx::query_scalar(
-                "select state from action_items where workspace_id = $1 and id = $2",
-            )
-            .bind(workspace_id)
-            .bind(item_id)
-            .fetch_optional(&mut *tx)
+        // `settle_and_release` with nothing to release, rather than a second
+        // implementation of the same conditional update.
+        //
+        // It was a copy, and the copy was the one production reached: after
+        // `settle_and_release` landed, nothing called this, while a dozen tests --
+        // including the two-people-answering-at-once race both versions exist to
+        // get right -- went on asserting against the path nothing took. A fix to
+        // one would have left the suite green.
+        self.settle_and_release(workspace_id, item_id, state, resolved_by, None, None)
             .await
-            .map_err(internal)?;
-
-            return Err(match existing.as_deref().and_then(State::parse) {
-                Some(s) => ActionError::NotPending(s.as_str()),
-                None => ActionError::NotFound,
-            });
-        }
-
-        // Read the targets back rather than making the caller supply them:
-        // whoever settles an item knows the item, not who was waiting on it,
-        // and a caller guessing would be a caller inventing an invalidation.
-        let targets = targets_of(&mut tx, workspace_id, item_id).await?;
-
-        announce(
-            &mut tx,
-            workspace_id,
-            &Delivery::Targeted {
-                item_ids: vec![item_id],
-                targets,
-            },
-        )
-        .await?;
-
-        tx.commit().await.map_err(internal)?;
-        Ok(())
+            .map(|_| ())
     }
 
     async fn add_targets(

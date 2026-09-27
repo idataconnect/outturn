@@ -6434,7 +6434,7 @@ async fn the_queue_returns_what_is_waiting_on_the_reader() {
             .raise(
                 workspace,
                 outturn::api::actions::NewItem {
-                    kind: "hitl.approval".into(),
+                    kind: "approval.charge".into(),
                     event_id: None,
                     payload: serde_json::json!({"question": "approve?"}),
                     targets: vec![outturn::api::actions::Target::User(user)],
@@ -6449,7 +6449,7 @@ async fn the_queue_returns_what_is_waiting_on_the_reader() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: Value = serde_json::from_str(&body).expect("json");
     assert_eq!(v["items"].as_array().expect("items").len(), 1);
-    assert_eq!(v["items"][0]["kind"], "hitl.approval");
+    assert_eq!(v["items"][0]["kind"], "approval.charge");
 
     let (status, body) = get_with_cookie(&h, "/v1/action-items/count", &cookie).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -6495,7 +6495,7 @@ async fn the_queue_shows_nothing_from_a_workspace_the_reader_left() {
             .raise(
                 theirs,
                 outturn::api::actions::NewItem {
-                    kind: "hitl.approval".into(),
+                    kind: "approval.charge".into(),
                     event_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
@@ -6543,7 +6543,7 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
             .raise(
                 workspace,
                 outturn::api::actions::NewItem {
-                    kind: "hitl.approval".into(),
+                    kind: "approval.charge".into(),
                     event_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
@@ -6593,7 +6593,7 @@ async fn a_waiting_read_returns_the_current_queue_when_nothing_happens() {
             .raise(
                 workspace,
                 outturn::api::actions::NewItem {
-                    kind: "hitl.approval".into(),
+                    kind: "approval.charge".into(),
                     event_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
@@ -7465,6 +7465,176 @@ async fn approve_new_hosts_gates_a_hand_added_host_and_not_a_skills_own() {
             .covering("api.brought.test", "GET", "/anything")
             .is_none(),
         "the skill's own host was already consented to"
+    );
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_body_only_edit_keeps_the_gates_its_files_declare() {
+    // The quiet failure the whole mechanism is arranged against, found by review.
+    //
+    // Files carry forward when a version brings none of its own -- that is how
+    // somebody fixes a typo in a skill's prose. The gates have to carry with them,
+    // because the declaration lives *in* those files. They did not: the carry
+    // branch keyed on `based_on`, which is the latest version of the *base* skill
+    // and is null for every ordinary skill, so neither branch ran and the new
+    // version had no gates at all. The file still said the operation needed a
+    // charge, `gates_for_turn` returned the empty set, and every turn after the
+    // edit was ungated with nothing logged and nothing refused.
+    let h = harness().await;
+    let workspace = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@test.invalid", None, Some((workspace, "admin")))
+        .await;
+
+    let charge_file =
+        "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n";
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/skills",
+        &admin,
+        &serde_json::json!({
+            "slug": "charging",
+            "name": "Charging",
+            "body": "One operation. Read charge.md.",
+            "hosts": ["api.hollowbrook.test"],
+            "files": [{ "path": "charge.md", "content": charge_file }],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let gates_for = |version: Uuid| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select count(*) from skill_version_gates where version_id = $1",
+            )
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("count")
+        }
+    };
+
+    let first: Uuid = sqlx::query_scalar(
+        "select id from skill_versions where skill_id = $1 order by ordinal desc limit 1",
+    )
+    .bind(skill)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the first version");
+    assert_eq!(
+        gates_for(first).await,
+        1,
+        "the first version should be gated"
+    );
+
+    // A reworded body and no files: the ordinary way a typo is fixed.
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/skills/{skill}/versions"),
+        &admin,
+        &serde_json::json!({
+            "body": "One operation. Read charge.md before charging anybody.",
+            "hosts": ["api.hollowbrook.test"],
+        })
+        .to_string(),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+
+    let second: Uuid = sqlx::query_scalar(
+        "select id from skill_versions where skill_id = $1 order by ordinal desc limit 1",
+    )
+    .bind(skill)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the second version");
+    assert_ne!(second, first, "a version should have been appended");
+
+    // The files carried forward, so the declaration did too.
+    let files: i64 =
+        sqlx::query_scalar("select count(*) from skill_version_files where version_id = $1")
+            .bind(second)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("files");
+    assert_eq!(files, 1, "the file should have carried forward");
+    assert_eq!(
+        gates_for(second).await,
+        1,
+        "the gate its file declares was dropped, so every later turn is ungated"
+    );
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
+    // Approving a skill's hosts takes `settings:update`, which is also what turns
+    // the ceiling on -- so whoever sets it can exempt a host from it, and
+    // `normalise_host` permits a wildcard over a domain. Declaring `*.example.com`
+    // in a skill and approving it would exempt every host under it from every turn.
+    // (`*.com` is refused outright, since `com` has no domain of its own.)
+    //
+    // Not an escalation across an authority boundary, but a wider door than the
+    // setting reads as having, and the same hazard the `covers` section of
+    // docs/approvals.md is about: approving the instance you were shown is not
+    // approving the class it belongs to.
+    let h = harness().await;
+    let workspace = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@test.invalid", None, Some((workspace, "admin")))
+        .await;
+
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/skills",
+        &admin,
+        &serde_json::json!({
+            "slug": "wide",
+            "name": "Wide Open",
+            "body": "Reaches anything.",
+            // `*.com` is already refused -- `com` has no domain -- so the widest
+            // form actually reachable is a wildcard over a real domain.
+            "hosts": ["*.example.com", "api.named.test"],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/skills/{skill}/hosts/approve"),
+        &admin,
+        "{}",
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+
+    let exempt = outturn::api::egress::hosts_from_skills(&h.db.pool, workspace)
+        .await
+        .expect("skill hosts");
+    assert!(
+        exempt.contains(&"api.named.test".to_string()),
+        "a named host a skill brought should be exempt: {exempt:?}"
+    );
+    assert!(
+        !exempt.iter().any(|h| h.contains('*')),
+        "a wildcard was exempted: {exempt:?}"
     );
 
     h.db.cleanup().await;

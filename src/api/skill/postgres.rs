@@ -534,12 +534,23 @@ impl SkillStore for PostgresSkillStore {
 
         write_hosts(&mut tx, version_id, &hosts).await?;
         write_files(&mut tx, version_id, &files).await?;
-        // New files bring their own declarations; a body-only edit carries the
-        // previous version's files forward, so its gates come with them.
+        // New files bring their own declarations; a version carrying the previous
+        // one's files carries its gates with them.
+        //
+        // From `live` -- this skill's latest version -- and not from `based_on`,
+        // which is the latest version of the *base* an override speaks about and is
+        // null for every ordinary skill. Keyed on `based_on`, neither branch ran on
+        // an ordinary body-only edit: the files carried forward with their
+        // frontmatter intact and the new version had no gates at all, so
+        // `gates_for_turn` returned the empty set and every turn after somebody
+        // fixed a typo in a skill's prose was ungated. Nothing logged it and nothing
+        // refused it, which is the quiet failure `write_gates` exists to prevent --
+        // and `write_gates`'s own guard could not fire, because it is not reached
+        // when there are no gates to write.
         if files_given {
             write_gates(&mut tx, version_id, &hosts, gates).await?;
-        } else if let Some(previous) = based_on {
-            copy_gates(&mut tx, previous, version_id).await?;
+        } else if let Some(live) = &live {
+            copy_gates(&mut tx, live.get("id"), version_id).await?;
         }
         sqlx::query("update skills set updated_at = now() where id = $1")
             .bind(id)

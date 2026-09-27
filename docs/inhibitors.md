@@ -345,8 +345,11 @@ see.
 Two questions that look like one.
 
 *May this person answer approvals at all* is an ordinary authority, and gets
-one: held by whoever a workspace decides, most likely admins and the operators
-who run the agents.
+one. Which roles hold it is settled in [approvals.md](approvals.md) -- `admin`
+in the templates and deliberately not `operator`, since an operator builds the
+agents that raise these -- rather than restated here, because this document said
+"most likely admins and the operators" and the two then disagreed about the same
+seed.
 
 *Is the approver entitled to the thing being approved* is the harder one, and
 the answer depends on who owns the concept. Where the authority is one of ours,

@@ -168,11 +168,14 @@ was already approved.
 
 ## What a yes is worth
 
-**An approval mints a capability the retry carries**, rather than flipping the
-request to approved and hoping the same path is taken -- the shape
-[inhibitors.md](inhibitors.md) asks for, and the shape this codebase already
-uses twice: an egress rule records the skill whose declaration opened it, and a
-turn carries a gateway token minted for that turn alone.
+**An approval should mint a capability the retry carries**, rather than flipping
+the request to approved and hoping the same path is taken. This section is
+design and not description: nothing mints one today, and the consequence is in
+*Not yet* -- an approved turn that resumes into the same gate is refused a
+second time -- the shape [inhibitors.md](inhibitors.md) asks for, and the shape
+this codebase already uses twice: an egress rule records the skill whose
+declaration opened it, and a turn carries a gateway token minted for that turn
+alone.
 
 A row rather than a token, for two reasons. The wait crosses a park that may
 last days and a pod that may not survive it, so a signed capability would need
@@ -233,6 +236,15 @@ conversation, asks the same question in a worse place. A host added by hand
 through `/v1/egress-rules` carries no skill and is not exempt: it says agents
 *may* reach that host, not that any particular use of it was reviewed, and that
 gap is the one the setting exists to close.
+
+A wildcard is never exempt, however it arrived. Approving a skill's hosts takes
+`settings:update`, which is also what turns the ceiling on -- so whoever sets it
+can exempt a host from it, and a skill declaring `*.example.com` would otherwise
+exempt everything under that domain. No authority boundary is crossed, but the
+exemption is meant to be for a host somebody named, and a wildcard names a
+class: consenting to a class is exactly the permission-dialog hazard the
+`covers` section above is about. A workspace that wants the class exempt can say
+so host by host.
 
 What it does not gate is anything nobody allowed. A host with no egress rule is
 refused outright and always was; a gate there would be a second answer to a
@@ -341,14 +353,19 @@ depending on it.
 
 ## Not yet
 
-- The automatic gate, above: the commitment, the matcher, and what the gateway
-  does with a request it must hold.
-- What the queue row shows for a charge. The payload carries what every target
-  may see and no more (see `NewItem` in `api::actions`), which for a charge is
-  the figure and the unit rather than the conversation that led to it.
-- Whether a declined approval is distinguishable from an expired one in the
-  transcript. Both leave the turn unable to proceed; only one of them was a
-  decision.
-- Tagging operations by risk, which [inhibitors.md](inhibitors.md) already
-  places: the right shape applied too early, worth revisiting once there are
-  enough declared operations to see whether they sort into groups.
+- **The capability**, and with it the loop. An approval releases the hold today
+  and nothing more: nothing records what was approved, so a turn that resumes
+  into the same gate is refused again. Everything under *What a yes is worth*
+  below is design, not description.
+- **Raising one from a refusal.** The gateway refuses a gated request and says
+  so in words the guest can read; nothing turns that into a held turn and a
+  queue item. Somebody calls `POST /v1/approvals` by hand, which means noticing
+  first. Those two together are what "the loop closes" would mean, and neither
+  is built. - What the queue row shows for a charge. The payload carries what
+  every target may see and no more (see `NewItem` in `api::actions`), which for
+  a charge is the figure and the unit rather than the conversation that led to
+  it. - Whether a declined approval is distinguishable from an expired one in
+  the transcript. Both leave the turn unable to proceed; only one of them was a
+  decision. - Tagging operations by risk, which [inhibitors.md](inhibitors.md)
+  already places: the right shape applied too early, worth revisiting once there
+  are enough declared operations to see whether they sort into groups.

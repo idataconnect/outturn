@@ -8,13 +8,17 @@
 //! carries no second copy of that (`docs/action-queue.md`), so releasing the
 //! hold is what answering *is*, and the queue row is a read model over it.
 //!
-//! What raises one, today, is this endpoint. The automatic gate -- the gateway
-//! matching an outbound request against a rule the API committed to -- is
-//! designed and not built, and `docs/approvals.md` says why it waits: the
-//! gateway sees a method, a URL and a body, not an operation, so the rule has to
-//! reach it through the commitment. Proving suspend, queue, answer and resume
-//! against an explicit request first means that change lands on machinery that
-//! already works.
+//! What raises one, today, is this endpoint, called by hand. The automatic gate
+//! is built -- `egress::gate` commits to a turn's gates and the gateway refuses a
+//! request that matches one -- but it *refuses*; it does not raise an approval.
+//! Nothing turns that refusal into a request for somebody's word, and nothing
+//! mints the capability `docs/approvals.md` describes, so a turn that is approved
+//! and resumes into the same gate is refused a second time.
+//!
+//! That is the honest shape of it: the gate stops the money moving, and the
+//! approval path is driven from outside. Closing the loop is the capability plus a
+//! producer, and until both exist this endpoint is the whole of how an approval
+//! comes to be.
 
 use std::sync::Arc;
 

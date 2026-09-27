@@ -124,8 +124,11 @@ tests agreed with each other rather than with the code.
 frontmatter, answered from the queue, and worth a capability the retry carries.
 [approvals.md](approvals.md).
 
-**Capability** — what an approval mints. Names what was approved and how far it
-reaches, so a resumed turn does not ask again.
+**Capability** — reserved, unbuilt. What an approval *would* mint: a record of
+what was approved and how far it reaches, so a resumed turn does not ask again.
+Designed in [approvals.md](approvals.md) and not built, which is why answering an
+approval today releases the hold and nothing more -- a turn that resumes into the
+same gate is refused again. Do not read the design as a description of the code.
 
 **Gate** — a request shape a turn may not send without somebody's word: a host,
 a method and a path, declared in an operation's frontmatter. The opposite of an

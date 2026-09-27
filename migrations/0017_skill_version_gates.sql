@@ -10,6 +10,14 @@
 -- One row per gate rather than a JSON column, because the API has to sort and
 -- hash them deterministically to commit to them, and a query that returns rows
 -- in a defined order is easier to hold to that than a blob somebody appends to.
+-- No `workspace_id`, which every other table here carries in its key. The
+-- exemption is deliberate and worth stating, because AGENTS.md makes the rule
+-- load-bearing: a version belongs to one skill and a skill to one workspace, and
+-- an operator's skill belongs to the platform workspace while the turns reading it
+-- belong to somebody else's. A `workspace_id` here would have to be the skill's,
+-- which is not the turn's, so a query filtering on the turn's would find nothing
+-- for exactly the skills the operator ships. The tenancy check is the version id,
+-- which a turn only holds for skills it resolved.
 create table skill_version_gates (
     version_id     uuid not null references skill_versions (id) on delete cascade,
     -- Which file said so, for an operator asking why a request is gated.

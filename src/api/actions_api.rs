@@ -12,7 +12,7 @@
 //! nothing: it would let a role grant in one workspace license reading
 //! another's. Membership is the tenancy check, and it is in the query.
 //!
-//! Settling is the opposite case and is not here. Answering a HITL request acts
+//! Settling is the opposite case and is not here. Answering an approval acts
 //! on one workspace's item, so it belongs on a route that authorises against
 //! that workspace.
 
