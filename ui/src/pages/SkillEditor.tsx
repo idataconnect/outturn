@@ -19,6 +19,7 @@ import {
   type SkillVersion,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
+import VersionContents from '../components/VersionContents'
 
 /**
  * One page for writing a skill and for changing one.
@@ -470,6 +471,10 @@ export default function SkillEditor() {
             older one brings its words back into the draft to be published again, so the
             history only ever runs forwards.
           </p>
+          <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
+            Open one to read what it said, or compare it with the live version to see what
+            restoring it would change.
+          </p>
           <ul className="mt-4 divide-y divide-surface-200 dark:divide-surface-800 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
             {versions.map((v) => (
               <li key={v.id} className="flex items-start gap-4 p-4">
@@ -488,6 +493,15 @@ export default function SkillEditor() {
                   <p className="text-xs text-surface-500 dark:text-surface-500">
                     {new Date(v.created_at).toLocaleString()}
                   </p>
+                  {/* Compared against the live version rather than the one before
+                      it: somebody weighing Restore is asking what would be
+                      different afterwards, and the previous version is not what
+                      they would be leaving. */}
+                  <VersionContents
+                    version={v}
+                    live={versions.find((other) => other.ordinal === skill?.ordinal)?.body}
+                    isLive={v.ordinal === skill?.ordinal}
+                  />
                 </div>
                 {editable && v.ordinal !== skill?.ordinal && (
                   <button

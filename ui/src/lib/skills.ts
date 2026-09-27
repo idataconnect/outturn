@@ -41,6 +41,9 @@ export type SkillVersion = {
   note: string
   based_on_version_id: string | null
   hosts: string[]
+  /** The files published with it. Part of the version as much as its prose is,
+   *  so a reader deciding whether to restore one needs to see them. */
+  files: { path: string; sha256: string; bytes: number }[]
   created_by: string | null
   created_at: string
 }
