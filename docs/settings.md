@@ -29,6 +29,21 @@ level falls back to whatever is above it. There is no "copy the default down"
 step, which is what lets an operator change a system value and have it reach
 every workspace that never chose otherwise.
 
+## A setting that is a ceiling
+
+Most of these are preferences: a temperature, a budget, how much an agent may
+read. `approve_new_hosts` is not -- it says an agent may not reach a host nobody
+reviewed without somebody's word, and it is a setting for a reason worth
+stating, because the alternative looked plausible.
+
+The per-operation approvals in [approvals.md](approvals.md) are declared in the
+frontmatter of the skill file documenting an operation, which is right for them:
+a skill adding a rule about its own endpoint can only make the platform
+stricter. A ceiling cannot work that way. It has to hold for an agent with no
+skills at all, and a workspace must not be able to escape it by publishing a
+skill that omits a line. So it cascades like everything else here, and the API
+turns it into ordinary gates when it prepares a turn.
+
 ## Who may override
 
 Part of the catalogue, not of the roles. Each setting is either

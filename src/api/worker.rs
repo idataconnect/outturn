@@ -1205,9 +1205,31 @@ impl Worker {
         // over it. Computed here, beside the egress commitment, because both are
         // statements this tier makes about a turn and neither is the runtime's to
         // assert -- see `egress::gate`.
-        let gates = super::skill::gates_for_turn(&self.pool, &skills)
+        let mut gates = super::skill::gates_for_turn(&self.pool, &skills)
             .await
-            .map_err(|e| anyhow::anyhow!("gates: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("gates: {e}"))?
+            .into_vec();
+
+        // And the workspace's own ceiling, if it set one. `approve_new_hosts` turns
+        // into gates here rather than being a flag the gateway reads, so nothing
+        // downstream has to know the setting exists: the commitment, the token
+        // claim, the check, the refusal and the parked turn are all the
+        // per-operation machinery, reused whole.
+        //
+        // Exempting the hosts a skill's own declaration opened is the point of the
+        // setting rather than a softening of it. Those were consented to when the
+        // skill was installed, in an act naming the skill and the host together; a
+        // host somebody added by hand says agents *may* reach it, not that any use
+        // of it was reviewed.
+        if settings.approve_new_hosts {
+            let allowed: Vec<String> = egress.iter().map(|r| r.host.clone()).collect();
+            let exempt = super::egress::hosts_from_skills(&self.pool, payload.workspace_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("skill hosts: {e}"))?;
+            gates.extend(crate::egress::gate::for_unreviewed_hosts(&allowed, &exempt));
+        }
+
+        let gates = crate::egress::gate::Gates::of(gates);
         let gate_commitment = gates.root(payload.workspace_id);
 
         let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);

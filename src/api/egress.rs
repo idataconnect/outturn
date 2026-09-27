@@ -37,6 +37,31 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
         .collect())
 }
 
+/// The hosts a skill's own declaration opened, for this workspace.
+///
+/// What `approve_new_hosts` exempts. A host that arrived because somebody
+/// installed a skill declaring it has been consented to once already, in an act
+/// that named the skill and the host together -- `POST /v1/skills/{id}/hosts/approve`
+/// is that act, and `from_skill_id` is what it records. Asking again, per
+/// conversation, would be asking the same question a second time in a worse place.
+///
+/// A host somebody added by hand through `/v1/egress-rules` carries no skill, and
+/// is the case the setting is for: it says this workspace's agents may reach it,
+/// not that any particular use of it was reviewed.
+pub async fn hosts_from_skills(
+    pool: &PgPool,
+    workspace_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select host from egress_rules \
+         where workspace_id = $1 and enabled and from_skill_id is not null \
+         order by host",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// A rule as a workspace sees it.
 ///
 /// `credential_env` is the name of an environment variable, never a secret, so

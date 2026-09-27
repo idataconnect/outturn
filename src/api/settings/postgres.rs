@@ -197,6 +197,7 @@ impl SettingsStore for PostgresSettingsStore {
                 // provider understands it; absent means "provider default",
                 // which for most providers means thinking on.
                 .or_else(|| Some("none".to_string())),
+            approve_new_hosts: get("approve_new_hosts").as_str() == Some("approve_new_hosts"),
             max_tool_rounds: get("max_tool_rounds")
                 .as_u64()
                 .map(|n| u32::try_from(n).unwrap_or(u32::MAX))

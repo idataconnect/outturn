@@ -130,6 +130,33 @@ pub fn catalogue() -> Vec<Setting> {
             default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
         },
+        // A ceiling rather than an addition, which is why it is a setting and not
+        // a declaration in a skill. The per-operation gates in docs/approvals.md
+        // are opt-in by whoever documents an operation, and that is right for them:
+        // a skill adding a rule about its own endpoint can only ever make the
+        // platform stricter. This one is the other direction -- it has to hold for
+        // an agent with no skills at all, and a workspace must not be able to
+        // escape it by publishing a skill that omits a line.
+        Setting {
+            key: "approve_new_hosts",
+            label: "Approve new hosts",
+            description: "Whether reaching a host on the public internet needs a \
+                          person's approval the first time an agent asks for it in a \
+                          conversation. Hosts a skill already brought with it are \
+                          already consented to and are not asked about again, nor are \
+                          the internal services an operator opened. Off by default: \
+                          this makes an agent's first call to each new host a \
+                          stop-and-wait, which is the point for some deployments and \
+                          an obstruction in the rest.",
+            // A choice rather than a boolean, which the catalogue has no kind for
+            // anyway -- and the naming is the better reason. "off"/"on" would leave
+            // a reader guessing what is on; these say what happens.
+            kind: Kind::Choice {
+                options: &["reach_freely", "approve_new_hosts"],
+            },
+            default: serde_json::json!("reach_freely"),
+            owner: Owner::WorkspaceOverridable,
+        },
         Setting {
             key: "max_tool_rounds",
             label: "Model calls per turn",
@@ -231,6 +258,9 @@ pub struct Resolved {
     /// the vocabulary has no way to say "write but not read", and a write
     /// triggers an extraction that reads the file back anyway.
     pub read_scopes: Vec<String>,
+    /// Whether a host on the public internet needs approving the first time a
+    /// turn asks for it. See the setting's own description for what is exempt.
+    pub approve_new_hosts: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
