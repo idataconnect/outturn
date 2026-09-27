@@ -54,6 +54,27 @@ approval:
 Charge the payment account attached to a booking...
 ```
 
+Parsed by `api::skill::frontmatter`, by hand rather than with a YAML crate. The
+contract is three scalar keys under one heading and is deliberately that narrow:
+a full reader would accept anchors, aliases, multi-document streams and nested
+collections, none of which mean anything here and every one of which is a shape
+somebody eventually writes and expects to work.
+
+What it refuses is worth knowing, because each refusal is a rule that would
+otherwise be half-applied. A block with no `requires` names no act. A `covers`
+with no `identified_by` offers a unit nothing can be keyed on, so a grant for it
+would quietly become a grant for every call -- the widening this document is
+most careful about. An unknown key *under* `approval` is refused, since under a
+block this tier acts on it may be the difference between gated and not; an
+unknown key *beside* it is left alone, so a file written for a later version
+still reads as prose. And `approval:` written as a scalar is refused rather than
+skipped as an unknown key, because skipping it would leave an operation meant to
+be gated ungated.
+
+`k8s/components/hollowbrook/skill/charge_payment_account.md` is the worked
+example, and the parser's tests read it off disk -- so an edit that breaks the
+declaration fails the suite rather than a cluster.
+
 Three keys, and each earns its place.
 
 ### `requires` -- what is being asked, in a word

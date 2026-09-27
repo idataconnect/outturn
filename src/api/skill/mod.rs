@@ -1,4 +1,5 @@
 mod files;
+pub mod frontmatter;
 mod postgres;
 
 pub use files::{MAX_FILE_BYTES, MAX_FILES, blob_key, prepare};

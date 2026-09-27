@@ -1,7 +1,8 @@
 # Take it for a spin
 
-Half an hour, ending with an agent that books rooms at a guesthouse you are
-also running.
+Half an hour, ending with an agent that takes bookings and payments at a
+guesthouse you are also running -- and that stops and waits for a manager
+before it charges anybody.
 
 The guesthouse is Hollowbrook House — a fixture with a REST API, deployed
 beside outturn. It stands in for the system a real deployment would be wiring
@@ -50,14 +51,23 @@ is this clone's own — `scripts/dev-secrets.sh --print` shows it.
 **Agents → New agent.** Give it a name and this system prompt:
 
 ```
-You are a booking agent for Hollowbrook House. Your answers should be
-concise. Be friendly and professional and don't let the user distract you
-with chats other than booking-related services.
+You help the staff of Hollowbrook House, a guesthouse, with bookings and
+payments. Whoever you are talking to works at the house and usually has a
+guest on the phone or in front of them, so answer them as a colleague would:
+briefly, and with what they need to say next. Keep to the house's business.
 ```
 
 Notice what is *not* in it: nothing about HTTP, nothing about hostnames,
 nothing about how to call anything. That is the skill's job, and the point of
 the exercise is that the prompt does not have to know.
+
+Notice who it says the user is, too. This platform has seats for the people
+who run a deployment and for the employees of its tenants, and deliberately
+none for a tenant's own customers -- so an agent here works *for* a member of
+staff, on the house's systems, and the guest is what the conversation is about
+rather than who is in it. A prompt written as though the guest were typing
+describes somebody this platform has nowhere to put, and the conversation
+reads oddly ever after.
 
 ## 3. Give it the skill
 
@@ -101,16 +111,71 @@ display name — and Hollowbrook's API is inconsistent about the field, calling
 it `id` in one response and `room_id` in another. The detail file says so in a
 line. A schema dump could not have.
 
+Keep the booking id it quotes back; the next step needs it.
+
+### "Put it on their card please, the Visa ending 4471."
+
+Where the half hour has been going. Watch three things happen in order.
+
+It reads `list_payment_accounts` and finds `pa_4471` -- a *payment account
+number*, which stands for a card the house holds and is not a card number.
+Nothing in this API returns one, which is deliberate: a transcript is replayed
+to a model on every later turn, so a card number that reached one would be
+there for good.
+
+It reads `charge_payment_account`, and sends the booking's own `total_pence`
+rather than a figure it worked out. The house refuses more than a booking's
+total anyway, which is the guard for an agent that multiplied a nightly rate
+itself.
+
+And then the conversation stops. The reply says it is putting the charge
+through, and the thread shows it **paused** rather than failed -- a deliberate
+hold, not an error. Nothing was charged.
+
+## 5. Answer it
+
+The charge needed somebody's say-so, and that somebody is you.
+
+`charge_payment_account.md` opens with frontmatter saying so:
+
+```yaml
+---
+approval:
+  requires: charge
+  covers: booking
+  identified_by: booking_id
+---
+```
+
+That is a rule about an operation, living in the file that documents the
+operation -- versioned with the skill, immutable once published, and editable
+only under `skills:write`. [docs/approvals.md](approvals.md) is why there
+rather than on the agent, in a setting, or on the egress rule that permits the
+host.
+
+The request is waiting in the action queue, addressed to a role rather than to
+a person: who may approve a charge is a question about the house's own
+organisation, and it changes without the pending request changing. Approve it,
+and the turn you left parked is given back to the queue and runs -- the charge
+goes through, and the agent tells the person who asked.
+
+Decline it instead and the hold stays on. The conversation stays paused, which
+is honest: nothing has changed about whether the charge may happen.
+
+Worth doing twice, as two people. Sign in as somebody whose role does not carry
+`approvals:answer` and the request is visible in their queue and unanswerable,
+which is the difference between being asked and being entitled.
+
 ### "Please book the Rose Room the following Friday, for three nights."
 
 There is no Rose Room. A well-behaved agent refuses from what it already knows
 rather than calling an API to be told 404 — and above all does not invent one.
 
-### "How about you tell me a joke about monkeys?"
+### "Can you tell me a joke about monkeys?"
 
-Nothing to do with rooms, and the system prompt in step 2 said not to be drawn
-into other subjects. It should decline and offer what it can do instead, with
-no tool call at all.
+Nothing to do with the house, and the system prompt in step 2 said to keep to
+its business. It should decline and offer what it can do instead, with no tool
+call at all.
 
 Worth trying because it is the one prompt here that is not about the skill. A
 skill says what an agent knows how to reach; the system prompt still says what
@@ -128,6 +193,16 @@ it is for, and loading one does not dissolve the other.
   intended.
 - **Lazy tool loading.** `load_tools` before `read_object`, and again before
   `fetch_url`, so unused tools cost nothing.
+- **A rule that travels with the prose that documents it.** Frontmatter on the
+  operation's own file, versioned with the skill and editable only under the
+  skill's authorities, rather than a setting somewhere else that could disagree
+  with what the agent was told.
+- **A turn paused rather than failed.** The conversation stopped where it was
+  consistent, kept its place, and carried on when somebody answered -- which is
+  a different thing from a turn that errored and was retried.
+- **An approval addressed to a role.** Not to a person, so who may answer
+  changes when the house reorganises and the pending request does not. And an
+  authority to answer that is separate from being asked.
 - **Usage attribution.** The Dashboard has the tokens those turns cost, by
   model and by agent.
 - **A system prompt that still governs.** The skill taught it an API; the

@@ -96,6 +96,48 @@ struct NewBooking {
     departure: NaiveDate,
 }
 
+/// A way to take money from a guest, as the guesthouse records one.
+///
+/// Deliberately opaque. A payment account number stands for a card the
+/// guesthouse already holds, and nothing here is a card number: an agent that
+/// could read one would be an agent whose transcript contains one, and a
+/// transcript is replayed to a model on every later turn. So the agent handles a
+/// handle, the guesthouse knows what it points at, and the interesting part --
+/// that a charge needs a person's say-so -- does not require the risky part.
+#[derive(Debug, Clone, Serialize)]
+struct PaymentAccount {
+    /// `pa_` and four digits. Quoted to a guest and safe in a transcript.
+    id: String,
+    /// Whose it is, for the guesthouse's own records.
+    holder: String,
+    /// What the guest would recognise, e.g. "Visa ending 4471". Not a number.
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Charge {
+    id: String,
+    payment_account_id: String,
+    booking_id: String,
+    amount_pence: u32,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NewCharge {
+    payment_account_id: String,
+    booking_id: String,
+    amount_pence: u32,
+    /// What makes a repeat safe to refuse.
+    ///
+    /// The one operation here that takes money is the one where a retry has to
+    /// be distinguishable from a second charge -- see docs/idempotency.md, which
+    /// calls a recipient that accepts a key and stores it the best outcome
+    /// available. This fixture is that recipient: a second charge quoting a key
+    /// it has seen returns the first charge rather than taking the money twice.
+    idempotency_key: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AvailabilityQuery {
     arrival: NaiveDate,
@@ -105,6 +147,12 @@ struct AvailabilityQuery {
 struct Fixture {
     rooms: Vec<Room>,
     bookings: Mutex<Vec<Booking>>,
+    /// The cards on file, by handle. Fixed, because a guesthouse's payment
+    /// accounts are not something an agent creates.
+    payment_accounts: Vec<PaymentAccount>,
+    /// What has been charged, so a test can assert money moved rather than
+    /// asserting a turn finished.
+    charges: Mutex<Vec<Charge>>,
     /// Where a booking is announced, and what it is signed with. Absent means
     /// the guesthouse keeps its news to itself, which is the default: a
     /// fixture that POSTs somewhere on startup is a fixture that fails in
@@ -193,6 +241,19 @@ async fn main() {
             },
         ],
         bookings: Mutex::new(Vec::new()),
+        payment_accounts: vec![
+            PaymentAccount {
+                id: "pa_4471".into(),
+                holder: "J. Okafor".into(),
+                label: "Visa ending 4471".into(),
+            },
+            PaymentAccount {
+                id: "pa_8802".into(),
+                holder: "R. Sandoval".into(),
+                label: "Mastercard ending 8802".into(),
+            },
+        ],
+        charges: Mutex::new(Vec::new()),
         webhook,
         client: reqwest::Client::new(),
     });
@@ -206,6 +267,8 @@ async fn main() {
         .route("/availability", get(availability))
         .route("/bookings", get(list_bookings).post(create_booking))
         .route("/bookings/{id}", get(get_booking))
+        .route("/payment-accounts", get(list_payment_accounts))
+        .route("/charges", get(list_charges).post(create_charge))
         // Resets between tests, so one test's bookings are not another's
         // availability. Not something a real service would offer, which is
         // why it is named for what it is.
@@ -404,6 +467,123 @@ async fn create_booking(
         .into_response()
 }
 
+/// The cards the guesthouse holds, by handle.
+///
+/// No numbers, here or anywhere: see `PaymentAccount`. An agent needs the handle
+/// and the label to say "the Visa ending 4471" to a guest, and needs nothing
+/// else.
+async fn list_payment_accounts(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(FIXTURE_HEADER, "hollowbrook")],
+        Json(state.payment_accounts.clone()),
+    )
+}
+
+async fn list_charges(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
+    let charges = state.charges.lock().expect("charges").clone();
+    (
+        StatusCode::OK,
+        [(FIXTURE_HEADER, "hollowbrook")],
+        Json(charges),
+    )
+}
+
+/// Takes money against a card the guesthouse holds.
+///
+/// The operation the approval demo is about. Nothing here decides whether it is
+/// allowed -- that is outturn's business, and a fixture that refused on its own
+/// judgement would be testing the fixture. What it does is behave like a
+/// recipient that was built properly: it validates, it refuses a repeat that
+/// quotes a key it has seen, and it records enough that a test can assert money
+/// moved rather than that a turn finished.
+async fn create_charge(
+    State(state): State<Arc<Fixture>>,
+    Json(input): Json<NewCharge>,
+) -> impl IntoResponse {
+    let refuse = |status: StatusCode, message: &str| {
+        (
+            status,
+            [(FIXTURE_HEADER, "hollowbrook")],
+            Json(serde_json::json!({ "error": message })),
+        )
+            .into_response()
+    };
+
+    if !state
+        .payment_accounts
+        .iter()
+        .any(|a| a.id == input.payment_account_id)
+    {
+        return refuse(StatusCode::NOT_FOUND, "no such payment account");
+    }
+    if input.amount_pence == 0 {
+        return refuse(StatusCode::BAD_REQUEST, "a charge has to be for something");
+    }
+
+    let booking_total = {
+        let bookings = state.bookings.lock().expect("bookings");
+        match bookings.iter().find(|b| b.id == input.booking_id) {
+            Some(booking) => booking.total_pence,
+            None => return refuse(StatusCode::NOT_FOUND, "no such booking"),
+        }
+    };
+    // A guesthouse does not take more than the stay costs, and an agent that
+    // worked the total out for itself is exactly the caller this catches.
+    if input.amount_pence > booking_total {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "that is more than the booking's total",
+        );
+    }
+
+    let mut charges = state.charges.lock().expect("charges");
+
+    // A key it has seen returns the first charge rather than taking the money
+    // again. Keyed on the charge's own id, since that is what the key was
+    // recorded against.
+    if let Some(key) = input.idempotency_key.as_deref()
+        && let Some(seen) = charges.iter().find(|c| c.id == charge_id(key))
+    {
+        return (
+            StatusCode::OK,
+            [(FIXTURE_HEADER, "hollowbrook")],
+            Json(seen.clone()),
+        )
+            .into_response();
+    }
+
+    let charge = Charge {
+        id: match input.idempotency_key.as_deref() {
+            Some(key) => charge_id(key),
+            None => format!("ch_{}", &Uuid::now_v7().simple().to_string()[..12]),
+        },
+        payment_account_id: input.payment_account_id,
+        booking_id: input.booking_id,
+        amount_pence: input.amount_pence,
+        created_at: Utc::now(),
+    };
+    charges.push(charge.clone());
+
+    (
+        StatusCode::CREATED,
+        [(FIXTURE_HEADER, "hollowbrook")],
+        Json(charge),
+    )
+        .into_response()
+}
+
+/// A charge's id, derived from the caller's idempotency key.
+///
+/// Derived rather than stored beside it so the lookup above needs no second
+/// index and no second field that could disagree. A key is a caller's word for
+/// one attempt, and this makes the record of that attempt findable by it.
+fn charge_id(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    format!("ch_{}", hex::encode(&digest[..6]))
+}
+
 /// POSTs a booking to whoever is listening, signed the way they asked.
 ///
 /// Failures are logged and not retried. A fixture that retried would hide the
@@ -508,6 +688,28 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
       ],
       "components": {
         "schemas": {
+          "PaymentAccount": {
+            "type": "object",
+            "required": ["id", "holder", "label"],
+            "properties": {
+              "id": { "type": "string", "description":
+                "A handle for a card the house already holds, e.g. `pa_4471`. Never a card number: quote this to a guest and put it in a record without a second thought." },
+              "holder": { "type": "string" },
+              "label": { "type": "string", "description":
+                "What a guest would recognise, e.g. `Visa ending 4471`." }
+            }
+          },
+          "Charge": {
+            "type": "object",
+            "required": ["id", "payment_account_id", "booking_id", "amount_pence", "created_at"],
+            "properties": {
+              "id": { "type": "string" },
+              "payment_account_id": { "type": "string" },
+              "booking_id": { "type": "string" },
+              "amount_pence": { "type": "integer", "description": "Pence." },
+              "created_at": { "type": "string", "format": "date-time" }
+            }
+          },
           "Room": {
             "type": "object",
             "required": ["id", "name", "sleeps", "rate_pence"],
@@ -745,6 +947,80 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
               }
             }
           }
+        },
+        "/payment-accounts": {
+          "get": {
+            "operationId": "listPaymentAccounts",
+            "summary": "The cards the house holds, by handle.",
+            "description":
+              "Handles and labels, never numbers. Use a handle with `createCharge`, and the \
+               label to say which card to a guest.",
+            "tags": ["payments"],
+            "responses": {
+              "200": {
+                "description": "The payment accounts.",
+                "content": { "application/json": { "schema": {
+                  "type": "array", "items": { "$ref": "#/components/schemas/PaymentAccount" }
+                } } }
+              }
+            }
+          }
+        },
+        "/charges": {
+          "get": {
+            "operationId": "listCharges",
+            "summary": "What has been charged.",
+            "tags": ["payments"],
+            "responses": {
+              "200": {
+                "description": "The charges.",
+                "content": { "application/json": { "schema": {
+                  "type": "array", "items": { "$ref": "#/components/schemas/Charge" }
+                } } }
+              }
+            }
+          },
+          "post": {
+            "operationId": "createCharge",
+            "summary": "Take money against a card the house holds.",
+            "description":
+              "Charges a payment account for a booking. Refuses more than the booking's \
+               total, so the amount is the stay's cost rather than a figure worked out \
+               here. Send `idempotency_key` and a repeat quoting the same key returns the \
+               first charge with 200 rather than taking the money twice.",
+            "tags": ["payments"],
+            "requestBody": {
+              "required": true,
+              "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["payment_account_id", "booking_id", "amount_pence"],
+                "properties": {
+                  "payment_account_id": { "type": "string" },
+                  "booking_id": { "type": "string" },
+                  "amount_pence": { "type": "integer" },
+                  "idempotency_key": { "type": "string" }
+                }
+              } } }
+            },
+            "responses": {
+              "201": {
+                "description": "The charge was taken.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Charge" } } }
+              },
+              "200": {
+                "description": "A charge with this idempotency key was already taken; this is that one.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Charge" } } }
+              },
+              "400": {
+                "description": "The amount is zero, or more than the booking's total.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              },
+              "404": {
+                "description": "No such payment account, or no such booking.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+              }
+            }
+          }
         }
       }
     });
@@ -763,6 +1039,8 @@ mod tests {
         let state = Arc::new(Fixture {
             rooms: Vec::new(),
             bookings: Mutex::new(Vec::new()),
+            payment_accounts: Vec::new(),
+            charges: Mutex::new(Vec::new()),
             webhook: None,
             client: reqwest::Client::new(),
         });
@@ -804,6 +1082,8 @@ mod tests {
             "/availability",
             "/bookings",
             "/bookings/{id}",
+            "/payment-accounts",
+            "/charges",
         ]
         .into_iter()
         .map(String::from)
@@ -884,6 +1164,194 @@ mod tests {
         assert!(
             dangling.is_empty(),
             "referenced but not defined: {dangling:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod charging {
+    use super::*;
+
+    fn fixture() -> Arc<Fixture> {
+        Arc::new(Fixture {
+            rooms: vec![Room {
+                id: "orchard".into(),
+                name: "Orchard Room".into(),
+                sleeps: 2,
+                rate_pence: 13_000,
+                description: String::new(),
+            }],
+            bookings: Mutex::new(vec![Booking {
+                id: "bk_test".into(),
+                room_id: "orchard".into(),
+                guest_name: "J. Okafor".into(),
+                arrival: NaiveDate::from_ymd_opt(2026, 10, 2).expect("date"),
+                departure: NaiveDate::from_ymd_opt(2026, 10, 4).expect("date"),
+                total_pence: 26_000,
+                created_at: Utc::now(),
+            }]),
+            payment_accounts: vec![PaymentAccount {
+                id: "pa_4471".into(),
+                holder: "J. Okafor".into(),
+                label: "Visa ending 4471".into(),
+            }],
+            charges: Mutex::new(Vec::new()),
+            webhook: None,
+            client: reqwest::Client::new(),
+        })
+    }
+
+    async fn charge(
+        state: &Arc<Fixture>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let input: NewCharge = serde_json::from_value(body).expect("a charge request");
+        let response = create_charge(State(Arc::clone(state)), Json(input))
+            .await
+            .into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json"))
+    }
+
+    #[tokio::test]
+    async fn a_charge_against_a_known_account_and_booking_is_taken() {
+        let state = fixture();
+        let (status, body) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_4471",
+                "booking_id": "bk_test",
+                "amount_pence": 26_000,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["amount_pence"], 26_000);
+        assert_eq!(state.charges.lock().expect("charges").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn more_than_the_bookings_total_is_refused() {
+        // The guard that catches an agent working the total out for itself.
+        let state = fixture();
+        let (status, body) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_4471",
+                "booking_id": "bk_test",
+                "amount_pence": 39_000,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(state.charges.lock().expect("charges").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeat_quoting_the_same_key_takes_the_money_once() {
+        // What makes this the recipient docs/idempotency.md calls the best
+        // outcome available: a retry is distinguishable from a second charge.
+        let state = fixture();
+        let request = serde_json::json!({
+            "payment_account_id": "pa_4471",
+            "booking_id": "bk_test",
+            "amount_pence": 13_000,
+            "idempotency_key": "turn-7-call-1",
+        });
+
+        let (first, first_body) = charge(&state, request.clone()).await;
+        assert_eq!(first, StatusCode::CREATED);
+        let (second, second_body) = charge(&state, request).await;
+        assert_eq!(
+            second,
+            StatusCode::OK,
+            "a repeat should report the first charge rather than create one"
+        );
+        assert_eq!(first_body["id"], second_body["id"]);
+        assert_eq!(
+            state.charges.lock().expect("charges").len(),
+            1,
+            "the money was taken twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_different_keys_are_two_charges() {
+        // The other half: keying must not collapse deliberately distinct calls,
+        // which is the hazard docs/idempotency.md names in key derivation.
+        let state = fixture();
+        for key in ["turn-7-call-1", "turn-9-call-1"] {
+            let (status, body) = charge(
+                &state,
+                serde_json::json!({
+                    "payment_account_id": "pa_4471",
+                    "booking_id": "bk_test",
+                    "amount_pence": 13_000,
+                    "idempotency_key": key,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+        }
+        assert_eq!(state.charges.lock().expect("charges").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_account_or_booking_is_refused() {
+        let state = fixture();
+        let (status, _) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_nope",
+                "booking_id": "bk_test",
+                "amount_pence": 1_000,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_4471",
+                "booking_id": "bk_nope",
+                "amount_pence": 1_000,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn nothing_here_can_return_a_card_number() {
+        // The reason a payment account number exists. A transcript is replayed
+        // to a model on every later turn, so an endpoint that returned a card
+        // number would put one there for good.
+        let state = fixture();
+        let response = list_payment_accounts(State(Arc::clone(&state)))
+            .await
+            .into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+        assert!(text.contains("pa_4471"), "{text}");
+
+        // The property, stated as one: nothing on the wire is a run of digits
+        // long enough to be a card. `pa_4471` and `4471` are four, and a card is
+        // thirteen or more, so the test does not have to know what a card number
+        // looks like -- only that there is no field here that could hold one.
+        let longest_run = text
+            .split(|c: char| !c.is_ascii_digit())
+            .map(str::len)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            longest_run < 13,
+            "a {longest_run}-digit run reached the wire, which is long enough to be a card: {text}"
         );
     }
 }
