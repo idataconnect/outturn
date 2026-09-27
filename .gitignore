@@ -17,7 +17,11 @@ agents/*/target/
 # rather than committed: a key in the repository is one every clone shares.
 k8s/overlays/local/dev-secrets.env
 
-# The overlay scripts/dev-mac.sh writes for a run: the base it was asked for
+# This machine's model, context window and budget, asked once by
+# scripts/dev-setup.sh. Facts about the machine rather than the code.
+k8s/overlays/local/dev-machine.env
+
+# The overlay scripts/lib/dev.sh writes for a run: the base it was asked for
 # plus whichever components. Generated rather than committed because the
 # alternative is one overlay per combination, and four of them would drift.
 k8s/overlays/.generated/

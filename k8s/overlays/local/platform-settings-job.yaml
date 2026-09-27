@@ -1,0 +1,101 @@
+# Sets the operator's defaults this machine's model needs, once the API is up.
+#
+# The settings cascade from operator to workspace to agent, and the operator's
+# level is written over the API like any other -- there is no environment
+# variable for it, and there should not be one: a default the platform read
+# from its own environment would be a second source of truth beside the
+# settings table, and the Settings page would show one while turns obeyed the
+# other.
+#
+# Only `context_budget` so far, because it is the one that follows from the
+# model server rather than from anybody's preference. The code's default is
+# sized for a 200k-token window; a local ollama runs 16k or 32k, and a budget
+# four times the window means the model server, not outturn, decides what to
+# drop from a long conversation -- oldest first, silently, and without the
+# order outturn's own trim keeps. See "Compaction" in AGENTS.md.
+#
+# Operator level on purpose. A workspace value set in the Settings page still
+# wins over it, so experimenting there is not undone by the next deploy.
+#
+# The number is the window in tokens times three bytes -- the pessimistic end,
+# as the setting's own description says -- less about 40% for the reply, tool
+# results arriving mid-turn and the request itself. The value here is for a
+# 32k window and is only the fallback for `kubectl apply -k` on its own:
+# scripts/dev.sh and scripts/dev-mac.sh patch CONTEXT_BUDGET from this
+# machine's answers. See docs/local-development.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platform-settings
+spec:
+  # A Job's template is immutable: changing the value within ten minutes of
+  # the last run is refused by `kubectl apply` until this one has gone. See
+  # k8s/components/hollowbrook/install-job.yaml, which has the same trade.
+  ttlSecondsAfterFinished: 600
+  # Waits on the API, which a cluster coming up cold can be slow to provide.
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: platform-settings
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: settings
+          image: alpine:3
+          env:
+            - name: CONTEXT_BUDGET
+              value: "60000"
+            - name: OUTTURN_API
+              value: "http://outturn-api:8080"
+            - name: OUTTURN_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-dev-secrets
+                  key: OUTTURN_DEV_ADMIN_EMAIL
+            - name: OUTTURN_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-dev-secrets
+                  key: OUTTURN_DEV_ADMIN_PASSWORD
+          # Inline rather than a ConfigMap: this overlay turns off generated
+          # names' hash suffix, so an edited script in a ConfigMap would not
+          # change the template and nothing would run it again.
+          #
+          # Signing in is the two calls k8s/components/hollowbrook/install.sh
+          # explains -- a bearer token read out of the Set-Cookie header,
+          # because curl will not keep a `Secure` cookie over plain http.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              apk add --no-cache curl jq >/dev/null
+              say() { echo "platform-settings: $*" >&2; }
+              i=0
+              until curl -sf "$OUTTURN_API/healthz" >/dev/null 2>&1; do
+                i=$((i + 1)); [ "$i" -lt 60 ] || { say "the API never became ready"; exit 1; }
+                sleep 2
+              done
+              creds=$(jq -n --arg e "$OUTTURN_ADMIN_EMAIL" --arg p "$OUTTURN_ADMIN_PASSWORD" '{email: $e, password: $p}')
+              ws=$(curl -sf "$OUTTURN_API/v1/login" -H 'content-type: application/json' -d "$creds" \
+                | jq -r '.workspaces[0].workspace_id // empty')
+              [ -n "$ws" ] || { say "could not sign in"; exit 1; }
+              token=$(curl -sf -D - -o /dev/null "$OUTTURN_API/v1/login" -H 'content-type: application/json' \
+                  -d "$(echo "$creds" | jq --arg w "$ws" '. + {workspace_id: $w}')" \
+                | grep -i '^set-cookie: outturn_session=' | sed 's/^[^=]*=//; s/;.*//')
+              [ -n "$token" ] || { say "could not sign in"; exit 1; }
+              code=$(curl -s -o /tmp/body -w '%{http_code}' -X PUT \
+                "$OUTTURN_API/v1/platform/settings/context_budget" \
+                -H "authorization: Bearer $token" -H 'content-type: application/json' \
+                -d "{\"value\": $CONTEXT_BUDGET}")
+              case "$code" in
+                2*) say "context_budget is $CONTEXT_BUDGET bytes" ;;
+                *) say "$code from the API: $(cat /tmp/body)"; exit 1 ;;
+              esac
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi

@@ -73,18 +73,22 @@ Then:
 scripts/dev-mac.sh
 ```
 
-It starts ollama if it is not running, pulls `qwen3.8:27b-mlx` if it is
-missing, loads it, writes the overlay for this run, and hands it to skaffold.
-The gateway reaches ollama on the host through `host.docker.internal`, and
-qwen3.8 is the default model. Loaded, it takes 18-23GB. It was chosen on a
-64GB M4; beside the cluster's VM, a 32GB machine will be tight.
+The first run asks which model, at what context window, and how much of a
+conversation to send it, and keeps the answers. The suggestions come from what
+it can see of the machine. qwen3.8:27b-mlx is 18-23GB loaded and was chosen on
+a 64GB M4, so below 48GB the suggestion is qwen3.5 at half the window. Then it
+starts ollama if it is not running, pulls the model if it is missing, loads it
+at the window you chose, writes the overlay for this run, and hands it to
+skaffold. The gateway reaches ollama on the host through
+`host.docker.internal`. What each answer drives, and how to change one, is in
+[docs/local-development.md](docs/local-development.md).
 
 Two flags, and anything else goes to skaffold:
 
 ```
-scripts/dev-mac.sh --small              # qwen3.5, for a Mac with less to spare
 scripts/dev-mac.sh --with tika          # plus document extraction
 scripts/dev-mac.sh --with tika,petstore
+scripts/dev-mac.sh --reconfigure        # ask the model questions again
 ```
 
 `--with` takes anything in `k8s/components`, and `scripts/dev.sh` on Linux
@@ -105,8 +109,8 @@ after a change:
 curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 ```
 
-On Linux, run `scripts/dev-secrets.sh` once, then `skaffold dev` without a
-profile: it reaches ollama across the Docker bridge and uses qwen3.5.
+On Linux, `scripts/dev.sh` does the same with ollama left to you to start.
+It reaches ollama across the Docker bridge and suggests qwen3.5.
 [AGENTS.md](AGENTS.md) covers both in more depth, including which models can
 be relied on to call a tool and why thinking is left on.
 

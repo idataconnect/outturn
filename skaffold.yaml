@@ -81,11 +81,3 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-mac
-  # A Mac with less memory to spare. As `mac`, but qwen3.5 rather than
-  # qwen3.8:27b-mlx -- the smaller model of the same family, against 22GB.
-  # `scripts/dev-mac.sh --small` runs this.
-  - name: mac-small
-    manifests:
-      kustomize:
-        paths:
-          - k8s/overlays/local-mac-small
