@@ -1,0 +1,17 @@
+-- What the person answering an approval wanted recorded.
+--
+-- `POST /v1/approvals/{id}/answer` took a `note` and documented it as "what the
+-- answerer wants recorded", then put it in a log line and dropped it. A field
+-- whose own documentation says recorded and which survives only in a log is the
+-- quiet kind of gap: the record looks complete and the reason a charge was
+-- refused is gone.
+--
+-- On the item rather than in a table of its own. It is one string per
+-- settlement, written once when `resolved_by` and `resolved_at` are, and those
+-- are columns here for the same reason: a settlement is a fact about the item.
+--
+-- Nullable, because an approval needs no explanation. A decline without one
+-- leaves the agent unable to say why, which is worth encouraging and not worth
+-- refusing over -- an answer nobody could give for want of a sentence is worse
+-- than an answer with no sentence.
+alter table action_items add column resolved_note text;

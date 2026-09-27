@@ -1201,6 +1201,15 @@ impl Worker {
         // Composed before the conversation is built, because a summary is
         // written against it: what the agent was told to do is what decides
         // which parts of a conversation mattered.
+        // What this turn's skills declare needs approving, and the commitment
+        // over it. Computed here, beside the egress commitment, because both are
+        // statements this tier makes about a turn and neither is the runtime's to
+        // assert -- see `egress::gate`.
+        let gates = super::skill::gates_for_turn(&self.pool, &skills)
+            .await
+            .map_err(|e| anyhow::anyhow!("gates: {e}"))?;
+        let gate_commitment = gates.root(payload.workspace_id);
+
         let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
 
         Ok(Prepared::Run(Box::new(
@@ -1278,6 +1287,8 @@ impl Worker {
                 reply_id: placeholder.message.id,
                 egress,
                 egress_commitment,
+                gate_commitment,
+                gates,
             },
         )))
     }
@@ -1357,6 +1368,9 @@ impl Worker {
                 session_id,
                 workspace_id,
                 crate::egress::commit::empty_root(),
+                // As in `naming`: said rather than absent, and empty because
+                // summarising reaches nothing but the model.
+                crate::egress::gate::Gates::none().root(workspace_id),
             )
             .ok()?;
 

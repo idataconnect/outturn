@@ -21,6 +21,51 @@ pub fn blob_key(workspace_id: Uuid, sha256: &str) -> String {
     crate::runtime::storage::scope::skill_blob_key(workspace_id, sha256)
 }
 
+/// What a file's frontmatter declared, beside the file itself.
+///
+/// Carried out of here rather than re-derived later because this is where the
+/// content is: a file's bytes go to the object store keyed by hash, and reading
+/// them back to parse a declaration would be a round trip for something already
+/// in hand. See `docs/approvals.md`.
+#[derive(Debug, Clone)]
+pub struct DeclaredGate {
+    pub path: String,
+    pub requires: String,
+    /// Upper case, as a request's method is normalised to.
+    pub method: String,
+    pub path_pattern: String,
+    pub identified_by: Option<String>,
+}
+
+/// Every approval a set of files declares.
+pub fn declared_gates(files: &[(SkillFile, Vec<u8>)]) -> Vec<DeclaredGate> {
+    let mut out = Vec::new();
+    for (file, bytes) in files {
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            continue;
+        };
+        // Already validated by `prepare`, which refuses a malformed declaration
+        // at publish. A failure here would mean a file that got past it.
+        let Ok(parsed) = super::frontmatter::parse(text) else {
+            continue;
+        };
+        let Some(rule) = parsed.approval else {
+            continue;
+        };
+        let Some((method, pattern)) = rule.matches.split_once(' ') else {
+            continue;
+        };
+        out.push(DeclaredGate {
+            path: file.path.clone(),
+            requires: rule.requires,
+            method: method.trim().to_ascii_uppercase(),
+            path_pattern: pattern.trim().to_string(),
+            identified_by: rule.identified_by,
+        });
+    }
+    out
+}
+
 /// Checks the set and hashes each file, returning what the store records
 /// beside the bytes to upload, sorted by path.
 pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillError> {
@@ -40,6 +85,18 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
                 bytes.len()
             )));
         }
+        // Parsed here, where the content is in hand and a person is waiting for
+        // an answer, so a malformed rule is refused at publish rather than
+        // discovered when a turn reads the file. `docs/approvals.md` lists what
+        // is refused and why each refusal is a rule that would otherwise be
+        // half-applied -- and a version is immutable, so a bad declaration
+        // published is one somebody has to publish over.
+        if let Ok(text) = std::str::from_utf8(&bytes)
+            && let Err(e) = super::frontmatter::parse(text)
+        {
+            return Err(SkillError::Invalid(format!("{}: {e}", file.path)));
+        }
+
         let sha256 = hex::encode(Sha256::digest(&bytes));
         out.push((
             SkillFile {
@@ -129,5 +186,98 @@ mod tests {
         assert!(prepare(vec![file("a.md", &big)]).is_err());
         let fits = "x".repeat(MAX_FILE_BYTES);
         assert!(prepare(vec![file("a.md", &fits)]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod declarations {
+    use super::*;
+
+    fn file(path: &str, content: &str) -> NewFile {
+        NewFile {
+            path: path.into(),
+            content: content.into(),
+        }
+    }
+
+    /// A malformed declaration is refused where somebody is waiting for an
+    /// answer, rather than discovered when a turn reads the file.
+    ///
+    /// A version is immutable, so a bad rule published is one somebody has to
+    /// publish over -- and until they do, the file says an operation is gated and
+    /// the platform cannot gate it.
+    #[test]
+    fn a_rule_the_gateway_could_not_apply_is_refused_at_publish() {
+        // `covers` with nothing to identify the unit by.
+        let err = prepare(vec![file(
+            "charge.md",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n---\n",
+        )])
+        .unwrap_err();
+        assert!(matches!(err, SkillError::Invalid(_)), "{err:?}");
+
+        // No `matches`, so nothing to gate on.
+        let err = prepare(vec![file(
+            "charge.md",
+            "---\napproval:\n  requires: charge\n---\n",
+        )])
+        .unwrap_err();
+        assert!(matches!(err, SkillError::Invalid(_)), "{err:?}");
+
+        // A star in the middle, which would gate more than it names.
+        let err = prepare(vec![file(
+            "charge.md",
+            "---\napproval:\n  requires: charge\n  matches: POST /char*ges\n---\n",
+        )])
+        .unwrap_err();
+        assert!(matches!(err, SkillError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn the_message_names_the_file() {
+        // A publish of forty files should say which one is wrong.
+        let err = prepare(vec![
+            file("list.md", "# list_rooms\n"),
+            file("charge.md", "---\napproval:\n  requires: charge\n---\n"),
+        ])
+        .unwrap_err();
+        let SkillError::Invalid(message) = err else {
+            panic!("expected Invalid");
+        };
+        assert!(message.starts_with("charge.md:"), "{message}");
+    }
+
+    #[test]
+    fn a_good_declaration_is_read_off_the_file() {
+        let prepared = prepare(vec![file(
+            "charge.md",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+             covers: booking\n  identified_by: booking_id\n---\n# charge\n",
+        )])
+        .expect("prepare");
+        let gates = declared_gates(&prepared);
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].requires, "charge");
+        assert_eq!(gates[0].method, "POST");
+        assert_eq!(gates[0].path_pattern, "/charges");
+        assert_eq!(gates[0].identified_by.as_deref(), Some("booking_id"));
+        assert_eq!(gates[0].path, "charge.md");
+    }
+
+    #[test]
+    fn a_file_with_no_declaration_contributes_no_gate() {
+        let prepared =
+            prepare(vec![file("list.md", "# list_rooms\n\nEvery room.\n")]).expect("prepare");
+        assert!(declared_gates(&prepared).is_empty());
+    }
+
+    #[test]
+    fn a_lower_case_method_is_stored_as_the_gateway_matches_it() {
+        let prepared = prepare(vec![file(
+            "charge.md",
+            "---\napproval:\n  requires: charge\n  matches: post /charges\n---\n",
+        )])
+        .expect("prepare");
+        assert_eq!(declared_gates(&prepared)[0].method, "POST");
     }
 }

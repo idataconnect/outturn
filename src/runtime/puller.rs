@@ -211,6 +211,9 @@ impl Puller {
             session_id: request.session_id,
             gateway_url: self.gateway_url.clone(),
             gateway_token: assignment.gateway_token,
+            // Relayed, not read. The gateway checks it against the commitment in
+            // the turn token, which this tier cannot write.
+            gates: request.gates.clone(),
             // Resolved by the API, which knows the agent and the operator's
             // setting. None here is a turn nobody chose a model for, refused
             // below rather than served by one this pod made up.

@@ -1354,3 +1354,197 @@ async fn losing_the_role_hides_what_became_of_an_item() {
 
     db.cleanup().await;
 }
+
+// --- settling, lifting and resuming as one ---------------------------------
+
+#[tokio::test]
+async fn settling_lifts_the_hold_and_resumes_in_one_go() {
+    let (db, ws, store) = setup().await;
+    let user = make_user(&db.pool).await;
+    let session = Uuid::now_v7();
+
+    // A hold on the conversation, as an approval takes.
+    let hold = Uuid::now_v7();
+    sqlx::query(
+        "insert into inhibitors (id, level, workspace_id, session_id, strength, reason, held_by) \
+         values ($1, 'session', $2, $3, 'suspended', 'waiting on somebody', 'test')",
+    )
+    .bind(hold)
+    .bind(ws)
+    .bind(session)
+    .execute(&db.pool)
+    .await
+    .expect("hold");
+
+    // And a turn parked under it.
+    let job = outturn::jobs::enqueue(
+        &db.pool,
+        ws,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": ws, "session_id": session,
+            "agent_id": Uuid::now_v7(), "message_id": Uuid::now_v7(),
+        }),
+        None,
+        Some(&format!("session:{session}")),
+        outturn::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    let claimed = outturn::jobs::claim(
+        &db.pool,
+        &["chat.turn"],
+        1,
+        std::time::Duration::from_secs(45),
+    )
+    .await
+    .expect("claim");
+    outturn::jobs::park(&db.pool, job, claimed[0].job.lease_token)
+        .await
+        .expect("park");
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
+        .await
+        .expect("raise");
+
+    let resumed = store
+        .settle_and_release(
+            ws,
+            id,
+            State::Resolved,
+            Some(user),
+            Some("fine"),
+            Some(hold),
+        )
+        .await
+        .expect("settle and release");
+    assert_eq!(resumed, 1, "the parked turn was not given back");
+
+    // All three landed.
+    let (state, note): (String, Option<String>) =
+        sqlx::query_as("select state, resolved_note from action_items where id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("item");
+    assert_eq!(state, "resolved");
+    assert_eq!(note.as_deref(), Some("fine"), "the note was not kept");
+
+    let holds: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
+        .bind(hold)
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(holds, 0, "the hold was not lifted");
+
+    let job_state: String = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(job)
+        .fetch_one(&db.pool)
+        .await
+        .expect("job");
+    assert_eq!(job_state, "pending");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn losing_the_race_lifts_nothing() {
+    // The reason the three writes are one transaction. The loser of two
+    // simultaneous answers must not lift the hold: that would let the turn run
+    // on the strength of an answer that lost.
+    let (db, ws, store) = setup().await;
+    let user = make_user(&db.pool).await;
+    let session = Uuid::now_v7();
+
+    let hold = Uuid::now_v7();
+    sqlx::query(
+        "insert into inhibitors (id, level, workspace_id, session_id, strength, reason, held_by) \
+         values ($1, 'session', $2, $3, 'suspended', 'waiting', 'test')",
+    )
+    .bind(hold)
+    .bind(ws)
+    .bind(session)
+    .execute(&db.pool)
+    .await
+    .expect("hold");
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
+        .await
+        .expect("raise");
+
+    // The winner declines, which passes no hold.
+    store
+        .settle_and_release(ws, id, State::Cancelled, Some(user), Some("no"), None)
+        .await
+        .expect("the winner");
+
+    // The loser tries to approve, and is refused before anything is lifted.
+    let err = store
+        .settle_and_release(ws, id, State::Resolved, Some(user), None, Some(hold))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ActionError::NotPending("cancelled")), "{err}");
+
+    let holds: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
+        .bind(hold)
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(holds, 1, "the loser lifted the hold");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_hold_somebody_already_released_is_not_an_error() {
+    // What this call is for -- the work no longer being held -- is already true.
+    let (db, ws, store) = setup().await;
+    let user = make_user(&db.pool).await;
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
+        .await
+        .expect("raise");
+
+    let resumed = store
+        .settle_and_release(
+            ws,
+            id,
+            State::Resolved,
+            Some(user),
+            None,
+            Some(Uuid::now_v7()),
+        )
+        .await
+        .expect("a missing hold is not an error");
+    assert_eq!(resumed, 0);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_settlement_with_no_note_keeps_none() {
+    let (db, ws, store) = setup().await;
+    let user = make_user(&db.pool).await;
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
+        .await
+        .expect("raise");
+
+    store
+        .settle_and_release(ws, id, State::Resolved, Some(user), None, None)
+        .await
+        .expect("settle");
+
+    let note: Option<String> =
+        sqlx::query_scalar("select resolved_note from action_items where id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("item");
+    assert_eq!(note, None);
+
+    db.cleanup().await;
+}

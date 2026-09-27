@@ -25,6 +25,18 @@ pub struct ApprovalRule {
     /// The act, in a word. Compared rather than read: two operations declaring
     /// the same act are the same act for the purposes of one grant.
     pub requires: String,
+    /// The request this applies to, as the gateway will see it: a method, a
+    /// space, and a path. `POST /charges`, or `DELETE /bookings/*` where a
+    /// trailing star stands for anything below.
+    ///
+    /// Declared rather than read out of the prose below. The body says
+    /// `fetch_url with POST http://.../charges` because that is what a model
+    /// needs; deriving a security gate by parsing that sentence would make the
+    /// gate depend on how somebody phrased a paragraph. Absent means the rule
+    /// cannot be enforced automatically, which is refused: a declaration that
+    /// looks like a gate and gates nothing is the failure this whole module is
+    /// arranged against.
+    pub matches: String,
     /// The unit a wider grant may span, when the approver ticks it. Absent
     /// means an approval covers this call and its retries and nothing else,
     /// which is the default because it needs no judgement from the approver.
@@ -115,6 +127,7 @@ fn split_at_close_fence(rest: &str) -> Option<(&str, &str)> {
 fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
     let mut inside = false;
     let mut requires = None;
+    let mut matches = None;
     let mut covers = None;
     let mut identified_by = None;
 
@@ -171,6 +184,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         // rather than resolved.
         let slot = match key {
             "requires" => &mut requires,
+            "matches" => &mut matches,
             "covers" => &mut covers,
             "identified_by" => &mut identified_by,
             other => {
@@ -187,7 +201,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
 
     let Some(requires) = requires else {
         // The block was opened and said nothing that names the act.
-        if covers.is_some() || identified_by.is_some() {
+        if matches.is_some() || covers.is_some() || identified_by.is_some() {
             return Err(FrontmatterError::Invalid(
                 "approval needs a requires saying what is being asked".into(),
             ));
@@ -221,11 +235,59 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         ));
     }
 
+    // A rule with nothing to match is a rule the gateway cannot apply. Refused
+    // rather than stored, because a file that declares an approval and gates
+    // nothing is worse than one that declares none: it says the operation is
+    // gated, and a reader believes it.
+    let Some(matches) = matches else {
+        return Err(FrontmatterError::Invalid(
+            "approval needs a matches saying which request it applies to, e.g. `POST /charges`"
+                .into(),
+        ));
+    };
+    check_matches(&matches)?;
+
     Ok(Some(ApprovalRule {
         requires,
+        matches,
         covers,
         identified_by,
     }))
+}
+
+/// Checks a `matches` is a method and an absolute path.
+///
+/// Narrow on purpose. A star is allowed only at the very end, because a pattern
+/// that can match in the middle is one somebody writes `*` into and gates far
+/// more than they meant -- and a gate that is too wide refuses work nobody
+/// intended to gate, which reads as the platform being broken rather than as a
+/// rule being wrong.
+fn check_matches(value: &str) -> Result<(), FrontmatterError> {
+    let Some((method, path)) = value.split_once(' ') else {
+        return Err(FrontmatterError::Invalid(format!(
+            "{value} is not a method and a path, e.g. `POST /charges`"
+        )));
+    };
+    let method = method.trim();
+    let path = path.trim();
+
+    const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+    if !METHODS.contains(&method.to_ascii_uppercase().as_str()) {
+        return Err(FrontmatterError::Invalid(format!(
+            "{method} is not a method this can gate"
+        )));
+    }
+    if !path.starts_with('/') {
+        return Err(FrontmatterError::Invalid(format!(
+            "{path} is not an absolute path"
+        )));
+    }
+    if path.trim_end_matches('*').contains('*') {
+        return Err(FrontmatterError::Invalid(format!(
+            "{path} has a star somewhere other than the end, which would gate more than it names"
+        )));
+    }
+    Ok(())
 }
 
 /// Strips one layer of matching quotes, so `requires: "charge"` reads the same
@@ -269,13 +331,14 @@ mod tests {
     #[test]
     fn a_rule_is_read_and_the_body_starts_after_the_fence() {
         let parsed = parse(
-            "---\napproval:\n  requires: charge\n  covers: booking\n  identified_by: booking_id\n---\n\n# charge\n",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n  identified_by: booking_id\n---\n\n# charge\n",
         )
         .expect("parse");
         assert_eq!(
             parsed.approval,
             Some(ApprovalRule {
                 requires: "charge".into(),
+                matches: "POST /charges".into(),
                 covers: Some("booking".into()),
                 identified_by: Some("booking_id".into()),
             })
@@ -285,7 +348,9 @@ mod tests {
 
     #[test]
     fn the_narrow_form_needs_only_requires() {
-        let parsed = parse("---\napproval:\n  requires: charge\n---\nbody").expect("parse");
+        let parsed =
+            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n---\nbody")
+                .expect("parse");
         let rule = parsed.approval.expect("a rule");
         assert_eq!(rule.requires, "charge");
         assert_eq!(rule.covers, None);
@@ -296,13 +361,13 @@ mod tests {
         // A unit nobody can identify cannot be keyed on, so the grant would
         // quietly become one for every call.
         let err =
-            parse("---\napproval:\n  requires: charge\n  covers: booking\n---\n").unwrap_err();
+            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n---\n").unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
 
     #[test]
     fn identified_by_without_covers_is_refused() {
-        let err = parse("---\napproval:\n  requires: charge\n  identified_by: booking_id\n---\n")
+        let err = parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  identified_by: booking_id\n---\n")
             .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
@@ -329,7 +394,10 @@ mod tests {
     fn an_unknown_key_under_approval_is_refused() {
         // Under a block we act on, a key we do not know may be the difference
         // between gated and not.
-        let err = parse("---\napproval:\n  requires: charge\n  unless: friday\n---\n").unwrap_err();
+        let err = parse(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  unless: friday\n---\n",
+        )
+        .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
 
@@ -337,7 +405,7 @@ mod tests {
     fn an_unknown_top_level_key_is_left_alone() {
         // A file written for a later version of this platform still reads here.
         let parsed =
-            parse("---\ntitle: Charging\napproval:\n  requires: charge\n---\nbody").expect("parse");
+            parse("---\ntitle: Charging\napproval:\n  requires: charge\n  matches: POST /charges\n---\nbody").expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
 
@@ -374,7 +442,7 @@ mod tests {
     #[test]
     fn quotes_and_comments_are_tolerated() {
         let parsed = parse(
-            "---\n# what this needs\napproval:\n  requires: \"charge\"\n  covers: 'booking'\n  identified_by: booking_id\n---\n",
+            "---\n# what this needs\napproval:\n  requires: \"charge\"\n  matches: POST /charges\n  covers: 'booking'\n  identified_by: booking_id\n---\n",
         )
         .expect("parse");
         let rule = parsed.approval.expect("a rule");
@@ -384,7 +452,10 @@ mod tests {
 
     #[test]
     fn windows_line_endings_parse() {
-        let parsed = parse("---\r\napproval:\r\n  requires: charge\r\n---\r\nbody").expect("parse");
+        let parsed = parse(
+            "---\r\napproval:\r\n  requires: charge\r\n  matches: POST /charges\r\n---\r\nbody",
+        )
+        .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
 
@@ -412,6 +483,7 @@ mod against_the_real_files {
         let parsed = parse(&source).expect("its frontmatter parses");
         let rule = parsed.approval.expect("it declares an approval");
         assert_eq!(rule.requires, "charge");
+        assert_eq!(rule.matches, "POST /charges");
         assert_eq!(rule.covers.as_deref(), Some("booking"));
         assert_eq!(rule.identified_by.as_deref(), Some("booking_id"));
         assert!(
@@ -463,7 +535,8 @@ mod what_it_must_not_do_quietly {
         // YAML accepts `approval :`, so somebody writes it. Matching the literal
         // `approval:` left this unrecognised, its children skipped, and the
         // operation ungated.
-        let parsed = parse("---\napproval :\n  requires: charge\n---\n").expect("parse");
+        let parsed = parse("---\napproval :\n  requires: charge\n  matches: POST /charges\n---\n")
+            .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
 
@@ -477,7 +550,9 @@ mod what_it_must_not_do_quietly {
 
     #[test]
     fn a_wholly_indented_block_is_refused_rather_than_ignored() {
-        let err = parse("---\n  approval:\n    requires: charge\n---\n").unwrap_err();
+        let err =
+            parse("---\n  approval:\n    requires: charge\n    matches: POST /charges\n---\n")
+                .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
 
@@ -519,7 +594,10 @@ mod what_it_must_not_do_quietly {
 
     #[test]
     fn a_stray_line_in_the_frontmatter_does_not_open_the_block() {
-        let parsed = parse("---\njust prose\napproval:\n  requires: charge\n---\n").expect("parse");
+        let parsed = parse(
+            "---\njust prose\napproval:\n  requires: charge\n  matches: POST /charges\n---\n",
+        )
+        .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
 }

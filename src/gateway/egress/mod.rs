@@ -56,6 +56,16 @@ const FETCH_BODY_LIMIT: usize = 256 * 1024;
 pub struct EgressRequest {
     pub method: String,
     pub url: String,
+    /// What the API said gates this turn, for checking against the commitment in
+    /// the caller's own token.
+    ///
+    /// Sent as the whole set rather than one gate and a proof, because what has
+    /// to be established is that this request matches *none* of them and a Merkle
+    /// proof shows presence rather than absence. A set that does not hash to the
+    /// token's root is refused, so a runtime that dropped a gate from its copy
+    /// gets nowhere -- see `egress::gate`.
+    #[serde(default = "crate::egress::gate::Gates::none")]
+    pub gates: crate::egress::gate::Gates,
     #[serde(default)]
     pub headers: Vec<(String, String)>,
     #[serde(default)]
@@ -122,6 +132,46 @@ pub async fn fetch(
     // matches is the one whose credential travels.
     let (host, rule) =
         rules::check_url(&vouched, &url).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
+
+    // Whether this request is one somebody has to approve first.
+    //
+    // The gate set is checked against the commitment in the token before it is
+    // consulted, and a token with no gate claim is refused outright. Both
+    // directions matter and they are opposite to the egress check above: an
+    // egress rule is a permission, so failing to prove one means refused and
+    // absence is safe. A gate is an obligation, so absence read as "nothing is
+    // gated" would let every request through -- the answer a forger would choose.
+    // Could-not-verify means refused here as there; what is refused is the
+    // *request* rather than the rule.
+    let gated = claims.gate_commitment().map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            "this turn carries no statement about what needs approving".to_string(),
+        )
+    })?;
+    if !request.gates.matches(claims.workspace_id, &gated) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "the approval rules offered are not the ones this turn was given".to_string(),
+        ));
+    }
+    if let Some(gate) = request.gates.covering(&host, &method, url.path()) {
+        // Refused rather than held here. Parking the turn is the API's to do --
+        // it owns the job and the queue -- and this tier has a method, a URL and a
+        // token. What it can do is not make the call, and say why in words the
+        // guest can read, which is what every other refusal here does.
+        //
+        // So the money does not move and get approved afterwards, which is the
+        // ordering that matters.
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "this needs approval before it can go out: {method} {} on {host} requires \"{}\"",
+                url.path(),
+                gate.requires,
+            ),
+        ));
+    }
 
     // A credential travels only where it cannot be read on the way. A
     // workspace that configured a key for a host did not consent to it going
@@ -365,5 +415,76 @@ mod tests {
 
         assert_eq!(credential_for(&paid), Some(("authorization", "STRIPE_KEY")));
         assert_eq!(credential_for(&free), None);
+    }
+}
+
+#[cfg(test)]
+mod gating {
+    use crate::egress::gate::{Gate, Gates};
+
+    fn gate() -> Gate {
+        Gate {
+            requires: "charge".into(),
+            host: "outturn-hollowbrook:8084".into(),
+            method: "POST".into(),
+            path: "/charges".into(),
+            identified_by: Some("booking_id".into()),
+        }
+    }
+
+    /// The gate set offered has to be the one the API committed to.
+    ///
+    /// This is the check that makes the whole scheme worth anything: a runtime
+    /// that dropped a gate from its copy would otherwise get the request through,
+    /// which is precisely what a compromised one would do.
+    #[test]
+    fn a_set_that_does_not_hash_to_the_commitment_is_refused() {
+        let workspace = uuid::Uuid::from_bytes([3; 16]);
+        let real = Gates::of(vec![gate()]);
+        let stripped = Gates::none();
+
+        let committed = real.root(workspace);
+        assert!(
+            !stripped.matches(workspace, &committed),
+            "a stripped set passed the commitment"
+        );
+        assert!(real.matches(workspace, &committed));
+    }
+
+    /// And an empty set is a statement, not an absence.
+    ///
+    /// A turn nothing gates says so, signed. What is refused is a token carrying
+    /// no gate claim at all, because defaulting that to empty would mean nothing
+    /// is ever gated -- the answer a forger would choose.
+    #[test]
+    fn a_turn_gated_by_nothing_still_commits_to_that() {
+        let workspace = uuid::Uuid::from_bytes([3; 16]);
+        let none = Gates::none();
+        assert!(none.matches(workspace, &none.root(workspace)));
+        assert!(!Gates::of(vec![gate()]).matches(workspace, &none.root(workspace)));
+    }
+
+    /// A gated request is found by host, method and path together.
+    #[test]
+    fn only_the_gated_request_is_covered() {
+        let gates = Gates::of(vec![gate()]);
+        assert!(
+            gates
+                .covering("outturn-hollowbrook:8084", "POST", "/charges")
+                .is_some()
+        );
+        // The same path on another host, the same host with another method, and
+        // the same method on another path all go through.
+        assert!(gates.covering("example.com", "POST", "/charges").is_none());
+        assert!(
+            gates
+                .covering("outturn-hollowbrook:8084", "GET", "/charges")
+                .is_none()
+        );
+        assert!(
+            gates
+                .covering("outturn-hollowbrook:8084", "POST", "/bookings")
+                .is_none()
+        );
     }
 }

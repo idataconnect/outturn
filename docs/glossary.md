@@ -127,6 +127,14 @@ frontmatter, answered from the queue, and worth a capability the retry carries.
 **Capability** — what an approval mints. Names what was approved and how far it
 reaches, so a resumed turn does not ask again.
 
+**Gate** — a request shape a turn may not send without somebody's word: a host,
+a method and a path, declared in an operation's frontmatter. The opposite of an
+egress rule in the direction it fails. A rule is a permission, so failing to
+prove one means refused; a gate is an obligation, so absence read as "nothing is
+gated" would let everything through. Hence a commitment of its own, an empty set
+that is signed rather than absent, and a token with no gate claim refused
+outright.
+
 ## Reaching out
 
 **Egress rule** — a host a workspace's agents may reach, with the *name* of the

@@ -2,7 +2,7 @@ mod files;
 mod frontmatter;
 mod postgres;
 
-pub use files::{MAX_FILE_BYTES, MAX_FILES, blob_key, prepare};
+pub use files::{DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, declared_gates, prepare};
 
 // The declaration at the top of an operation's file. Named rather than the
 // module made public, as `files` and `postgres` beside it are: a caller wants
@@ -211,6 +211,48 @@ fn with_reachable_files(skills: &[ResolvedSkill]) -> Vec<&ResolvedSkill> {
 
 /// The files of a turn's skills, named as the agent reads them. A skill whose
 /// slug another bound skill already took is logged rather than merged.
+/// The gates a turn's skills declare, as the API commits to them.
+///
+/// Read from what publishing recorded rather than by parsing the files again: the
+/// declaration is in an operation's frontmatter and its content lives in the
+/// object store by hash, so deriving this per turn would mean reading every bound
+/// skill's every file before the first token. A version is immutable, so what its
+/// files declare cannot change after it was published.
+///
+/// The host comes from the skill's own declared hosts, so a gate on `POST
+/// /charges` does not gate the same path on somebody else's API.
+pub async fn gates_for_turn(
+    pool: &sqlx::PgPool,
+    skills: &[ResolvedSkill],
+) -> Result<crate::egress::gate::Gates, SkillError> {
+    if skills.is_empty() {
+        return Ok(crate::egress::gate::Gates::none());
+    }
+    let versions: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
+    let rows = sqlx::query(
+        "select requires, host, method, path_pattern, identified_by \
+         from skill_version_gates where version_id = any($1) \
+         order by host, method, path_pattern, requires",
+    )
+    .bind(&versions)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| SkillError::Internal(e.to_string()))?;
+
+    use sqlx::Row as _;
+    let gates = rows
+        .iter()
+        .map(|r| crate::egress::gate::Gate {
+            requires: r.get("requires"),
+            host: r.get("host"),
+            method: r.get("method"),
+            path: r.get("path_pattern"),
+            identified_by: r.try_get("identified_by").ok().flatten(),
+        })
+        .collect();
+    Ok(crate::egress::gate::Gates::of(gates))
+}
+
 pub fn objects_for_turn(skills: &[ResolvedSkill]) -> Vec<scope::SkillObject> {
     let reachable = with_reachable_files(skills);
     for s in skills.iter().filter(|s| !s.files.is_empty()) {
@@ -273,6 +315,10 @@ pub trait SkillStore: Send + Sync {
         author: Uuid,
         input: CreateSkill,
         files: &[SkillFile],
+        // What those files declare needs approving. Passed in rather than derived
+        // here, because the content is in hand where the files were prepared and
+        // is in the object store by the time this is called.
+        gates: &[DeclaredGate],
     ) -> Result<Skill, SkillError>;
     async fn update(
         &self,
@@ -294,6 +340,10 @@ pub trait SkillStore: Send + Sync {
         author: Uuid,
         input: NewVersion,
         files: Option<&[SkillFile]>,
+        // What the new files declare. Empty when `files` is `None`, since a
+        // body-only edit carries the previous version's files and its
+        // declarations with them.
+        gates: &[DeclaredGate],
     ) -> Result<(SkillVersion, bool), SkillError>;
     async fn versions(&self, workspace_id: Uuid, id: Uuid)
     -> Result<Vec<SkillVersion>, SkillError>;

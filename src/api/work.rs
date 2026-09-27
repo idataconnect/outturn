@@ -176,6 +176,7 @@ pub async fn take(
                         payload.session_id,
                         payload.workspace_id,
                         request.egress_commitment,
+                        request.gate_commitment,
                     ) {
                         Ok(token) => token,
                         Err(e) => {
@@ -267,10 +268,11 @@ pub fn mint_for(
     session_id: Uuid,
     workspace_id: Uuid,
     egress_commitment: crate::egress::commit::Hash,
+    gate_commitment: crate::egress::commit::Hash,
 ) -> Result<String, ApiError> {
     state
         .minter
-        .mint_turn(session_id, workspace_id, egress_commitment)
+        .mint_turn(session_id, workspace_id, egress_commitment, gate_commitment)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 

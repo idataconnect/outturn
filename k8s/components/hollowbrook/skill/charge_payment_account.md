@@ -1,6 +1,7 @@
 ---
 approval:
   requires: charge
+  matches: POST /charges
   covers: booking
   identified_by: booking_id
 ---

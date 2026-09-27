@@ -45,6 +45,7 @@ documenting a read has to know this exists.
 ---
 approval:
   requires: charge
+  matches: POST /charges
   covers: booking
   identified_by: booking_id
 ---
@@ -99,7 +100,7 @@ their queue and was refused when they tried to answer it. Being asked and being
 entitled are separate, and they are separate in the running system rather than
 only in the tests.
 
-Three keys, and each earns its place.
+Four keys, and each earns its place.
 
 ### `requires` -- what is being asked, in a word
 
@@ -109,6 +110,27 @@ person deciding sees "charge", not the tool name and not the URL.
 Deliberately not free prose. It is compared: two operations declaring the same
 `requires` are the same act for the purposes of one grant, and the queue groups
 by it. Prose would make that comparison a string match on a sentence.
+
+### `matches` -- which request it applies to
+
+A method and a path, as the gateway will see them. `POST /charges`, or `DELETE
+/bookings/*` where a trailing star stands for anything below it -- an operation
+on `/bookings/{id}` is one rule and not one per booking. A star anywhere else is
+refused: a pattern that can match in the middle is one somebody writes `*` into
+and gates far more than they meant, and a gate that is too wide refuses work
+nobody intended to gate, which reads as the platform being broken rather than as
+a rule being wrong.
+
+Declared rather than read out of the prose below it. The body says `fetch_url
+with POST http://.../charges` because that is what a model needs; deriving a
+security gate by parsing that sentence would make the gate depend on how
+somebody phrased a paragraph. The host is not named here either -- it comes from
+the skill's own declared hosts, so a gate on `POST /charges` does not gate the
+same path on somebody else's API.
+
+Required. A rule with nothing to match is one the gateway cannot apply, and a
+file that declares an approval and gates nothing is worse than one that declares
+none: it says the operation is gated, and a reader believes it.
 
 ### `covers` -- the unit one yes may span
 
@@ -222,19 +244,48 @@ what two people answering at once produces. A decline leaves the hold on: the
 turn stays parked, which is honest, since nothing has changed about whether the
 work may proceed.
 
-**The automatic gate**, later. The gateway is the only tier that sees every
+**The automatic gate.** Built. The gateway is the only tier that sees every
 outbound request, holds the credential, and can refuse before anything is spent;
 it is also the tier a compromised runtime cannot influence. What it cannot do is
 know which *operation* a request is: it receives a method, a URL and a body, and
 the file that declared the rule lives in the API.
 
-So the rule has to reach it the way egress rules already do -- committed by the
-API into the turn token and verified against that commitment, so a guest cannot
-strip it and "could not verify" means refused. The API reads the bound skills'
-frontmatter when it prepares a turn, commits the matchers, and the gateway
-matches the request it is about to make. That is a change to
-`src/egress/commit.rs` and the token, which is why it waits until the mechanism
-above is proven.
+So the rule reaches it the way egress rules do. The API resolves a turn's bound
+skills, hashes the gates it finds into a root (`egress::gate`) and signs that
+into the turn token beside the egress commitment; the runtime relays the set
+unchanged; and the gateway checks the set against the root before consulting it.
+A runtime that dropped a gate from its copy gets nowhere, because the set no
+longer hashes to what the token says.
+
+The asymmetry with egress is the whole design, and it decides which way a
+stripped claim fails. An egress rule is a **permission**: a request proves one
+and is allowed, so failing to prove means refused and absence is safe. A gate is
+an **obligation**: a request matching one is refused until somebody approves,
+and absence read as "nothing is gated" would let everything through -- which is
+the answer a forger would choose. So a gate commitment is a *second* claim
+rather than folded into the first, "nothing gates this turn" is `Gates::none()`
+with a root of its own, and a token carrying no gate claim is refused outright
+rather than defaulted.
+
+It also means the whole set travels rather than one gate and a proof. A Merkle
+proof shows presence; what the gateway has to establish is that a request
+matches *none* of the gates, and absence is not something a proof provides.
+
+Two things follow that are worth knowing before changing them. The gate is
+declared with a `matches` -- `POST /charges` -- rather than derived from the
+prose that tells the model what to call: the body says "fetch_url with POST
+http://.../charges" because that is what a model needs, and deriving a security
+gate by parsing that sentence would make the gate depend on how somebody phrased
+a paragraph. And the gates are recorded when a version is published rather than
+computed per turn, because a file's content lives in the object store by hash,
+so a turn deriving them would read every bound skill's every file before its
+first token. A version is immutable, so what it declares cannot change
+afterwards.
+
+What the gateway does on a match is refuse the request, in words the guest can
+read, rather than parking the turn: parking is the API's, which owns the job and
+the queue, and this tier has a method, a URL and a token. So the money does not
+move and get approved afterwards -- which is the ordering that matters.
 
 **Not the guest asking.** A `request_approval` host call would be a gate that
 fires only when the guest chooses to ask, which is the same fault
