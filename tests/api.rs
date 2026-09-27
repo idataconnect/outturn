@@ -7374,3 +7374,98 @@ async fn a_gate_declaration_with_no_host_is_refused_at_publish() {
 
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn approve_new_hosts_gates_a_hand_added_host_and_not_a_skills_own() {
+    // The setting, end to end: what it turns into, and what it exempts. A host a
+    // skill's declaration opened was consented to when the skill was installed --
+    // in an act that named the skill and the host together -- so asking again per
+    // conversation would be asking the same question somewhere worse. A host
+    // somebody added by hand says agents *may* reach it, not that any particular
+    // use of it was reviewed, and that is the case the setting is for.
+    let h = harness().await;
+    let workspace = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@test.invalid", None, Some((workspace, "admin")))
+        .await;
+
+    // One host from a skill, one added by hand.
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/skills",
+        &admin,
+        &serde_json::json!({
+            "slug": "brought",
+            "name": "Brought By A Skill",
+            "body": "Reaches api.brought.test.",
+            "hosts": ["api.brought.test"],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/skills/{skill}/hosts/approve"),
+        &admin,
+        "{}",
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "approving the skill's host: {status} {body}"
+    );
+
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/egress-rules",
+        &admin,
+        &serde_json::json!({ "host": "api.byhand.test" }).to_string(),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "adding a rule by hand: {status} {body}"
+    );
+
+    // Off by default: nothing is gated.
+    let rules = outturn::api::egress::rules_for(&h.db.pool, workspace)
+        .await
+        .expect("rules");
+    let hosts: Vec<String> = rules.iter().map(|r| r.host.clone()).collect();
+    assert!(hosts.contains(&"api.byhand.test".to_string()), "{hosts:?}");
+    assert!(hosts.contains(&"api.brought.test".to_string()), "{hosts:?}");
+
+    let exempt = outturn::api::egress::hosts_from_skills(&h.db.pool, workspace)
+        .await
+        .expect("skill hosts");
+    assert_eq!(
+        exempt,
+        vec!["api.brought.test".to_string()],
+        "only the skill's host should be exempt"
+    );
+
+    // What the setting turns into.
+    let gates = outturn::egress::gate::Gates::of(outturn::egress::gate::for_unreviewed_hosts(
+        &hosts, &exempt,
+    ));
+    assert!(
+        gates
+            .covering("api.byhand.test", "GET", "/anything")
+            .is_some(),
+        "the hand-added host should need approving"
+    );
+    assert!(
+        gates
+            .covering("api.brought.test", "GET", "/anything")
+            .is_none(),
+        "the skill's own host was already consented to"
+    );
+
+    h.db.cleanup().await;
+}

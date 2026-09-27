@@ -158,6 +158,53 @@ fn percent_decode(path: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The act a host-level approval is about.
+///
+/// One word, as every `requires` is, and named for what a person is being asked
+/// rather than for the setting that asked it: the queue row says "reach", and the
+/// manager deciding does not need to know which switch produced the question.
+pub const REACH: &str = "reach";
+
+/// Gates for every host a turn may reach but has not had reviewed.
+///
+/// The `approve_new_hosts` setting, expressed as gates so that nothing downstream
+/// has to know it exists. The commitment, the token claim, the gateway's check, the
+/// refusal and the parked turn are all the per-operation machinery from
+/// `docs/approvals.md`, and this reuses them whole.
+///
+/// A gate per host rather than one wildcard gate, and `*` for the path, because
+/// the unit a person can honestly approve is a host: reaching `api.example.com`
+/// twice is the same act both times, which is the test `docs/inhibitors.md` sets
+/// and the reason the egress model can approve a host at all. Per request would
+/// ask three times for three pages.
+///
+/// `exempt` is the hosts a skill's own declaration opened. Those were consented to
+/// when the skill was installed, in an act that named the skill and the host
+/// together; asking again per conversation is asking the same question somewhere
+/// worse. A host added by hand through `/v1/egress-rules` is not exempt, which is
+/// the case the setting exists for -- it says agents *may* reach it, not that any
+/// use of it was reviewed.
+///
+/// Every method, because a read of an unreviewed host is as much a reach as a
+/// write. The setting is about who the agent talks to rather than what it says.
+pub fn for_unreviewed_hosts(allowed: &[String], exempt: &[String]) -> Vec<Gate> {
+    allowed
+        .iter()
+        .filter(|host| !exempt.iter().any(|e| e == *host))
+        .flat_map(|host| {
+            ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+                .into_iter()
+                .map(move |method| Gate {
+                    requires: REACH.to_string(),
+                    host: host.clone(),
+                    method: method.to_string(),
+                    path: "/*".to_string(),
+                    identified_by: None,
+                })
+        })
+        .collect()
+}
+
 /// What a turn is gated by, as the gateway knows it.
 ///
 /// Held as the whole set rather than proven one at a time, which is the opposite
@@ -193,6 +240,15 @@ impl Gates {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The gates, for a caller adding to them before committing.
+    ///
+    /// Taken apart rather than extended in place so the sort in `of` cannot be
+    /// skipped: a set that went out unsorted would decide which of two overlapping
+    /// gates names a refusal by whatever order it was built in.
+    pub fn into_vec(self) -> Vec<Gate> {
+        self.0
     }
 
     /// The gate that covers this request, if any.
@@ -642,5 +698,90 @@ mod hosts {
                 "{host} evaded the gate"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod reaching {
+    use super::*;
+
+    #[test]
+    fn every_allowed_host_is_gated_unless_a_skill_brought_it() {
+        let gates = for_unreviewed_hosts(
+            &[
+                "api.stripe.com".to_string(),
+                "outturn-hollowbrook".to_string(),
+            ],
+            &["outturn-hollowbrook".to_string()],
+        );
+        let set = Gates::of(gates);
+        assert!(
+            set.covering("api.stripe.com", "POST", "/v1/charges")
+                .is_some(),
+            "a host added by hand should be gated"
+        );
+        assert!(
+            set.covering("outturn-hollowbrook", "POST", "/charges")
+                .is_none(),
+            "a host a skill brought was consented to when the skill was installed"
+        );
+    }
+
+    #[test]
+    fn a_host_nobody_allowed_is_not_gated_because_it_is_already_refused() {
+        // Egress refuses it outright, and a gate would be a second answer to a
+        // question already answered -- worse, one that reads as "approvable".
+        let set = Gates::of(for_unreviewed_hosts(&["api.stripe.com".to_string()], &[]));
+        assert!(set.covering("evil.test", "GET", "/").is_none());
+    }
+
+    #[test]
+    fn every_method_is_gated() {
+        // A read of an unreviewed host is as much a reach as a write: the setting
+        // is about who the agent talks to, not what it says.
+        let set = Gates::of(for_unreviewed_hosts(&["api.stripe.com".to_string()], &[]));
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] {
+            assert!(
+                set.covering("api.stripe.com", method, "/anything")
+                    .is_some(),
+                "{method} was not gated"
+            );
+        }
+    }
+
+    #[test]
+    fn any_path_on_a_gated_host_is_gated() {
+        let set = Gates::of(for_unreviewed_hosts(&["api.stripe.com".to_string()], &[]));
+        for path in ["/", "/v1/charges", "/deep/nested/thing", "//odd"] {
+            assert!(
+                set.covering("api.stripe.com", "GET", path).is_some(),
+                "{path} was not gated"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wildcard_rule_gates_the_hosts_it_covers() {
+        // An egress rule may be `*.example.com`, and the gate borrows its matcher.
+        let set = Gates::of(for_unreviewed_hosts(&["*.example.com".to_string()], &[]));
+        assert!(set.covering("api.example.com", "GET", "/").is_some());
+        assert!(set.covering("notexample.com", "GET", "/").is_none());
+    }
+
+    #[test]
+    fn exempting_everything_gates_nothing() {
+        let hosts = vec!["api.stripe.com".to_string()];
+        assert!(for_unreviewed_hosts(&hosts, &hosts).is_empty());
+    }
+
+    #[test]
+    fn these_gates_commit_like_any_other() {
+        // The point of expressing the setting this way: nothing downstream knows
+        // it is different.
+        let workspace = uuid::Uuid::from_bytes([5; 16]);
+        let set = Gates::of(for_unreviewed_hosts(&["api.stripe.com".to_string()], &[]));
+        let root = set.root(workspace);
+        assert!(set.matches(workspace, &root));
+        assert!(!Gates::none().matches(workspace, &root));
     }
 }

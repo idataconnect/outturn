@@ -197,6 +197,51 @@ Wider extents -- this session, until revoked -- are left undesigned. They are
 authorities rather than approvals, and the place to add one is the roles model,
 where a list of who holds what already exists.
 
+## A ceiling, rather than a rule per operation
+
+Everything above is opt-in by whoever documents an operation, and that is right
+for it: a skill declaring a rule about its own endpoint can only make the
+platform stricter. Some deployments want the other direction -- an agent that
+may not reach anywhere new without somebody's word -- and that cannot be a
+declaration in a skill, for two reasons. It has to hold for an agent with no
+skills at all, and a workspace must not be able to escape it by publishing a
+skill that omits a line.
+
+So it is a setting, `approve_new_hosts`, cascading operator to workspace to
+agent like every other ([settings.md](settings.md)). Where it is on, the API
+turns it into ordinary gates at turn preparation: one per allowed host, every
+method, `/*` for the path. Nothing downstream knows the setting exists -- the
+commitment, the token claim, the gateway's check, the refusal and the parked
+turn are the machinery above, reused whole.
+
+Three things about what it gates are worth stating, because each is a decision
+rather than a detail.
+
+**A host, not a request.** The unit a person can honestly approve is a host:
+reaching `api.example.com` twice is the same act both times, which is the test
+[inhibitors.md](inhibitors.md) sets and the reason the egress model can approve
+a host at all. Per request would ask three times for three pages of one site.
+
+**Every method.** A read of an unreviewed host is as much a reach as a write.
+The setting is about who the agent talks to rather than what it says to them.
+
+**Not the hosts a skill brought.** A host that arrived because somebody
+installed a skill declaring it was consented to already, in an act that named
+the skill and the host together -- `POST /v1/skills/{id}/hosts/approve` is that
+act, and `egress_rules.from_skill_id` is what records it. Asking again, per
+conversation, asks the same question in a worse place. A host added by hand
+through `/v1/egress-rules` carries no skill and is not exempt: it says agents
+*may* reach that host, not that any particular use of it was reviewed, and that
+gap is the one the setting exists to close.
+
+What it does not gate is anything nobody allowed. A host with no egress rule is
+refused outright and always was; a gate there would be a second answer to a
+settled question, and a worse one, since it reads as though approving were
+possible.
+
+Off by default. An agent's first call to each new host becomes a stop-and-wait,
+which is the point in a deployment that wants it and an obstruction in the rest.
+
 ## Who may answer
 
 Two questions that look like one, per
