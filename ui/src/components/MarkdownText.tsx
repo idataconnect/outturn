@@ -1,6 +1,9 @@
+import { useAuiState } from '@assistant-ui/react'
 import { MarkdownTextPrimitive, unstable_memoizeMarkdownComponents } from '@assistant-ui/react-markdown'
+import { useMemo, useState } from 'react'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
+import { newFadeState, rehypeStreamFade } from '../lib/streamFade'
 
 /**
  * Renders message text as markdown, for both sides of the conversation.
@@ -83,9 +86,17 @@ const components = unstable_memoizeMarkdownComponents({
 })
 
 export default function MarkdownText() {
+  // One per part, for the part's life: it is what remembers which text has
+  // already faded in. See lib/streamFade.ts. Mutable on purpose -- the plugin
+  // writes to it as it parses, and nothing re-renders because of it.
+  const [fade] = useState(newFadeState)
+  const running = useAuiState((s) => s.part.status.type === 'running')
+  const rehypePlugins = useMemo(() => [rehypeStreamFade(fade, running)], [fade, running])
+
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={rehypePlugins}
       components={components}
       // Smoothing is on by default; these are its knobs. A local model
       // arrives in bursts -- a whole sentence, then nothing -- and revealing
