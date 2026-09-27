@@ -174,6 +174,17 @@ Within that suite a missing key fails rather than skips.
 Do not assert elapsed time in the slow suites because of core competition
 and parallel runs.
 
+One test does, and is flaky for it: `long_poll_returns_empty_on_timeout` in
+`tests/queue_and_events.rs` fails roughly one run in three under the full
+suite and passes alone. It pauses tokio's virtual clock and then asserts the
+poll waited out 25 seconds, and `EventBus::spawn` opens its listener on a task
+of its own -- so a loaded machine can pause the clock while that connection is
+still being made, and the first query races a clock already past the deadline.
+Pre-existing, and not something a warm-up query fixes: tried, and it failed
+twice in four runs rather than once in three. Fixing it properly means not
+asserting on the clock, which is what the line above says. Re-run before
+believing a red suite.
+
 Every test gets a private Postgres schema, so the suite is safe to run in
 parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`
 serves scripted responses — including a tool call, a truncated stream and a

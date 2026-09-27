@@ -271,8 +271,10 @@ fn check_matches(value: &str) -> Result<(), FrontmatterError> {
     let method = method.trim();
     let path = path.trim();
 
-    const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
-    if !METHODS.contains(&method.to_ascii_uppercase().as_str()) {
+    // The one list, in `egress::gate`. A method this validator accepts and the
+    // gateway will not send is a rule that can never fire; one it refuses that the
+    // gateway would send is an operation nobody can gate.
+    if !crate::egress::gate::METHODS.contains(&method.to_ascii_uppercase().as_str()) {
         return Err(FrontmatterError::Invalid(format!(
             "{method} is not a method this can gate"
         )));

@@ -114,15 +114,16 @@ pub async fn fetch(
     let vouched = commit::verify(claims.workspace_id, &committed, &request.proof)
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
 
-    let method = match request.method.to_ascii_uppercase().as_str() {
-        m @ ("GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD") => m.to_string(),
-        other => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("{other} is not a method this can send"),
-            ));
-        }
-    };
+    // Against the one list, in `egress::gate`, because that is what
+    // `for_unreviewed_hosts` fans a host gate across: a verb this tier would send
+    // and no gate covers is an un-approved request, silently.
+    let method = request.method.to_ascii_uppercase();
+    if !crate::egress::gate::METHODS.contains(&method.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{method} is not a method this can send"),
+        ));
+    }
 
     let url = reqwest::Url::parse(&request.url)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;

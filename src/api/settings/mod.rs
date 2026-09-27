@@ -143,8 +143,11 @@ pub fn catalogue() -> Vec<Setting> {
             description: "Whether reaching a host on the public internet needs a \
                           person's approval the first time an agent asks for it in a \
                           conversation. Hosts a skill already brought with it are \
-                          already consented to and are not asked about again, nor are \
-                          the internal services an operator opened. Off by default: \
+                          already consented to and are not asked about again. An \
+                          internal service an operator opened still needs a rule of \
+                          this workspace's own, and one added by hand is asked about \
+                          like any other -- name it in a skill to exempt it. Off by \
+                          default: \
                           this makes an agent's first call to each new host a \
                           stop-and-wait, which is the point for some deployments and \
                           an obstruction in the rest.",

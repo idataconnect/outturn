@@ -36,6 +36,17 @@ use uuid::Uuid;
 
 use super::commit::Hash;
 
+/// The methods this platform will send.
+///
+/// One list, because there were three: the gateway's match arm, the frontmatter
+/// validator's own const, and an array literal here. They drift asymmetrically,
+/// which is why this is the copy that had to go. Adding a seventh verb to the
+/// gateway and the validator and missing this one would stop
+/// `for_unreviewed_hosts` emitting a gate for it -- an un-approved request to every
+/// unreviewed host, silently, which is the fail-open direction. The reverse miss is
+/// a loud refusal at publish.
+pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
 const TAG_LEAF: &[u8] = b"outturn:gate:leaf:v1\0";
 const TAG_NODE: &[u8] = b"outturn:gate:node:v1\0";
 const TAG_EMPTY: &[u8] = b"outturn:gate:empty:v1\0";
@@ -192,15 +203,13 @@ pub fn for_unreviewed_hosts(allowed: &[String], exempt: &[String]) -> Vec<Gate> 
         .iter()
         .filter(|host| !exempt.iter().any(|e| e == *host))
         .flat_map(|host| {
-            ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
-                .into_iter()
-                .map(move |method| Gate {
-                    requires: REACH.to_string(),
-                    host: host.clone(),
-                    method: method.to_string(),
-                    path: "/*".to_string(),
-                    identified_by: None,
-                })
+            METHODS.into_iter().map(move |method| Gate {
+                requires: REACH.to_string(),
+                host: host.clone(),
+                method: method.to_string(),
+                path: "/*".to_string(),
+                identified_by: None,
+            })
         })
         .collect()
 }
@@ -288,10 +297,9 @@ impl Gates {
     /// the API and the gateway agree byte for byte whatever order the skills
     /// were read in.
     fn leaves(&self, workspace_id: Uuid) -> Vec<Hash> {
-        let mut leaves: Vec<Hash> = self.0.iter().map(|g| leaf(workspace_id, g)).collect();
-        leaves.sort_unstable_by_key(|h| h.0);
-        leaves.dedup_by(|a, b| a.0 == b.0);
-        leaves
+        // `commit::ordered`, shared: the dedup is what makes the carry-up tree
+        // safe, and a copy of it here is a copy that can lose it.
+        super::commit::ordered(self.0.iter().map(|g| leaf(workspace_id, g)).collect())
     }
 }
 
@@ -783,5 +791,52 @@ mod reaching {
         let root = set.root(workspace);
         assert!(set.matches(workspace, &root));
         assert!(!Gates::none().matches(workspace, &root));
+    }
+}
+
+#[cfg(test)]
+mod the_tree_shape {
+    use super::*;
+
+    fn gate(requires: &str) -> Gate {
+        Gate {
+            requires: requires.into(),
+            host: "api.example.com".into(),
+            method: "POST".into(),
+            path: "/charges".into(),
+            identified_by: None,
+        }
+    }
+
+    /// The dedup, asserted on this side too.
+    ///
+    /// `commit.rs` has had this test since it was written; this side shared the
+    /// tree and the ordering but had no test of its own, which made the copy that
+    /// matters most the untested one. Under the carry-up shape `[a, b, c]` and
+    /// `[a, b, c, c]` hash alike without dedup, so one commitment vouches for two
+    /// sets -- and here the second set can be the *smaller* one, which is a gate
+    /// vanishing and a charge going out unapproved.
+    #[test]
+    fn a_repeat_does_not_make_a_second_set_the_root_vouches_for() {
+        let workspace = uuid::Uuid::from_bytes([11; 16]);
+        let a = gate("charge");
+        let b = gate("refund");
+        let c = gate("comp");
+
+        // Deduplication is deliberate: two bound skills documenting one endpoint
+        // is ordinary, so these two are the same set and share a root.
+        assert_eq!(
+            Gates::of(vec![a.clone(), b.clone(), c.clone()])
+                .root(workspace)
+                .0,
+            Gates::of(vec![a.clone(), b.clone(), c.clone(), c.clone()])
+                .root(workspace)
+                .0,
+        );
+
+        // What must not follow from that: a genuinely smaller set passing.
+        let all = Gates::of(vec![a.clone(), b.clone(), c]);
+        let committed = all.root(workspace);
+        assert!(!Gates::of(vec![a, b]).matches(workspace, &committed));
     }
 }

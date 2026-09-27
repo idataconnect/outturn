@@ -178,11 +178,26 @@ dropped the rule from its copy gets nowhere, because the copy it can rewrite is
 not the one the token vouches for -- the same move that makes egress rules worth
 anything.
 
-The request is waiting in the action queue, addressed to a role rather than to
-a person: who may approve a charge is a question about the house's own
-organisation, and it changes without the pending request changing. Approve it,
-and the turn you left parked is given back to the queue and runs -- the charge
-goes through, and the agent tells the person who asked.
+Here the walkthrough gets ahead of the code, and it is worth saying so rather
+than leaving you to discover it. The gateway refuses the charge; nothing yet
+turns that refusal into a request for somebody's word. Raising one is a call
+somebody makes:
+
+```
+curl -X POST localhost:18080/v1/approvals -b "outturn_session=$COOKIE" \
+  -H 'content-type: application/json' \
+  -d '{"session_id":"<the conversation>","requires":"charge",
+       "reason":"£260 to the Visa ending 4471","roles":["<a role id>"]}'
+```
+
+That holds the conversation and puts the request in the queue, addressed to a
+role rather than to a person: who may approve a charge is a question about the
+house's own organisation, and it changes without the pending request changing.
+Answering it releases the hold and gives back any turn parked under it.
+
+What does not yet follow is the charge going through. An approval records no
+capability, so the resumed turn meets the same gate and is refused again --
+`docs/approvals.md`'s *Not yet* has both halves of what closing that loop needs.
 
 Decline it instead and the hold stays on. The conversation stays paused, which
 is honest: nothing has changed about whether the charge may happen.
