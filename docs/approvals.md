@@ -83,6 +83,22 @@ version of this platform reads as prose here.
 example, and the parser's tests read it off disk -- so an edit that breaks the
 declaration fails the suite rather than a cluster.
 
+## Driven once, against a cluster
+
+Worth recording, because the suite proves the parts and not the path. Against a
+live deployment: raising put a `suspended` hold on the session -- the first
+thing in this codebase ever to take one -- and an `approval.charge` item in the
+asked role's queue with the figure and the account label in its payload. The
+badge went to one. Approving released the hold and emptied the badge; answering
+again was refused as already resolved. Declining a second request left its hold
+on, and the conversation with it.
+
+And the two-person case, which is the one worth being sure of: a clerk holding a
+role that was *asked* but does not carry `approvals:answer` saw the request in
+their queue and was refused when they tried to answer it. Being asked and being
+entitled are separate, and they are separate in the running system rather than
+only in the tests.
+
 Three keys, and each earns its place.
 
 ### `requires` -- what is being asked, in a word
