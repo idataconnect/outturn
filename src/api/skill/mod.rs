@@ -1,8 +1,13 @@
 mod files;
-pub mod frontmatter;
+mod frontmatter;
 mod postgres;
 
 pub use files::{MAX_FILE_BYTES, MAX_FILES, blob_key, prepare};
+
+// The declaration at the top of an operation's file. Named rather than the
+// module made public, as `files` and `postgres` beside it are: a caller wants
+// these four things and not the parser's internals.
+pub use frontmatter::{ApprovalRule, FrontmatterError, Parsed, parse};
 
 pub use postgres::PostgresSkillStore;
 

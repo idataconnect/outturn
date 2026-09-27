@@ -126,17 +126,25 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
 
         let indented = line.starts_with(' ') || line.starts_with('\t');
         if !indented {
-            // A new top-level key ends the block. Others are left alone: a file
-            // may carry declarations this version knows nothing about.
-            inside = line.trim_end() == "approval:";
-            if inside {
-                continue;
-            }
-            // A top-level `approval: something` is a rule written as a scalar,
-            // which is not the shape and would otherwise be silently skipped.
-            if let Some(value) = line.strip_prefix("approval:")
-                && !value.trim().is_empty()
-            {
+            // A new top-level key ends the block. Split at the colon and trim
+            // the key rather than matching a literal `approval:`: YAML accepts
+            // `approval :`, and comparing against the literal left that spelling
+            // unrecognised, its children skipped, and the operation ungated with
+            // nothing said -- which is the one outcome this module exists to
+            // prevent.
+            let (key, value) = match line.split_once(':') {
+                Some((key, value)) => (key.trim(), value.trim()),
+                // Not a key at all. A stray line in frontmatter is somebody
+                // else's business, not ours.
+                None => {
+                    inside = false;
+                    continue;
+                }
+            };
+            inside = key == "approval";
+            // A rule written as a scalar is not the shape, and skipping it as an
+            // unknown key would leave a gated operation ungated.
+            if inside && !value.is_empty() {
                 return Err(FrontmatterError::Invalid(
                     "approval takes a block of keys, not a value".into(),
                 ));
@@ -153,23 +161,28 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
                 line.trim()
             )));
         };
-        let value = unquote(value.trim());
+        let key = key.trim();
+        let value = unquote(value.trim())?;
         if value.is_empty() {
-            return Err(FrontmatterError::Invalid(format!(
-                "{} has no value",
-                key.trim()
-            )));
+            return Err(FrontmatterError::Invalid(format!("{key} has no value")));
         }
-        match key.trim() {
-            "requires" => requires = Some(value.to_string()),
-            "covers" => covers = Some(value.to_string()),
-            "identified_by" => identified_by = Some(value.to_string()),
+        // Two values for one key is a contradiction, and picking one means a
+        // reviewer who read the first has approved something else. Refused
+        // rather than resolved.
+        let slot = match key {
+            "requires" => &mut requires,
+            "covers" => &mut covers,
+            "identified_by" => &mut identified_by,
             other => {
                 return Err(FrontmatterError::Invalid(format!(
                     "{other} is not a key of approval"
                 )));
             }
+        };
+        if slot.is_some() {
+            return Err(FrontmatterError::Invalid(format!("{key} is given twice")));
         }
+        *slot = Some(value.to_string());
     }
 
     let Some(requires) = requires else {
@@ -177,6 +190,18 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         if covers.is_some() || identified_by.is_some() {
             return Err(FrontmatterError::Invalid(
                 "approval needs a requires saying what is being asked".into(),
+            ));
+        }
+        // Nothing was declared. Which is only safe to conclude if the word does
+        // not appear at all: a declaration this parser failed to recognise --
+        // nested under another key, or in a shape nobody anticipated -- would
+        // otherwise leave an operation meant to be gated ungated, silently. So
+        // the presence of the word with no rule to show for it is refused.
+        if yaml.contains("approval") {
+            return Err(FrontmatterError::Invalid(
+                "this file mentions approval but declares no rule this understands; \
+                 an approval block belongs at the top level of the frontmatter"
+                    .into(),
             ));
         }
         return Ok(None);
@@ -205,16 +230,29 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
 
 /// Strips one layer of matching quotes, so `requires: "charge"` reads the same
 /// as `requires: charge`.
-fn unquote(value: &str) -> &str {
+///
+/// Both ends have to be the same character and there have to be two of them: a
+/// single `"` otherwise strips against itself and becomes a value, and an
+/// unclosed `"charge` becomes the act `"charge`, which compares unequal to every
+/// grant for `charge`. A typo that changes the act is worse than one that is
+/// refused, because nothing about it looks wrong.
+fn unquote(value: &str) -> Result<&str, FrontmatterError> {
     for quote in ['"', '\''] {
-        if let Some(inner) = value
-            .strip_prefix(quote)
-            .and_then(|v| v.strip_suffix(quote))
-        {
-            return inner;
+        if !value.starts_with(quote) && !value.ends_with(quote) {
+            continue;
         }
+        let inner = value
+            .strip_prefix(quote)
+            .filter(|rest| !rest.is_empty())
+            .and_then(|rest| rest.strip_suffix(quote));
+        return match inner {
+            Some(inner) => Ok(inner),
+            None => Err(FrontmatterError::Invalid(format!(
+                "{value} opens a quote it does not close"
+            ))),
+        };
     }
-    value
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -276,11 +314,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_block_declares_nothing() {
-        // Not an error: a file may open a block and say nothing in it, and
-        // nothing is what it then declares.
-        let parsed = parse("---\napproval:\n---\nbody").expect("parse");
-        assert_eq!(parsed.approval, None);
+    fn an_empty_block_is_refused() {
+        // This used to be allowed, on the reasoning that a block saying nothing
+        // declares nothing. That was the wrong way round: an `approval:` with
+        // nothing under it is a rule somebody started writing far more often than
+        // it is a deliberate statement of no rule, and reading it as the latter
+        // leaves an operation ungated by a file that looks like it gates one. A
+        // file that needs no approval says so by having no block.
+        let err = parse("---\napproval:\n---\nbody").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
 
     #[test]
@@ -401,5 +443,83 @@ mod against_the_real_files {
             assert_eq!(parsed.approval, None, "{name} should need no approval");
             assert_eq!(parsed.body, source, "{name} has no frontmatter to strip");
         }
+    }
+}
+
+#[cfg(test)]
+mod what_it_must_not_do_quietly {
+    use super::*;
+
+    /// Everything in here was found by review, and every one of them parsed
+    /// successfully into something wrong before it was fixed. They share a
+    /// failure mode: a file that looks like it declares a rule, and a parser
+    /// that produces a different rule or none, with nothing said either way. For
+    /// a governance declaration that is the worst outcome available -- worse than
+    /// refusing, because an operation meant to be gated is not, and the file says
+    /// it is.
+
+    #[test]
+    fn a_space_before_the_colon_is_still_the_approval_key() {
+        // YAML accepts `approval :`, so somebody writes it. Matching the literal
+        // `approval:` left this unrecognised, its children skipped, and the
+        // operation ungated.
+        let parsed = parse("---\napproval :\n  requires: charge\n---\n").expect("parse");
+        assert_eq!(parsed.approval.expect("a rule").requires, "charge");
+    }
+
+    #[test]
+    fn a_rule_nested_under_another_key_is_refused_not_skipped() {
+        // Not a shape the docs invite, but the silent-drop hole is the same:
+        // there has to be no way for the word to appear and nothing to happen.
+        let err = parse("---\nother:\n  approval: charge\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn a_wholly_indented_block_is_refused_rather_than_ignored() {
+        let err = parse("---\n  approval:\n    requires: charge\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn an_unclosed_quote_does_not_become_part_of_the_act() {
+        // `"charge` parsed to the act `"charge`, which compares unequal to every
+        // grant for `charge` -- so the rule existed and matched nothing.
+        let err = parse("---\napproval:\n  requires: \"charge\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn a_lone_quote_is_not_a_value() {
+        // A single `"` stripped against itself and became the act `"`.
+        let err = parse("---\napproval:\n  requires: \"\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn mismatched_quotes_are_refused() {
+        let err = parse("---\napproval:\n  requires: \"charge'\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn a_key_given_twice_is_refused_rather_than_resolved() {
+        // Taking the last means a reviewer who read the first approved something
+        // else.
+        let err = parse("---\napproval:\n  requires: a\n  requires: b\n---\n").unwrap_err();
+        assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    #[test]
+    fn a_file_that_never_mentions_approval_declares_nothing() {
+        // The backstop must not turn every ordinary file into an error.
+        let parsed = parse("---\ntitle: Listing rooms\n---\n# list_rooms\n").expect("parse");
+        assert_eq!(parsed.approval, None);
+    }
+
+    #[test]
+    fn a_stray_line_in_the_frontmatter_does_not_open_the_block() {
+        let parsed = parse("---\njust prose\napproval:\n  requires: charge\n---\n").expect("parse");
+        assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
 }
