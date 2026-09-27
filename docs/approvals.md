@@ -60,16 +60,24 @@ a full reader would accept anchors, aliases, multi-document streams and nested
 collections, none of which mean anything here and every one of which is a shape
 somebody eventually writes and expects to work.
 
-What it refuses is worth knowing, because each refusal is a rule that would
-otherwise be half-applied. A block with no `requires` names no act. A `covers`
-with no `identified_by` offers a unit nothing can be keyed on, so a grant for it
-would quietly become a grant for every call -- the widening this document is
-most careful about. An unknown key *under* `approval` is refused, since under a
-block this tier acts on it may be the difference between gated and not; an
-unknown key *beside* it is left alone, so a file written for a later version
-still reads as prose. And `approval:` written as a scalar is refused rather than
-skipped as an unknown key, because skipping it would leave an operation meant to
-be gated ungated.
+What it refuses is worth knowing, because every refusal is a rule that would
+otherwise be half-applied -- and a rule half-applied is an operation the file
+says is gated and the platform does not gate. Review found four ways that
+happened. `approval :` with a space was unrecognised and its keys skipped, so
+the operation was ungated and nothing said so. A wholly indented block was the
+same. An unclosed quote made `"charge` the act, which compares unequal to every
+grant for `charge`, so the rule existed and matched nothing. And a key given
+twice took the last, so a reviewer who read the first had approved something
+else. All four are refused now, and there is a test for each named after what it
+must not do quietly.
+
+The backstop is the general form of that: a file mentioning `approval` that
+produces no rule this understands is refused rather than read as declaring
+nothing. Which is also why an empty `approval:` block is an error -- it is a
+rule somebody started writing far more often than a deliberate statement of no
+rule, and a file needing no approval says so by having no block. A key we do not
+know *beside* `approval` is still left alone, so a file written for a later
+version of this platform reads as prose here.
 
 `k8s/components/hollowbrook/skill/charge_payment_account.md` is the worked
 example, and the parser's tests read it off disk -- so an edit that breaks the

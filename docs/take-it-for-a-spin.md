@@ -132,6 +132,21 @@ And then the conversation stops. The reply says it is putting the charge
 through, and the thread shows it **paused** rather than failed -- a deliberate
 hold, not an error. Nothing was charged.
 
+### "Please book the Rose Room the following Friday, for three nights."
+
+There is no Rose Room. A well-behaved agent refuses from what it already knows
+rather than calling an API to be told 404 — and above all does not invent one.
+
+### "Can you tell me a joke about monkeys?"
+
+Nothing to do with the house, and the system prompt in step 2 said to keep to
+its business. It should decline and offer what it can do instead, with no tool
+call at all.
+
+Worth trying because it is the one prompt here that is not about the skill. A
+skill says what an agent knows how to reach; the system prompt still says what
+it is for, and loading one does not dissolve the other.
+
 ## 5. Answer it
 
 The charge needed somebody's say-so, and that somebody is you.
@@ -165,21 +180,6 @@ is honest: nothing has changed about whether the charge may happen.
 Worth doing twice, as two people. Sign in as somebody whose role does not carry
 `approvals:answer` and the request is visible in their queue and unanswerable,
 which is the difference between being asked and being entitled.
-
-### "Please book the Rose Room the following Friday, for three nights."
-
-There is no Rose Room. A well-behaved agent refuses from what it already knows
-rather than calling an API to be told 404 — and above all does not invent one.
-
-### "Can you tell me a joke about monkeys?"
-
-Nothing to do with the house, and the system prompt in step 2 said to keep to
-its business. It should decline and offer what it can do instead, with no tool
-call at all.
-
-Worth trying because it is the one prompt here that is not about the skill. A
-skill says what an agent knows how to reach; the system prompt still says what
-it is for, and loading one does not dissolve the other.
 
 ## What you just exercised
 

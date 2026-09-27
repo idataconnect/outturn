@@ -35,12 +35,37 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// What this fixture serves.
+///
+/// A function rather than built inline in `main` so a test can issue requests
+/// against the same routes the process does. The specification is hand-written
+/// (see `openapi`), and the only way to hold the two together is to ask the
+/// router itself.
+fn router(state: Arc<Fixture>) -> Router {
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(|| async { "ok" }))
+        .route("/openapi.json", get(openapi))
+        .route("/rooms", get(list_rooms))
+        .route("/rooms/{id}", get(get_room))
+        .route("/availability", get(availability))
+        .route("/bookings", get(list_bookings).post(create_booking))
+        .route("/bookings/{id}", get(get_booking))
+        .route("/payment-accounts", get(list_payment_accounts))
+        .route("/charges", get(list_charges).post(create_charge))
+        // Resets between tests, so one test's bookings are not another's
+        // availability. Not something a real service would offer, which is
+        // why it is named for what it is.
+        .route("/fixture/reset", post(reset))
+        .with_state(state)
+}
 
 /// A room, as the guesthouse thinks of one.
 #[derive(Debug, Clone, Serialize)]
@@ -258,22 +283,7 @@ async fn main() {
         client: reqwest::Client::new(),
     });
 
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(|| async { "ok" }))
-        .route("/openapi.json", get(openapi))
-        .route("/rooms", get(list_rooms))
-        .route("/rooms/{id}", get(get_room))
-        .route("/availability", get(availability))
-        .route("/bookings", get(list_bookings).post(create_booking))
-        .route("/bookings/{id}", get(get_booking))
-        .route("/payment-accounts", get(list_payment_accounts))
-        .route("/charges", get(list_charges).post(create_charge))
-        // Resets between tests, so one test's bookings are not another's
-        // availability. Not something a real service would offer, which is
-        // why it is named for what it is.
-        .route("/fixture/reset", post(reset))
-        .with_state(state);
+    let app = router(state);
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -288,6 +298,24 @@ async fn main() {
 
 fn marked<T: Serialize>(body: T) -> impl IntoResponse {
     ([(FIXTURE_HEADER, "hollowbrook")], Json(body))
+}
+
+/// The same, for an answer that names its status.
+///
+/// `marked` covers the implicit 200 and nothing else, so every response with a
+/// status of its own used to write the header tuple out by hand -- fourteen
+/// copies of it in this file, seven of them the error shape below. The header is
+/// the contract: it is what lets somebody finding this data later tell it is not
+/// real, and there are tests asserting it. A `(StatusCode, Json<_>)` without it
+/// is a perfectly good `IntoResponse`, so a branch that forgets serves an
+/// unmarked response and nothing objects.
+fn marked_with<T: Serialize>(status: StatusCode, body: T) -> Response {
+    (status, [(FIXTURE_HEADER, "hollowbrook")], Json(body)).into_response()
+}
+
+/// A refusal, in the shape every refusal here takes.
+fn refuse(status: StatusCode, message: &str) -> Response {
+    marked_with(status, serde_json::json!({ "error": message }))
 }
 
 async fn list_rooms(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
@@ -313,12 +341,7 @@ async fn get_room(State(state): State<Arc<Fixture>>, Path(id): Path<String>) -> 
             }),
         )
             .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({ "error": "no such room" })),
-        )
-            .into_response(),
+        None => refuse(StatusCode::NOT_FOUND, "no such room"),
     }
 }
 
@@ -333,14 +356,12 @@ async fn availability(
     Query(q): Query<AvailabilityQuery>,
 ) -> impl IntoResponse {
     if q.departure <= q.arrival {
-        return (
+        return marked_with(
             StatusCode::BAD_REQUEST,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({
+            serde_json::json!({
                 "error": "departure must be after arrival",
-            })),
-        )
-            .into_response();
+            }),
+        );
     }
 
     let bookings = state.bookings.lock().expect("bookings");
@@ -364,17 +385,15 @@ async fn availability(
         })
         .collect();
 
-    (
+    marked_with(
         StatusCode::OK,
-        [(FIXTURE_HEADER, "hollowbrook")],
-        Json(serde_json::json!({
+        serde_json::json!({
             "arrival": q.arrival,
             "departure": q.departure,
             "nights": nights,
             "available": free,
-        })),
+        }),
     )
-        .into_response()
 }
 
 async fn list_bookings(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
@@ -395,12 +414,7 @@ async fn get_booking(
         .cloned();
     match found {
         Some(b) => (StatusCode::OK, [(FIXTURE_HEADER, "hollowbrook")], Json(b)).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({ "error": "no such booking" })),
-        )
-            .into_response(),
+        None => refuse(StatusCode::NOT_FOUND, "no such booking"),
     }
 }
 
@@ -414,20 +428,10 @@ async fn create_booking(
     Json(input): Json<NewBooking>,
 ) -> impl IntoResponse {
     let Some(room) = state.rooms.iter().find(|r| r.id == input.room_id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({ "error": "no such room" })),
-        )
-            .into_response();
+        return refuse(StatusCode::NOT_FOUND, "no such room");
     };
     if input.departure <= input.arrival {
-        return (
-            StatusCode::BAD_REQUEST,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({ "error": "departure must be after arrival" })),
-        )
-            .into_response();
+        return refuse(StatusCode::BAD_REQUEST, "departure must be after arrival");
     }
 
     let booking = {
@@ -436,12 +440,7 @@ async fn create_booking(
             b.room_id == input.room_id && b.arrival < input.departure && input.arrival < b.departure
         });
         if clash {
-            return (
-                StatusCode::CONFLICT,
-                [(FIXTURE_HEADER, "hollowbrook")],
-                Json(serde_json::json!({ "error": "that room is taken for those dates" })),
-            )
-                .into_response();
+            return refuse(StatusCode::CONFLICT, "that room is taken for those dates");
         }
         let nights = (input.departure - input.arrival).num_days().max(0) as u32;
         let booking = Booking {
@@ -459,12 +458,7 @@ async fn create_booking(
 
     announce(&state, &booking).await;
 
-    (
-        StatusCode::CREATED,
-        [(FIXTURE_HEADER, "hollowbrook")],
-        Json(booking),
-    )
-        .into_response()
+    marked_with(StatusCode::CREATED, booking)
 }
 
 /// The cards the guesthouse holds, by handle.
@@ -473,20 +467,12 @@ async fn create_booking(
 /// and the label to say "the Visa ending 4471" to a guest, and needs nothing
 /// else.
 async fn list_payment_accounts(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [(FIXTURE_HEADER, "hollowbrook")],
-        Json(state.payment_accounts.clone()),
-    )
+    marked(state.payment_accounts.clone())
 }
 
 async fn list_charges(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
     let charges = state.charges.lock().expect("charges").clone();
-    (
-        StatusCode::OK,
-        [(FIXTURE_HEADER, "hollowbrook")],
-        Json(charges),
-    )
+    marked(charges)
 }
 
 /// Takes money against a card the guesthouse holds.
@@ -501,15 +487,6 @@ async fn create_charge(
     State(state): State<Arc<Fixture>>,
     Json(input): Json<NewCharge>,
 ) -> impl IntoResponse {
-    let refuse = |status: StatusCode, message: &str| {
-        (
-            status,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(serde_json::json!({ "error": message })),
-        )
-            .into_response()
-    };
-
     if !state
         .payment_accounts
         .iter()
@@ -528,29 +505,55 @@ async fn create_charge(
             None => return refuse(StatusCode::NOT_FOUND, "no such booking"),
         }
     };
+    let mut charges = state.charges.lock().expect("charges");
+
+    // A key it has seen returns the first charge rather than taking the money
+    // again, and it is checked *before* the total below: a retry of a charge
+    // that already exhausted the booking would otherwise be refused as an
+    // overcharge, which is the one case where refusing is the wrong answer.
+    //
+    // The request has to match what the key bought, though. Keys here are
+    // caller-chosen strings like `turn-7-call-1`, so two unrelated sessions
+    // picking the same one is likely rather than adversarial -- and a lookup on
+    // the key alone handed the second caller the first's charge, complete with
+    // somebody else's account and amount, while silently not taking the money
+    // they asked for. A real idempotent endpoint refuses a key reused for
+    // different arguments, and this is what that looks like.
+    if let Some(key) = input.idempotency_key.as_deref()
+        && let Some(seen) = charges.iter().find(|c| c.id == charge_id(key))
+    {
+        let same = seen.payment_account_id == input.payment_account_id
+            && seen.booking_id == input.booking_id
+            && seen.amount_pence == input.amount_pence;
+        return if same {
+            marked_with(StatusCode::OK, seen.clone())
+        } else {
+            refuse(
+                StatusCode::CONFLICT,
+                "that idempotency key was used for a different charge",
+            )
+        };
+    }
+
     // A guesthouse does not take more than the stay costs, and an agent that
     // worked the total out for itself is exactly the caller this catches.
-    if input.amount_pence > booking_total {
+    //
+    // Against what is already charged rather than against this charge alone. A
+    // single-charge check passes three charges of the full total, which is the
+    // shape a retried turn produces: the amount is right every time and the
+    // guest is billed three times over. The lock is held across the sum and the
+    // insert, so two concurrent charges cannot each read the same total and
+    // both fit under it.
+    let already: u32 = charges
+        .iter()
+        .filter(|c| c.booking_id == input.booking_id)
+        .map(|c| c.amount_pence)
+        .sum();
+    if input.amount_pence.saturating_add(already) > booking_total {
         return refuse(
             StatusCode::BAD_REQUEST,
             "that is more than the booking's total",
         );
-    }
-
-    let mut charges = state.charges.lock().expect("charges");
-
-    // A key it has seen returns the first charge rather than taking the money
-    // again. Keyed on the charge's own id, since that is what the key was
-    // recorded against.
-    if let Some(key) = input.idempotency_key.as_deref()
-        && let Some(seen) = charges.iter().find(|c| c.id == charge_id(key))
-    {
-        return (
-            StatusCode::OK,
-            [(FIXTURE_HEADER, "hollowbrook")],
-            Json(seen.clone()),
-        )
-            .into_response();
     }
 
     let charge = Charge {
@@ -565,12 +568,7 @@ async fn create_charge(
     };
     charges.push(charge.clone());
 
-    (
-        StatusCode::CREATED,
-        [(FIXTURE_HEADER, "hollowbrook")],
-        Json(charge),
-    )
-        .into_response()
+    marked_with(StatusCode::CREATED, charge)
 }
 
 /// A charge's id, derived from the caller's idempotency key.
@@ -1091,8 +1089,76 @@ mod tests {
 
         assert_eq!(
             described, served,
-            "the specification and the router disagree about what exists"
+            "the specification and the document's own list of what is served disagree"
         );
+    }
+
+    /// A fixture with one of everything, for serving requests against.
+    fn state_for_routes() -> Arc<Fixture> {
+        Arc::new(Fixture {
+            rooms: Vec::new(),
+            bookings: Mutex::new(Vec::new()),
+            payment_accounts: Vec::new(),
+            charges: Mutex::new(Vec::new()),
+            webhook: None,
+            client: reqwest::Client::new(),
+        })
+    }
+
+    /// Every method the specification advertises is one the router serves.
+    ///
+    /// The list in the test above is written by hand, which is worth saying
+    /// plainly: it catches a *specification* that grew a path nobody serves, and
+    /// it cannot catch a router that grew one nobody documented -- adding both
+    /// the route and the list entry and forgetting the spec passes. Deriving the
+    /// list from the `Router` would fix that, and axum does not expose its routes
+    /// to be walked.
+    ///
+    /// What is checkable is the other half, and it is the half that bites: a
+    /// specification advertising `createCharge` against a path registered
+    /// `get`-only reads as a working write to an agent, which discovers otherwise
+    /// with a 405 it cannot act on. So each advertised method is issued against
+    /// the real router and must not come back "method not allowed".
+    #[tokio::test]
+    async fn every_method_the_specification_advertises_is_served() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let spec = spec().await;
+        for (path, methods) in spec["paths"].as_object().expect("paths") {
+            for method in methods.as_object().expect("methods").keys() {
+                // A concrete value for a path parameter: what comes back does not
+                // matter, only that the router has a handler for the method.
+                let concrete = path.replace("{id}", "nonexistent");
+                let request = Request::builder()
+                    .method(method.to_uppercase().as_str())
+                    .uri(format!(
+                        "{concrete}?arrival=2026-01-01&departure=2026-01-02"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request");
+                let response = router(state_for_routes())
+                    .oneshot(request)
+                    .await
+                    .expect("response");
+                assert_ne!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "the specification advertises {} {path}, which the router does not serve",
+                    method.to_uppercase()
+                );
+                // Only the method check. A route that exists answers 404 for a
+                // resource that does not, and a body this test did not bother to
+                // make valid is rejected as 422 before any handler runs -- from
+                // out here neither is distinguishable from a missing route, and
+                // asserting on them made this fail for two reasons that were not
+                // the one it is for. `METHOD_NOT_ALLOWED` is the one status axum
+                // returns only when the path matched and the method did not,
+                // which is exactly the disagreement worth catching.
+            }
+        }
     }
 
     /// Every operation says what comes back, not merely that something does.
@@ -1168,11 +1234,16 @@ mod tests {
     }
 }
 
+/// The fixture and the call the charging tests share.
+///
+/// Its own module so two test modules can use one copy: a second hand-built
+/// `Fixture` is a second thing to update when the struct gains a field, and this
+/// file already had three.
 #[cfg(test)]
-mod charging {
+mod charging_helpers {
     use super::*;
 
-    fn fixture() -> Arc<Fixture> {
+    pub(super) fn fixture() -> Arc<Fixture> {
         Arc::new(Fixture {
             rooms: vec![Room {
                 id: "orchard".into(),
@@ -1201,7 +1272,7 @@ mod charging {
         })
     }
 
-    async fn charge(
+    pub(super) async fn charge(
         state: &Arc<Fixture>,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
@@ -1215,6 +1286,12 @@ mod charging {
             .expect("body");
         (status, serde_json::from_slice(&bytes).expect("json"))
     }
+}
+
+#[cfg(test)]
+mod charging {
+    use super::charging_helpers::*;
+    use super::*;
 
     #[tokio::test]
     async fn a_charge_against_a_known_account_and_booking_is_taken() {
@@ -1325,6 +1402,86 @@ mod charging {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
+    /// Three charges of the full total are three charges, and must not all pass.
+    ///
+    /// The shape a retried turn produces: the amount is right every time, and a
+    /// check that only compares one charge against the total lets every one of
+    /// them through. This is why the guard sums what is already charged.
+    #[tokio::test]
+    async fn the_total_is_a_ceiling_on_the_booking_not_on_one_charge() {
+        let state = fixture();
+        let full = serde_json::json!({
+            "payment_account_id": "pa_4471",
+            "booking_id": "bk_test",
+            "amount_pence": 26_000,
+        });
+
+        let (first, _) = charge(&state, full.clone()).await;
+        assert_eq!(first, StatusCode::CREATED);
+        let (second, body) = charge(&state, full).await;
+        assert_eq!(
+            second,
+            StatusCode::BAD_REQUEST,
+            "the booking was charged twice over: {body}"
+        );
+        assert_eq!(state.charges.lock().expect("charges").len(), 1);
+    }
+
+    /// Two halves of a stay are fine, and a third half is not.
+    #[tokio::test]
+    async fn partial_charges_add_up_to_the_total_and_no_further() {
+        let state = fixture();
+        let half = serde_json::json!({
+            "payment_account_id": "pa_4471",
+            "booking_id": "bk_test",
+            "amount_pence": 13_000,
+        });
+
+        for expected in [
+            StatusCode::CREATED,
+            StatusCode::CREATED,
+            StatusCode::BAD_REQUEST,
+        ] {
+            let (status, body) = charge(&state, half.clone()).await;
+            assert_eq!(status, expected, "{body}");
+        }
+        let total: u32 = state
+            .charges
+            .lock()
+            .expect("charges")
+            .iter()
+            .map(|c| c.amount_pence)
+            .sum();
+        assert_eq!(total, 26_000);
+    }
+
+    /// A retry of a charge that filled the booking is served, not refused.
+    ///
+    /// The one case where refusing an overcharge is the wrong answer: the money
+    /// was already taken, and the caller asking again with the same key is
+    /// asking what happened rather than asking for more.
+    #[tokio::test]
+    async fn a_retry_of_the_last_charge_is_still_served() {
+        let state = fixture();
+        let full = serde_json::json!({
+            "payment_account_id": "pa_4471",
+            "booking_id": "bk_test",
+            "amount_pence": 26_000,
+            "idempotency_key": "turn-7-call-1",
+        });
+
+        let (first, first_body) = charge(&state, full.clone()).await;
+        assert_eq!(first, StatusCode::CREATED);
+        let (second, second_body) = charge(&state, full).await;
+        assert_eq!(
+            second,
+            StatusCode::OK,
+            "a keyed retry was refused as an overcharge: {second_body}"
+        );
+        assert_eq!(first_body["id"], second_body["id"]);
+        assert_eq!(state.charges.lock().expect("charges").len(), 1);
+    }
+
     #[tokio::test]
     async fn nothing_here_can_return_a_card_number() {
         // The reason a payment account number exists. A transcript is replayed
@@ -1353,5 +1510,56 @@ mod charging {
             longest_run < 13,
             "a {longest_run}-digit run reached the wire, which is long enough to be a card: {text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod reusing_a_key {
+    use super::charging_helpers::*;
+    use super::*;
+
+    /// A key reused for different arguments is refused, not served.
+    ///
+    /// Keys here are caller-chosen strings like `turn-7-call-1`, so two
+    /// unrelated sessions choosing the same one is ordinary rather than
+    /// adversarial. Matching on the key alone handed the second caller the
+    /// first's charge -- another account, another amount -- and silently skipped
+    /// the charge they asked for.
+    #[tokio::test]
+    async fn a_key_reused_for_a_different_charge_is_refused() {
+        let state = fixture();
+        let (first, _) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_4471",
+                "booking_id": "bk_test",
+                "amount_pence": 13_000,
+                "idempotency_key": "turn-7-call-1",
+            }),
+        )
+        .await;
+        assert_eq!(first, StatusCode::CREATED);
+
+        let (second, body) = charge(
+            &state,
+            serde_json::json!({
+                "payment_account_id": "pa_4471",
+                "booking_id": "bk_test",
+                "amount_pence": 9_000,
+                "idempotency_key": "turn-7-call-1",
+            }),
+        )
+        .await;
+        assert_eq!(
+            second,
+            StatusCode::CONFLICT,
+            "a key reused for a different amount was served: {body}"
+        );
+        assert_eq!(
+            body["amount_pence"],
+            serde_json::Value::Null,
+            "the other charge's body was handed over: {body}"
+        );
+        assert_eq!(state.charges.lock().expect("charges").len(), 1);
     }
 }
