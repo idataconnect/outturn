@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { annotate, parts as parts_, splitAtSteers, withQuote } from './useChatRuntime'
+import {
+  annotate,
+  parts as parts_,
+  splitAtSteers,
+  turnIsRunning,
+  withQuote,
+} from './useChatRuntime'
 import type { Message } from './chat'
 
 /** A stored message, with only what `annotate` reads. */
@@ -403,5 +409,61 @@ describe('a prompt whose reply has begun to think', () => {
       message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: '' }),
     ]
     expect(statusOf(msgs, 'u1')).toEqual({ kind: 'waiting' })
+  })
+})
+
+describe('whether a turn is running, for whoever is looking', () => {
+  /// The gap this closes: `isRunning` was set only by the tab that sent, so a
+  /// viewer of somebody else's session was offered no stop button -- and,
+  /// because the library picks between `enqueue` and `steer` on the same flag,
+  /// a message they typed mid-reply started a new turn instead of steering the
+  /// running one.
+  it('is running for a viewer who did not start the turn', () => {
+    expect(
+      turnIsRunning([
+        message({ id: 'u1', role: 'user', content: 'go', job_state: 'running' }),
+        message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'part' }),
+      ]),
+    ).toBe(true)
+  })
+
+  it('is running before the reply row exists', () => {
+    expect(
+      turnIsRunning([message({ id: 'u1', role: 'user', content: 'go', job_state: 'pending' })]),
+    ).toBe(true)
+  })
+
+  /// Every one of these must read as not running. If any stuck true the
+  /// composer would offer stop for ever and every later message would be
+  /// steered into a turn that had ended.
+  it.each(['succeeded', 'failed', 'cancelled'] as const)(
+    'is not running once the turn is %s',
+    (state) => {
+      expect(
+        turnIsRunning([
+          message({ id: 'u1', role: 'user', content: 'go', job_state: state }),
+          message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'done' }),
+        ]),
+      ).toBe(false)
+    },
+  )
+
+  /// A parked turn is waiting on a person, not on a model. Stopping it is not
+  /// what the reader wants, and a message typed now is not a steer -- there is
+  /// nothing running to steer into.
+  it('is not running while a turn is parked on an approval', () => {
+    expect(
+      turnIsRunning([message({ id: 'u1', role: 'user', content: 'go', job_state: 'parked' })]),
+    ).toBe(false)
+  })
+
+  it('is not running in the window before a job row exists', () => {
+    expect(
+      turnIsRunning([message({ id: 'u1', role: 'user', content: 'go', job_state: null })]),
+    ).toBe(false)
+  })
+
+  it('is not running on an empty transcript', () => {
+    expect(turnIsRunning([])).toBe(false)
   })
 })

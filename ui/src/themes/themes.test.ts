@@ -75,3 +75,38 @@ describe('the default look does not leak into components', () => {
     expect(offenders).toEqual([])
   })
 })
+
+/**
+ * CSS requires every `@import` to precede every rule, and Tailwind's expands
+ * into some seventeen hundred of them. So a theme that imports a webfont has to
+ * be imported *before* Tailwind, or its import lands after all those rules and
+ * PostCSS refuses the whole stylesheet -- which renders the app with no styles
+ * at all rather than with the wrong ones.
+ *
+ * It hid for months because only a theme with an import of its own trips it,
+ * and the default has none.
+ */
+describe('a theme that imports a webfont', () => {
+  const INDEX = join(DIR, '..', 'index.css')
+  const index = readFileSync(INDEX, 'utf8')
+
+  it('is imported before tailwind, whose rules would otherwise precede it', () => {
+    const theme = index.indexOf('@import "virtual:theme.css"')
+    const tailwind = index.indexOf('@import "tailwindcss"')
+    expect(theme).toBeGreaterThanOrEqual(0)
+    expect(tailwind).toBeGreaterThanOrEqual(0)
+    expect(theme).toBeLessThan(tailwind)
+  })
+
+  it.each(themes.map((t) => [t] as const))('%s puts any import above its own rules', (theme) => {
+    const css = read(theme)
+    const lastImport = css.lastIndexOf('@import')
+    if (lastImport < 0) return
+    // `@theme` and `:root` are the two things these files open with.
+    const firstRule = Math.min(
+      ...[css.indexOf('@theme'), css.indexOf(':root')].filter((i) => i >= 0),
+    )
+    if (!Number.isFinite(firstRule)) return
+    expect(lastImport).toBeLessThan(firstRule)
+  })
+})

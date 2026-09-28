@@ -357,3 +357,29 @@ describe('copying a reply', () => {
     expect(bar.className).toContain('opacity-100')
   })
 })
+
+// Thinking is a message part now, so it is the renderer that has to know about
+// it -- and a part the renderer cannot draw is the kind of thing that takes the
+// message down with it rather than merely omitting a line.
+describe('a reply that shows its thinking', () => {
+  const reply: ThreadMessageLike[] = [
+    { role: 'user', content: [{ type: 'text', text: 'is the room free?' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: 'I should check the calendar.' },
+        { type: 'text', text: 'Yes, it is free.' },
+      ],
+    },
+  ]
+
+  it('still draws the words the agent said', () => {
+    render(<Harness messages={reply} />)
+    expect(screen.getByText('Yes, it is free.')).toBeInTheDocument()
+  })
+
+  it('offers the thinking beside them', () => {
+    render(<Harness messages={reply} />)
+    expect(screen.getByRole('button', { name: /thought about this/i })).toBeInTheDocument()
+  })
+})
