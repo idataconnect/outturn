@@ -556,6 +556,8 @@ impl AnthropicStream {
                                         arguments: Some(String::new()),
                                     }),
                                 }]),
+                                reasoning: None,
+                                reasoning_content: None,
                             },
                             None,
                         ))
@@ -581,6 +583,8 @@ impl AnthropicStream {
                                 role: None,
                                 content: Some(text.to_string()),
                                 tool_calls: None,
+                                reasoning: None,
+                                reasoning_content: None,
                             },
                             None,
                         ))
@@ -614,6 +618,8 @@ impl AnthropicStream {
                                         arguments: Some(fragment.to_string()),
                                     }),
                                 }]),
+                                reasoning: None,
+                                reasoning_content: None,
                             },
                             None,
                         ))
@@ -1435,6 +1441,8 @@ impl GeminiStream {
                     role: None,
                     content,
                     tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+                    reasoning: None,
+                    reasoning_content: None,
                 },
                 finish_reason: finish,
             }],

@@ -55,7 +55,7 @@ export type PendingApproval = {
   covers?: { field?: string; unit?: string } | null
 }
 
-type Annotated = Message & {
+export type Annotated = Message & {
   status?: MessageStatus | null
   /** On a reply: its turn is still running, so a call without a result is
    *  one still being run, not one whose turn died before it answered. */
@@ -272,7 +272,7 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
  * was kept is read the way it used to be replayed -- its calls, then its
  * words -- which is what those turns were.
  */
-function parts(message: Annotated): ThreadMessageLike['content'] {
+export function parts(message: Annotated): ThreadMessageLike['content'] {
   const calls = message.metadata.tool_calls ?? []
   const drawn = (call: ToolCallRecord) => ({
     type: 'tool-call' as const,
@@ -294,15 +294,25 @@ function parts(message: Annotated): ThreadMessageLike['content'] {
     argsText: JSON.stringify({ action: call.action }),
   })
 
+  // First, because it came first: the model thought and then answered. Drawn
+  // as a reasoning part so assistant-ui collapses it behind its own disclosure
+  // rather than presenting a model's private deliberation as the reply.
+  const thinking = message.metadata.reasoning
+  const thought =
+    thinking !== undefined && thinking !== ''
+      ? [{ type: 'reasoning' as const, text: thinking }]
+      : []
+
   const recorded = message.metadata.parts
   if (!recorded || recorded.length === 0) {
     return [
+      ...thought,
       ...calls.map(drawn),
       { type: 'text' as const, text: message.content },
     ] as ThreadMessageLike['content']
   }
 
-  const out = []
+  const out = [...thought]
   for (const part of recorded) {
     if (part.type === 'text') {
       if (part.text !== '') out.push({ type: 'text' as const, text: part.text })
@@ -576,6 +586,7 @@ export function useChatRuntime(
           for (const event of result.events) {
             if (
               event.kind !== 'chat.delta' &&
+              event.kind !== 'chat.reasoning' &&
               event.kind !== 'chat.tool' &&
               event.kind !== 'chat.tool_result'
             ) {
@@ -684,6 +695,27 @@ export function useChatRuntime(
                     metadata: { ...m.metadata, parts: [...parts, { type: 'steer', id }] },
                   }
                 }),
+              )
+              continue
+            }
+            if (event.kind === 'chat.reasoning') {
+              // No index to check. A delta is reconciled against stored content
+              // -- a gap means the reply would be wrong -- but thinking is never
+              // folded into content, so there is nothing for a missing fragment
+              // to corrupt and a refetch would only show it twice.
+              const { message_id, text } = event.payload
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === message_id
+                    ? {
+                        ...m,
+                        metadata: {
+                          ...m.metadata,
+                          reasoning: (m.metadata.reasoning ?? '') + text,
+                        },
+                      }
+                    : m,
+                ),
               )
               continue
             }

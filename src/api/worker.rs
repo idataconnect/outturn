@@ -423,6 +423,13 @@ pub(super) struct TurnOutcome {
     /// the event stream, which is already in order -- the arrangement was
     /// never unknown, only discarded.
     parts: Vec<serde_json::Value>,
+    /// The model's thinking, where it produced any, joined across the turn.
+    ///
+    /// Kept beside the reply rather than in it. It is not what the agent said:
+    /// it never joins `content`, it is not a `parts` entry, and the projection
+    /// never sends it to a later turn -- a model handed its own reasoning back
+    /// as history reads it as something it said and answers it.
+    reasoning: String,
     /// Summed across every round of the turn, counted by the runtime host.
     usage: Usage,
     /// The endpoint that served it, for attributing spend.
@@ -587,6 +594,7 @@ impl Worker {
         let mut tools: Vec<serde_json::Value> = Vec::new();
         // Built as the events arrive, which is the order they happened in.
         let mut parts: Vec<serde_json::Value> = Vec::new();
+        let mut reasoning = String::new();
         // The session's account label, for the ledger. Read once, on the
         // first call that needs it, so a turn that makes no model call reads
         // nothing.
@@ -625,6 +633,24 @@ impl Worker {
                             )
                             .await?;
                         }
+                    }
+                    Ok(ExecuteEvent::Reasoning { text }) => {
+                        // Accumulated for the transcript and announced for the
+                        // reader, the same two places a delta goes -- but into
+                        // its own field and its own event kind, because it is
+                        // not the reply and must never be concatenated to it.
+                        reasoning.push_str(&text);
+                        events::append(
+                            &self.pool,
+                            payload.workspace_id,
+                            Some(payload.session_id),
+                            "chat.reasoning",
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "text": text,
+                            }),
+                        )
+                        .await?;
                     }
                     Ok(ExecuteEvent::Delta { idx, text }) => {
                         match parts.last_mut() {
@@ -855,6 +881,7 @@ impl Worker {
                             content,
                             tools,
                             parts,
+                            reasoning,
                             usage: Usage {
                                 // Recorded as signed, since a provider that
                                 // reports nothing should read as absent rather
@@ -1948,11 +1975,18 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
-        let metadata = if reply.tools.is_empty() {
+        let mut metadata = if reply.tools.is_empty() {
             serde_json::json!({})
         } else {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
+        // A sibling of `parts`, never a member of it. Everything that builds a
+        // request to a model walks `parts`, so thinking kept here cannot reach
+        // one by accident -- and a turn that thought and said nothing else still
+        // has something in the transcript to explain where its tokens went.
+        if !reply.reasoning.is_empty() {
+            metadata["reasoning"] = serde_json::json!(reply.reasoning);
+        }
 
         let finished = self
             .chat

@@ -28,6 +28,7 @@ import { useMessageAge } from '../lib/useMessageAge'
 import type { MessageStatus } from '../lib/useChatRuntime'
 import MarkdownText, { UserMarkdownText } from './MarkdownText'
 import MessageAge from './MessageAge'
+import Reasoning from './Reasoning'
 import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
 import Working from './Working'
@@ -323,6 +324,7 @@ function AssistantMessage() {
           components={{
             Text: MarkdownText,
             Empty: Nothing,
+            Reasoning,
             tools: { by_name: toolRenderers, Fallback: ToolCall },
           }}
         />
