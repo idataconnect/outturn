@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { annotate, parts, splitAtSteers, withQuote } from './useChatRuntime'
-import type { Annotated } from './useChatRuntime'
+import { annotate, parts as parts_, splitAtSteers, withQuote } from './useChatRuntime'
 import type { Message } from './chat'
 
 /** A stored message, with only what `annotate` reads. */
@@ -310,60 +309,71 @@ describe('a prompt answered across more than one attempt', () => {
   })
 })
 
-describe('a model that thought before it answered', () => {
-  const thinking = (over: Partial<Message> = {}) =>
-    parts({
-      ...message({
+describe('a model that thought while it worked', () => {
+  const drawnFrom = (parts, content = 'done', calls = undefined) =>
+    parts_(
+      message({
         id: 'a1',
         role: 'assistant',
-        content: 'The Orchard Room is free.',
-        metadata: { reasoning: 'Checking the calendar first.' },
-        ...over,
+        content,
+        metadata: calls ? { parts, tool_calls: calls } : { parts },
       }),
-    } as Annotated)
+    )
 
-  it('shows the thinking before the answer, which is the order it happened in', () => {
-    const drawn = thinking()
-    expect(drawn[0]).toEqual({ type: 'reasoning', text: 'Checking the calendar first.' })
-    expect(drawn[1]).toEqual({ type: 'text', text: 'The Orchard Room is free.' })
+  it('draws the thinking where it happened, not at the top', () => {
+    const drawn = drawnFrom([
+      { type: 'reasoning', text: 'I should look it up.' },
+      { type: 'call', id: 't1' },
+      { type: 'reasoning', text: 'Sleeps two, so no.' },
+      { type: 'text', text: "It won't suit them." },
+    ], "It won't suit them.", [
+      { id: 't1', name: 'fetch_url', action: 'Checking' },
+    ])
+
+    expect(drawn.map((p) => p.type)).toEqual([
+      'reasoning',
+      'tool-call',
+      'reasoning',
+      'text',
+    ])
   })
 
-  /// The failure this whole path exists for: the model spent its turn thinking
-  /// and never spoke. Before reasoning was carried through, such a reply stored
-  /// empty and rendered as nothing at all, so a reader saw a question that had
-  /// silently gone unanswered.
+  /// The shape this change is for. One accumulated block would say the model
+  /// deliberated once -- about a tool result it had not yet seen when it
+  /// started thinking.
+  it('keeps two thoughts separate when a tool call came between them', () => {
+    const drawn = drawnFrom([
+      { type: 'reasoning', text: 'first thought' },
+      { type: 'call', id: 't1' },
+      { type: 'reasoning', text: 'second thought' },
+    ], '', [{ id: 't1', name: 'fetch_url', action: 'Checking' }])
+
+    const thoughts = drawn.filter((p) => p.type === 'reasoning')
+    expect(thoughts).toHaveLength(2)
+    expect(thoughts[0]).toEqual({ type: 'reasoning', text: 'first thought' })
+    expect(thoughts[1]).toEqual({ type: 'reasoning', text: 'second thought' })
+  })
+
   it('has something to show for a turn that only thought', () => {
-    const drawn = thinking({ content: '' })
-    expect(drawn).toContainEqual({ type: 'reasoning', text: 'Checking the calendar first.' })
+    const drawn = drawnFrom([{ type: 'reasoning', text: 'thinking, and no answer' }], '')
+    expect(drawn).toContainEqual({ type: 'reasoning', text: 'thinking, and no answer' })
+  })
+
+  it('keeps thinking out of the text, which is what gets stored and replayed', () => {
+    const drawn = drawnFrom([
+      { type: 'reasoning', text: 'deliberating' },
+      { type: 'text', text: 'the answer' },
+    ], 'the answer')
+    const said = drawn
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+    expect(said).toBe('the answer')
+    expect(said).not.toContain('deliberating')
   })
 
   it('draws no reasoning part when the model did not think aloud', () => {
-    const drawn = thinking({ metadata: {} })
+    const drawn = drawnFrom([{ type: 'text', text: 'just an answer' }], 'just an answer')
     expect(drawn.some((p) => p.type === 'reasoning')).toBe(false)
-  })
-
-  it('keeps thinking out of the reply, which is what gets stored and replayed', () => {
-    const drawn = thinking()
-    const said = drawn
-      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-      .map((p) => p.text)
-      .join('')
-    expect(said).toBe('The Orchard Room is free.')
-    expect(said).not.toContain('Checking the calendar')
-  })
-
-  it('still shows thinking on a reply that also called tools', () => {
-    const drawn = thinking({
-      metadata: {
-        reasoning: 'I should check availability.',
-        tool_calls: [{ id: 't1', name: 'fetch_url', action: 'Checking availability' }],
-        parts: [
-          { type: 'call', id: 't1' },
-          { type: 'text', text: 'The Orchard Room is free.' },
-        ],
-      },
-    })
-    expect(drawn[0]).toEqual({ type: 'reasoning', text: 'I should check availability.' })
-    expect(drawn.some((p) => p.type === 'tool-call')).toBe(true)
   })
 })
