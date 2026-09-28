@@ -1,6 +1,14 @@
 import { api, ApiError } from './api'
 
-export type Agent = { id: string; name: string; slug: string }
+export type Agent = {
+  id: string
+  name: string
+  slug: string
+  description: string
+  enabled: boolean
+  /** Whether this reader may start a conversation with it. */
+  can_chat: boolean
+}
 export type AgentSession = { id: string; agent_id: string; title: string }
 
 /** A tool the agent ran, labelled by the agent with what it was doing. */
