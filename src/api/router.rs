@@ -231,25 +231,22 @@ pub(super) async fn require_in(
 /// Two checks rather than one: whether the caller holds the authority at all,
 /// and whether anybody narrowed them to a set of agents this one is not in. An
 /// authority that is not narrowed by a scope -- `agents:read`, and everything
-/// that is not about an agent -- takes the first check alone.
+/// that is not about an agent -- takes the first check alone, and never pays
+/// for reading the scope.
 pub(super) async fn require_for_agent(
     state: &ApiState,
     claims: &SessionClaims,
     authority: Authority,
     agent_id: Uuid,
 ) -> Result<(), ApiError> {
-    require(state, claims, authority).await?;
+    let held = authorities_of(state, claims).await?;
+    let reach = if super::scope::is_narrowed(authority) {
+        reach_of(state, claims).await?
+    } else {
+        super::scope::Reach::default()
+    };
 
-    if !super::scope::is_narrowed(authority) {
-        return Ok(());
-    }
-    let reach = state
-        .scopes
-        .reach(claims.workspace_id, claims.subject)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if reach.covers(agent_id) {
+    if may_for_agent(&held, &reach, authority, agent_id) {
         Ok(())
     } else {
         // Forbidden rather than not-found: the roster is workspace-public, so
@@ -260,6 +257,18 @@ pub(super) async fn require_for_agent(
             auth::AuthError::Forbidden.to_string(),
         ))
     }
+}
+
+/// The rule `require_for_agent` enforces, for a listing that says rather than
+/// refuses. One statement of it, so a page offering an action and the request
+/// that performs it cannot come to disagree.
+pub(super) fn may_for_agent(
+    held: &std::collections::HashSet<Authority>,
+    reach: &super::scope::Reach,
+    authority: Authority,
+    agent_id: Uuid,
+) -> bool {
+    held.contains(&authority) && (!super::scope::is_narrowed(authority) || reach.covers(agent_id))
 }
 
 /// What this caller may reach, for a listing that filters rather than refuses.

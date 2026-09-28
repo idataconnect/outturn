@@ -7764,6 +7764,21 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
     };
     let billing = make("billing").await;
     let support = make("support").await;
+    // Accepts a session and then fails its first turn, so it is offered to
+    // nobody, whoever they are.
+    let retired = make("retired").await;
+    let (status, body) = h
+        .send(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/agents/{retired}"))
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":false}"#))
+                .expect("request"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
 
     let chat_with = |token: String| {
         let h = &h;
@@ -7773,7 +7788,7 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
             let listed: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
             // The whole roster either way: narrowing hides conversations, not
             // which agents exist.
-            assert_eq!(listed.len(), 2);
+            assert_eq!(listed.len(), 3);
             listed
                 .iter()
                 .filter(|a| a["can_chat"] == true)
@@ -7786,7 +7801,7 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
     both.sort();
     let mut expected = vec![billing, support];
     expected.sort();
-    assert_eq!(both, expected, "unnarrowed, every agent is offered");
+    assert_eq!(both, expected, "unnarrowed, every enabled agent is offered");
 
     let op_id: Uuid =
         sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
