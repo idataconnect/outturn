@@ -24,14 +24,41 @@ impl From<AgentError> for ApiError {
     }
 }
 
+/// An agent as the roster shows it to one caller.
+#[derive(Debug, serde::Serialize)]
+pub struct ListedAgent {
+    #[serde(flatten)]
+    pub agent: Agent,
+    /// Whether this caller may start a conversation with it. The roster is
+    /// workspace-public but starting a conversation is narrowed, so without
+    /// this a page offers every agent and a narrowed person finds out which
+    /// ones they may use by being refused.
+    pub can_chat: bool,
+}
+
 pub async fn list_agents(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<Agent>>, ApiError> {
+) -> Result<Json<Vec<ListedAgent>>, ApiError> {
     // The workspace comes from the token, never from the request: a caller can
     // only reach agents in a workspace they hold a minted token for.
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    Ok(Json(state.agents.list(claims.workspace_id).await?))
+    let may_start = super::router::authorities_of(&state, &claims)
+        .await?
+        .contains(&Authority::SessionsCreate);
+    let reach = super::router::reach_of(&state, &claims).await?;
+    Ok(Json(
+        state
+            .agents
+            .list(claims.workspace_id)
+            .await?
+            .into_iter()
+            .map(|agent| ListedAgent {
+                can_chat: may_start && reach.covers(agent.id),
+                agent,
+            })
+            .collect(),
+    ))
 }
 
 pub async fn create_agent(

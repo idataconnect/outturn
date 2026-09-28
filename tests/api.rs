@@ -7732,3 +7732,74 @@ async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
 
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn the_roster_says_which_agents_a_caller_may_talk_to() {
+    use outturn::api::scope::ScopeStore;
+
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let operator = h
+        .login_as("op@acme.example", None, Some((acme, "operator")))
+        .await;
+    let viewer = h
+        .login_as("viewer@acme.example", None, Some((acme, "viewer")))
+        .await;
+
+    let make = |slug: &'static str| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let body = format!(r#"{{"name":"{slug}","slug":"{slug}"}}"#);
+            let (_, made) = h.post("/v1/agents", Some(admin), &body).await;
+            serde_json::from_str::<serde_json::Value>(&made).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap()
+        }
+    };
+    let billing = make("billing").await;
+    let support = make("support").await;
+
+    let chat_with = |token: String| {
+        let h = &h;
+        async move {
+            let (status, body) = h.get("/v1/agents", Some(&token)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            let listed: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+            // The whole roster either way: narrowing hides conversations, not
+            // which agents exist.
+            assert_eq!(listed.len(), 2);
+            listed
+                .iter()
+                .filter(|a| a["can_chat"] == true)
+                .map(|a| a["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let mut both = chat_with(operator.clone()).await;
+    both.sort();
+    let mut expected = vec![billing, support];
+    expected.sort();
+    assert_eq!(both, expected, "unnarrowed, every agent is offered");
+
+    let op_id: Uuid =
+        sqlx::query_scalar("select user_id from user_identities where provider_subject = $1")
+            .bind("op@acme.example")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the operator's account");
+    h.scopes
+        .set(acme, op_id, &[billing])
+        .await
+        .expect("set scope");
+    assert_eq!(chat_with(operator).await, vec![billing]);
+
+    // Somebody who may not start conversations at all is offered none.
+    assert!(chat_with(viewer).await.is_empty());
+}
