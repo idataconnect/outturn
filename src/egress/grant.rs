@@ -53,6 +53,55 @@ impl Extent {
     }
 }
 
+/// What identifies an outbound request, for hashing and for matching.
+///
+/// Four values, and they are the same four at every tier: the gateway checks
+/// the live request against them, `api::gated` records them when it raises an
+/// approval, and the projection recovers them from a stored call to ask whether
+/// a grant covers it. The *hashing* was always shared; what was not was the
+/// mapping from a call to these four, and that is what this type names.
+pub struct Shape {
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    pub body: Option<String>,
+}
+
+impl Shape {
+    /// The shape of a `fetch_url` call, as the guest recorded its arguments.
+    ///
+    /// One interpretation, so nothing re-derives it. The guest that builds the
+    /// request from a model's arguments lives in another crate -- `agents/default`,
+    /// compiled to wasm with its artifact committed -- so this cannot literally
+    /// be the code it runs. What it can be is the only *host-side* reading of
+    /// those arguments, matched to the guest's by the test below.
+    ///
+    /// `None` wherever the answer is not plain, and every caller treats that as
+    /// a call it cannot check rather than one it may permit. In particular the
+    /// method is not defaulted: `fetch_url` defaults an absent method to `GET`
+    /// before sending, but a stored call with no method is one whose real method
+    /// nobody knows, and guessing it could land inside a `GET` gate.
+    pub fn of_fetch_arguments(arguments: &serde_json::Value) -> Option<Self> {
+        let arguments = arguments.as_str()?;
+        let call: serde_json::Value = serde_json::from_str(arguments).ok()?;
+
+        // `reqwest::Url`, because that is what the gateway parses with and
+        // `normalise_path` is documented against its resolution of `.` and
+        // `..`. A different parser could agree on the string and disagree on
+        // the path that gets hashed.
+        let url = reqwest::Url::parse(call["url"].as_str()?).ok()?;
+
+        Some(Self {
+            method: call["method"].as_str()?.to_ascii_uppercase(),
+            // Without the port, which is what every other tier hashes: they all
+            // read `host_str()`.
+            host: url.host_str()?.to_string(),
+            path: url.path().to_string(),
+            body: call["body"].as_str().map(str::to_string),
+        })
+    }
+}
+
 /// The key a `call` grant is taken out on, over the request a person was shown.
 ///
 /// Every bound field is hashed in the order the skill declared them, so two
@@ -538,5 +587,72 @@ mod tests {
         };
         assert!(missing_bound_field(&reach, None).is_none());
         assert!(missing_bound_field(&reach, Some("{}")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod shape_matches_the_guest {
+    use super::Shape;
+
+    /// What the guest actually stores, copied from a real refused charge.
+    const REAL: &str = r#"{"body":"{\"payment_account_id\":\"pa_4471\",\"booking_id\":\"bk_01a0e6f308ef\",\"amount_pence\":19500,\"idempotency_key\":\"charge-bk_01a0e6f308ef-19500\"}","headers":{"Content-Type":"application/json"},"method":"POST","url":"http://outturn-hollowbrook:8084/charges"}"#;
+
+    /// The four values every tier hashes, read off a real stored call.
+    ///
+    /// The guest that built this request lives in another crate and cannot
+    /// share this code, so this test is what holds the two readings together.
+    /// If `fetch_url` changes how it interprets a model's arguments -- accepting
+    /// an object body, an aliased url key, a defaulted method -- this is what
+    /// should fail, because the alternative is that nothing fails and approved
+    /// calls silently stop being retracted.
+    #[test]
+    fn the_four_values_come_back_as_the_guest_sent_them() {
+        let shape = Shape::of_fetch_arguments(&serde_json::json!(REAL)).expect("shape");
+
+        assert_eq!(shape.method, "POST");
+        // Without the port: every tier hashes `host_str()`.
+        assert_eq!(shape.host, "outturn-hollowbrook");
+        assert_eq!(shape.path, "/charges");
+        assert!(
+            shape
+                .body
+                .as_deref()
+                .is_some_and(|b| b.contains("\"amount_pence\":19500")),
+            "the body goes through byte for byte, since the digest hashes its fields"
+        );
+    }
+
+    /// A method is never guessed. `fetch_url` defaults an absent one to `GET`
+    /// before sending, but a *stored* call with no method is one whose real
+    /// method nobody knows -- and guessing could land it inside a `GET` gate.
+    #[test]
+    fn a_missing_method_is_not_defaulted() {
+        let no_method = serde_json::json!(r#"{"url":"http://somewhere/x","body":"{}"}"#);
+        assert!(Shape::of_fetch_arguments(&no_method).is_none());
+    }
+
+    #[test]
+    fn anything_unreadable_is_no_shape_at_all() {
+        for bad in [
+            serde_json::json!({"method": "POST"}),
+            serde_json::json!("{not json"),
+            serde_json::json!(r#"{"method":"POST"}"#),
+            serde_json::json!(r#"{"method":"POST","url":"not a url"}"#),
+            serde_json::json!(r#"{"method":"POST","url":"file:///etc/passwd"}"#),
+        ] {
+            assert!(
+                Shape::of_fetch_arguments(&bad).is_none(),
+                "unreadable arguments must yield no shape: {bad}"
+            );
+        }
+    }
+
+    /// A body the guest could not read is sent as no body, and hashed as none.
+    #[test]
+    fn a_body_that_is_not_a_string_is_no_body() {
+        let object_body =
+            serde_json::json!(r#"{"method":"POST","url":"http://somewhere/x","body":{"a":1}}"#);
+        let shape = Shape::of_fetch_arguments(&object_body).expect("shape");
+        assert!(shape.body.is_none());
     }
 }

@@ -197,60 +197,34 @@ impl PostgresChatStore {
 /// of work between them, until the turn finished and put them all back.
 fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json::Value {
     let mut calls: Vec<serde_json::Value> = Vec::new();
-    let mut parts: Vec<serde_json::Value> = Vec::new();
-    let mut reasoning_began: Option<chrono::DateTime<chrono::Utc>> = None;
+    // The same builder the live path assembles with, so a reload rebuilds the
+    // message the browser already drew rather than a differently-shaped one.
+    let mut parts = super::parts::Builder::new();
     for event in events.as_array().into_iter().flatten() {
         let payload = &event["payload"];
         match event["kind"].as_str() {
             Some("chat.delta") => {
-                let text = payload["text"].as_str().unwrap_or_default();
-                match parts.last_mut() {
-                    Some(last) if last["type"] == "text" => {
-                        let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
-                        last["text"] = serde_json::json!(joined);
-                    }
-                    _ => parts.push(serde_json::json!({ "type": "text", "text": text })),
-                }
+                parts.text(payload["text"].as_str().unwrap_or_default());
             }
             Some("chat.tool") => {
                 let call = &payload["call"];
                 if calls.iter().any(|c| c["id"] == call["id"]) {
                     continue;
                 }
-                parts.push(serde_json::json!({ "type": "call", "id": call["id"] }));
+                parts.call(call["id"].as_str().unwrap_or_default());
                 calls.push(call.clone());
             }
             Some("chat.reasoning") => {
-                // Placed where it happened, and coalesced only with thinking
-                // immediately before it -- the same rule the live path applies,
-                // so a reload rebuilds the message the browser already drew.
-                let text = payload["text"].as_str().unwrap_or_default();
-                // The event's own time, so a reload reports the same duration
-                // the live path measured rather than the time of the reload.
+                // The event's own time, so a reload reports the duration the
+                // live path measured rather than the time of the reload.
                 let at = event["at"]
                     .as_str()
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                     .map(|t| t.with_timezone(&chrono::Utc));
-                match parts.last_mut() {
-                    Some(last) if last["type"] == "reasoning" => {
-                        let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
-                        last["text"] = serde_json::json!(joined);
-                        if let (Some(at), Some(began)) = (at, reasoning_began) {
-                            last["ms"] = serde_json::json!((at - began).num_milliseconds().max(0));
-                        }
-                    }
-                    _ => {
-                        reasoning_began = at;
-                        // No `ms` until a second fragment gives it a span.
-                        // Zero is a measurement, and "Thought 0.0s" reads as a
-                        // thought that took no time rather than one nothing
-                        // timed.
-                        parts.push(serde_json::json!({ "type": "reasoning", "text": text }));
-                    }
-                }
+                parts.reasoning(payload["text"].as_str().unwrap_or_default(), at);
             }
             Some("chat.steer") => {
-                parts.push(serde_json::json!({ "type": "steer", "id": payload["id"] }));
+                parts.steer(payload["id"].as_str().unwrap_or_default());
             }
             Some("chat.tool_result") => {
                 if let Some(call) = calls.iter_mut().find(|c| c["id"] == payload["id"]) {
@@ -264,7 +238,11 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
     // A run of plain prose says nothing the flat content does not, so it is
     // left alone. Anything else -- a call, or a point the model stopped to
     // think -- is an arrangement that only `parts` records.
-    if parts.iter().all(|p| p["type"] == "text") {
+    if parts
+        .parts()
+        .iter()
+        .all(|p| matches!(p, super::parts::Part::Text { .. }))
+    {
         return metadata;
     }
     let mut metadata = match metadata {
@@ -272,7 +250,7 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
         _ => serde_json::Map::new(),
     };
     metadata.insert("tool_calls".into(), serde_json::Value::Array(calls));
-    metadata.insert("parts".into(), serde_json::Value::Array(parts));
+    metadata.insert("parts".into(), parts.to_json());
     serde_json::Value::Object(metadata)
 }
 
@@ -644,28 +622,22 @@ impl ChatStore for PostgresChatStore {
     async fn discard_placeholder(&self, replies_to: Uuid, attempt: i32) -> Result<(), ChatError> {
         // Only while still empty: a turn that failed after writing its reply
         // must not have that reply deleted.
-        // Scoped to the attempt being abandoned, and never over a reply that
-        // holds tool calls. A turn refused at a gate very often has empty
+        // Scoped to the attempt being abandoned, and only over a reply with
+        // nothing in it. A turn refused at a gate very often has empty
         // `content` and nothing but the refused call in its metadata -- the
         // guest made the call, was refused, and returned at the round boundary
         // without saying anything. Unscoped, abandoning a later attempt deleted
         // that one too, which is exactly the evidence the approver approved
         // against and the reason migration 0019 exists.
         //
-        // The same exclusion `append_message`'s abandoned guard already applies;
-        // this statement is its sibling and was missed when attempts arrived.
-        //
-        // Thinking counts as something said, for the same reason: a model that
-        // reasoned and then stopped leaves empty `content` and no calls, and
-        // that row is the only account of where the turn's tokens went.
+        // What counts as "nothing in it" is `said_something`, shared with the
+        // abandoned-placeholder guard below. Written out twice before that, and
+        // the two had already drifted once: an exclusion added here was missed
+        // there, under a comment claiming a parity that did not exist.
         sqlx::query(
             "delete from agent_messages \
-             where replies_to = $1 and attempt = $2 and content = '' \
-               and coalesce(jsonb_array_length(metadata->'tool_calls'), 0) = 0 \
-               and not exists ( \
-                   select 1 from jsonb_array_elements( \
-                       coalesce(metadata->'parts', '[]'::jsonb)) p \
-                   where p->>'type' = 'reasoning')",
+             where replies_to = $1 and attempt = $2 \
+               and not said_something(content, metadata)",
         )
         .bind(replies_to)
         .bind(attempt)
@@ -795,12 +767,8 @@ impl ChatStore for PostgresChatStore {
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
                    and j.state in ('pending', 'running', 'succeeded', 'cancelled', 'parked') \
-             where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
-               and coalesce(jsonb_array_length(m.metadata->'tool_calls'), 0) = 0 \
-               and not exists ( \
-                   select 1 from jsonb_array_elements( \
-                       coalesce(m.metadata->'parts', '[]'::jsonb)) p \
-                   where p->>'type' = 'reasoning') \
+             where m.session_id = $1 and m.role = 'assistant' \
+               and not said_something(m.content, m.metadata) \
                and j.id is null \
              limit 1",
         )

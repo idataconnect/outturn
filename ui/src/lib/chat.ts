@@ -44,6 +44,29 @@ export type MessagePart =
    *  between its halves, since what follows is answering it. */
   | { type: 'steer'; id: string }
 
+/** Whether a reply has anything in it, by the one rule everything uses.
+ *
+ * Three things count, and the third is easy to forget: the words, the calls it
+ * made, and the points it stopped to think. A reply holding a thought and
+ * nothing else is a turn the model spent deliberating -- the only account of
+ * where its tokens went -- so treating it as empty discards it.
+ *
+ * One function because this was written out twice and the two copies had
+ * already drifted: the second omitted the calls, so a failed turn's reply that
+ * had made calls vanished from the page while surviving in the transcript, and
+ * came back on the next reload.
+ *
+ * The server applies the same rule in SQL -- `discard_placeholder` and the
+ * abandoned-placeholder guard in `src/api/chat/postgres.rs`, and
+ * `parts::Builder::said_something` in Rust. Those cannot share this, being in
+ * another language; changing the rule means changing all of them.
+ */
+export function saidSomething(m: Pick<Message, 'content' | 'metadata'>): boolean {
+  if (m.content !== '') return true
+  if ((m.metadata.tool_calls?.length ?? 0) > 0) return true
+  return m.metadata.parts?.some((p) => p.type === 'reasoning') ?? false
+}
+
 export type Message = {
   /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
   id: string
