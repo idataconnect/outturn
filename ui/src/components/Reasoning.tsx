@@ -20,7 +20,28 @@ import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
  * never sent back to a model as history, because a model handed its own
  * reasoning as a past utterance reads it as speech and answers it.
  */
-export default function Reasoning({ text, status }: ReasoningMessagePartProps) {
+/** What a thought cost, in the units we can honestly report.
+ *
+ * Words rather than tokens. Nothing in this codebase counts tokens -- a
+ * per-model tokeniser is wrong for every model it was not built for -- and a
+ * figure labelled "tokens" that was really a guess would be read as the number
+ * on somebody's bill. Where a provider reports reasoning tokens of its own
+ * they belong here instead, under their own name; until then this is the true
+ * thing that can be said.
+ *
+ * Rounded to a tenth of a second under ten, then to whole seconds. A thought
+ * that took 4.2s and one that took 4.23s are the same fact to a reader.
+ */
+function cost(text: string, ms: number | undefined): string {
+  const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length
+  const counted = `${words.toLocaleString()} ${words === 1 ? 'word' : 'words'}`
+  if (ms === undefined) return counted
+  const seconds = ms / 1000
+  const shown = seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString()
+  return `${shown}s \u00b7 ${counted}`
+}
+
+export default function Reasoning({ text, status, ...part }: ReasoningMessagePartProps) {
   const [open, setOpen] = useState(false)
   // While it is still arriving there may be nothing else in the reply yet, so
   // the summary line is the only thing saying the turn is alive.
@@ -45,7 +66,21 @@ export default function Reasoning({ text, status }: ReasoningMessagePartProps) {
           className={`h-3.5 w-3.5 shrink-0 ${thinking ? 'animate-pulse text-brand-600 dark:text-brand-400' : ''}`}
           aria-hidden
         />
-        <span>{thinking ? 'Thinking...' : 'Thought about this'}</span>
+        <span>
+          {thinking ? (
+            'Thinking...'
+          ) : (
+            <>
+              Thought
+              {/* Dimmer than the verb: the numbers are there for somebody
+                  wondering where a turn went, not for everybody reading a
+                  reply. */}
+              <span className="ml-1.5 text-surface-500 dark:text-surface-500">
+                {cost(text, (part as { ms?: number }).ms)}
+              </span>
+            </>
+          )}
+        </span>
       </button>
 
       {open && (

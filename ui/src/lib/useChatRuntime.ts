@@ -340,7 +340,15 @@ export function parts(message: Annotated): ThreadMessageLike['content'] {
     // about rather than hoisted to the top of the reply as though the model had
     // known the answer before it asked.
     if (part.type === 'reasoning') {
-      if (part.text !== '') out.push({ type: 'reasoning' as const, text: part.text })
+      if (part.text !== '') {
+        out.push({
+          type: 'reasoning' as const,
+          text: part.text,
+          // assistant-ui hands a part's own fields to its component, so the
+          // duration rides along with the text it belongs to.
+          ...(part.ms === undefined ? {} : { ms: part.ms }),
+        })
+      }
       continue
     }
     const call = calls.find((c) => c.id === part.id)
@@ -741,8 +749,12 @@ export function useChatRuntime(
                   // what a reload rebuilds are the same message.
                   const parts = [...(m.metadata.parts ?? [])]
                   const last = parts[parts.length - 1]
+                  // Live, the duration is measured by the API and arrives with
+                  // the stored parts; while streaming the reader has the pulsing
+                  // "Thinking..." instead, which says the same thing better than
+                  // a number climbing a tenth at a time.
                   if (last && last.type === 'reasoning') {
-                    parts[parts.length - 1] = { type: 'reasoning', text: last.text + text }
+                    parts[parts.length - 1] = { ...last, text: last.text + text }
                   } else {
                     parts.push({ type: 'reasoning', text })
                   }

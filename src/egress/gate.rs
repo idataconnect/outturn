@@ -134,6 +134,26 @@ impl Gate {
 /// servers, so folding them would gate `/Charges` as well and refuse work nobody
 /// meant to gate -- and the failure direction there is a conversation that cannot
 /// proceed rather than a charge that slips through.
+/// The sentence a gated refusal ends with, and the mark that makes it ours.
+///
+/// Two tiers share it: `runtime::component` builds the refusal a guest is
+/// answered with, and `api::worker::answered` finds it again to retract it once
+/// somebody approves. A constant rather than the sentence written twice --
+/// reword it in one place and the retraction silently becomes a no-op, and the
+/// failure is the original bug back: the resumed turn reads "do not retry", says
+/// nothing, and the grant goes unspent.
+///
+/// The mark is why this is not merely a shared string. A tool result is a remote
+/// response kept verbatim, so a page the agent fetched can contain any sentence
+/// the platform writes -- and a substring sweep would rewrite a refusal that was
+/// never ours, or let a remote body pose as an approval the platform granted.
+/// The marker is stripped before the reader ever sees it, and nothing a guest
+/// fetches can emit it without the platform having put it there.
+pub const GATED_MARK: &str = "\u{2060}outturn:gated\u{2060}";
+
+/// What a gated refusal tells the guest to do, ending in `GATED_MARK`.
+pub const GATED_REFUSAL: &str = "Do not retry this request.";
+
 pub fn normalise_path(path: &str) -> String {
     let decoded = percent_decode(path);
     let mut out = String::with_capacity(decoded.len());

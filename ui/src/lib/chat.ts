@@ -24,7 +24,13 @@ export type MessagePart =
   /** Where the model stopped to think, and what it thought. Positioned rather
    *  than collected: a model that thinks, calls a tool, reads the answer and
    *  thinks again deliberated twice about two different things. */
-  | { type: 'reasoning'; text: string }
+  | {
+      type: 'reasoning'
+      text: string
+      /** How long this thought took, first fragment to last. Absent on a
+       *  thought recorded before it was measured. */
+      ms?: number
+    }
   /** The point a message the user sent mid-turn was handed to the agent,
    *  naming that message. The reply is drawn split here, with the message
    *  between its halves, since what follows is answering it. */

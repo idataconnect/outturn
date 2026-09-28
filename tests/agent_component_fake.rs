@@ -61,6 +61,9 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         gateway_token: "test-token".into(),
         default_model: "fake".into(),
         progress,
+        // Not exercised here: these suites assert what a guest does with a
+        // reply, and thinking never reaches the guest.
+        reasoning: None,
         on_tool: None,
         on_tool_result: None,
         on_usage: None,

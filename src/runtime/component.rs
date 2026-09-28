@@ -764,10 +764,16 @@ impl outturn::agent::host::Host for AgentHost {
                         // the transcript. The guest may still do other work
                         // before it stops -- what it must not do is treat this as
                         // a transient failure and retry the same call.
+                        // The sentence and its mark are shared with the API,
+                        // which finds them again to retract the instruction once
+                        // somebody approves. Rewording it here alone would make
+                        // that retraction a silent no-op.
                         return Err(format!(
                             "{refusal}. Somebody has been asked to approve it, \
                              and this conversation will pause until they answer. \
-                             Do not retry this request."
+                             {}{}",
+                            crate::egress::gate::GATED_REFUSAL,
+                            crate::egress::gate::GATED_MARK
                         ));
                     }
                 }

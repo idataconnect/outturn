@@ -11,8 +11,7 @@ use uuid::Uuid;
 
 use super::component::{
     AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ReasoningSink, ToolActivity, ToolOutcome,
-    ToolResultSink,
-    ToolSink, UsageSink, WriteSink,
+    ToolResultSink, ToolSink, UsageSink, WriteSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so

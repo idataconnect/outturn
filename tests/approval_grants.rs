@@ -365,6 +365,27 @@ async fn a_decline_is_recorded_as_a_decline() {
         "{}",
         recorded.content
     );
+    // Lifting the hold is what keeps the conversation usable, so something has
+    // to stop the agent calling again a second later and asking the same
+    // question. The transcript is where it is told.
+    assert!(
+        recorded
+            .content
+            .contains(outturn::api::chat::DECLINED_GUIDANCE),
+        "a declined agent must be told to talk to the user first: {}",
+        recorded.content
+    );
+    // Not a prohibition. Somebody who declines and then changes their mind must
+    // be able to say so, so the agent has to be free to try again afterwards --
+    // the gate is what holds the line, by minting no grant.
+    // Asserted against the constant rather than by hunting for words: the note
+    // a person typed is interpolated into this same string, so "never mind" in
+    // a decline note would fail a substring search for "never".
+    assert!(
+        outturn::api::chat::DECLINED_GUIDANCE.contains("before discussing"),
+        "the guidance defers the call rather than forbidding it: {}",
+        outturn::api::chat::DECLINED_GUIDANCE
+    );
 
     db.cleanup().await;
 }
@@ -401,10 +422,16 @@ async fn a_turn_resuming_after_an_approval_keeps_the_refused_reply() {
     .expect("finish");
 
     // Resuming asks for the next attempt; a crashed retry would not.
+    //
+    // The flag is "a person answered", not "a grant was minted" -- a decline
+    // answers and grants nothing, and it must keep the refused reply just as an
+    // approval does. Taking it back overwrites what the person read when they
+    // decided, and leaves the resumed turn no refusal in its history, so the
+    // model re-derives the task and calls the gate again.
     assert_eq!(
         chat.attempt_for(prompt, true).await.expect("resuming"),
         2,
-        "a resumed turn must not take back the reply somebody approved against"
+        "a resumed turn must not take back the reply somebody answered against"
     );
     assert_eq!(
         chat.attempt_for(prompt, false).await.expect("retrying"),
@@ -561,4 +588,65 @@ async fn prompt_session(db: &common::TestDb, prompt: Uuid) -> Uuid {
         .fetch_one(&db.pool)
         .await
         .expect("session")
+}
+
+/// A decline keeps the refused reply, exactly as an approval does.
+///
+/// The bug: the attempt was chosen from whether the turn held a *grant*, and a
+/// decline mints none -- so a declined turn fell through to "a crashed retry
+/// takes its own attempt back" and overwrote the very reply the person had just
+/// read and refused. Nothing was left saying what had been declined, and the
+/// resumed turn's history had no refusal in it either, so the model re-derived
+/// the task from the bare prompt and called the gate again -- raising a fresh
+/// approval nobody asked for, which is what the decline guidance exists to stop.
+///
+/// The predicate is "a person answered", which a decline satisfies.
+#[tokio::test]
+async fn a_declined_turn_keeps_the_reply_it_was_refused_on() {
+    use outturn::api::chat::{ChatStore, PostgresChatStore, Usage};
+
+    let (db, ws) = setup().await;
+    let (chat, prompt) = a_prompt(&db, ws).await;
+
+    let refused = chat
+        .claim_placeholder(prompt, prompt_session(&db, prompt).await, 1)
+        .await
+        .expect("refused");
+    chat.set_message_content(
+        refused.message.id,
+        "I need approval to charge that.",
+        None,
+        None,
+        Usage::default(),
+        serde_json::json!({}),
+    )
+    .await
+    .expect("finish");
+
+    // Answered -- declined -- so the next attempt, leaving the refusal where it
+    // is. This is the value `prepare_turn` now derives from the queue item
+    // rather than from whether a grant exists.
+    assert_eq!(
+        chat.attempt_for(prompt, true).await.expect("declined"),
+        2,
+        "a declined turn must not overwrite the reply that was refused"
+    );
+
+    let next = chat
+        .claim_placeholder(prompt, prompt_session(&db, prompt).await, 2)
+        .await
+        .expect("next");
+    assert_ne!(next.message.id, refused.message.id);
+
+    let kept: String = sqlx::query_scalar("select content from agent_messages where id = $1")
+        .bind(refused.message.id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("still there");
+    assert_eq!(
+        kept, "I need approval to charge that.",
+        "the refusal the person declined is the record of what they declined"
+    );
+
+    db.cleanup().await;
 }

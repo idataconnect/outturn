@@ -4,8 +4,8 @@ use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 use super::{
-    AgentSession, ChatError, ChatStore, CreateSession, Delivery, History, Message, Placeholder,
-    Usage,
+    AgentSession, ChatError, ChatStore, CreateSession, DECLINED_GUIDANCE, Delivery, History,
+    Message, Placeholder, Usage,
 };
 
 pub struct PostgresChatStore {
@@ -82,7 +82,8 @@ impl PostgresChatStore {
                         (count(*) filter (where e.kind = 'chat.delta'))::int as delta_next, \
                         coalesce(string_agg(e.payload->>'text', '' order by e.id) \
                             filter (where e.kind = 'chat.delta'), '') as text, \
-                        jsonb_agg(jsonb_build_object('kind', e.kind, 'payload', e.payload) \
+                        jsonb_agg(jsonb_build_object( \
+                            'kind', e.kind, 'payload', e.payload, 'at', e.created_at) \
                             order by e.id) as events \
                  from events e, bound \
                  where e.session_id = $1 \
@@ -197,6 +198,7 @@ impl PostgresChatStore {
 fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json::Value {
     let mut calls: Vec<serde_json::Value> = Vec::new();
     let mut parts: Vec<serde_json::Value> = Vec::new();
+    let mut reasoning_began: Option<chrono::DateTime<chrono::Utc>> = None;
     for event in events.as_array().into_iter().flatten() {
         let payload = &event["payload"];
         match event["kind"].as_str() {
@@ -223,12 +225,28 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
                 // immediately before it -- the same rule the live path applies,
                 // so a reload rebuilds the message the browser already drew.
                 let text = payload["text"].as_str().unwrap_or_default();
+                // The event's own time, so a reload reports the same duration
+                // the live path measured rather than the time of the reload.
+                let at = event["at"]
+                    .as_str()
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc));
                 match parts.last_mut() {
                     Some(last) if last["type"] == "reasoning" => {
                         let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
                         last["text"] = serde_json::json!(joined);
+                        if let (Some(at), Some(began)) = (at, reasoning_began) {
+                            last["ms"] = serde_json::json!((at - began).num_milliseconds().max(0));
+                        }
                     }
-                    _ => parts.push(serde_json::json!({ "type": "reasoning", "text": text })),
+                    _ => {
+                        reasoning_began = at;
+                        // No `ms` until a second fragment gives it a span.
+                        // Zero is a measurement, and "Thought 0.0s" reads as a
+                        // thought that took no time rather than one nothing
+                        // timed.
+                        parts.push(serde_json::json!({ "type": "reasoning", "text": text }));
+                    }
                 }
             }
             Some("chat.steer") => {
@@ -695,10 +713,29 @@ impl ChatStore for PostgresChatStore {
                 format!("{who} approved this {}: {note}", answer.requires)
             }
             (true, _) => format!("{who} approved this {}.", answer.requires),
+            // A decline carries an instruction where an approval needs none.
+            // Lifting the hold is what lets the conversation carry on -- holding
+            // it up suspended every later turn in the session, with the item
+            // cancelled and nobody able to answer it again -- so something else
+            // has to stop the agent simply calling again and raising the same
+            // question. That something is this sentence.
+            //
+            // It does not forbid the call outright. A person who declines a
+            // charge and then changes their mind should be able to say so and
+            // have it go through, which means the agent must be free to try
+            // again *after discussing it*. The gate is what actually holds the
+            // line: a decline mints no grant, so a retry raises a fresh approval
+            // rather than slipping past.
             (false, Some(note)) if !note.trim().is_empty() => {
-                format!("{who} declined this {}: {note}", answer.requires)
+                format!(
+                    "{who} declined this {}: {note}\n\n{DECLINED_GUIDANCE}",
+                    answer.requires
+                )
             }
-            (false, _) => format!("{who} declined this {}.", answer.requires),
+            (false, _) => format!(
+                "{who} declined this {}.\n\n{DECLINED_GUIDANCE}",
+                answer.requires
+            ),
         };
 
         let row = sqlx::query(
@@ -760,6 +797,10 @@ impl ChatStore for PostgresChatStore {
                    and j.state in ('pending', 'running', 'succeeded', 'cancelled', 'parked') \
              where m.session_id = $1 and m.role = 'assistant' and m.content = '' \
                and coalesce(jsonb_array_length(m.metadata->'tool_calls'), 0) = 0 \
+               and not exists ( \
+                   select 1 from jsonb_array_elements( \
+                       coalesce(m.metadata->'parts', '[]'::jsonb)) p \
+                   where p->>'type' = 'reasoning') \
                and j.id is null \
              limit 1",
         )
@@ -854,5 +895,87 @@ mod tests {
     fn text_alone_leaves_the_metadata_as_it_was() {
         let events = json!([{ "kind": "chat.delta", "payload": { "text": "hi" } }]);
         assert_eq!(replay(json!({}), &events), json!({}));
+    }
+}
+
+#[cfg(test)]
+mod reasoning_replay {
+    use super::replay;
+    use serde_json::json;
+
+    fn thinking(at: &str, text: &str) -> serde_json::Value {
+        json!({ "kind": "chat.reasoning", "payload": { "text": text }, "at": at })
+    }
+
+    /// A reload must report the duration the live path measured, not the time
+    /// of the reload. The events carry their own clock, so the arithmetic is
+    /// the same either way.
+    #[test]
+    fn a_reload_reports_what_the_thought_actually_took() {
+        let events = json!([
+            thinking("2026-09-28T07:00:00Z", "Let me "),
+            thinking("2026-09-28T07:00:04Z", "work it out."),
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "fetch_url" } } },
+        ]);
+
+        let parts = replay(json!({}), &events)["parts"].clone();
+        assert_eq!(parts[0]["type"], "reasoning");
+        assert_eq!(parts[0]["text"], "Let me work it out.");
+        assert_eq!(parts[0]["ms"], 4000);
+    }
+
+    /// The clock restarts on each thought. A pause spent running a tool is not
+    /// time the model spent thinking, and counting it would report a thought
+    /// that took four seconds as having taken forty.
+    #[test]
+    fn time_spent_in_a_tool_is_not_counted_as_thinking() {
+        let events = json!([
+            thinking("2026-09-28T07:00:00Z", "first"),
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "fetch_url" } } },
+            { "kind": "chat.tool_result", "payload": { "id": "c1", "details": "ok", "is_error": false } },
+            thinking("2026-09-28T07:00:30Z", "second "),
+            thinking("2026-09-28T07:00:32Z", "thought"),
+        ]);
+
+        let parts = replay(json!({}), &events)["parts"].clone();
+        let thoughts: Vec<&serde_json::Value> = parts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["type"] == "reasoning")
+            .collect();
+
+        assert_eq!(
+            thoughts.len(),
+            2,
+            "two thoughts, not one run across the call"
+        );
+        assert!(
+            thoughts[0].get("ms").is_none(),
+            "one fragment has no span, so nothing timed it -- and zero would \
+             render as a thought that took no time"
+        );
+        assert_eq!(
+            thoughts[1]["ms"], 2000,
+            "two seconds, not the thirty since the first"
+        );
+    }
+
+    /// An event written before the time was carried still replays its words.
+    /// The contract the UI's untimed branch depends on: no `ms` rather than a
+    /// zero. Asserted, because a test that only checked the text passed with the
+    /// whole duration feature deleted.
+    #[test]
+    fn a_thought_with_no_clock_still_comes_back() {
+        let events = json!([
+            { "kind": "chat.reasoning", "payload": { "text": "no clock here" } },
+            { "kind": "chat.tool", "payload": { "call": { "id": "c1", "name": "fetch_url" } } },
+        ]);
+        let parts = replay(json!({}), &events)["parts"].clone();
+        assert_eq!(parts[0]["text"], "no clock here");
+        assert!(
+            parts[0].get("ms").is_none(),
+            "nothing timed it, so it says nothing"
+        );
     }
 }

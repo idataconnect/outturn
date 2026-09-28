@@ -102,6 +102,9 @@ async fn component_runs_a_turn_and_streams_progress() {
                 // possibly their money: nothing here picks one for them.
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
                     .expect("OUTTURN_DEFAULT_MODEL must name the model to run against"),
+                // Not exercised here: these suites assert what a guest does with a
+                // reply, and thinking never reaches the guest.
+                reasoning: None,
                 progress: Some(sink),
                 on_tool: None,
                 on_tool_result: None,

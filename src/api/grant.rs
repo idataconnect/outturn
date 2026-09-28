@@ -147,3 +147,38 @@ pub async fn live_for(
         })
         .collect())
 }
+
+/// Whether a person has answered an approval for this turn, either way.
+///
+/// Distinct from holding a grant. A decline answers and grants nothing, and the
+/// two decide different things: a grant decides whether the standing refusal is
+/// retracted, while *having been answered* decides which attempt the turn
+/// writes.
+///
+/// It has to be the second for the attempt, because the reply a turn parked on
+/// is what the person read when they decided. Taking it back would overwrite the
+/// refusal a decline was a decision about -- and worse, leave the resumed turn's
+/// history with no refusal in it at all, so the model re-derives the task from
+/// the bare prompt and calls the gate again. That is precisely what the decline
+/// guidance exists to prevent.
+///
+/// A crashed retry was never answered, so it still takes its own attempt back,
+/// which is what stops an empty placeholder stranding the session.
+pub async fn was_answered(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    job_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "select exists ( \
+             select 1 from action_items \
+             where workspace_id = $1 \
+               and payload->>'job_id' = $2::text \
+               and kind like 'approval.%' \
+               and state in ('resolved', 'cancelled'))",
+    )
+    .bind(workspace_id)
+    .bind(job_id.to_string())
+    .fetch_one(pool)
+    .await
+}
