@@ -88,6 +88,15 @@ pub(crate) fn flatten_parts(parts: &[ContentPart]) -> (String, Vec<ToolCall>) {
 /// Reports text as the model produces it, before the turn finishes.
 pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Reports a model's thinking as it produces it.
+///
+/// Separate from `ProgressSink` because thinking is not the reply: it never
+/// joins the stored content, never reaches a later turn, and never gets the
+/// round separator a second round's prose does. The guest does not see it at
+/// all -- which model thinks aloud is a provider detail, and an agent that read
+/// its own reasoning back would answer it.
+pub type ReasoningSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Reports a tool call as the guest starts it.
 pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 
@@ -167,6 +176,7 @@ pub struct AgentHost {
     default_model: String,
     http: reqwest::Client,
     progress: Option<ProgressSink>,
+    reasoning: Option<ReasoningSink>,
     session_id: uuid::Uuid,
     /// IANA zone of the user this turn belongs to. None when the client did
     /// not say, in which case the clock answers in UTC rather than guessing.
@@ -590,6 +600,7 @@ impl outturn::agent::host::Host for AgentHost {
             &self.reply_id,
             body,
             progress.as_ref(),
+            self.reasoning.as_ref(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -1182,6 +1193,22 @@ impl outturn::agent::host::Host for AgentHost {
 
 /// Consumes the gateway's stream, reporting text as it arrives and returning
 /// the whole reply once generation ends.
+/// The thinking in one chunk, where the provider put any.
+///
+/// `reasoning` is what ollama and llama.cpp emit; `reasoning_content` is the
+/// same thing under the name DeepSeek's API and several of its compatibles use.
+/// Both arrive with `content` set to `""` on every thinking chunk, which is why
+/// reading `content` alone made a turn spent entirely on thinking look like a
+/// turn that produced nothing: the reply stored empty, no delta ever streamed,
+/// and the tokens it cost recorded in the ledger with nothing to show for them.
+fn thinking_in(chunk: &serde_json::Value) -> Option<&str> {
+    let delta = &chunk["choices"][0]["delta"];
+    delta["reasoning"]
+        .as_str()
+        .or_else(|| delta["reasoning_content"].as_str())
+        .filter(|t| !t.is_empty())
+}
+
 async fn stream_completion(
     http: &reqwest::Client,
     gateway_url: &str,
@@ -1190,6 +1217,7 @@ async fn stream_completion(
     reply_id: &uuid::Uuid,
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
+    reasoning: Option<&ReasoningSink>,
 ) -> anyhow::Result<(Completion, Vec<(Arrival, Option<uuid::Uuid>)>, Served)> {
     use futures::StreamExt;
 
@@ -1270,6 +1298,25 @@ async fn stream_completion(
                 && !m.is_empty()
             {
                 served.model = Some(m.to_string());
+            }
+            // Thinking, where a model produces it. Never joined to the reply:
+            // it is not what the agent said, the transcript must not replay it
+            // to a later turn as prose, and both protocols reject an assistant
+            // message whose content is a model's private reasoning.
+            //
+            // Carried on a channel of its own instead, so the reader can watch
+            // a model think without the guest ever seeing it. A turn spent
+            // entirely on thinking used to stream nothing at all -- every chunk
+            // arrives with `content` set to "" and the thinking under
+            // `reasoning`, so the reply was stored empty while the usage ledger
+            // recorded the tokens it cost.
+            //
+            // `reasoning_content` is the same field under the name some
+            // OpenAI-compatible endpoints use for it.
+            if let Some(thought) = thinking_in(&chunk)
+                && let Some(sink) = reasoning
+            {
+                sink(thought);
             }
             if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str()
                 && !text.is_empty()
@@ -1536,6 +1583,7 @@ pub struct RunOptions {
     pub gates: crate::egress::gate::Gates,
     pub default_model: String,
     pub progress: Option<ProgressSink>,
+    pub reasoning: Option<ReasoningSink>,
     pub on_tool: Option<ToolSink>,
     pub on_tool_result: Option<ToolResultSink>,
     pub on_usage: Option<UsageSink>,
@@ -1673,6 +1721,7 @@ impl AgentRunner {
             default_model: options.default_model,
             http: crate::http_client::streaming_client(options.idle_timeout),
             progress: options.progress,
+            reasoning: options.reasoning,
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
             on_gated: options.on_gated,
@@ -1983,5 +2032,46 @@ mod artifact_guard {
             runner.verify(b"not a component at all").is_err(),
             "verify must reject what it cannot link"
         );
+    }
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::thinking_in;
+
+    #[test]
+    fn thinking_is_read_from_either_name_providers_give_it() {
+        for field in ["reasoning", "reasoning_content"] {
+            let chunk = serde_json::json!({
+                "choices": [{"delta": {"content": "", field: "the user wants"}}]
+            });
+            assert_eq!(
+                thinking_in(&chunk),
+                Some("the user wants"),
+                "{field} should be recognised as thinking"
+            );
+        }
+    }
+
+    /// The shape that was losing whole turns: thinking arrives with `content`
+    /// present and empty, so anything reading `content` alone sees nothing.
+    #[test]
+    fn a_thinking_chunk_carries_empty_content_beside_it() {
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"role": "assistant", "content": "", "reasoning": "The"}}]
+        });
+        assert_eq!(chunk["choices"][0]["delta"]["content"].as_str(), Some(""));
+        assert_eq!(thinking_in(&chunk), Some("The"));
+    }
+
+    #[test]
+    fn prose_is_not_thinking_and_an_empty_thought_is_not_one_either() {
+        let prose = serde_json::json!({"choices": [{"delta": {"content": "Hello"}}]});
+        assert_eq!(thinking_in(&prose), None);
+
+        // Sent at the boundary between thinking and prose. Relaying it would
+        // open a reasoning part with nothing in it.
+        let closing = serde_json::json!({"choices": [{"delta": {"reasoning": ""}}]});
+        assert_eq!(thinking_in(&closing), None);
     }
 }

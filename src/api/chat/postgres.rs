@@ -86,7 +86,8 @@ impl PostgresChatStore {
                             order by e.id) as events \
                  from events e, bound \
                  where e.session_id = $1 \
-                   and e.kind in ('chat.delta', 'chat.tool', 'chat.tool_result', 'chat.steer') \
+                   and e.kind in ('chat.delta', 'chat.reasoning', 'chat.tool', \
+                                  'chat.tool_result', 'chat.steer') \
                    and e.id <= bound.cursor \
                    and e.id > (select id from win order by id limit 1) \
                    and (e.payload->>'message_id')::uuid in ( \
@@ -196,6 +197,7 @@ impl PostgresChatStore {
 fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json::Value {
     let mut calls: Vec<serde_json::Value> = Vec::new();
     let mut parts: Vec<serde_json::Value> = Vec::new();
+    let mut reasoning = String::new();
     for event in events.as_array().into_iter().flatten() {
         let payload = &event["payload"];
         match event["kind"].as_str() {
@@ -217,6 +219,11 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
                 parts.push(serde_json::json!({ "type": "call", "id": call["id"] }));
                 calls.push(call.clone());
             }
+            Some("chat.reasoning") => {
+                // Never a `parts` entry: thinking is not the reply, and the
+                // projection that builds a model's history walks `parts`.
+                reasoning.push_str(payload["text"].as_str().unwrap_or_default());
+            }
             Some("chat.steer") => {
                 parts.push(serde_json::json!({ "type": "steer", "id": payload["id"] }));
             }
@@ -229,15 +236,27 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
             _ => {}
         }
     }
-    if parts.iter().all(|p| p["type"] == "text") {
+    // Thinking is folded in whatever else the turn did, and before the
+    // text-only shortcut below: a turn that thought and has not spoken yet has
+    // no calls and no ordering to rebuild, so that early return is exactly the
+    // path a reload mid-thought takes -- and it would come back with nothing.
+    let only_text = parts.iter().all(|p| p["type"] == "text");
+    if only_text && reasoning.is_empty() {
         return metadata;
     }
     let mut metadata = match metadata {
         serde_json::Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    metadata.insert("tool_calls".into(), serde_json::Value::Array(calls));
-    metadata.insert("parts".into(), serde_json::Value::Array(parts));
+    if !reasoning.is_empty() {
+        metadata.insert("reasoning".into(), serde_json::json!(reasoning));
+    }
+    // The stored row wins once the turn has ended: it holds the whole reply,
+    // while the events only cover what streamed past the read's cursor.
+    if !only_text {
+        metadata.insert("tool_calls".into(), serde_json::Value::Array(calls));
+        metadata.insert("parts".into(), serde_json::Value::Array(parts));
+    }
     serde_json::Value::Object(metadata)
 }
 
@@ -619,10 +638,15 @@ impl ChatStore for PostgresChatStore {
         //
         // The same exclusion `append_message`'s abandoned guard already applies;
         // this statement is its sibling and was missed when attempts arrived.
+        //
+        // Thinking counts as something said, for the same reason: a model that
+        // reasoned and then stopped leaves empty `content` and no calls, and
+        // that row is the only account of where the turn's tokens went.
         sqlx::query(
             "delete from agent_messages \
              where replies_to = $1 and attempt = $2 and content = '' \
-               and coalesce(jsonb_array_length(metadata->'tool_calls'), 0) = 0",
+               and coalesce(jsonb_array_length(metadata->'tool_calls'), 0) = 0 \
+               and coalesce(metadata->>'reasoning', '') = ''",
         )
         .bind(replies_to)
         .bind(attempt)

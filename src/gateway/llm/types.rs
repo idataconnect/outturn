@@ -252,6 +252,22 @@ pub struct Delta {
     pub role: Option<Role>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// A thinking model's reasoning, where the provider sends it.
+    ///
+    /// Carried because a chunk is decoded into this struct and re-serialised
+    /// from it, so a field absent here is a field the tier above never sees --
+    /// however carefully it looks. Thinking arrives with `content` set to `""`
+    /// beside it, so dropping it made a turn the model spent deliberating
+    /// stream nothing at all: an empty reply stored, no delta emitted, and the
+    /// tokens it cost recorded in the ledger with nothing to show for them.
+    ///
+    /// `reasoning_content` is the same field under the name DeepSeek's API and
+    /// several of its compatibles use; both are accepted and it is written back
+    /// out under the name it came in as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
 }
@@ -280,4 +296,68 @@ pub struct FunctionCallDelta {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod reasoning_survives_the_gateway {
+    use super::StreamChunk;
+
+    /// The gateway decodes a provider's chunk into `StreamChunk` and writes it
+    /// out again, so a field this struct does not carry is a field no tier above
+    /// can ever see. Thinking was such a field: the runtime read the chunk as
+    /// raw JSON and looked for `reasoning`, and it was never there to find --
+    /// serde had dropped it one tier below, before the runtime was handed
+    /// anything.
+    #[test]
+    fn a_chunks_thinking_is_still_there_after_a_round_trip() {
+        // Exactly what ollama sends for qwen3: thinking under `reasoning`, with
+        // `content` present and empty beside it.
+        let wire = serde_json::json!({
+            "id": "chatcmpl-605",
+            "object": "chat.completion.chunk",
+            "created": 1790574500u64,
+            "model": "qwen3",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "", "reasoning": "The user wants"},
+                "finish_reason": null
+            }]
+        });
+
+        let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
+        assert_eq!(chunk.choices[0].delta.reasoning.as_deref(), Some("The user wants"));
+
+        let again = serde_json::to_value(&chunk).expect("re-encode");
+        assert_eq!(
+            again["choices"][0]["delta"]["reasoning"].as_str(),
+            Some("The user wants"),
+            "thinking must survive being written back out, which is what the runtime reads"
+        );
+    }
+
+    /// The name DeepSeek and several compatibles use for the same thing.
+    #[test]
+    fn reasoning_content_survives_under_its_own_name() {
+        let wire = serde_json::json!({
+            "id": "c", "object": "chat.completion.chunk", "created": 1u64, "model": "m",
+            "choices": [{"index": 0, "delta": {"reasoning_content": "hmm"}, "finish_reason": null}]
+        });
+        let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
+        let again = serde_json::to_value(&chunk).expect("re-encode");
+        assert_eq!(again["choices"][0]["delta"]["reasoning_content"].as_str(), Some("hmm"));
+    }
+
+    /// A reply that was only ever prose must not grow a null field on the way
+    /// through: some providers reject unknown or null members outright.
+    #[test]
+    fn a_chunk_without_thinking_gains_no_thinking_field() {
+        let wire = serde_json::json!({
+            "id": "c", "object": "chat.completion.chunk", "created": 1u64, "model": "m",
+            "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": null}]
+        });
+        let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
+        let again = serde_json::to_value(&chunk).expect("re-encode");
+        assert!(again["choices"][0]["delta"].get("reasoning").is_none());
+        assert!(again["choices"][0]["delta"].get("reasoning_content").is_none());
+    }
 }

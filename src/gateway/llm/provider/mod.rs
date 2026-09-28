@@ -61,6 +61,8 @@ pub trait LlmProvider: Send + Sync {
                             MessageContent::Parts(_) => String::new(),
                         }),
                         tool_calls: None,
+                        reasoning: None,
+                        reasoning_content: None,
                     },
                     finish_reason: c.finish_reason,
                 })

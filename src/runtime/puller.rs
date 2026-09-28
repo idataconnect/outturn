@@ -218,11 +218,12 @@ impl Puller {
             // setting. None here is a turn nobody chose a model for, refused
             // below rather than served by one this pod made up.
             default_model: request.model.clone().unwrap_or_default(),
-            progress: Some(sinks.0),
-            on_tool: Some(sinks.1),
-            on_tool_result: Some(sinks.2),
-            on_usage: Some(sinks.3),
-            on_write: Some(sinks.4),
+            progress: Some(sinks.progress),
+            reasoning: Some(sinks.reasoning),
+            on_tool: Some(sinks.on_tool),
+            on_tool_result: Some(sinks.on_tool_result),
+            on_usage: Some(sinks.on_usage),
+            on_write: Some(sinks.on_write),
             // Tells the API a request was refused for want of an approval, so
             // it can ask somebody and park the turn. The shape only: what act
             // that was, and whether it really was gated, are the API's to decide.
@@ -250,7 +251,7 @@ impl Puller {
                         as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
                 })
             }),
-            on_absorbed: Some(sinks.5),
+            on_absorbed: Some(sinks.on_absorbed),
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,

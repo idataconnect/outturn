@@ -42,6 +42,11 @@ export type Message = {
      *  something the agent said, so a reader can see that their conversation
      *  was compacted and what it was replaced by. */
     summary_through?: string
+    /** The model's thinking, where it produced any. Beside the reply rather
+     *  than in it: it is not what the agent said, and it is never sent back to
+     *  a model as history. A reply with this and nothing else is a turn the
+     *  model spent thinking without ever answering. */
+    reasoning?: string
     /** Present when this message records somebody answering an approval.
      *  Drawn as a boundary rather than as speech: the agent did not say it,
      *  the platform recorded what a person decided. */
@@ -108,6 +113,13 @@ export type ChatEvent =
       id: string
       kind: 'chat.delta'
       payload: { message_id: string; idx: number; text: string }
+    }
+  /** A fragment of the model's thinking. No index: it is not part of the
+   *  reply, so nothing concatenates it to stored content. */
+  | {
+      id: string
+      kind: 'chat.reasoning'
+      payload: { message_id: string; text: string }
     }
   /**
    * A message is complete. Carries no content: the client has already rendered

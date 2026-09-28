@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::component::{
-    AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ToolActivity, ToolOutcome, ToolResultSink,
+    AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ReasoningSink, ToolActivity, ToolOutcome,
+    ToolResultSink,
     ToolSink, UsageSink, WriteSink,
 };
 
@@ -148,6 +149,12 @@ pub struct ConversationToolCall {
 pub enum ExecuteEvent {
     /// A fragment of the reply, in order.
     Delta { idx: i64, text: String },
+    /// A fragment of the model's thinking, where it produces it.
+    ///
+    /// Carries no index, because it is not part of the reply and nothing
+    /// reassembles it into stored content -- the browser shows it while the turn
+    /// runs and the transcript keeps it beside the reply rather than in it.
+    Reasoning { text: String },
     /// The guest wrote an object. Reported so the tier with the database can
     /// treat it exactly as it treats an upload -- a document landing is a
     /// document to extract, whoever put it there. The runtime cannot enqueue
@@ -247,22 +254,29 @@ pub enum ExecuteEvent {
     },
 }
 
-/// The three sinks a turn reports progress through.
+/// The sinks a turn reports through.
 ///
 /// Built together because they all feed one channel, and shared because both
-/// ways of reaching a runtime -- being called, and asking -- need the same
-/// three. The channel is unbounded: these are called while the guest is
-/// blocked, so they cannot wait for a slow reader.
-pub fn sinks_for(
-    tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>,
-) -> (
-    ProgressSink,
-    ToolSink,
-    ToolResultSink,
-    UsageSink,
-    WriteSink,
-    AbsorbedSink,
-) {
+/// ways of reaching a runtime -- being called, and asking -- need the same set.
+/// The channel is unbounded: these are called while the guest is blocked, so
+/// they cannot wait for a slow reader.
+///
+/// Named rather than a tuple. It was six positions read back as `sinks.3` and
+/// `sinks.4` by a caller that could not say which was which, with a doc comment
+/// still calling it three -- so inserting one silently handed every sink after
+/// it to the wrong field, and the types were close enough that most of it
+/// compiled.
+pub struct Sinks {
+    pub progress: ProgressSink,
+    pub reasoning: ReasoningSink,
+    pub on_tool: ToolSink,
+    pub on_tool_result: ToolResultSink,
+    pub on_usage: UsageSink,
+    pub on_write: WriteSink,
+    pub on_absorbed: AbsorbedSink,
+}
+
+pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks {
     let progress: ProgressSink = {
         let tx = tx.clone();
         let index = std::sync::atomic::AtomicI64::new(0);
@@ -270,6 +284,18 @@ pub fn sinks_for(
             let idx = index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = tx.send(ExecuteEvent::Delta {
                 idx,
+                text: text.to_string(),
+            });
+        })
+    };
+
+    // No index and no round separator: thinking is not the reply, so nothing
+    // concatenates it to stored content and nothing has to line up with what a
+    // later round shows.
+    let reasoning: ReasoningSink = {
+        let tx = tx.clone();
+        Arc::new(move |text: &str| {
+            let _ = tx.send(ExecuteEvent::Reasoning {
                 text: text.to_string(),
             });
         })
@@ -335,12 +361,13 @@ pub fn sinks_for(
         })
     };
 
-    (
+    Sinks {
         progress,
+        reasoning,
         on_tool,
         on_tool_result,
         on_usage,
         on_write,
         on_absorbed,
-    )
+    }
 }

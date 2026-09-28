@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { annotate, splitAtSteers, withQuote } from './useChatRuntime'
+import { annotate, parts, splitAtSteers, withQuote } from './useChatRuntime'
+import type { Annotated } from './useChatRuntime'
 import type { Message } from './chat'
 
 /** A stored message, with only what `annotate` reads. */
@@ -306,5 +307,63 @@ describe('a prompt answered across more than one attempt', () => {
       message({ id: 'a2', role: 'assistant', replies_to: 'p1' }),
     ]
     expect(statusOf(msgs, 'p1')).toEqual({ kind: 'silent' })
+  })
+})
+
+describe('a model that thought before it answered', () => {
+  const thinking = (over: Partial<Message> = {}) =>
+    parts({
+      ...message({
+        id: 'a1',
+        role: 'assistant',
+        content: 'The Orchard Room is free.',
+        metadata: { reasoning: 'Checking the calendar first.' },
+        ...over,
+      }),
+    } as Annotated)
+
+  it('shows the thinking before the answer, which is the order it happened in', () => {
+    const drawn = thinking()
+    expect(drawn[0]).toEqual({ type: 'reasoning', text: 'Checking the calendar first.' })
+    expect(drawn[1]).toEqual({ type: 'text', text: 'The Orchard Room is free.' })
+  })
+
+  /// The failure this whole path exists for: the model spent its turn thinking
+  /// and never spoke. Before reasoning was carried through, such a reply stored
+  /// empty and rendered as nothing at all, so a reader saw a question that had
+  /// silently gone unanswered.
+  it('has something to show for a turn that only thought', () => {
+    const drawn = thinking({ content: '' })
+    expect(drawn).toContainEqual({ type: 'reasoning', text: 'Checking the calendar first.' })
+  })
+
+  it('draws no reasoning part when the model did not think aloud', () => {
+    const drawn = thinking({ metadata: {} })
+    expect(drawn.some((p) => p.type === 'reasoning')).toBe(false)
+  })
+
+  it('keeps thinking out of the reply, which is what gets stored and replayed', () => {
+    const drawn = thinking()
+    const said = drawn
+      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+    expect(said).toBe('The Orchard Room is free.')
+    expect(said).not.toContain('Checking the calendar')
+  })
+
+  it('still shows thinking on a reply that also called tools', () => {
+    const drawn = thinking({
+      metadata: {
+        reasoning: 'I should check availability.',
+        tool_calls: [{ id: 't1', name: 'fetch_url', action: 'Checking availability' }],
+        parts: [
+          { type: 'call', id: 't1' },
+          { type: 'text', text: 'The Orchard Room is free.' },
+        ],
+      },
+    })
+    expect(drawn[0]).toEqual({ type: 'reasoning', text: 'I should check availability.' })
+    expect(drawn.some((p) => p.type === 'tool-call')).toBe(true)
   })
 })
