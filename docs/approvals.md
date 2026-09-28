@@ -318,6 +318,33 @@ possible.
 Off by default. An agent's first call to each new host becomes a stop-and-wait,
 which is the point in a deployment that wants it and an obstruction in the rest.
 
+## What a no is worth
+
+A decline mints nothing and lifts the hold. Those are two different jobs and it
+took a wedged conversation to separate them: the *grant* is what lets the work
+proceed, so without one the gate refuses the same call again; the *hold* only
+decides whether the conversation can carry on, and the hold is session-scoped.
+Leaving it up suspended every later turn, with the queue item cancelled so
+nobody could answer it again -- declining one charge ended the conversation, and
+only an operator releasing the hold by id could revive it.
+
+What stops the agent asking again a second later is being told, in the
+transcript, that a person said no and to discuss it before re-attempting
+(`chat::DECLINED_GUIDANCE`). Prose rather than a mechanism, deliberately.
+
+**A declined operation can always be raised again.** That is the intended
+behaviour and not a gap. Somebody who declines a charge, talks it over and
+changes their mind must be able to have it go through, which means the agent has
+to be free to try again once that conversation has happened -- and the gate holds
+the line regardless, since the retry raises a fresh approval rather than slipping
+past. A model that re-asks *without* discussing it first is a model ignoring a
+plain instruction, and the cost of that is an approver seeing the question twice.
+
+The alternatives were all worse, and each needed a number nobody could choose
+well: a cap per session, a cooling-off window, or not refunding the attempt a
+park gives back. Each can be tuned wrong in a way that refuses a legitimate
+second ask, which is the failure that actually hurts.
+
 ## Who may answer
 
 Two questions that look like one, per
