@@ -9,6 +9,7 @@ use crate::events;
 use crate::jobs;
 use crate::runtime::router::ExecuteEvent;
 
+use super::actions::ActionStore as _;
 use super::agent::AgentStore;
 use super::chat::{ChatStore, Usage};
 
@@ -165,6 +166,16 @@ fn projected_with_sources(
             // the label is how it is presented.
             let text = if super::chat::summarise::is_summary(&message.metadata) {
                 super::chat::summarise::framed(&message.content)
+            } else if message.metadata.get(super::chat::APPROVAL_MARK).is_some() {
+                // Labelled for the same reason a summary is. It is stored as an
+                // assistant message because that is what the transcript serves
+                // and the browser draws, but the agent did not say it -- and an
+                // agent that reads "Ben approved this charge" as its own words
+                // will answer it rather than act on it.
+                format!(
+                    "[the platform recorded this; it is not something you said]\n\n{}",
+                    message.content
+                )
             } else {
                 message.content.clone()
             };
@@ -270,7 +281,30 @@ fn projected_with_sources(
 /// steers, once, or wait for their own turn.
 fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::Message> {
     // Ids are UUIDv7, so id order is send order.
-    messages.into_iter().filter(|m| m.id <= prompt).collect()
+    messages
+        .into_iter()
+        .filter(|m| {
+            if m.id <= prompt {
+                return true;
+            }
+            // What this turn itself produced after the prompt comes back, even
+            // though it sorts above it. The rule above is about a *user* message
+            // arriving later, which the gateway hands over as a steer and which
+            // would otherwise be answered twice. This turn's own earlier attempt
+            // and the record of somebody answering its approval are neither
+            // sent by a user nor delivered as a steer.
+            //
+            // Left out, a turn resumed after an approval started from the bare
+            // prompt with no memory of having made the call, being refused, or
+            // being approved -- so it re-derived the whole task and, finding its
+            // own first attempt's side effects already there, declined. That
+            // read as the model being sensible; it was the model being handed a
+            // transcript with the relevant part missing, and it is why the
+            // grant-honouring path went so long without ever being exercised.
+            m.role == "assistant" && m.replies_to == Some(prompt)
+                || m.metadata.get(super::chat::APPROVAL_MARK).is_some()
+        })
+        .collect()
 }
 
 /// Says why the conversation stops where it does, for a turn picking it up.
@@ -371,6 +405,13 @@ fn elapsed(span: chrono::TimeDelta) -> String {
 
 /// What a completed turn produced.
 pub(super) struct TurnOutcome {
+    /// Whether this turn stopped because somebody is being asked to approve
+    /// something, and so should be kept rather than finished.
+    ///
+    /// The reply it wrote stays either way: what it managed to say before it
+    /// stopped is part of the conversation, and `replies_to` means the resumed
+    /// turn takes that reply back rather than orphaning it.
+    pub(super) awaiting_approval: bool,
     content: String,
     /// Tool calls the agent made, in order, each with the model's own label.
     tools: Vec<serde_json::Value>,
@@ -432,7 +473,20 @@ impl Worker {
     /// no timescale at all. Both halves matter, which is why they are one
     /// function rather than two blocks that drifted apart.
     async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
-        if let Err(e) = self.chat.discard_placeholder(payload.message_id).await {
+        // The attempt being abandoned is the latest one: earlier attempts are
+        // finished, and one of them may hold the refusal somebody approved
+        // against. `attempt_for(.., false)` is "the attempt that already
+        // exists", which is the one this turn was writing.
+        let attempt = self
+            .chat
+            .attempt_for(payload.message_id, false)
+            .await
+            .unwrap_or(1);
+        if let Err(e) = self
+            .chat
+            .discard_placeholder(payload.message_id, attempt)
+            .await
+        {
             tracing::error!(
                 session_id = %payload.session_id,
                 error = %e,
@@ -466,6 +520,20 @@ impl Worker {
     /// because a refusal that could not be announced is still a refusal and
     /// failing the job over it would retry work that is meant not to run.
     async fn announce_hold(&self, payload: &ChatTurnPayload, why: &str, resumable: bool) {
+        // The approval waiting on somebody, where one is. Carried on the event so
+        // a reader watching this conversation can answer it without going to find
+        // a queue -- the person who triggered a hold is usually the person who can
+        // lift it, and sending them elsewhere to do it loses the thread.
+        //
+        // Absent when the hold is anything else: a spend cap and an operator's
+        // stop are held the same way and neither is answerable here.
+        let pending = super::actions::PostgresActionStore::new(self.pool.clone())
+            .approval_on_session(payload.workspace_id, payload.session_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|item| super::gated::answerable(&item));
+
         self.announce(
             payload,
             "chat.held",
@@ -476,6 +544,7 @@ impl Worker {
                 // latches and waits for a person; a suspension lifts when the
                 // hold does.
                 "resumable": resumable,
+                "approval": pending,
             }),
         )
         .await;
@@ -743,6 +812,7 @@ impl Worker {
                         reasoning_tokens,
                         provider,
                         held,
+                        awaiting_approval,
                     }) => {
                         // Latched here, where generation actually stopped,
                         // rather than a turn later when the next one is
@@ -751,7 +821,15 @@ impl Worker {
                         // unlatched -- and the next turn, finding nothing
                         // holding it, would simply run. A stop is supposed to
                         // need a person to lift it.
-                        if let Some(reason) = &held {
+                        // A turn waiting on an approval is not latched. The
+                        // latch exists so a stop needs a person to lift it; an
+                        // approval *is* lifted by a person, and latching would
+                        // leave the conversation stopped after the yes -- with
+                        // the hold released, the turn resumed, and the session
+                        // refusing to run it.
+                        if let Some(reason) = &held
+                            && !awaiting_approval
+                        {
                             // Fails the turn rather than logging and carrying
                             // on, which is what the latch at preparation does
                             // and for the same reason: a stop that did not
@@ -773,6 +851,7 @@ impl Worker {
                         }
 
                         return Ok(TurnOutcome {
+                            awaiting_approval,
                             content,
                             tools,
                             parts,
@@ -1013,10 +1092,35 @@ impl Worker {
                 // A no-op when the session was already stopped, which is what
                 // keeps the original reason and time.
                 let why = decision.why();
-                self.chat
-                    .stop_session(payload.session_id, &why)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("stop session: {e}"))?;
+
+                // Unless this conversation is *also* waiting on somebody. A
+                // stop that lands over a pending approval is the workspace's
+                // state, not this conversation's: it was not stopped, it was
+                // already waiting, and the stop refuses the turn on its own
+                // without needing a latch left behind.
+                //
+                // Latching anyway is a trap, because a latch outlives the hold
+                // that set it. The approver answers, the approval's hold goes,
+                // the turn is given back -- and refuses again on a latch nobody
+                // can see, with the approval already gone from the queue. They
+                // did the thing they were asked to do and the conversation
+                // stayed dead.
+                //
+                // Only a suspended hold counts. Two stops are still a stop.
+                //
+                // Through `should_latch` rather than inline: the branch here is
+                // unreachable from a test without a live worker, and a copy of
+                // the rule inverted right here left every test in the crate
+                // passing.
+                let latching = super::inhibitor::should_latch(&decision);
+                let also_waiting = !latching;
+
+                if latching {
+                    self.chat
+                        .stop_session(payload.session_id, &why)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("stop session: {e}"))?;
+                }
                 // Told to whoever is watching. This refusal happens before a
                 // placeholder exists, so without an event the message sits in
                 // the transcript with no reply and no indication -- and the
@@ -1028,16 +1132,35 @@ impl Worker {
                 // banner for a turn the reader never asked for explains
                 // nothing they can act on.
                 if payload.user_id.is_some() {
-                    self.announce_hold(payload, latched.as_deref().unwrap_or(&why), false)
+                    // `resumable` follows the latch, not the verdict. A turn
+                    // that was not latched carries on by itself once the stop
+                    // lifts, and telling its reader to send a message would have
+                    // them typing into a conversation that is already coming
+                    // back -- and clearing a latch that is not there.
+                    self.announce_hold(payload, latched.as_deref().unwrap_or(&why), also_waiting)
                         .await;
                 }
                 tracing::info!(
                     session_id = %payload.session_id,
                     workspace_id = %payload.workspace_id,
                     reason = %why,
+                    also_waiting,
                     "a turn was stopped before it ran"
                 );
-                Ok(Err(Ok(Prepared::Nothing)))
+                // Kept rather than finished when it is also waiting on
+                // somebody. `Nothing` completes the job, which for a stop is
+                // right -- the turn was declined and nothing will bring it
+                // back -- and for this is the wedge the latch used to cause,
+                // by a worse route: the approver answers, `resume_for_scope`
+                // finds no parked row, and the grant is minted against a job
+                // that will never run again.
+                //
+                // Parking is what `resumable: true` above already promises.
+                Ok(Err(Ok(if also_waiting {
+                    Prepared::Park
+                } else {
+                    Prepared::Nothing
+                })))
             }
             // A suspension pauses rather than declines: the turn is kept and
             // given back to the queue when the hold lifts. It takes no latch,
@@ -1072,7 +1195,11 @@ impl Worker {
     /// to a question already addressed. `Park` is a turn a suspended hold
     /// refused, which has to be kept rather than completed -- completing it is
     /// what made `resumable` a promise nothing could keep.
-    pub(super) async fn prepare_turn(&self, payload: &ChatTurnPayload) -> anyhow::Result<Prepared> {
+    pub(super) async fn prepare_turn(
+        &self,
+        job_id: Uuid,
+        payload: &ChatTurnPayload,
+    ) -> anyhow::Result<Prepared> {
         let agent = self
             .agents
             .get(payload.workspace_id, payload.agent_id)
@@ -1116,9 +1243,28 @@ impl Worker {
         // the tier that reports its own rules.
         let egress_commitment = crate::egress::commit::root(payload.workspace_id, &egress);
 
+        // A turn carrying grants is one somebody answered an approval for, so
+        // it writes a new attempt rather than taking back the reply that was
+        // refused. Anything else -- including an ordinary crashed retry -- takes
+        // its own attempt back, which is what makes that idempotent.
+        // Read once, here, because the attempt has to be settled before a
+        // placeholder is claimed and the same set is committed into the token
+        // further down. Two reads was the first shape, with a comment claiming
+        // it kept a query off the path of every turn -- which it did not, since
+        // this one is on that path regardless.
+        let granted = super::grant::live_for(&self.pool, payload.workspace_id, job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("grants: {e}"))?;
+        let resuming = !granted.is_empty();
+        let attempt = self
+            .chat
+            .attempt_for(payload.message_id, resuming)
+            .await
+            .map_err(|e| anyhow::anyhow!("attempt: {e}"))?;
+
         let placeholder = self
             .chat
-            .claim_placeholder(payload.message_id, payload.session_id)
+            .claim_placeholder(payload.message_id, payload.session_id, attempt)
             .await
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
 
@@ -1205,31 +1351,43 @@ impl Worker {
         // over it. Computed here, beside the egress commitment, because both are
         // statements this tier makes about a turn and neither is the runtime's to
         // assert -- see `egress::gate`.
-        let mut gates = super::skill::gates_for_turn(&self.pool, &skills)
-            .await
-            .map_err(|e| anyhow::anyhow!("gates: {e}"))?
-            .into_vec();
+        let gates = assemble_gates(
+            &self.pool,
+            payload.workspace_id,
+            &skills,
+            &egress,
+            settings.approve_new_hosts,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("gates: {e}"))?;
 
-        // And the workspace's own ceiling, if it set one. `approve_new_hosts` turns
-        // into gates here rather than being a flag the gateway reads, so nothing
-        // downstream has to know the setting exists: the commitment, the token
-        // claim, the check, the refusal and the parked turn are all the
-        // per-operation machinery, reused whole.
+        // A turn resuming from an approval carries grants, and they travel with
+        // it rather than changing what is gated.
         //
-        // Exempting the hosts a skill's own declaration opened is the point of the
-        // setting rather than a softening of it. Those were consented to when the
-        // skill was installed, in an act naming the skill and the host together; a
-        // host somebody added by hand says agents *may* reach it, not that any use
-        // of it was reviewed.
-        if settings.approve_new_hosts {
-            let allowed: Vec<String> = egress.iter().map(|r| r.host.clone()).collect();
-            let exempt = super::egress::hosts_from_skills(&self.pool, payload.workspace_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("skill hosts: {e}"))?;
-            gates.extend(crate::egress::gate::for_unreviewed_hosts(&allowed, &exempt));
+        // Dropping the satisfied gates was tried and is the wrong shape. A gate
+        // dropped from the commitment is not enforced at all, so anything the
+        // drop was too broad about becomes an ungated request -- and it was too
+        // broad: keyed on the act alone, one approved GET uncommitted every
+        // `reach` gate for every unreviewed host and method, and a unit grant for
+        // one booking uncommitted the charging of every other. The failure
+        // direction has to be the other one, so the gate stays and the grant is
+        // what lets a particular request through.
+        //
+        // It also cannot work for a unit grant, whose key is a field of the
+        // request body: nothing here has a body, and the only tier that does is
+        // the one making the call.
+        if !granted.is_empty() {
+            tracing::info!(
+                workspace_id = %payload.workspace_id,
+                session_id = %payload.session_id,
+                count = granted.len(),
+                "a resumed turn carries approvals"
+            );
         }
 
-        let gates = crate::egress::gate::Gates::of(gates);
+        // Committed together, so a grant is as unforgeable as the gate it is
+        // about and a stripped one fails the same way.
+        let gates = crate::egress::gate::Gates::of(gates).with_grants(granted);
         let gate_commitment = gates.root(payload.workspace_id);
 
         let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
@@ -1722,12 +1880,19 @@ impl Worker {
         // indicator that never resolves.
         //
         // Taken back rather than passed in, because this tier is reached by a
-        // runtime reporting a job id and nothing else. The unique index on
-        // `replies_to` is what makes that unambiguous, and is the same thing
-        // that lets a retry take back the reply it already made.
+        // runtime reporting a job id and nothing else. `false` here is not a
+        // claim that nothing was resumed: it asks for the attempt that already
+        // exists, which is the one `prepare_turn` settled on when it started
+        // this turn. Deciding again here could pick a different number and have
+        // one turn write two replies.
+        let attempt = self
+            .chat
+            .attempt_for(payload.message_id, false)
+            .await
+            .map_err(|e| anyhow::anyhow!("attempt: {e}"))?;
         let placeholder = self
             .chat
-            .claim_placeholder(payload.message_id, payload.session_id)
+            .claim_placeholder(payload.message_id, payload.session_id, attempt)
             .await
             .map_err(|e| anyhow::anyhow!("placeholder: {e}"))?;
         let reply_id = placeholder.message.id;
@@ -1819,8 +1984,59 @@ impl Worker {
         // it did produce a reply, and that reply was kept, but recording it as
         // an ordinary success loses the only evidence that the answer is short
         // because it was interrupted rather than because that was the answer.
+        // A turn waiting on an approval is *kept* rather than finished. Parking
+        // is what a suspended hold does everywhere else -- the job drops its
+        // lease, gives back the attempt it spent, and `resume_parked` hands it
+        // out again when somebody answers -- and this is the one place a hold
+        // arrives after a turn was claimed, so `prepare_turn` never sees it.
+        //
+        // Completing instead is the bug this replaces: the hold was taken, the
+        // reply was written, the job succeeded, and answering the approval had
+        // nothing to give back. The agent said it had asked somebody, the person
+        // said yes, and the conversation sat silent until the user typed again.
+        //
+        // After a cancel, because somebody pressing stop outranks a turn waiting
+        // to carry on: the approval stays pending and answering it resumes
+        // nothing, which is what stopping means.
         match jobs::cancel_requested(&self.pool, job_id).await {
             Ok(true) => jobs::mark_cancelled(&self.pool, job_id, lease_token).await?,
+            _ if reply.awaiting_approval => {
+                match jobs::park(&self.pool, job_id, lease_token).await? {
+                    jobs::Parked::Parked => {
+                        tracing::info!(
+                            job_id = %job_id,
+                            session_id = %payload.session_id,
+                            "a turn is waiting on an approval and was kept"
+                        );
+                        // And the reader is told, which nothing else does from
+                        // here: `announce_hold` fires when a turn is *refused* at
+                        // preparation, and this one was already streaming when
+                        // the hold arrived. Without this the conversation shows a
+                        // red tool error and a working composer, which reads as
+                        // finished rather than paused -- and the approval the
+                        // event carries is what puts Approve in front of the
+                        // person who is already looking.
+                        // Said as a reader would say it. "Waiting on an
+                        // approval" and "the hold is lifted" are words from
+                        // inside this platform; whoever is watching is a person
+                        // who asked for something and is being told why it
+                        // stopped.
+                        self.announce_hold(
+                            &payload,
+                            "Paused: this needs somebody to approve it",
+                            true,
+                        )
+                        .await;
+                    }
+                    // The lease lapsed and another pod holds this turn. Its
+                    // result stands; parking on top of it would take a turn
+                    // somebody else is running away from them.
+                    jobs::Parked::NotHeld => tracing::warn!(
+                        job_id = %job_id,
+                        "a turn waiting on an approval no longer holds its lease"
+                    ),
+                }
+            }
             // A failure to ask is not a reason to leave the job running: the
             // work is done either way, and the worse of the two records is the
             // one that says nothing finished.
@@ -1887,6 +2103,8 @@ mod projection_tests {
             prompt_tokens: None,
             completion_tokens: None,
             replies_to: None,
+            attempt: 1,
+            finished_at: None,
             absorbed_by: None,
             job_state: None,
         }
@@ -2416,6 +2634,67 @@ mod projection_tests {
             .count();
         assert_eq!(calls, 2);
     }
+
+    /// What a turn resumed after an approval is allowed to remember.
+    ///
+    /// `up_to` keeps the transcript as it stood when the prompt was sent, so a
+    /// *user* message arriving later is not answered twice. This turn's own
+    /// earlier attempt and the record of somebody answering its approval sort
+    /// above the prompt too, and dropping them handed the resumed turn a bare
+    /// prompt: it re-derived the whole task, found its first attempt's side
+    /// effects already there, and declined. Which read as the model being
+    /// sensible rather than as the transcript being wrong.
+    #[test]
+    fn a_resumed_turn_keeps_its_own_attempt_and_the_approval() {
+        let prompt_id = Uuid::now_v7();
+        let mut prompt = message("user", "charge it", serde_json::json!({}));
+        prompt.id = prompt_id;
+
+        let mut refused = message("assistant", "I need approval.", serde_json::json!({}));
+        refused.replies_to = Some(prompt_id);
+
+        let approved = message(
+            "assistant",
+            "Ada approved this charge.",
+            serde_json::json!({ crate::api::chat::APPROVAL_MARK: { "approved": true } }),
+        );
+
+        // A user message sent after the prompt, which must stay out: the
+        // gateway hands it over as a steer, and left here it is answered twice.
+        let later = message("user", "actually wait", serde_json::json!({}));
+
+        let kept = up_to(
+            vec![prompt, refused.clone(), approved.clone(), later.clone()],
+            prompt_id,
+        );
+        let ids: Vec<Uuid> = kept.iter().map(|m| m.id).collect();
+
+        assert!(ids.contains(&prompt_id), "the prompt itself");
+        assert!(
+            ids.contains(&refused.id),
+            "the refusal the approver approved against"
+        );
+        assert!(ids.contains(&approved.id), "the record of the answer");
+        assert!(
+            !ids.contains(&later.id),
+            "a later user message still reaches this turn only as a steer"
+        );
+    }
+
+    /// Another prompt's reply is not this turn's to remember. It arrives on its
+    /// own turn, and pulling it in would answer a question nobody asked here.
+    #[test]
+    fn a_reply_to_a_different_prompt_stays_out() {
+        let prompt_id = Uuid::now_v7();
+        let mut prompt = message("user", "charge it", serde_json::json!({}));
+        prompt.id = prompt_id;
+
+        let mut other = message("assistant", "about something else", serde_json::json!({}));
+        other.replies_to = Some(Uuid::now_v7());
+
+        let kept = up_to(vec![prompt, other.clone()], prompt_id);
+        assert!(!kept.iter().any(|m| m.id == other.id));
+    }
 }
 
 #[cfg(test)]
@@ -2450,4 +2729,85 @@ mod usage_source_tests {
             );
         }
     }
+}
+
+/// What a turn's skills and its workspace's ceiling say needs approving.
+///
+/// One copy, called when a turn is prepared and again when a refusal comes back
+/// claiming to have hit one. The second caller is why this is a free function:
+/// `src/api/gated.rs` re-derives the gates rather than trusting the runtime's
+/// account of what it was refused, and a second implementation there would be a
+/// second answer to "what is gated", which is the one question this mechanism
+/// cannot afford two answers to.
+pub async fn assemble_gates(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    skills: &[super::skill::ResolvedSkill],
+    egress: &[crate::runtime::egress::EgressRule],
+    approve_new_hosts: bool,
+) -> anyhow::Result<Vec<crate::egress::gate::Gate>> {
+    let mut gates = super::skill::gates_for_turn(pool, skills)
+        .await
+        .map_err(|e| anyhow::anyhow!("gates: {e}"))?
+        .into_vec();
+
+    // The workspace's own ceiling, if it set one. `approve_new_hosts` turns into
+    // gates here rather than being a flag the gateway reads, so nothing
+    // downstream has to know the setting exists: the commitment, the token
+    // claim, the check, the refusal and the parked turn are all the
+    // per-operation machinery, reused whole.
+    //
+    // Exempting the hosts a skill's own declaration opened is the point of the
+    // setting rather than a softening of it. Those were consented to when the
+    // skill was installed, in an act naming the skill and the host together; a
+    // host somebody added by hand says agents *may* reach it, not that any use
+    // of it was reviewed.
+    if approve_new_hosts {
+        let allowed: Vec<String> = egress.iter().map(|r| r.host.clone()).collect();
+        let exempt = super::egress::hosts_from_skills(pool, workspace_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("skill hosts: {e}"))?;
+        gates.extend(crate::egress::gate::for_unreviewed_hosts(&allowed, &exempt));
+    }
+
+    Ok(gates)
+}
+
+/// The gates for a turn that is already running, re-derived from its payload.
+///
+/// Used by the refusal path, which has a job id and nothing else. Resolves the
+/// same skills, egress rules and settings `prepare_turn` did -- so a skill
+/// unbound mid-turn narrows what can be approved rather than widening it, which
+/// is the safe direction.
+pub async fn gates_for(
+    pool: &sqlx::PgPool,
+    payload: &ChatTurnPayload,
+) -> anyhow::Result<crate::egress::gate::Gates> {
+    use super::settings::SettingsStore as _;
+    use super::skill::SkillStore as _;
+
+    let skills = super::skill::PostgresSkillStore::new(pool.clone())
+        .resolve_for_agent(payload.workspace_id, payload.agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
+
+    let egress = super::egress::rules_for(pool, payload.workspace_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("egress: {e}"))?;
+
+    let settings = super::settings::PostgresSettingsStore::new(pool.clone())
+        .resolve(payload.workspace_id, payload.agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
+
+    Ok(crate::egress::gate::Gates::of(
+        assemble_gates(
+            pool,
+            payload.workspace_id,
+            &skills,
+            &egress,
+            settings.approve_new_hosts,
+        )
+        .await?,
+    ))
 }

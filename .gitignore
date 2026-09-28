@@ -25,3 +25,4 @@ k8s/overlays/local/dev-machine.env
 # plus whichever components. Generated rather than committed because the
 # alternative is one overlay per combination, and four of them would drift.
 k8s/overlays/.generated/
+ui/.shots/

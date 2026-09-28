@@ -223,6 +223,33 @@ impl Puller {
             on_tool_result: Some(sinks.2),
             on_usage: Some(sinks.3),
             on_write: Some(sinks.4),
+            // Tells the API a request was refused for want of an approval, so
+            // it can ask somebody and park the turn. The shape only: what act
+            // that was, and whether it really was gated, are the API's to decide.
+            on_gated: Some({
+                let api_url = self.api_url.clone();
+                let runtime_key = self.runtime_key.clone();
+                let http = self.http.clone();
+                let session_id = request.session_id;
+                Arc::new(move |refused: crate::runtime::component::GatedRequest| {
+                    let api_url = api_url.clone();
+                    let runtime_key = runtime_key.clone();
+                    let http = http.clone();
+                    Box::pin(async move {
+                        report_gated(
+                            &http,
+                            &api_url,
+                            &runtime_key,
+                            lease,
+                            session_id,
+                            job_id,
+                            refused,
+                        )
+                        .await
+                    })
+                        as std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+                })
+            }),
             on_absorbed: Some(sinks.5),
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
@@ -283,15 +310,16 @@ impl Puller {
             }
             let outcome = runner.run(&module, conversation, prompt, options).await;
             let _ = match outcome {
-                Ok((content, cost, held)) => tx.send(ExecuteEvent::Done {
-                    content,
-                    prompt_tokens: cost.prompt_tokens,
-                    completion_tokens: cost.completion_tokens,
-                    cache_read_tokens: cost.cache_read_tokens,
-                    cache_write_tokens: cost.cache_write_tokens,
-                    reasoning_tokens: cost.reasoning_tokens,
-                    provider: cost.provider,
-                    held,
+                Ok(done) => tx.send(ExecuteEvent::Done {
+                    content: done.reply,
+                    prompt_tokens: done.cost.prompt_tokens,
+                    completion_tokens: done.cost.completion_tokens,
+                    cache_read_tokens: done.cost.cache_read_tokens,
+                    cache_write_tokens: done.cost.cache_write_tokens,
+                    reasoning_tokens: done.cost.reasoning_tokens,
+                    provider: done.cost.provider,
+                    held: done.held,
+                    awaiting_approval: done.awaiting_approval,
                 }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
@@ -361,6 +389,64 @@ impl Puller {
                 error = %e,
                 "could not hand a turn back; its lease will recover it"
             );
+        }
+    }
+}
+
+/// Tells the API a request was refused for want of an approval.
+///
+/// Returns whether the turn should expect to park. False on any failure: the
+/// request has already been refused, so the worst case is an agent told less
+/// than it could have been rather than one that proceeds when it should not.
+async fn report_gated(
+    http: &reqwest::Client,
+    api_url: &str,
+    runtime_key: &str,
+    lease: Uuid,
+    session_id: Uuid,
+    job_id: Uuid,
+    refused: crate::runtime::component::GatedRequest,
+) -> bool {
+    let response = http
+        .post(format!("{}/v1/work/gated", api_url.trim_end_matches('/')))
+        .bearer_auth(runtime_key)
+        // As every other report carries it. The shared key says only "the
+        // runtime tier"; the lease is what says this pod is the one running this
+        // turn, without which the API would take a runtime's word for which
+        // conversation it was speaking about.
+        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .json(&serde_json::json!({
+            "session_id": session_id,
+            "job_id": job_id,
+            "method": refused.method,
+            "host": refused.host,
+            "path": refused.path,
+            "body": refused.body,
+        }))
+        .send()
+        .await;
+
+    match response {
+        Ok(response) if response.status().is_success() => response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("park").and_then(|p| p.as_bool()))
+            .unwrap_or(false),
+        Ok(response) => {
+            // Refused by the API, which is what a relay for an ungated request
+            // gets. Worth seeing: the honest causes are a race with a skill
+            // being unbound, and a runtime that should not be trusted.
+            tracing::warn!(
+                job_id = %job_id,
+                status = %response.status(),
+                "the API would not raise an approval for a refused request"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(job_id = %job_id, error = %e, "could not report a gated refusal");
+            false
         }
     }
 }

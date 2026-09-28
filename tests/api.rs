@@ -6436,6 +6436,7 @@ async fn the_queue_returns_what_is_waiting_on_the_reader() {
                 outturn::api::actions::NewItem {
                     kind: "approval.charge".into(),
                     event_id: None,
+                    inhibitor_id: None,
                     payload: serde_json::json!({"question": "approve?"}),
                     targets: vec![outturn::api::actions::Target::User(user)],
                     expires_at: None,
@@ -6497,6 +6498,7 @@ async fn the_queue_shows_nothing_from_a_workspace_the_reader_left() {
                 outturn::api::actions::NewItem {
                     kind: "approval.charge".into(),
                     event_id: None,
+                    inhibitor_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
                     expires_at: None,
@@ -6545,6 +6547,7 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
                 outturn::api::actions::NewItem {
                     kind: "approval.charge".into(),
                     event_id: None,
+                    inhibitor_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
                     expires_at: None,
@@ -6595,6 +6598,7 @@ async fn a_waiting_read_returns_the_current_queue_when_nothing_happens() {
                 outturn::api::actions::NewItem {
                     kind: "approval.charge".into(),
                     event_id: None,
+                    inhibitor_id: None,
                     payload: serde_json::json!({}),
                     targets: vec![outturn::api::actions::Target::User(user)],
                     expires_at: None,
@@ -7331,7 +7335,7 @@ async fn a_gate_declaration_with_no_host_is_refused_at_publish() {
         "body": "One operation. Read charge.md before using it.",
         "files": [{
             "path": "charge.md",
-            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n",
+            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n\n# charge\n",
         }],
     })
     .to_string();
@@ -7353,7 +7357,7 @@ async fn a_gate_declaration_with_no_host_is_refused_at_publish() {
         "hosts": ["api.hollowbrook.test"],
         "files": [{
             "path": "charge.md",
-            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n",
+            "content": "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n\n# charge\n",
         }],
     })
     .to_string();
@@ -7471,6 +7475,54 @@ async fn approve_new_hosts_gates_a_hand_added_host_and_not_a_skills_own() {
 }
 
 #[tokio::test]
+async fn a_skill_with_two_hosts_gates_both_of_them() {
+    // The gate row was keyed on `(version_id, path, requires)` with no host,
+    // while the write loops over the skill's hosts with `on conflict do
+    // nothing` -- so the second host's gate was silently dropped and requests
+    // to it went out unapproved. A gate failing open, with nothing saying so.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let charge_file = "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n\n# charge\n";
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/skills",
+        &admin,
+        &serde_json::json!({
+            "slug": "two-hosts",
+            "name": "Two hosts",
+            "body": "One operation, two places it can go.",
+            "hosts": ["api.one.test", "api.two.test"],
+            "files": [{ "path": "charge.md", "content": charge_file }],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let hosts: Vec<String> = sqlx::query_scalar(
+        "select g.host from skill_version_gates g \
+           join skill_versions v on v.id = g.version_id \
+           join skills s on s.id = v.skill_id \
+          where s.slug = 'two-hosts' order by g.host",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .expect("gates");
+
+    assert_eq!(
+        hosts,
+        vec!["api.one.test".to_string(), "api.two.test".to_string()],
+        "both hosts must be gated; a dropped one is a request nobody gates"
+    );
+
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn a_body_only_edit_keeps_the_gates_its_files_declare() {
     // The quiet failure the whole mechanism is arranged against, found by review.
     //
@@ -7488,8 +7540,7 @@ async fn a_body_only_edit_keeps_the_gates_its_files_declare() {
         .login_as("admin@test.invalid", None, Some((workspace, "admin")))
         .await;
 
-    let charge_file =
-        "---\napproval:\n  requires: charge\n  matches: POST /charges\n---\n\n# charge\n";
+    let charge_file = "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n\n# charge\n";
     let (status, body) = post_with_cookie(
         &h,
         "/v1/skills",
@@ -7572,6 +7623,24 @@ async fn a_body_only_edit_keeps_the_gates_its_files_declare() {
         gates_for(second).await,
         1,
         "the gate its file declares was dropped, so every later turn is ungated"
+    );
+
+    // And what the gate binds, which is the half a count of gates cannot see.
+    // A gate whose binds did not travel is not ungated -- it still refuses -- but
+    // every grant taken out under it is keyed on the path alone, so one approved
+    // charge covers a charge for any amount. Counting gates alone passed while
+    // that was true.
+    let binds: Vec<String> = sqlx::query_scalar(
+        "select field from skill_version_gate_binds where version_id = $1 order by position",
+    )
+    .bind(second)
+    .fetch_all(&h.db.pool)
+    .await
+    .expect("binds");
+    assert_eq!(
+        binds,
+        vec!["amount_pence".to_string()],
+        "the bound fields did not carry forward, so later grants bind nothing"
     );
 
     h.db.cleanup().await;

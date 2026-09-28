@@ -2,6 +2,7 @@
 approval:
   requires: charge
   matches: POST /charges
+  binds: [payment_account_id, booking_id, amount_pence]
   covers: booking
   identified_by: booking_id
 ---
@@ -28,9 +29,16 @@ off.
 - `booking_id` — the booking this is payment for, from `create_booking` or
   `list_bookings`.
 - `amount_pence` — pence, so £145 is `14500`.
-- `idempotency_key` — recommended. Any stable string of your own; send the same
-  one if you call this again for the same charge, and the house returns the
-  first charge rather than taking the money twice.
+- `idempotency_key` — **required, and derived rather than invented.** Build it
+  as `charge-<booking_id>-<amount_pence>`, so charging `bk_8812` for `9000` is
+  always `charge-bk_8812-9000`.
+
+  Derive it that way every time, including when you try again. A key you made up
+  fresh is a key the house has not seen, so it takes the money a second time —
+  and a charge that needs approving is refused, approved and then *retried*, so
+  the second attempt is the ordinary path rather than a rare one. Deriving it
+  from the booking and the amount means your retry is recognised as the same
+  charge, whatever happened in between.
 
 ## What comes back
 

@@ -103,6 +103,25 @@ async fn write_gates(
             .execute(&mut **tx)
             .await
             .map_err(internal)?;
+
+            // The bound fields, in declared order. Not keyed on the host --
+            // what a request binds does not vary by where it is sent -- so the
+            // repeats past the first host are no-ops through `on conflict`.
+            for (position, field) in rule.binds.iter().enumerate() {
+                sqlx::query(
+                    "insert into skill_version_gate_binds \
+                     (version_id, path, requires, position, field) \
+                     values ($1, $2, $3, $4, $5) on conflict do nothing",
+                )
+                .bind(version_id)
+                .bind(&rule.path)
+                .bind(&rule.requires)
+                .bind(position as i32)
+                .bind(field)
+                .execute(&mut **tx)
+                .await
+                .map_err(internal)?;
+            }
         }
     }
     Ok(())
@@ -122,6 +141,23 @@ async fn copy_gates(
          (version_id, path, requires, host, method, path_pattern, identified_by) \
          select $2, path, requires, host, method, path_pattern, identified_by \
          from skill_version_gates where version_id = $1 \
+         on conflict do nothing",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await
+    .map_err(internal)?;
+
+    // And what each of them binds. Carried with the gate rather than left
+    // behind: a gate whose binds did not travel is one whose grants cover every
+    // request to its path, so losing them here is the fail-open direction. The
+    // body-only edit already lost a whole gate set once this way.
+    sqlx::query(
+        "insert into skill_version_gate_binds \
+         (version_id, path, requires, position, field) \
+         select $2, path, requires, position, field \
+         from skill_version_gate_binds where version_id = $1 \
          on conflict do nothing",
     )
     .bind(from)

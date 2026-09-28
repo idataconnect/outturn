@@ -1475,6 +1475,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // Runtimes ask here for work and report back what it produced. Both
         // require GatewayInvoke, which is the platform's own tier rather than
         // a workspace's.
+        .route("/v1/work/gated", post(super::gated::raise))
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))

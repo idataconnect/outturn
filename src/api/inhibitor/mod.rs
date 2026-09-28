@@ -187,6 +187,32 @@ pub fn decide(inhibitors: Vec<Inhibitor>) -> Decision {
     }
 }
 
+/// Whether a stopped verdict should latch the session it refused.
+///
+/// A latch outlives the hold that set it -- that is its purpose, so releasing a
+/// kill switch does not resume fifty conversations it killed. Which makes it the
+/// wrong thing to leave behind on a conversation that was merely *waiting*: the
+/// approver answers, the suspension goes, the turn is given back, and it refuses
+/// again on a latch nobody can see, with the approval already gone from the
+/// queue. They did what they were asked and the conversation stayed dead.
+///
+/// So a stop that lands over a pending approval refuses the turn without
+/// latching. It does not need one: the stop itself is what refuses, and it
+/// resumes of its own accord when lifted. Two stops are still a stop.
+///
+/// A free function rather than a branch inside `worker::inhibited`, because the
+/// branch there is unreachable from a test without a live worker -- and with the
+/// condition inverted, every test in this crate still passed.
+pub fn should_latch(decision: &Decision) -> bool {
+    if decision.verdict != Verdict::Stopped {
+        return false;
+    }
+    !decision
+        .contributors
+        .iter()
+        .any(|held| matches!(held.strength, Strength::Suspended))
+}
+
 /// Taking a hold.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TakeInhibitor {
@@ -319,5 +345,85 @@ mod tests {
         assert!(Strength::Stopped > Strength::Suspended);
         assert!(Verdict::Stopped > Verdict::Suspended);
         assert!(Verdict::Suspended > Verdict::Proceed);
+    }
+
+    /// The bug this closes, stated as the sequence that produced it: a turn
+    /// parks for an approval, somebody stops the workspace, the stop refuses the
+    /// turn and latches the session -- and then answering the approval resumes
+    /// nothing, because the latch outlived the hold and nothing in the queue is
+    /// left to explain it.
+    #[test]
+    fn a_stop_over_a_pending_approval_does_not_latch() {
+        let decision = decide(vec![held(Strength::Suspended), held(Strength::Stopped)]);
+        assert_eq!(
+            decision.verdict,
+            Verdict::Stopped,
+            "the turn is still refused"
+        );
+        assert!(
+            !should_latch(&decision),
+            "a conversation that was waiting must not be left latched, or the \
+             approver answers and it stays dead"
+        );
+    }
+
+    /// An ordinary stop still latches, which is the whole point of a latch: a
+    /// kill switch that a released hold undoes is one that silently did not take.
+    #[test]
+    fn an_ordinary_stop_still_latches() {
+        assert!(should_latch(&decide(vec![held(Strength::Stopped)])));
+        assert!(should_latch(&decide(vec![
+            held(Strength::Stopped),
+            held(Strength::Stopped),
+        ])));
+    }
+
+    /// Nothing latches a turn that was not stopped.
+    #[test]
+    fn a_suspension_alone_never_latches() {
+        assert!(!should_latch(&decide(vec![held(Strength::Suspended)])));
+        assert!(!should_latch(&decide(vec![])));
+    }
+
+    /// A stop that lands over a pending approval is still a stop, and the
+    /// contributors still say somebody is being waited on.
+    ///
+    /// `worker::inhibited` reads exactly this to decide whether to latch the
+    /// session. A stop refuses the turn either way; what it must not do here is
+    /// leave a latch behind, because a latch outlives the hold that set it --
+    /// the approver answers, the suspension goes, the turn is given back, and it
+    /// refuses again on a latch nobody can see with the approval already gone
+    /// from the queue.
+    #[test]
+    fn a_stop_over_a_suspension_still_says_somebody_is_waiting() {
+        let decision = decide(vec![held(Strength::Suspended), held(Strength::Stopped)]);
+
+        assert_eq!(
+            decision.verdict,
+            Verdict::Stopped,
+            "the strongest hold still wins"
+        );
+        assert!(
+            decision
+                .contributors
+                .iter()
+                .any(|h| matches!(h.strength, Strength::Suspended)),
+            "the suspension has to survive in the contributors, or the worker \
+             cannot tell a conversation that was stopped from one that was \
+             already waiting"
+        );
+    }
+
+    /// Two stops are a stop. Nothing here is waiting on anybody, so a latch is
+    /// exactly right.
+    #[test]
+    fn two_stops_are_not_a_conversation_waiting_on_somebody() {
+        let decision = decide(vec![held(Strength::Stopped), held(Strength::Stopped)]);
+        assert!(
+            !decision
+                .contributors
+                .iter()
+                .any(|h| matches!(h.strength, Strength::Suspended)),
+        );
     }
 }

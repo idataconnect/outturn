@@ -42,12 +42,28 @@ export type Message = {
      *  something the agent said, so a reader can see that their conversation
      *  was compacted and what it was replaced by. */
     summary_through?: string
+    /** Present when this message records somebody answering an approval.
+     *  Drawn as a boundary rather than as speech: the agent did not say it,
+     *  the platform recorded what a person decided. */
+    approval?: {
+      requires: string
+      approved: boolean
+      answered_by?: string | null
+      answered_by_name?: string | null
+      note?: string | null
+    }
   }
   /** How many deltas `content` already accounts for. */
   delta_next: number
   model: string | null
   /** On a reply, the user message it answers. */
   replies_to?: string | null
+  /** Which attempt at answering its prompt this reply is. */
+  attempt?: number
+  /** When it stopped being written, as distinct from when it was created.
+   *  The id is creation time -- for a reply that waited on an approval, those
+   *  are minutes apart. */
+  finished_at?: string | null
   /** On a user message, the reply that took it mid-turn. */
   absorbed_by?: string | null
   /** On a user message, where the job answering it is. Only the transcript
@@ -72,6 +88,16 @@ export type Message = {
 export type History = {
   messages: Message[]
   cursor: string
+  /** The approval this conversation is waiting on, if it is waiting on one.
+   *  Served with the history because a reader who reloads has to learn
+   *  everything true *now* from one answer -- the live `chat.held` event is
+   *  gone by then. */
+  awaiting?: {
+    item_id: string
+    requires?: string | null
+    reason?: string | null
+    covers?: { field?: string; unit?: string } | null
+  } | null
 }
 
 export type ChatEvent =

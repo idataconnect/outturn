@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { elapsedSince } from './elapsed'
+import { elapsedPhrase, elapsedSince } from './elapsed'
 
 /** How long the figure stays up before it is withdrawn as stale. */
 const VISIBLE_MS = 20_000
@@ -30,7 +30,7 @@ const VISIBLE_MS = 20_000
  * from -- which is exactly how this first went in, fading not at all. So the
  * phrase mounts first and the reveal follows on the next frame.
  */
-export function useMessageAge(id: string) {
+export function useMessageAge(id: string, finishedAt?: string | null) {
   const [phrase, setPhrase] = useState<string | null>(null)
   const [shown, setShown] = useState(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -54,7 +54,13 @@ export function useMessageAge(id: string) {
   const show = useCallback(() => {
     // Computed here, at the moment of asking. That is the whole design: no
     // state holds an age, only the id one can be derived from.
-    const said = elapsedSince(id)
+    // `finished_at` where there is one, and the id otherwise. An id is a
+    // UUIDv7 assigned when a reply's placeholder is made, at the start of the
+    // turn -- so a turn that waited thirteen minutes for somebody to approve
+    // something produced a reply that claimed to be thirteen minutes old the
+    // instant it finished streaming.
+    const finished = finishedAt != null ? Date.parse(finishedAt) : NaN
+    const said = Number.isNaN(finished) ? elapsedSince(id) : elapsedPhrase(finished)
     if (said === null) return
     clear()
     setPhrase(said)
@@ -66,7 +72,7 @@ export function useMessageAge(id: string) {
       setShown(true)
     })
     hideTimer.current = setTimeout(() => setShown(false), VISIBLE_MS)
-  }, [id, clear])
+  }, [id, finishedAt, clear])
 
   const hide = useCallback(() => {
     clear()

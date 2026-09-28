@@ -105,6 +105,82 @@ recommendation a person applies rather than an edit, and the judge holds no
 authority of its own -- it reads a transcript and writes prose, and cannot
 publish a version, bind a skill, or open a host.
 
+## Readiness: what a skill can be checked for without running anything
+
+Some failures are visible in the file. They need no transcript, no judge and no
+model -- a query over what a version declares against what its prose says, run
+when the version is published. That is the cheap half of this document, and the
+half worth building first.
+
+The one that prompted writing this down: **an operation whose approval is
+declared, whose retry is not.**
+
+A gated operation is refused, approved, and retried by the resumed turn. If the
+API it calls is idempotent -- Hollowbrook's `charge_payment_account` is, and
+says so -- then the retry is only free when it carries *the same*
+`idempotency_key`. A skill that says "send an idempotency key" without saying
+how to derive one gets a fresh key per attempt, so the retry reads to the API as
+a second charge. The approval mechanism works perfectly while the money moves
+twice.
+
+That is not something a grant can fix. A grant is keyed on the fields the
+declaration says make the request what it is, and binding the idempotency key
+into them makes it worse rather than better: a key that varies per attempt means
+the grant stops matching its own retry, and the person is asked again. The fix
+is in the prose -- *derive the key from the booking and the amount, and send the
+same one if you try again* -- which is exactly what a readiness check can ask
+for and a model cannot be relied on to invent.
+
+So, as a shape rather than a list: a check reads what a version declares and
+what its files say, and flags what cannot be true together. An approval declared
+with no stated way to repeat the call. A `covers` offered with no
+`identified_by` to key it on. A declared host nothing documents reaching. The
+value is that each names one file and one sentence, so the answer is an edit
+rather than an investigation.
+
+What a readiness check must not become is a gate on publishing. A workspace with
+a skill that is 80% right and shipping is better served by being told which 20%
+than by being refused -- and the failures here are all ones the platform
+survives, because the gate still refuses and the person is still asked. Being
+asked twice is annoying; being charged twice is not, and the check exists to
+catch the second.
+
+### Suggesting the fix, not only naming the gap
+
+Most readiness findings have one obvious repair, and a person who has been told
+"this operation never says how to derive its idempotency key" mostly wants the
+sentence written. So the loop is worth closing: the check names the gap, a model
+drafts the edit, and a person with `skills:write` accepts or rejects it.
+
+**This is the safe end of the model work in this document, and the reason is the
+input.** A readiness finding is derived from a file somebody in the workspace
+wrote, against a declaration the platform parsed. No customer text, no host
+response, no transcript -- so the prompt-injection target that *The part to get
+right first* is about does not exist here. The judged half reads untrusted text
+and must be treated accordingly; this half does not, and conflating them would
+either make this needlessly slow or make that dangerously fast.
+
+What holds either way: the draft is a **suggestion**, never an edit. A skill
+version is immutable and published under `skills:write`, and a model that could
+publish one would be a model that can change what every later turn is told. The
+loop ends at a diff somebody accepts.
+
+Two things worth getting right when it is built:
+
+- **Show the gap and the draft together.** A suggestion with no reason reads as
+  a model rewriting prose it did not like. The finding is what makes it
+  reviewable -- *this is missing, here is a sentence that supplies it* -- and it
+  is also what lets somebody reject the draft while still fixing the gap.
+- **Draft the sentence, not the skill.** The scope of a readiness fix is the
+  thing the check found. A model handed a whole file will improve the prose it
+  was not asked about, and the reviewer then has to read everything to approve
+  anything -- which is how a one-line fix becomes a thing nobody merges.
+
+Whether the same loop should offer fixes for judged findings is left open. The
+argument for is that it is the same affordance; the argument against is that the
+input is untrusted, so a suggestion could be authored by whoever wrote the
+transcript. That is a different decision and should be taken separately.
+
 ## Did the edit help, or trade one failure for another
 
 A skill is edited to fix something. The pass rate goes from 71% to 74%, and

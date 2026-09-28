@@ -262,3 +262,49 @@ describe('a message taken into a reply mid-turn', () => {
     expect(drawn(msgs).map((m) => m.id)).toEqual(['u1', 'a1'])
   })
 })
+
+describe('a prompt answered across more than one attempt', () => {
+  /// A turn stopped for an approval keeps what it wrote, and the resumed turn
+  /// writes a new attempt beside it. Judged by the latest attempt alone, a
+  /// prompt whose first attempt made four tool calls and said its piece was
+  /// drawn as "the agent did not reply" -- directly above the reply it gave.
+  it('is answered if any attempt said something', () => {
+    const msgs = [
+      message({ id: 'p1', role: 'user', job_state: 'succeeded' }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        replies_to: 'p1',
+        content: 'I need approval for that charge.',
+      }),
+      // The resumed attempt, still empty.
+      message({ id: 'a2', role: 'assistant', replies_to: 'p1' }),
+    ]
+    expect(statusOf(msgs, 'p1')).toBeNull()
+  })
+
+  it('counts an attempt that only made tool calls', () => {
+    const msgs = [
+      message({ id: 'p1', role: 'user', job_state: 'succeeded' }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        replies_to: 'p1',
+        metadata: { tool_calls: [{ id: 'c1', name: 'fetch_url' }] },
+      }),
+      message({ id: 'a2', role: 'assistant', replies_to: 'p1' }),
+    ]
+    expect(statusOf(msgs, 'p1')).toBeNull()
+  })
+
+  /// But a prompt whose every attempt is empty is still a turn that said
+  /// nothing, and the reader is owed that rather than a spinner.
+  it('is silent when no attempt said anything', () => {
+    const msgs = [
+      message({ id: 'p1', role: 'user', job_state: 'succeeded' }),
+      message({ id: 'a1', role: 'assistant', replies_to: 'p1' }),
+      message({ id: 'a2', role: 'assistant', replies_to: 'p1' }),
+    ]
+    expect(statusOf(msgs, 'p1')).toEqual({ kind: 'silent' })
+  })
+})

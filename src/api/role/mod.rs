@@ -109,6 +109,18 @@ pub trait RoleStore: Send + Sync {
         roles: &[String],
     ) -> Result<HashSet<Authority>, RoleError>;
 
+    /// The roles in this workspace that carry `authority`.
+    ///
+    /// For addressing something to whoever may act on it, rather than for
+    /// checking one caller. Returns role ids because that is what a queue target
+    /// stores: expanding to members here would freeze a snapshot of membership
+    /// into rows whose whole purpose is to outlive the moment.
+    async fn roles_with(
+        &self,
+        workspace_id: Uuid,
+        authority: Authority,
+    ) -> Result<Vec<Uuid>, RoleError>;
+
     /// What a new workspace's roles are copied from.
     ///
     /// Read rather than compiled in, so a deployment can ship its own names and

@@ -17,7 +17,7 @@
 //! bus owns its listener on a task of its own.
 
 use outturn::api::actions::{
-    ActionError, ActionStore, Delivery, NewItem, PostgresActionStore, State, Target,
+    ActionError, ActionStore, Delivery, NewItem, PostgresActionStore, Settle, State, Target,
 };
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
@@ -94,6 +94,7 @@ fn item(kind: &str, targets: Vec<Target>) -> NewItem {
     NewItem {
         kind: kind.into(),
         event_id: None,
+        inhibitor_id: None,
         payload: serde_json::json!({"question": "approve?"}),
         targets,
         expires_at: None,
@@ -1409,14 +1410,15 @@ async fn settling_lifts_the_hold_and_resumes_in_one_go() {
         .expect("raise");
 
     let resumed = store
-        .settle_and_release(
-            ws,
-            id,
-            State::Resolved,
-            Some(user),
-            Some("fine"),
-            Some(hold),
-        )
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Resolved,
+            resolved_by: Some(user),
+            note: Some("fine"),
+            hold: Some(hold),
+            grant: None,
+        })
         .await
         .expect("settle and release");
     assert_eq!(resumed, 1, "the parked turn was not given back");
@@ -1476,13 +1478,29 @@ async fn losing_the_race_lifts_nothing() {
 
     // The winner declines, which passes no hold.
     store
-        .settle_and_release(ws, id, State::Cancelled, Some(user), Some("no"), None)
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Cancelled,
+            resolved_by: Some(user),
+            note: Some("no"),
+            hold: None,
+            grant: None,
+        })
         .await
         .expect("the winner");
 
     // The loser tries to approve, and is refused before anything is lifted.
     let err = store
-        .settle_and_release(ws, id, State::Resolved, Some(user), None, Some(hold))
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Resolved,
+            resolved_by: Some(user),
+            note: None,
+            hold: Some(hold),
+            grant: None,
+        })
         .await
         .unwrap_err();
     assert!(matches!(err, ActionError::NotPending("cancelled")), "{err}");
@@ -1509,14 +1527,15 @@ async fn a_hold_somebody_already_released_is_not_an_error() {
         .expect("raise");
 
     let resumed = store
-        .settle_and_release(
-            ws,
-            id,
-            State::Resolved,
-            Some(user),
-            None,
-            Some(Uuid::now_v7()),
-        )
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Resolved,
+            resolved_by: Some(user),
+            note: None,
+            hold: Some(Uuid::now_v7()),
+            grant: None,
+        })
         .await
         .expect("a missing hold is not an error");
     assert_eq!(resumed, 0);
@@ -1534,7 +1553,15 @@ async fn a_settlement_with_no_note_keeps_none() {
         .expect("raise");
 
     store
-        .settle_and_release(ws, id, State::Resolved, Some(user), None, None)
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Resolved,
+            resolved_by: Some(user),
+            note: None,
+            hold: None,
+            grant: None,
+        })
         .await
         .expect("settle");
 

@@ -101,7 +101,7 @@ impl PostgresChatStore {
                         as content, \
                     coalesce(s.delta_next, 0) as delta_next, s.events as streamed, \
                     m.model, m.prompt_tokens, m.completion_tokens, \
-                    m.replies_to, m.absorbed_by, \
+                    m.replies_to, m.absorbed_by, m.attempt, m.finished_at, \
                     case when m.role = 'user' then ( \
                         select j.state from jobs j \
                         where j.kind = 'chat.turn' \
@@ -132,7 +132,42 @@ impl PostgresChatStore {
             .unwrap_or_else(Uuid::nil);
         let has_more = rows.first().map(|r| r.get("has_more")).unwrap_or(false);
 
+        // What this conversation is waiting on, if anything. Read here rather
+        // than left to the live event, which a reloaded tab has already missed:
+        // through the hold, because the hold is what says a request is still
+        // open, and scoped to this session so a workspace's other pending
+        // approvals are not somebody else's business.
+        //
+        // Through `actions::approval_on_session` and `gated::answerable` rather
+        // than a query and a projection of its own. Those existed here first and
+        // were a hand-copy: the `kind like 'approval.%'` filter was added to
+        // this one and not to the shared method, so the reload banner and the
+        // live banner disagreed about what an approval is. Two spellings that
+        // must stay byte-identical is not a thing to keep.
+        //
+        // The workspace comes from the session, because a transcript read is
+        // reached by session id alone.
+        let workspace_id: Option<Uuid> =
+            sqlx::query_scalar("select workspace_id from agent_sessions where id = $1")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+
+        use super::super::actions::ActionStore as _;
+        let awaiting = match workspace_id {
+            Some(workspace_id) => {
+                super::super::actions::PostgresActionStore::new(self.pool.clone())
+                    .approval_on_session(workspace_id, session_id)
+                    .await
+                    .map_err(|e| ChatError::Internal(e.to_string()))?
+                    .map(|item| super::super::gated::answerable(&item))
+            }
+            None => None,
+        };
+
         Ok(History {
+            awaiting,
             messages: rows
                 .iter()
                 .map(|row| {
@@ -235,6 +270,8 @@ fn read_message(row: &sqlx::postgres::PgRow) -> Message {
         prompt_tokens: row.get("prompt_tokens"),
         completion_tokens: row.get("completion_tokens"),
         replies_to: row.try_get("replies_to").ok().flatten(),
+        attempt: row.try_get("attempt").unwrap_or(1),
+        finished_at: row.try_get("finished_at").ok().flatten(),
         absorbed_by: row.try_get("absorbed_by").ok().flatten(),
         job_state: row.try_get("job_state").ok().flatten(),
     }
@@ -406,7 +443,8 @@ impl ChatStore for PostgresChatStore {
                  completion_tokens = coalesce($7, completion_tokens), \
                  cache_read_tokens = coalesce($8, cache_read_tokens), \
                  cache_write_tokens = coalesce($9, cache_write_tokens), \
-                 reasoning_tokens = coalesce($10, reasoning_tokens) \
+                 reasoning_tokens = coalesce($10, reasoning_tokens), \
+                 finished_at = now() \
              where id = $1 \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens, replies_to, absorbed_by",
@@ -442,18 +480,26 @@ impl ChatStore for PostgresChatStore {
         &self,
         replies_to: Uuid,
         session_id: Uuid,
+        attempt: i32,
     ) -> Result<Placeholder, ChatError> {
-        // The unique index on replies_to is what makes this idempotent: a
-        // retry of the same turn collides and takes the row it already made,
-        // rather than leaving the first behind. Doing it in one statement
-        // means a worker that dies mid-way leaves nothing half-done.
+        // Idempotent per *attempt*. A retry of the same attempt collides and
+        // takes the row it already made, which is what makes a worker dying
+        // mid-way leave nothing half-done -- the property the single-reply index
+        // used to provide, now keyed on `(replies_to, attempt)`.
+        //
+        // What changed is that a turn resuming after an approval asks for the
+        // next attempt instead, so the refused reply stays where it is. Taking
+        // it back would overwrite the refusal the reader approved against, and
+        // leave a transcript showing a charge that succeeded with nothing in it
+        // that ever needed approving.
         //
         // `xmax = 0` distinguishes the insert from the conflict, which is what
         // lets the caller announce the reply once rather than once per attempt.
         let row = sqlx::query(
-            "insert into agent_messages (id, session_id, role, content, replies_to) \
-             values ($1, $2, 'assistant', '', $3) \
-             on conflict (replies_to) where replies_to is not null \
+            "insert into agent_messages \
+                 (id, session_id, role, content, replies_to, attempt) \
+             values ($1, $2, 'assistant', '', $3, $4) \
+             on conflict (replies_to, attempt) where replies_to is not null \
              do update set replies_to = excluded.replies_to \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens, replies_to, absorbed_by, \
@@ -462,6 +508,7 @@ impl ChatStore for PostgresChatStore {
         .bind(Uuid::now_v7())
         .bind(session_id)
         .bind(replies_to)
+        .bind(attempt)
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
@@ -534,15 +581,117 @@ impl ChatStore for PostgresChatStore {
         Ok(reason.flatten())
     }
 
-    async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError> {
+    async fn attempt_for(&self, replies_to: Uuid, resuming: bool) -> Result<i32, ChatError> {
+        let latest: Option<(i32, bool)> = sqlx::query_as(
+            "select attempt, finished_at is not null \
+             from agent_messages where replies_to = $1 \
+             order by attempt desc limit 1",
+        )
+        .bind(replies_to)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        Ok(match latest {
+            // Nothing yet: the first attempt.
+            None => 1,
+            // Resuming after an approval, and the attempt it was refused on is
+            // finished. The next one, so that reply stays as it was.
+            Some((attempt, true)) if resuming => attempt + 1,
+            // Anything else takes the latest attempt back: a crashed retry, and
+            // a resume whose previous attempt never finished streaming -- which
+            // has nothing worth preserving and would otherwise leave an empty
+            // reply behind for the abandoned-placeholder guard to trip over.
+            Some((attempt, _)) => attempt,
+        })
+    }
+
+    async fn discard_placeholder(&self, replies_to: Uuid, attempt: i32) -> Result<(), ChatError> {
         // Only while still empty: a turn that failed after writing its reply
         // must not have that reply deleted.
-        sqlx::query("delete from agent_messages where replies_to = $1 and content = ''")
-            .bind(replies_to)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
+        // Scoped to the attempt being abandoned, and never over a reply that
+        // holds tool calls. A turn refused at a gate very often has empty
+        // `content` and nothing but the refused call in its metadata -- the
+        // guest made the call, was refused, and returned at the round boundary
+        // without saying anything. Unscoped, abandoning a later attempt deleted
+        // that one too, which is exactly the evidence the approver approved
+        // against and the reason migration 0019 exists.
+        //
+        // The same exclusion `append_message`'s abandoned guard already applies;
+        // this statement is its sibling and was missed when attempts arrived.
+        sqlx::query(
+            "delete from agent_messages \
+             where replies_to = $1 and attempt = $2 and content = '' \
+               and coalesce(jsonb_array_length(metadata->'tool_calls'), 0) = 0",
+        )
+        .bind(replies_to)
+        .bind(attempt)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(())
+    }
+
+    async fn record_approval(
+        &self,
+        session_id: Uuid,
+        answer: super::ApprovalAnswer<'_>,
+    ) -> Result<Message, ChatError> {
+        // Stored as `assistant`, the way a summary is, and for the same
+        // practical reason: those are the messages the transcript serves and the
+        // client draws. A `system` role reaches neither -- the browser maps only
+        // user and assistant to a component, so it would render as nothing at
+        // all.
+        //
+        // What stops the agent reading it as its own speech is the mark plus the
+        // framing on the way to the model, exactly as `summarise::framed` does
+        // for a summary. The content below is written to be true either way.
+        //
+        // Deliberately not going through `append_message`, which refuses to
+        // write past an abandoned reply. A turn waiting on an approval has an
+        // empty reply by construction, and this has to land while that is true.
+        let mark = serde_json::json!({
+            super::APPROVAL_MARK: {
+                "requires": answer.requires,
+                "approved": answer.approved,
+                "answered_by": answer.answered_by,
+                "answered_by_name": answer.answered_by_name,
+                "note": answer.note,
+            }
+        });
+
+        // The content says it in words too. A client that does not know this
+        // mark still shows something true, and the model reading the transcript
+        // later is told what happened rather than inferring it from a refusal
+        // that stopped repeating.
+        let who = answer.answered_by_name.unwrap_or("somebody");
+        let content = match (answer.approved, answer.note) {
+            (true, Some(note)) if !note.trim().is_empty() => {
+                format!("{who} approved this {}: {note}", answer.requires)
+            }
+            (true, _) => format!("{who} approved this {}.", answer.requires),
+            (false, Some(note)) if !note.trim().is_empty() => {
+                format!("{who} declined this {}: {note}", answer.requires)
+            }
+            (false, _) => format!("{who} declined this {}.", answer.requires),
+        };
+
+        let row = sqlx::query(
+            "insert into agent_messages (id, session_id, role, content, metadata, user_id) \
+             values ($1, $2, 'assistant', $3, $4, $5) \
+             returning id, session_id, role, content, metadata, model, \
+                       prompt_tokens, completion_tokens, replies_to, absorbed_by",
+        )
+        .bind(Uuid::now_v7())
+        .bind(session_id)
+        .bind(&content)
+        .bind(&mark)
+        .bind(answer.answered_by)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        Ok(read_message(&row))
     }
 
     async fn append_message(

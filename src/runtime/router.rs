@@ -221,6 +221,18 @@ pub enum ExecuteEvent {
         /// as "a person stopped it", the same thing it read as before.
         #[serde(default)]
         held: Option<String>,
+        /// Whether what stopped it is something somebody will answer.
+        ///
+        /// A hold that ends a turn ordinarily *latches* the session: a spend cap
+        /// or an operator's stop is meant to need a person to lift it, and a
+        /// session that answered the next message as though nothing happened
+        /// would be a kill switch that silently did not take. An approval is the
+        /// opposite -- answering it is what resumes the turn, and latching would
+        /// leave the conversation stopped after the yes.
+        ///
+        /// False from an older runtime, which is the latching behaviour it had.
+        #[serde(default)]
+        awaiting_approval: bool,
     },
     /// The turn failed.
     Failed {

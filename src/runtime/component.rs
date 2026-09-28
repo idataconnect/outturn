@@ -121,6 +121,30 @@ pub type UsageSink = Arc<dyn Fn(&CallUsage) + Send + Sync>;
 /// Reports an object the guest wrote, as `(scoped path, resolved key)`.
 pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+/// Told when the gateway refused a request because somebody has to approve it.
+///
+/// Async because it is an HTTP call to the API, and fallible because the answer
+/// decides what the guest is told: `true` means an approval is now pending and
+/// the turn will park, `false` means it was let through or could not be raised.
+///
+/// Carries the shape of the refused request and nothing else. Naming the act is
+/// the API's to do -- see `api::gated` -- because a `requires` chosen in this
+/// tier would be a policy decision made by the sandbox's own host.
+pub type GatedSink = Arc<
+    dyn Fn(GatedRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// What was refused, as the runtime saw it.
+#[derive(Debug, Clone)]
+pub struct GatedRequest {
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    pub body: Option<String>,
+}
+
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
 
@@ -137,6 +161,9 @@ pub struct AgentHost {
     /// outbound request and read by nothing here: it is checked against the
     /// commitment in the turn token, which this tier cannot write.
     gates: crate::egress::gate::Gates,
+    /// Told when the gateway refuses for want of an approval. Relays the shape
+    /// of the request; decides nothing about it.
+    on_gated: Option<GatedSink>,
     default_model: String,
     http: reqwest::Client,
     progress: Option<ProgressSink>,
@@ -188,6 +215,13 @@ pub struct AgentHost {
     cancelled: bool,
     /// Why a hold cut this turn, where one did.
     held: Option<String>,
+    /// Whether what stopped it is a question somebody will answer.
+    ///
+    /// The difference decides whether the session latches. A spend cap or an
+    /// operator's stop is meant to need a person to lift it; an approval is
+    /// lifted *by* being answered, and latching would leave the conversation
+    /// stopped after the yes.
+    awaiting_approval: bool,
     /// The reply this turn is writing. Sent to the gateway so it can record
     /// which reply absorbed a message it handed over.
     reply_id: uuid::Uuid,
@@ -654,6 +688,11 @@ impl outturn::agent::host::Host for AgentHost {
                 egress::Refused::Unproven(rule.host.clone()).to_string()
             })?;
 
+        let method = request.method.clone();
+        let body = request.body.clone();
+        let path = url.path().to_string();
+        let host_name = url.host_str().unwrap_or_default().to_string();
+
         let outcome = crate::runtime::fetch::through_gateway(
             &self.gateway_url,
             &self.gateway_token,
@@ -666,7 +705,64 @@ impl outturn::agent::host::Host for AgentHost {
                 gates: self.gates.clone(),
             },
         )
-        .await?;
+        .await;
+
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(refusal) => {
+                // A refusal for want of an approval is the one the API has to
+                // hear about, because it owns the queue and the job. Recognised
+                // by asking the gates this turn carries rather than by reading
+                // the gateway's wording: matching on prose would break the moment
+                // somebody rephrased a message, and silently -- the failure would
+                // be an approval nobody is ever asked for.
+                //
+                // Nothing here decides whether the request was allowed. The API
+                // re-derives the gates and refuses a shape that matches none, so
+                // this relaying a refusal it invented gets nowhere.
+                if self
+                    .gates
+                    .covering(&host_name, &method.to_ascii_uppercase(), &path)
+                    .is_some()
+                    && let Some(on_gated) = &self.on_gated
+                {
+                    let pending = on_gated(GatedRequest {
+                        method: method.clone(),
+                        host: host_name.clone(),
+                        path: path.clone(),
+                        body,
+                    })
+                    .await;
+                    if pending {
+                        // The turn winds down at its next round boundary, on the
+                        // same flag a stop uses -- which is the only place
+                        // stopping is safe, because a tool that has started has
+                        // either had its effect or not and nothing can say which
+                        // afterwards. The guest finishes what it is holding, says
+                        // what it has, and returns; the hold the API took is what
+                        // keeps it stopped until somebody answers.
+                        //
+                        // Not parked here. This tier runs workspace code and owns
+                        // no job: what it can do is stop asking for more, and the
+                        // API decides what that means for the turn.
+                        self.cancelled = true;
+                        self.held = Some("waiting on an approval".to_string());
+                        self.awaiting_approval = true;
+
+                        // Said plainly, because this reaches the model and then
+                        // the transcript. The guest may still do other work
+                        // before it stops -- what it must not do is treat this as
+                        // a transient failure and retry the same call.
+                        return Err(format!(
+                            "{refusal}. Somebody has been asked to approve it, \
+                             and this conversation will pause until they answer. \
+                             Do not retry this request."
+                        ));
+                    }
+                }
+                return Err(refusal);
+            }
+        };
 
         Ok(HttpResponse {
             status: outcome.status,
@@ -1409,6 +1505,22 @@ impl<T: Clone> CompiledCache<T> {
     }
 }
 
+/// What a turn produced, and why it stopped.
+///
+/// A struct rather than a tuple: the last two are both about a turn ending
+/// early and mean opposite things for the session, which is exactly the pair a
+/// positional tuple invites somebody to swap.
+#[derive(Debug)]
+pub struct Finished {
+    pub reply: String,
+    pub cost: TurnCost,
+    /// Why a hold ended it, where one did.
+    pub held: Option<String>,
+    /// Whether what stopped it is a question somebody will answer, and so
+    /// whether the session should latch. See `ExecuteEvent::Done`.
+    pub awaiting_approval: bool,
+}
+
 pub struct AgentRunner {
     engine: Engine,
     /// Built once. A linker describes what the host offers, which does not
@@ -1429,6 +1541,8 @@ pub struct RunOptions {
     pub on_usage: Option<UsageSink>,
     pub on_write: Option<WriteSink>,
     pub on_absorbed: Option<AbsorbedSink>,
+    /// Called when the gateway refuses a request for want of an approval.
+    pub on_gated: Option<GatedSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -1542,7 +1656,7 @@ impl AgentRunner {
         conversation: Vec<Message>,
         system_prompt: String,
         options: RunOptions,
-    ) -> Result<(String, TurnCost, Option<String>), HeldError> {
+    ) -> Result<Finished, HeldError> {
         let component = self.component_for(component_bytes)?;
 
         // No preopened directories, no environment, no network: everything the
@@ -1550,6 +1664,7 @@ impl AgentRunner {
         let host = AgentHost {
             cancelled: false,
             held: None,
+            awaiting_approval: false,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
             gateway_url: options.gateway_url,
@@ -1560,6 +1675,7 @@ impl AgentRunner {
             progress: options.progress,
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
+            on_gated: options.on_gated,
             on_usage: options.on_usage,
             on_write: options.on_write,
             on_absorbed: options.on_absorbed,
@@ -1675,7 +1791,12 @@ impl AgentRunner {
         // and why it stopped is not a number. The tier above needs both and
         // treats them differently -- one goes to the ledger, the other to the
         // latch.
-        Ok((reply, cost, host.held.clone()))
+        Ok(Finished {
+            reply,
+            cost,
+            held: host.held.clone(),
+            awaiting_approval: host.awaiting_approval,
+        })
     }
 }
 

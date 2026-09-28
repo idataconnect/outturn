@@ -5,6 +5,7 @@ import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
 
 import { useSkillCommands } from '../lib/useSkillCommands'
 
+import ApprovalPrompt from '../components/ApprovalPrompt'
 import Thread from '../components/Thread'
 import FilesPanel from '../components/FilesPanel'
 import SidePane, { type PaneTab } from '../components/SidePane'
@@ -47,7 +48,7 @@ export default function Chat() {
   /** Filled by the composer; read by the runtime as a message is sent. */
   const takeAttachments = useRef<(() => string) | null>(null)
 
-  const { runtime, error: chatError, held, stopping, retry } = useChatRuntime(
+  const { runtime, error: chatError, held, stopping, retry, clearHeld } = useChatRuntime(
     active,
     (title) => {
       if (!active) return
@@ -82,6 +83,14 @@ export default function Chat() {
   const canSend =
     state.status === 'authenticated' &&
     state.session.authorities.includes('gateway:invoke')
+  // Whether to offer the approval in the conversation at all. The API refuses
+  // anyone without it, so showing the buttons is safe -- but a clerk who presses
+  // Approve and is told 403 has been invited to do something they cannot, which
+  // is worse than not being asked. `Holds` draws the same line with
+  // `canRelease`.
+  const canAnswerApprovals =
+    state.status === 'authenticated' &&
+    state.session.authorities.includes('approvals:answer')
   // Which workspace the lists on screen describe, or null before the first
   // load finishes. Held as the workspace rather than a bare flag so that
   // "loaded" can be derived during render: a switch makes it stale the moment
@@ -359,15 +368,34 @@ export default function Chat() {
             -- a screen reader should hear this as the state of the
             conversation, not as something going wrong. */}
         {held && !shown && (
-          <p
-            className="px-6 py-2 text-sm text-amber-700 dark:text-amber-400 border-b border-surface-200 dark:border-surface-800"
-            role="status"
-          >
-            {held.message}
-            {held.resumable
-              ? ' \u2014 this will carry on by itself once the hold is lifted.'
-              : ' \u2014 send a message to start the conversation again once the hold is lifted.'}
-          </p>
+          <div className="border-b border-surface-200 px-6 py-2 dark:border-surface-800">
+            <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+              {/* "Hold" is a word from inside this platform, and the sentence
+                  was also passive about something the reader is often the one
+                  to do. Said as what happens next, to them. */}
+              {held.message}
+              {held.resumable
+                ? held.approval
+                  ? ' \u2014 it will carry on as soon as somebody answers.'
+                  : ' \u2014 it will carry on by itself once this is sorted.'
+                : ' \u2014 send a message to pick it up again once this is sorted.'}
+            </p>
+            {/* Answerable here when the hold is an approval. The queue remains
+                the place to find every pending decision; this is for the person
+                who was already looking -- and whether they may answer is the
+                API's to say, not this component's. */}
+            {held.approval && canAnswerApprovals && (
+              <ApprovalPrompt
+                approval={held.approval}
+                onAnswered={() => {
+                  // The turn is given back to the queue by the answer itself,
+                  // so nothing here restarts it. Clearing the banner is all
+                  // that is owed: the reply resumes streaming on its own.
+                  clearHeld()
+                }}
+              />
+            )}
+          </div>
         )}
         <div className="flex-1 min-h-0">
           <AssistantRuntimeProvider runtime={runtime}>

@@ -61,6 +61,14 @@ import { ApiError } from '../lib/api'
  * The rest are terminal, and a mark that draws movement has nothing true to
  * say about them. They stay as badges under the prompt.
  */
+/** What a settled approval left in the transcript. See `chat.ts`. */
+type ApprovalRecord = {
+  requires: string
+  approved: boolean
+  answered_by_name?: string | null
+  note?: string | null
+}
+
 function heldLabel(status: MessageStatus): string | null {
   switch (status.kind) {
     case 'waiting':
@@ -171,7 +179,10 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
   )
   const id = useAuiState((s) => s.message.id)
 
-  const { phrase, shown, handlers } = useMessageAge(id ?? '')
+  const finishedAt = useAuiState(
+    (s) => s.message.metadata.custom?.finishedAt as string | null | undefined,
+  )
+  const { phrase, shown, handlers } = useMessageAge(id ?? '', finishedAt)
   const held = status ? heldLabel(status) : null
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
@@ -225,6 +236,12 @@ function AssistantMessage() {
   // came before, and a reader who cannot see that their conversation was
   // compacted cannot tell why it stopped referring to something.
   const summary = useAuiState((s) => s.message.metadata.custom?.summary === true)
+  // What somebody decided about an approval. Drawn across the width like a
+  // summary and for the same reason: the agent did not say it, and shown as
+  // speech it reads as the agent announcing its own authorisation.
+  const approval = useAuiState(
+    (s) => s.message.metadata.custom?.approval as ApprovalRecord | null | undefined,
+  )
   // Whether this reply's turn is still going. Said under the reply rather than
   // under the prompt, because by now the reply exists: the gap this covers is
   // the one after some text has arrived, where a tool call is being set up and
@@ -243,8 +260,37 @@ function AssistantMessage() {
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
   // not this particular message ends up drawn.
-  const { phrase, shown, handlers } = useMessageAge(id ?? '')
+  const finishedAt = useAuiState(
+    (s) => s.message.metadata.custom?.finishedAt as string | null | undefined,
+  )
+  const { phrase, shown, handlers } = useMessageAge(id ?? '', finishedAt)
   if (empty) return null
+
+  if (approval) {
+    const who = approval.answered_by_name ?? 'Somebody'
+    return (
+      <MessagePrimitive.Root className="flex justify-center">
+        <div
+          className={`my-2 w-full rounded-lg border px-4 py-2 text-xs ${
+            approval.approved
+              ? 'border-green-300 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-950/40 dark:text-green-200'
+              : 'border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200'
+          }`}
+        >
+          <p className="mb-1 text-[10px] font-medium tracking-wide uppercase">
+            {approval.approved ? 'Approved' : 'Declined'}
+          </p>
+          <p>
+            {who} {approval.approved ? 'approved' : 'declined'} this{' '}
+            <span className="font-mono">{approval.requires}</span>.
+          </p>
+          {approval.note && approval.note.trim() !== '' && (
+            <p className="mt-1 italic">{approval.note}</p>
+          )}
+        </div>
+      </MessagePrimitive.Root>
+    )
+  }
 
   if (summary) {
     return (
