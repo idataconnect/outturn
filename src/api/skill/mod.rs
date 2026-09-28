@@ -1,3 +1,6 @@
+pub mod stats;
+mod stats_postgres;
+pub use stats_postgres::PostgresSkillStatsStore;
 mod files;
 mod frontmatter;
 mod postgres;
