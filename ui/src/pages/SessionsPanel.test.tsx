@@ -228,11 +228,19 @@ describe('a new chat', () => {
       { id: 'a1', name: 'Helper', slug: 'helper', description: '', enabled: true, can_chat: true },
     ])
     setWidth(1440)
+    // Watched from the first render, since what is being tested is that the
+    // picker is never drawn -- not merely that it is gone by the end.
+    let asked = false
+    const watch = new MutationObserver(() => {
+      if (document.body.textContent?.match(/who would you like/i)) asked = true
+    })
+    watch.observe(document.body, { subtree: true, childList: true, characterData: true })
     show('/sessions/new')
+    if (document.body.textContent?.match(/who would you like/i)) asked = true
 
-    // Straight to the composer, with the picker never drawn on the way.
     expect(await screen.findByText('New chat with Helper')).toBeInTheDocument()
-    expect(screen.queryByText(/who would you like/i)).toBeNull()
+    watch.disconnect()
+    expect(asked).toBe(false)
   })
 
   it('drops a notice about a dead link once somebody starts a new chat', async () => {
