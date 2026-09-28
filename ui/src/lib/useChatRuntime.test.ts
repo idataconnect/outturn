@@ -377,3 +377,31 @@ describe('a model that thought while it worked', () => {
     expect(drawn.some((p) => p.type === 'reasoning')).toBe(false)
   })
 })
+
+describe('a prompt whose reply has begun to think', () => {
+  /// The regression positioned thinking introduced: a reply with a reasoning
+  /// part but no text yet counted as having said nothing, so the prompt kept
+  /// its waiting spinner while the reply streamed one of its own -- two
+  /// indicators on screen saying different things about the same turn.
+  it('is no longer waiting once the model is thinking', () => {
+    const msgs = [
+      message({ id: 'u1', role: 'user', content: 'go', job_state: 'running' }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        replies_to: 'u1',
+        content: '',
+        metadata: { parts: [{ type: 'reasoning', text: 'considering' }] },
+      }),
+    ]
+    expect(statusOf(msgs, 'u1')).toBeNull()
+  })
+
+  it('is still waiting when the reply is genuinely empty', () => {
+    const msgs = [
+      message({ id: 'u1', role: 'user', content: 'go', job_state: 'running' }),
+      message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: '' }),
+    ]
+    expect(statusOf(msgs, 'u1')).toEqual({ kind: 'waiting' })
+  })
+})

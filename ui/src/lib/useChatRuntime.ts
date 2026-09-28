@@ -115,7 +115,12 @@ export function annotate(
   for (const m of messages) {
     if (m.role === 'assistant' && m.replies_to) {
       replyFor.set(m.replies_to, m)
-      if (m.content !== '' || (m.metadata.tool_calls?.length ?? 0) > 0) {
+      // Thinking counts. It is not an answer, but it is visibly the agent at
+      // work with its own streaming indicator -- and a prompt that still says
+      // "waiting" above it puts two spinners on screen saying different things
+      // about the same turn.
+      const thought = m.metadata.parts?.some((p) => p.type === 'reasoning') ?? false
+      if (m.content !== '' || (m.metadata.tool_calls?.length ?? 0) > 0 || thought) {
         saidSomething.add(m.replies_to)
       }
     }
@@ -848,10 +853,18 @@ export function useChatRuntime(
               setFailures((prev) => new Map(prev).set(message_id, message))
               // A failed turn's empty reply is discarded server-side, and the
               // reader should not be left looking at a bubble that no longer
-              // exists.
+              // exists. A reply holding thinking is not discarded there and
+              // must not be dropped here: it is the only account of where the
+              // turn's tokens went.
               setMessages((prev) =>
                 prev.filter(
-                  (m) => !(m.role === 'assistant' && m.replies_to === message_id && m.content === ''),
+                  (m) =>
+                    !(
+                      m.role === 'assistant' &&
+                      m.replies_to === message_id &&
+                      m.content === '' &&
+                      !m.metadata.parts?.some((p) => p.type === 'reasoning')
+                    ),
                 ),
               )
             }
