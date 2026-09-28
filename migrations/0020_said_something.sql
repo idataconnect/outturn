@@ -13,7 +13,10 @@
 --
 -- `immutable` so it can still be used in a partial index if one is ever wanted;
 -- it reads only its arguments.
-create function said_something(content text, metadata jsonb) returns boolean
+-- `or replace` so re-running is harmless: the definition is the truth, and a
+-- migration that cannot be applied twice is one that strands a database
+-- somebody has already touched.
+create or replace function said_something(content text, metadata jsonb) returns boolean
     immutable
     language sql
 as $$
