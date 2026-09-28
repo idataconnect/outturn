@@ -80,21 +80,19 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
       <div>
         <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Skills</h2>
         <p className="text-xs text-surface-500 dark:text-surface-400">
-          What the agents were carrying, and what it did. Read from the
-          transcript rather than the usage ledger, so these are turns rather
-          than tokens.
+          Which instructions your agents used, and how often.
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Skills" value={totals.skills} hint={`${totals.bound} carried by an agent`} />
-        <StatTile label="Turns served" value={totals.turns} hint="skill uses across the window" />
+        <StatTile label="Skills" value={totals.skills} hint={`${totals.bound} given to an agent`} />
+        <StatTile label="Times used" value={totals.turns} hint="by all your agents" />
         <StatTile
-          label="Versions written"
+          label="Edits"
           value={totals.versions}
-          hint={`${totals.created} new, ${totals.retired} retired`}
+          hint={`${totals.created} added, ${totals.retired} removed`}
         />
-        <StatTile label="Idle" value={stats.idle.length} hint="carried, used by nothing" />
+        <StatTile label="Unused" value={stats.idle.length} hint="given to an agent, never used" />
       </div>
 
       {stats.used.length > 0 && (
@@ -111,7 +109,7 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
                     className="shrink-0 tabular-nums text-surface-500 dark:text-surface-400"
                     title={exact(s.turns)}
                   >
-                    {compact(s.turns)} turns
+                    used {compact(s.turns)}&times;
                   </span>
                 </div>
                 {/* Against the busiest rather than the total: several skills
@@ -139,22 +137,22 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-amber-800 dark:text-amber-300">
             <Clock className="h-3.5 w-3.5" aria-hidden />
-            Running an older version
+            Using an older version
           </p>
           <ul className="mt-3 space-y-2 text-sm">
             {stats.lagging.map((s) => (
               <li key={s.skill_id}>
                 <span className="text-surface-800 dark:text-surface-200">{s.name}</span>{' '}
                 <span className="text-surface-600 dark:text-surface-400">
-                  served v{s.serving} on {compact(s.turns)}{' '}
-                  {s.turns === 1 ? 'turn' : 'turns'}, latest is v{s.latest}
+                  — still on version {s.serving} of {s.latest}
                 </span>
                 {/* The whole point of the panel: a pin is somebody's decision,
                     its absence is an edit nobody picked up. */}
                 <p className="text-xs text-surface-500 dark:text-surface-400">
+                  {`Used ${compact(s.turns)} ${s.turns === 1 ? 'time' : 'times'}. `}
                   {s.pinned
-                    ? 'An agent pins this version, so the newer one is deliberate.'
-                    : 'Nothing pins it — the newer version may not have reached the agent.'}
+                    ? 'An agent is set to this version on purpose.'
+                    : 'No agent is set to this version, so your newer edits may not be in use.'}
                 </p>
               </li>
             ))}
@@ -166,11 +164,13 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
         <div className="rounded-lg border border-surface-200 bg-white p-4 dark:border-surface-800 dark:bg-surface-900">
           <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
             <PauseCircle className="h-3.5 w-3.5" aria-hidden />
-            Carried, and used by nothing
+            Given to an agent, never used
           </p>
+          {/* Why a reader should care, in terms of their bill rather than of
+              rounds and prompts. */}
           <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-            A skill's instructions are sent on every round of every turn the
-            agent takes, whether it uses them or not.
+            These are sent to the model every time the agent replies, whether
+            they are used or not — so they cost something and do nothing.
           </p>
           <ul className="mt-3 space-y-1 text-sm">
             {stats.idle.map((s) => (
@@ -188,7 +188,7 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
       {stats.authors.length > 0 && (
         <div className="rounded-lg border border-surface-200 bg-white p-4 dark:border-surface-800 dark:bg-surface-900">
           <p className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
-            Who wrote them
+            Who edited them
           </p>
           <ul className="mt-3 space-y-1 text-sm">
             {stats.authors.map((a) => (
@@ -199,10 +199,10 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
                 <span className="truncate text-surface-800 dark:text-surface-200">
                   {/* A version written by an install or a seed carries no
                       author. Named as such rather than left blank. */}
-                  {a.name ?? 'the platform'}
+                  {a.name ?? 'Set up automatically'}
                 </span>
                 <span className="shrink-0 text-xs text-surface-500 dark:text-surface-400">
-                  {a.versions} {a.versions === 1 ? 'version' : 'versions'} across {a.skills}{' '}
+                  {a.versions} {a.versions === 1 ? 'edit' : 'edits'} to {a.skills}{' '}
                   {a.skills === 1 ? 'skill' : 'skills'}
                 </span>
               </li>
