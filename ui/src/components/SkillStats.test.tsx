@@ -18,8 +18,8 @@ const shown = (over: Partial<Stats>) => render(<SkillStats stats={{ ...base, ...
 describe('the skills panel', () => {
   it('says what the headline numbers are of', () => {
     shown({})
-    expect(screen.getByText('2 carried by an agent')).toBeInTheDocument()
-    expect(screen.getByText('1 new, 0 retired')).toBeInTheDocument()
+    expect(screen.getByText('2 given to an agent')).toBeInTheDocument()
+    expect(screen.getByText('1 added, 0 removed')).toBeInTheDocument()
   })
 
   /// Conversations as well as turns: one busy session and twenty separate ones
@@ -38,7 +38,7 @@ describe('the skills panel', () => {
         },
       ],
     })
-    expect(screen.getByText(/20 turns/)).toBeInTheDocument()
+    expect(screen.getByText(/used 20/)).toBeInTheDocument()
     expect(screen.getByText(/10 conversations/)).toBeInTheDocument()
   })
 
@@ -59,7 +59,7 @@ describe('the skills panel', () => {
         },
       ],
     })
-    expect(screen.getByText(/may not have reached the agent/)).toBeInTheDocument()
+    expect(screen.getByText(/newer edits may not be in use/)).toBeInTheDocument()
   })
 
   it('and says so when it is', () => {
@@ -76,7 +76,7 @@ describe('the skills panel', () => {
         },
       ],
     })
-    expect(screen.getByText(/deliberate/)).toBeInTheDocument()
+    expect(screen.getByText(/on purpose/)).toBeInTheDocument()
   })
 
   /// "Never" is a stronger statement than "not lately", and the API reaches
@@ -100,20 +100,20 @@ describe('the skills panel', () => {
 
   /// A version written by an install carries no author. Named rather than left
   /// blank, so a row with no name does not read as a rendering fault.
-  it('names the platform where there is no author', () => {
+  it('says so plainly where there is no author', () => {
     shown({ authors: [{ user_id: null, name: null, versions: 2, skills: 1 }] })
-    expect(screen.getByText('the platform')).toBeInTheDocument()
+    expect(screen.getByText('Set up automatically')).toBeInTheDocument()
   })
 
   /// The quiet panels stay quiet. A workspace with nothing wrong should see no
   /// warnings at all.
   it('shows no warnings when there is nothing to warn about', () => {
     shown({})
-    expect(screen.queryByText(/Running an older version/)).not.toBeInTheDocument()
-    // The tile stays -- "0 idle" is worth saying. What must not appear is the
+    expect(screen.queryByText(/Using an older version/)).not.toBeInTheDocument()
+    // The tile stays -- "0 unused" is worth saying. What must not appear is the
     // list panel, which exists only to name the offenders.
-    expect(screen.queryByText(/Carried, and used by nothing/)).not.toBeInTheDocument()
-    expect(screen.getByText('Idle')).toBeInTheDocument()
+    expect(screen.queryByText(/Given to an agent, never used/)).not.toBeInTheDocument()
+    expect(screen.getByText('Unused')).toBeInTheDocument()
   })
 
   it('says plainly when the workspace has no skills', () => {
