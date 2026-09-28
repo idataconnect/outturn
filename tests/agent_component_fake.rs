@@ -534,6 +534,14 @@ async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
     let gateway = FakeGateway::start(Behavior::Hang).await;
     let runner = runner();
 
+    // Compiled before the clock starts. The runner's cache does not make
+    // concurrent misses wait for one another, so at the start of the suite
+    // every test compiles the component at once, and in a debug build that
+    // took forty-seven seconds of this test's sixty -- the turn itself then
+    // ended two seconds after it began, which is its deadline firing on time.
+    // Compiling is not what is under test, and nothing about it can hang.
+    runner.verify(&component()).expect("component compiles");
+
     // Bounded from outside rather than measured from inside. The old test
     // asserted elapsed time against a threshold, which cannot distinguish a
     // deadline that did not fire from a turn that was starved -- and starved
