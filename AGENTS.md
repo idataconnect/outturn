@@ -471,6 +471,28 @@ An attempt that never *finished* is taken back even when resuming: an empty repl
 stranded past a new attempt is what the abandoned-placeholder guard trips over,
 and that wedges the session.
 
+**A reply's parts are one rule, written once.** `api::chat::parts` holds the
+kinds and the builder that assembles them, and both the live path and `replay`
+go through it -- they produced the same shape by two transcriptions of one rule
+until they did not. `Part` is an enum, so a kind added later is a compile error
+at every consumer rather than a silent drop in the projection that builds a
+model's request; an unrecognised kind decodes to `Unknown` so a rolling deploy
+can still read its own rows. Two copies remain and cannot be collapsed: the
+browser's, in `ui/src/lib/useChatRuntime.ts`, and the SQL predicate
+`said_something`, which both `discard_placeholder` and the
+abandoned-placeholder guard call. Changing what counts as an empty reply means
+changing all three.
+
+**A request has one shape.** `egress::grant::Shape` is the four values every
+tier identifies an outbound request by -- method, host without its port, path,
+body -- and `Shape::of_fetch_arguments` is the only host-side reading of a
+stored call. The guest that builds the request from a model's arguments is
+another crate compiled to wasm, so it cannot share the code; a test pins the two
+readings to a real stored call instead. If `fetch_url` learns to accept an
+object body or an aliased url key, that test is what should fail -- the
+alternative is that nothing fails and approved calls quietly stop being
+retracted.
+
 **Ordering rides on UUIDv7 keys.** No sequence columns, no offset pagination.
 Cursors are the last id seen; `Uuid::nil()` means the beginning.
 

@@ -227,8 +227,19 @@ fn projected_with_sources(
             }
         };
 
-        for part in &parts {
-            match part["type"].as_str() {
+        // Typed, so the match below is exhaustive: a kind added later is a
+        // compile error at every consumer rather than a silent drop here. That
+        // silence is the hazard -- a part the model never sees is a failure
+        // whose every symptom points somewhere else.
+        //
+        // A kind this build does not know decodes to `Unknown` rather than
+        // failing, so a rolling deploy can read rows the other version wrote.
+        let typed: Vec<super::chat::parts::Part> =
+            serde_json::from_value(serde_json::Value::Array(parts.clone()))
+                .unwrap_or_else(|_| Vec::new());
+
+        for part in &typed {
+            match part {
                 // Never sent. Thinking is the model talking to itself, and a
                 // model handed its own reasoning back as a past utterance reads
                 // it as speech and answers it. It is stored so a reader can see
@@ -238,9 +249,8 @@ fn projected_with_sources(
                 // is the whole reason thinking is safe to keep in `parts` at
                 // all: silence here would be a fall-through nobody could see
                 // was deliberate.
-                Some("reasoning") => continue,
-                Some("text") => {
-                    let text = part["text"].as_str().unwrap_or("");
+                super::chat::parts::Part::Reasoning { .. } => continue,
+                super::chat::parts::Part::Text { text } => {
                     if text.is_empty() {
                         continue;
                     }
@@ -249,8 +259,8 @@ fn projected_with_sources(
                     }
                     open.push(serde_json::json!({"type": "text", "text": text}));
                 }
-                Some("call") => {
-                    let Some(call) = calls.iter().find(|c| c["id"] == part["id"]) else {
+                super::chat::parts::Part::Call { id } => {
+                    let Some(call) = calls.iter().find(|c| c["id"] == *id) else {
                         continue;
                     };
                     open.push(serde_json::json!({
@@ -263,7 +273,17 @@ fn projected_with_sources(
                     }));
                     awaiting.push(call);
                 }
-                _ => {}
+                // Drawn by the reader as the point a message arrived, and
+                // meaningless to a model: the message itself is in the history
+                // in its own right.
+                super::chat::parts::Part::Steer { .. } => continue,
+                // Written by a build that knew something this one does not.
+                // Dropped rather than guessed at, and said out loud, because
+                // the only way here is a pod older than the row it is reading.
+                super::chat::parts::Part::Unknown => {
+                    tracing::warn!("a part kind this build does not know was left out of a turn");
+                    continue;
+                }
             }
         }
         flush(&mut open, &mut awaiting, &mut projected);
@@ -319,53 +339,35 @@ fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::
 
 /// Whether a grant this turn holds permits the call that was refused.
 ///
-/// The digest is recomputed through `grant::digest` -- the same function the
-/// gateway verifies with and `api::gated` recorded the shape with -- rather than
-/// compared against anything stored beside the call. One implementation, so a
-/// second copy cannot drift into retracting the wrong refusal.
+/// The request is recovered through `grant::Shape` and hashed through
+/// `grant::digest` -- the same type and the same function the gateway verifies
+/// with and `api::gated` recorded the shape with -- rather than compared against
+/// anything stored beside the call. One reading of a call, one hash of it, so
+/// no second copy can drift into retracting the wrong refusal.
 ///
-/// A call whose gate cannot be found, or whose arguments cannot be read, is
-/// **not** retracted. Same rule as the commitment: could not verify means
-/// refused, never permitted.
+/// A call whose arguments cannot be read, or whose gate is not among this
+/// turn's, is **not** retracted. Same rule as the commitment: could not verify
+/// means refused, never permitted.
 fn grant_covers(
     gates: &crate::egress::gate::Gates,
     granted: &[crate::egress::grant::Granted],
     arguments: &serde_json::Value,
 ) -> bool {
-    let Some(arguments) = arguments.as_str() else {
+    let Some(shape) = crate::egress::grant::Shape::of_fetch_arguments(arguments) else {
         return false;
     };
-    let Ok(call): Result<serde_json::Value, _> = serde_json::from_str(arguments) else {
+    let Some(gate) = gates.covering(&shape.host, &shape.method, &shape.path) else {
         return false;
     };
-
-    // No default. A method this cannot read is a call it cannot check, and
-    // guessing `GET` would let a gate on `GET` match a request that was never
-    // one -- a default that permits, in a function whose rule is to refuse.
-    let Some(method) = call["method"].as_str().map(|m| m.to_ascii_uppercase()) else {
-        return false;
-    };
-    // `reqwest::Url`, because that is what the gateway parses with and
-    // `normalise_path` is documented against its resolution of `.` and `..`.
-    // A different parser here could agree on the string and disagree on the
-    // path that gets hashed.
-    let Some(url) = call["url"]
-        .as_str()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-    else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let body = call["body"].as_str();
-
-    let Some(gate) = gates.covering(host, &method, url.path()) else {
-        return false;
-    };
-    granted
-        .iter()
-        .any(|g| g.permits(gate, &method, host, url.path(), body))
+    granted.iter().any(|g| {
+        g.permits(
+            gate,
+            &shape.method,
+            &shape.host,
+            &shape.path,
+            shape.body.as_deref(),
+        )
+    })
 }
 
 /// Retracts the standing refusal a turn was parked on, once it is approved.
@@ -595,7 +597,7 @@ pub(super) struct TurnOutcome {
     /// `tools`, so nothing about a call is written down twice. Assembled from
     /// the event stream, which is already in order -- the arrangement was
     /// never unknown, only discarded.
-    parts: Vec<serde_json::Value>,
+    parts: Vec<super::chat::parts::Part>,
     /// Summed across every round of the turn, counted by the runtime host.
     usage: Usage,
     /// The endpoint that served it, for attributing spend.
@@ -759,10 +761,9 @@ impl Worker {
         let mut buffer = String::new();
         let mut tools: Vec<serde_json::Value> = Vec::new();
         // Built as the events arrive, which is the order they happened in.
-        let mut parts: Vec<serde_json::Value> = Vec::new();
-        // When the thought now being written began. Only meaningful while the
-        // last part is a reasoning one, which is the only time it is read.
-        let mut reasoning_began = chrono::Utc::now();
+        // The same builder `replay` assembles with, so what streams and what a
+        // reload rebuilds are the same message.
+        let mut parts = super::chat::parts::Builder::new();
         // The session's account label, for the ledger. Read once, on the
         // first call that needs it, so a turn that makes no model call reads
         // nothing.
@@ -788,7 +789,7 @@ impl Worker {
                         // reply around it, rather than below a reply that
                         // went on to answer it.
                         for id in ids {
-                            parts.push(serde_json::json!({"type": "steer", "id": id}));
+                            parts.steer(&id.to_string());
                             events::append(
                                 &self.pool,
                                 payload.workspace_id,
@@ -813,35 +814,10 @@ impl Worker {
                         // also thinking, exactly as a text delta coalesces:
                         // within one stretch of thinking the fragments are one
                         // thought arriving a token at a time.
-                        // How long the model spent on this thought, measured
-                        // from the first fragment to the last. Recorded here
-                        // because this is the only place that sees them arrive:
-                        // the stored row says what was thought, never how long
-                        // it took, and a reader watching a turn sit silent for
-                        // half a minute has no other way to find out where it
-                        // went.
-                        let now = chrono::Utc::now();
-                        match parts.last_mut() {
-                            Some(p) if p["type"] == "reasoning" => {
-                                let joined =
-                                    format!("{}{}", p["text"].as_str().unwrap_or(""), text);
-                                p["text"] = serde_json::json!(joined);
-                                p["ms"] = serde_json::json!(
-                                    (now - reasoning_began).num_milliseconds().max(0)
-                                );
-                            }
-                            _ => {
-                                // A new thought: the clock starts here rather
-                                // than at the previous one's end, so a pause
-                                // spent running a tool is not counted as
-                                // thinking.
-                                reasoning_began = now;
-                                // No `ms` yet: one fragment has no span, and
-                                // zero would render as a thought that took no
-                                // time rather than one nothing has timed.
-                                parts.push(serde_json::json!({"type": "reasoning", "text": text}));
-                            }
-                        }
+                        // Placed where it happened, with the clock restarting on
+                        // each thought: time spent waiting on a tool is not time
+                        // the model spent thinking.
+                        parts.reasoning(&text, Some(chrono::Utc::now()));
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -855,14 +831,7 @@ impl Worker {
                         .await?;
                     }
                     Ok(ExecuteEvent::Delta { idx, text }) => {
-                        match parts.last_mut() {
-                            Some(p) if p["type"] == "text" => {
-                                let joined =
-                                    format!("{}{}", p["text"].as_str().unwrap_or(""), text);
-                                p["text"] = serde_json::json!(joined);
-                            }
-                            _ => parts.push(serde_json::json!({"type": "text", "text": text})),
-                        }
+                        parts.text(&text);
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -895,7 +864,7 @@ impl Worker {
                         // record it -- the event feed is prunable, the
                         // transcript is not.
                         tools.push(call.clone());
-                        parts.push(serde_json::json!({"type": "call", "id": id}));
+                        parts.call(&id);
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -1082,7 +1051,7 @@ impl Worker {
                             awaiting_approval,
                             content,
                             tools,
-                            parts,
+                            parts: parts.into_parts(),
                             usage: Usage {
                                 // Recorded as signed, since a provider that
                                 // reports nothing should read as absent rather
@@ -2195,7 +2164,10 @@ impl Worker {
         // which calls were made, and where the model stopped to think. A reply
         // that is one run of prose needs none of it, and storing it there would
         // be the same string twice.
-        let thought = reply.parts.iter().any(|p| p["type"] == "reasoning");
+        let thought = reply
+            .parts
+            .iter()
+            .any(|p| matches!(p, super::chat::parts::Part::Reasoning { .. }));
         let metadata = if reply.tools.is_empty() && !thought {
             serde_json::json!({})
         } else if reply.tools.is_empty() {

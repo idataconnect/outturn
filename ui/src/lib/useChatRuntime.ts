@@ -10,6 +10,7 @@ import {
   loadHistory,
   pollEvents,
   retryTurn,
+  saidSomething as hasContent,
   sendMessage,
   type Delivery,
   type Message,
@@ -134,7 +135,7 @@ export function annotate(
   // second attempt and drawn as "the agent did not reply", directly above the
   // reply it had in fact given.
   const replyFor = new Map<string, Message>()
-  const saidSomething = new Set<string>()
+  const answered = new Set<string>()
   for (const m of messages) {
     if (m.role === 'assistant' && m.replies_to) {
       replyFor.set(m.replies_to, m)
@@ -142,10 +143,7 @@ export function annotate(
       // work with its own streaming indicator -- and a prompt that still says
       // "waiting" above it puts two spinners on screen saying different things
       // about the same turn.
-      const thought = m.metadata.parts?.some((p) => p.type === 'reasoning') ?? false
-      if (m.content !== '' || (m.metadata.tool_calls?.length ?? 0) > 0 || thought) {
-        saidSomething.add(m.replies_to)
-      }
+      if (hasContent(m)) answered.add(m.replies_to)
     }
   }
 
@@ -191,7 +189,7 @@ export function annotate(
     // Any attempt saying something is the prompt being answered. Judging only
     // the latest calls a prompt unanswered the moment a resumed turn opens an
     // empty reply beside the one that answered it.
-    if (saidSomething.has(m.id)) return { ...m, status: null }
+    if (answered.has(m.id)) return { ...m, status: null }
 
     const failure = failures.get(m.id)
     if (failure !== undefined || m.job_state === 'failed') {
@@ -917,8 +915,7 @@ export function useChatRuntime(
                     !(
                       m.role === 'assistant' &&
                       m.replies_to === message_id &&
-                      m.content === '' &&
-                      !m.metadata.parts?.some((p) => p.type === 'reasoning')
+                      !hasContent(m)
                     ),
                 ),
               )
