@@ -108,6 +108,18 @@ instantly and forever. A caller narrowed to nothing in a window is given a
 watermark instead, so their cursor still moves past what they could not see and
 the next poll does not rescan the same span.
 
+The roster does neither: it is workspace-public, so it lists every agent and
+says of each whether this caller may start a conversation with it
+(`can_chat`), because a page that offers every agent leaves a narrowed person
+to find out which they may use by being refused. That answer has to be the
+guard's, not a restatement of it -- so the rule lives once, in
+`router::may_for_agent`, which `require_for_agent` enforces and the listing
+reports. A second action a page offers ahead of time should ask the same
+function rather than write its own check. `can_chat` also counts a disabled
+agent out, which is not an authority but is the other thing
+`create_session` refuses on, and the test holding the roster to it starts a
+conversation with every agent it lists.
+
 An agent's files narrow with its conversations -- a transcript says what was
 said and a file is what somebody uploaded, both being what the agent has done --
 and the file listing leaves out a scope it may not read rather than refusing the

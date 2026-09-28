@@ -240,10 +240,12 @@ pub(super) async fn require_for_agent(
     agent_id: Uuid,
 ) -> Result<(), ApiError> {
     let held = authorities_of(state, claims).await?;
-    let reach = if super::scope::is_narrowed(authority) {
-        reach_of(state, claims).await?
-    } else {
+    // Not holding it at all settles it, before the scope is read: a refusal
+    // should not cost a query, nor turn into a 500 when that query fails.
+    let reach = if !held.contains(&authority) || !super::scope::is_narrowed(authority) {
         super::scope::Reach::default()
+    } else {
+        reach_of(state, claims).await?
     };
 
     if may_for_agent(&held, &reach, authority, agent_id) {

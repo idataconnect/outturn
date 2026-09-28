@@ -106,6 +106,12 @@ pub async fn create_session(
     // the support agent are separate permissions where somebody said so.
     super::router::require_for_agent(&state, &claims, Authority::SessionsCreate, input.agent_id)
         .await?;
+    // After the authority, so a caller who may not start conversations learns
+    // nothing about an agent's configuration from being refused.
+    let agent = state.agents.get(claims.workspace_id, input.agent_id).await?;
+    if !agent.takes_conversations() {
+        return Err((StatusCode::CONFLICT, "this agent is disabled".into()));
+    }
     let session = state
         .chat
         .create_session(claims.workspace_id, claims.subject, input)
