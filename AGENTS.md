@@ -314,6 +314,13 @@ model and gets called as a tool name by a weaker one, and nothing today would
 say so. Most of that is a query rather than an inference; the judged half reads
 untrusted transcripts, which is the part to be careful with.
 
+Finding a conversation again is designed but unbuilt, in
+[docs/session-search.md](docs/session-search.md) -- a recent list by last
+activity rather than every session ever made, lexical search built in, and
+embeddings as an optional component like Tika. They go through the gateway
+rather than beside it: an embedding is a model call, and a model call that
+skipped the ledger would be the first.
+
 What happens to a write nobody saw the answer to is designed but unbuilt, in
 [docs/idempotency.md](docs/idempotency.md) — a tool call has three outcomes
 rather than two, and the third, sent-but-never-observed, is what a crash

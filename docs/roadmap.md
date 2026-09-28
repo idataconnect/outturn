@@ -132,6 +132,17 @@ notifications, which is where a reply nobody asked for and a repeatedly failing
 schedule both land, and a dashboard panel for agent health. Neither exists, and
 triggers are what make their absence matter.
 
+### Session search
+
+[session-search.md](session-search.md). The sessions list becomes recent by
+last activity, paged, and everything older is reached by search: titles by
+trigram and content by full-text, both narrowed in the query. Embeddings are an
+optional component on top, called through the gateway so they land in the
+ledger like any other model call.
+
+The first step alone retires the unbounded sessions query, and none of the
+first three needs a decision the document has not made.
+
 ### ~~Confirm what inhibitors actually does~~ — done, 2026-09-20
 
 Stopping is built and suspension is not, in the precise sense that matters:
