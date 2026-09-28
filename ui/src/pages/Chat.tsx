@@ -368,7 +368,11 @@ export default function Chat() {
             -- a screen reader should hear this as the state of the
             conversation, not as something going wrong. */}
         {held && !shown && (
-          <div className="border-b border-surface-200 px-6 py-2 dark:border-surface-800">
+          // Tinted, so the amber card has something to sit against. On the
+          // page's own background the card and the strip around it read as one
+          // shape, and the band that is holding the conversation up looks like
+          // part of the transcript rather than something across it.
+          <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
             <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
               {/* "Hold" is a word from inside this platform, and the sentence
                   was also passive about something the reader is often the one

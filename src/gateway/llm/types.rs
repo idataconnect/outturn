@@ -325,7 +325,10 @@ mod reasoning_survives_the_gateway {
         });
 
         let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
-        assert_eq!(chunk.choices[0].delta.reasoning.as_deref(), Some("The user wants"));
+        assert_eq!(
+            chunk.choices[0].delta.reasoning.as_deref(),
+            Some("The user wants")
+        );
 
         let again = serde_json::to_value(&chunk).expect("re-encode");
         assert_eq!(
@@ -344,7 +347,10 @@ mod reasoning_survives_the_gateway {
         });
         let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
         let again = serde_json::to_value(&chunk).expect("re-encode");
-        assert_eq!(again["choices"][0]["delta"]["reasoning_content"].as_str(), Some("hmm"));
+        assert_eq!(
+            again["choices"][0]["delta"]["reasoning_content"].as_str(),
+            Some("hmm")
+        );
     }
 
     /// A reply that was only ever prose must not grow a null field on the way
@@ -358,6 +364,10 @@ mod reasoning_survives_the_gateway {
         let chunk: StreamChunk = serde_json::from_value(wire).expect("decode");
         let again = serde_json::to_value(&chunk).expect("re-encode");
         assert!(again["choices"][0]["delta"].get("reasoning").is_none());
-        assert!(again["choices"][0]["delta"].get("reasoning_content").is_none());
+        assert!(
+            again["choices"][0]["delta"]
+                .get("reasoning_content")
+                .is_none()
+        );
     }
 }

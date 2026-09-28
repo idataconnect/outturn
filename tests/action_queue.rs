@@ -1575,3 +1575,76 @@ async fn a_settlement_with_no_note_keeps_none() {
 
     db.cleanup().await;
 }
+
+/// A decline must not end the conversation.
+///
+/// The hold a gate takes is session-scoped, so leaving it up after a decline
+/// suspended every later turn in that session -- and the item is `Cancelled`, so
+/// nobody could answer it again and nothing else moves a job out of `parked`.
+/// Declining one charge killed the conversation, recoverable only by an operator
+/// releasing the hold by id, with nothing on screen saying so.
+///
+/// What stops the work is the *grant*, which a decline does not mint. What the
+/// hold decides is only whether the conversation can carry on, and after a
+/// decline it must.
+#[tokio::test]
+async fn declining_lets_the_conversation_carry_on() {
+    let (db, ws, store) = setup().await;
+    let user = make_user(&db.pool).await;
+    let session = Uuid::now_v7();
+
+    let hold = Uuid::now_v7();
+    sqlx::query(
+        "insert into inhibitors (id, level, workspace_id, session_id, strength, reason, held_by) \
+         values ($1, 'session', $2, $3, 'suspended', 'charge needs approval', 'gate')",
+    )
+    .bind(hold)
+    .bind(ws)
+    .bind(session)
+    .execute(&db.pool)
+    .await
+    .expect("hold");
+
+    let id = store
+        .raise(ws, item("approval.charge", vec![Target::User(user)]))
+        .await
+        .expect("raise");
+
+    // Declined -- and the hold goes with it, the way `api::approvals` now
+    // passes it for either answer.
+    store
+        .settle_and_release(Settle {
+            workspace_id: ws,
+            item_id: id,
+            state: State::Cancelled,
+            resolved_by: Some(user),
+            note: Some("not this time"),
+            hold: Some(hold),
+            grant: None,
+        })
+        .await
+        .expect("decline");
+
+    // A lifted hold is deleted rather than marked, so its absence is the check.
+    let still_held: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
+        .bind(hold)
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        still_held, 0,
+        "a declined approval must not leave the session suspended"
+    );
+
+    // And nothing was granted, which is what keeps the work from happening:
+    // the same call raises a fresh approval rather than going out.
+    let grants: i64 =
+        sqlx::query_scalar("select count(*) from approval_grants where workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&db.pool)
+            .await
+            .expect("grants");
+    assert_eq!(grants, 0, "a decline grants nothing");
+
+    db.cleanup().await;
+}

@@ -383,6 +383,17 @@ carries a lifecycle column the hold should own. That document settles which is
 the truth and what changes when suspension lands. Nothing should start reading
 `action_items.state` as the answer to whether a request is open.
 
+A refusal a turn parked on is retracted when it resumes. The gate answers the
+guest with "Do not retry this request", which is right while the turn is
+stopping and wrong once somebody says yes -- it is a tool result, so it replays
+to the turn whose whole purpose is to make that call, and the model obeys the
+last thing in its own transcript. `worker::answered` swaps that one sentence on
+a resuming turn; the refusal itself stays, being what the approver approved
+against. It is safe only because the gate refuses *before* dispatch, so the call
+provably never went out. A gate that refused after would make this a retry of a
+call that may have landed -- see "What approvals already assume" in
+[docs/idempotency.md](docs/idempotency.md).
+
 A round cut partway is therefore untrusted in full: its tool calls may carry
 arguments truncated mid-JSON, and running one is precisely the outcome that
 document is about. They are refused the same way a reply cut off at the token

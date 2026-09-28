@@ -308,10 +308,24 @@ pub async fn answer(
     // `parked`. The conversation stayed silent and only an operator releasing the
     // hold by id could free it, with nothing saying so.
     //
-    // A decline passes no hold, which is what keeps the conversation paused:
-    // nothing has changed about whether the work may proceed, and lifting the
-    // hold would let it run having been refused. Stopping the turn is the way out
-    // that says so.
+    // A decline lifts the hold too, and mints nothing. Those are different
+    // jobs: the *grant* is what lets the work proceed, and without one the gate
+    // refuses the same call again -- grants are scoped to a job and a decline
+    // creates none, so a retry raises a fresh approval rather than slipping
+    // through. The hold only decides whether the conversation can carry on.
+    //
+    // Holding it up was the first shape and it was wrong. The hold is
+    // session-scoped, so a declined approval suspended every later turn in that
+    // conversation -- and the item was `Cancelled`, so nobody could answer it
+    // again and nothing else moves a job out of `parked`. Declining one charge
+    // ended the conversation, recoverable only by an operator releasing the hold
+    // by id, with nothing on screen saying so. That is the same dead end the
+    // paragraph above describes for a failed release, reached by the ordinary
+    // path.
+    //
+    // What stops the agent trying again immediately is being told, in the
+    // transcript, that a person said no and to talk to them before re-attempting.
+    // See `chat::DECLINED_GUIDANCE`.
     // What the yes is worth, built before the settle so it commits with it.
     // Only on an approval: a decline grants nothing.
     let grant = if input.approved {
@@ -332,7 +346,7 @@ pub async fn answer(
             },
             resolved_by: Some(claims.subject),
             note: input.note.as_deref(),
-            hold: if input.approved { held } else { None },
+            hold: held,
             grant,
         })
         .await

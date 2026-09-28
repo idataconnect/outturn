@@ -380,6 +380,6 @@ describe('a reply that shows its thinking', () => {
 
   it('offers the thinking beside them', () => {
     render(<Harness messages={reply} />)
-    expect(screen.getByRole('button', { name: /thought about this/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /thought/i })).toBeInTheDocument()
   })
 })

@@ -245,7 +245,60 @@ idempotent by construction -- it replaces. So the case that needs this is a
 [integrations.md](integrations.md) is about. This becomes urgent when
 integrations do, and not before.
 
+## What approvals already assume, and what will break
+
+Approval gating is built (see [approvals.md](approvals.md)), and it has a
+dependency on this design that nothing else records -- so it is recorded here,
+where somebody building the tristate will read it.
+
+When the gateway refuses a call for want of an approval, the guest is answered
+with a tool result ending **"Do not retry this request."** That sentence is
+right while the turn is parking: it stops the guest spinning on a call nobody
+has answered yet.
+
+It is wrong the moment somebody says yes. The refusal is a tool result, so it
+replays verbatim to the turn that resumes -- a turn whose entire purpose is to
+make that call -- and the model reads the last thing in its own transcript
+telling it not to. It obeys, says nothing, and the turn ends with the grant
+unspent and the call never made. That happened twice before it was found, with
+every other part of the loop looking correct.
+
+So `worker::answered` retracts the sentence on a resuming turn, replacing it
+with "It has since been approved, so make this call now." The refusal itself
+stays: what was asked and what came back is the record the approver approved
+against.
+
+**That retraction is only safe because the gate refuses before dispatch.** The
+call provably never went out, so telling the agent to make it is telling it to
+do something once, not twice. The safety rests on *where* the gate fires, and
+nothing in the sentence says so.
+
+Two things follow for the work below:
+
+- If a gate ever refuses **after** dispatch -- an approval required by the
+  recipient rather than by us, a refusal that arrives as a response -- then the
+  retraction is telling an agent to redo a call that may already have landed.
+  That is exactly `attempted`, and the retraction must then consult the
+  tristate rather than assuming.
+- A gated call is the best-behaved case this document has: it is a `POST`
+  through `fetch_url` to a workspace's own API, with a key the skill already
+  requires. `charge_payment_account.md` derives `charge-<booking_id>-<amount_pence>`,
+  which is a real key on a real write, arrived at through the skill rather than
+  through the host. When derivation policy moves into the WIT, that skill is the
+  worked example to check the design against -- and the place to notice that a
+  skill-derived key and a host-derived one must not disagree.
+
+The approval loop therefore needs no change when the tristate lands. What needs
+checking is the assumption above, and it is checked by asking one question: can
+a gate refuse a call that was already sent?
+
 ## Human in the loop
+
+This section is about escalating an unresolved `attempted` write to a person,
+which is a different thing from the approval gating now built: that asks
+permission *before* a call, this asks a person to settle what happened *after*
+one. They will share a queue -- [action-queue.md](action-queue.md) -- and
+nothing else.
 
 An `attempted` write that neither a key nor a probe can settle is not something
 an agent should resolve by guessing, and not something the platform should
@@ -256,7 +309,8 @@ A person is the last resort rather than the first, which is the point of the
 two declarations above: the goal is that escalation is rare, not that it is
 well-designed.
 
-There is no HITL yet, and this does not wait for it. An `attempted` record is
+The approval queue exists now, so the UI this would surface in is no longer
+hypothetical -- but nothing here waits for it. An `attempted` record is
 durable and resolves whenever something resolves it: a person reading the
 transcript today, a HITL flow later, or an automated reconciler for recipients
 that can be asked "did you get this". The record does not care which, so HITL

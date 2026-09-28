@@ -6928,9 +6928,18 @@ async fn approving_releases_the_hold_and_gives_the_turn_back() {
 }
 
 #[tokio::test]
-async fn declining_leaves_the_hold_on() {
-    // Nothing has changed about whether the work may proceed, so releasing the
-    // hold would let it run having been refused.
+async fn declining_lets_the_conversation_carry_on() {
+    // This used to assert the opposite, on the reasoning that "nothing has
+    // changed about whether the work may proceed". True of the *work*, and the
+    // grant is what enforces it -- a decline mints none, so the gate refuses the
+    // same call again. But the hold is session-scoped, so leaving it up
+    // suspended every later turn in the conversation, and the item was
+    // `Cancelled` so nobody could answer it again and nothing else moves a job
+    // out of `parked`. Declining one charge ended the conversation, recoverable
+    // only by an operator releasing the hold by id.
+    //
+    // What stops the agent asking again immediately is `DECLINED_GUIDANCE` in
+    // the transcript, not the hold.
     let h = harness().await;
     let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
     let admin = h
@@ -6966,6 +6975,9 @@ async fn declining_leaves_the_hold_on() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // Zero parked turns to give back: this fixture holds a conversation without
+    // one. What matters here is the hold, checked below -- `resumed` is
+    // exercised against a real parked job in `tests/action_queue.rs`.
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["resumed"], 0);
 
     let still: i64 = sqlx::query_scalar("select count(*) from inhibitors where id = $1")
@@ -6973,7 +6985,19 @@ async fn declining_leaves_the_hold_on() {
         .fetch_one(&h.db.pool)
         .await
         .expect("count");
-    assert_eq!(still, 1, "declining released the hold");
+    assert_eq!(
+        still, 0,
+        "a declined approval must not leave the session suspended"
+    );
+
+    // And nothing was granted, which is what keeps the work from happening.
+    let grants: i64 =
+        sqlx::query_scalar("select count(*) from approval_grants where workspace_id = $1")
+            .bind(workspace)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("grants");
+    assert_eq!(grants, 0, "a decline grants nothing");
 
     h.db.cleanup().await;
 }

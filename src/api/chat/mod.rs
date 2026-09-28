@@ -161,6 +161,21 @@ pub struct ApprovalAnswer<'a> {
 /// something the agent said.
 pub const APPROVAL_MARK: &str = "approval";
 
+/// What a declined agent is told, beside the decline itself.
+///
+/// A decline lifts the hold, so the conversation carries on and the turn is
+/// free to run. Nothing mechanical then stops the agent making the same call
+/// again and raising the same question a second later -- so it is told not to,
+/// in the transcript, where it reads as what a person decided rather than as a
+/// tool failing.
+///
+/// Deliberately not "never do this". Somebody who declines a charge and then
+/// talks it over should be able to change their mind and have it go through,
+/// which means the agent has to be free to try again once that conversation has
+/// happened. The gate is what holds the line regardless: a decline mints no
+/// grant, so any retry raises a fresh approval rather than slipping past.
+pub const DECLINED_GUIDANCE: &str = "Do not re-attempt this before discussing it with the user.";
+
 impl Default for Delivery {
     /// Steering is the default because it is what someone typing during a
     /// turn almost always means: they are reacting to what they can see.
