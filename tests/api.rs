@@ -7797,6 +7797,28 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
         }
     };
 
+    // What the roster offers is what starting a conversation allows, agent by
+    // agent -- the point of the field is that the two cannot disagree. Asked
+    // before narrowing and again after, since each refuses for its own reason.
+    let agrees = |token: String| {
+        let h = &h;
+        let chat_with = &chat_with;
+        async move {
+            let offered = chat_with(token.clone()).await;
+            for agent in [billing, support, retired] {
+                let body = format!(r#"{{"agent_id":"{agent}","title":"t"}}"#);
+                let (status, made) = h.post("/v1/agent-sessions", Some(&token), &body).await;
+                assert_eq!(
+                    status == StatusCode::CREATED,
+                    offered.contains(&agent),
+                    "agent {agent}: offered {}, starting one answered {status}: {made}",
+                    offered.contains(&agent),
+                );
+            }
+        }
+    };
+    agrees(operator.clone()).await;
+
     let mut both = chat_with(operator.clone()).await;
     both.sort();
     let mut expected = vec![billing, support];
@@ -7813,7 +7835,8 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
         .set(acme, op_id, &[billing])
         .await
         .expect("set scope");
-    assert_eq!(chat_with(operator).await, vec![billing]);
+    assert_eq!(chat_with(operator.clone()).await, vec![billing]);
+    agrees(operator).await;
 
     // Somebody who may not start conversations at all is offered none.
     assert!(chat_with(viewer).await.is_empty());

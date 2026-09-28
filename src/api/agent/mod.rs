@@ -18,6 +18,15 @@ pub struct Agent {
     pub enabled: bool,
 }
 
+impl Agent {
+    /// Whether a new conversation with it would be answered. A disabled agent
+    /// is refused by the worker at the first turn, so a conversation started
+    /// with one is only ever a place for that failure to happen.
+    pub fn takes_conversations(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateAgent {
     pub name: String,
