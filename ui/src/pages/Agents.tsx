@@ -47,6 +47,7 @@ export default function Agents() {
   const canDelete = authorities.includes('agents:delete')
   const canStopAgent = authorities.includes('agents:inhibit')
   const canStopWorkspace = authorities.includes('workspaces:inhibit')
+  const canReadSessions = authorities.includes('sessions:read')
 
   const [held, setHeld] = useState<Inhibitor[]>([])
 
@@ -95,18 +96,17 @@ export default function Agents() {
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   useEffect(() => {
     void refresh()
-    // A reader who may see agents but not conversations still gets the page;
-    // the recent list is what goes missing.
-    listSessions().then(setSessions, () => setSessions([]))
-  }, [workspaceId])
-
-  // On a wide screen an empty right half is a page that has not finished its
-  // job, so open the first agent. On a phone the list is the page.
-  useEffect(() => {
-    if (!id && breakpoint !== 'phone' && agents.length > 0) {
-      void navigate(`/agents/${agents[0].id}`, { replace: true })
+    // A reader who may see agents but not conversations still gets the page,
+    // without the recent list -- not asked for, rather than asked for and
+    // refused, so a failure that does happen is a real one and says so.
+    if (!canReadSessions) {
+      setSessions([])
+      return
     }
-  }, [id, breakpoint, agents, navigate])
+    listSessions().then(setSessions, (e) =>
+      setError(e instanceof ApiError ? e.message : 'failed to load recent chats'),
+    )
+  }, [workspaceId, canReadSessions])
 
   async function onDelete(agent: Agent) {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
@@ -119,7 +119,11 @@ export default function Agents() {
     }
   }
 
-  const selected = agents.find((a) => a.id === id)
+  // On a wide screen an empty right half is a page that has not finished its
+  // job, so with none named the first agent is shown -- without rewriting the
+  // URL, which would pick an agent on the reader's behalf every time the list
+  // changed. On a phone the list is the page.
+  const selected = id ? agents.find((a) => a.id === id) : breakpoint !== 'phone' ? agents[0] : undefined
   const ownHold = selected
     ? held.find((i) => i.scope.level === 'agent' && i.scope.agent_id === selected.id)
     : undefined
@@ -154,7 +158,7 @@ export default function Agents() {
               <AgentList
                 agents={agents}
                 href={(agent) => `/agents/${agent.id}`}
-                marksCurrent
+                current={selected?.id}
                 empty={
                   <p className="p-2 text-sm text-surface-600 dark:text-surface-400">
                     No agents yet.
@@ -293,7 +297,7 @@ export default function Agents() {
               </p>
 
               <div className="mt-6">
-                {selected.can_chat && selected.enabled ? (
+                {selected.can_chat ? (
                   <Link
                     to={`/sessions/new?agent=${selected.id}`}
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
