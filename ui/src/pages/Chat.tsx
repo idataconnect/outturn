@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, useNavigate, useParams } from 'react-router'
+import { Link, NavLink, useNavigate, useParams, useSearchParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
 
@@ -7,6 +7,7 @@ import { useSkillCommands } from '../lib/useSkillCommands'
 
 import ApprovalPrompt from '../components/ApprovalPrompt'
 import Thread from '../components/Thread'
+import AgentList from '../components/AgentList'
 import FilesPanel from '../components/FilesPanel'
 import SidePane, { type PaneTab } from '../components/SidePane'
 import { ApiError } from '../lib/api'
@@ -26,12 +27,19 @@ import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 import { iconButtonLarge } from '../lib/buttons'
 
-export default function Chat() {
+/**
+ * Conversations: the list, the one open, and -- under `/sessions/new` -- one
+ * about to be started. `?agent=` names who it will be with; without it the
+ * page asks. Nothing is made until the first message is sent.
+ */
+export default function Chat({ draft = false }: { draft?: boolean }) {
   const state = useSession()
   const navigate = useNavigate()
   // The URL owns the selection, so a session can be linked to, reloaded, and
   // reached with the back button.
   const { sessionId } = useParams<{ sessionId?: string }>()
+  const [search] = useSearchParams()
+  const draftAgent = draft ? search.get('agent') : null
   const [agents, setAgents] = useState<Agent[]>([])
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -58,6 +66,18 @@ export default function Chat() {
     // is where the attachments are: the runtime is created here, and the two
     // would otherwise have no way to meet.
     () => takeAttachments.current?.() ?? '',
+    draftAgent
+      ? {
+          create: async () => {
+            const session = await createSession(draftAgent)
+            setSessions((prev) => [session, ...prev])
+            return session.id
+          },
+          // Replaced rather than pushed: back from the conversation should not
+          // land on an empty "new" page for a chat that now exists.
+          opened: (id) => void navigate(`/sessions/${id}`, { replace: true }),
+        }
+      : undefined,
   )
 
   // Agents and sessions are workspace-scoped, so switching workspace reloads both.
@@ -152,7 +172,7 @@ export default function Chat() {
 
   // Reconcile the URL against what this workspace can actually see, once loaded.
   useEffect(() => {
-    if (!loaded) return
+    if (!loaded || draft) return
 
     // Land on the most recent session when none was named. Replace rather than
     // push, so the back button does not return to an empty /sessions that
@@ -176,22 +196,25 @@ export default function Chat() {
     // The notice explains the landing it caused; it should not still be
     // there once a session the reader chose is on screen.
     if (sessionId !== landed.current) setMissing(null)
-  }, [loaded, sessionId, sessions, navigate])
+  }, [loaded, draft, sessionId, sessions, navigate])
 
-  async function start(agentId: string) {
-    try {
-      const session = await createSession(agentId)
-      setSessions((prev) => [session, ...prev])
-      void navigate(`/sessions/${session.id}`)
-      setFocusRequest((n) => n + 1)
-      setError(null)
-      // Same as picking an existing one: only dismiss a list that was
-      // covering the conversation it just opened.
-      if (breakpoint === 'phone') toggleSessions(false)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'failed to start session')
+  // Who a new chat could be with. Only agents this reader may start one
+  // with: offering the rest invites a refusal.
+  const chattable = useMemo(() => agents.filter((a) => a.can_chat && a.enabled), [agents])
+
+  const draftWith = draftAgent ? chattable.find((a) => a.id === draftAgent) : undefined
+
+  // Whoever just chose who to talk to is about to type to them.
+  useEffect(() => {
+    if (draftWith) setFocusRequest((n) => n + 1)
+  }, [draftWith])
+
+  // One agent is not a choice, so do not ask it.
+  useEffect(() => {
+    if (draft && !draftAgent && loaded && chattable.length === 1) {
+      void navigate(`/sessions/new?agent=${chattable[0].id}`, { replace: true })
     }
-  }
+  }, [draft, draftAgent, loaded, chattable, navigate])
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
   const shown = error ?? chatError ?? missing
@@ -219,8 +242,14 @@ export default function Chat() {
   const current = sessions.find((s) => s.id === active)
   // What the composer's `/` menu offers. Keyed on the open session's agent,
   // so switching sessions switches the menu with it.
-  const skills = useSkillCommands(current?.agent_id ?? null)
-  const activeTitle = active ? sessionName(current) : 'Sessions'
+  const skills = useSkillCommands(current?.agent_id ?? draftAgent)
+  const activeTitle = active
+    ? sessionName(current)
+    : draftWith
+      ? `New chat with ${draftWith.name}`
+      : draft
+        ? 'New chat'
+        : 'Sessions'
 
   async function rename(id: string, title: string) {
     try {
@@ -244,16 +273,15 @@ export default function Chat() {
             control that could only do half the job left the pair disagreeing
             about which one to reach for -- and it sat inside the thing it
             closed, vanishing with it. */}
-        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
-          <p className="text-xs font-medium text-surface-600 dark:text-surface-400">
-            Start a session
-          </p>
-        </div>
+        {/* One button, not a button per agent. The list of agents used to sit
+            here, and it grew with the workspace until the conversations it
+            sat above were pushed off the bottom of the panel. Choosing who to
+            talk to is the new-chat page's job. */}
         <div className="p-3 border-b border-surface-200 dark:border-surface-800">
           {agents.length === 0 ? (
             canCreateAgents ? (
               <NavLink
-                to="/agents"
+                to="/agents/new"
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
               >
                 <Plus size={14} className="shrink-0" />
@@ -264,27 +292,28 @@ export default function Chat() {
                 No agents yet. Ask an administrator to add one.
               </p>
             )
-          ) : canStart ? (
-            <div className="space-y-1">
-              {agents.map((agent) => (
-                <button
-                  key={agent.id}
-                  onClick={() => void start(agent.id)}
-                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800"
-                >
-                  <Plus size={14} className="shrink-0 text-surface-400" />
-                  <span className="truncate">{agent.name}</span>
-                </button>
-              ))}
-            </div>
+          ) : canStart && chattable.length > 0 ? (
+            <Link
+              to="/sessions/new"
+              onClick={() => {
+                if (breakpoint === 'phone') toggleSessions(false)
+              }}
+              className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
+            >
+              <Plus size={14} aria-hidden />
+              New chat
+            </Link>
           ) : (
-            // A badge rather than a sentence. The panel says "Start a session"
-            // and there is nothing under it; what a reader needs is to know
-            // that is the arrangement rather than a list that failed to load,
-            // and two words do that. The authority is in the tooltip for
+            // A badge rather than a sentence. What a reader needs is to know
+            // that no button is the arrangement rather than a list that failed
+            // to load, and two words do that. The reason is in the tooltip for
             // whoever is asking why.
             <span
-              title="Starting a session needs the sessions:create authority"
+              title={
+                canStart
+                  ? 'You have not been given any agent to start a chat with'
+                  : 'Starting a chat needs the sessions:create authority'
+              }
               className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-surface-100 dark:bg-surface-800 text-surface-500 dark:text-surface-400"
             >
               Read-only
@@ -349,10 +378,13 @@ export default function Chat() {
             canRename={canRename && !!current}
             onRename={(t) => current && void rename(current.id, t)}
           />
-          {current && (
-            <span className="hidden sm:block shrink-0 text-xs text-surface-400 dark:text-surface-500">
-              {agentName(current.agent_id)}
-            </span>
+          {(current || draftWith) && (
+            <Link
+              to={`/agents/${current?.agent_id ?? draftWith?.id}`}
+              className="hidden sm:block shrink-0 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
+            >
+              {agentName(current?.agent_id ?? draftWith!.id)}
+            </Link>
           )}
         </div>
         {shown && (
@@ -402,9 +434,37 @@ export default function Chat() {
           </div>
         )}
         <div className="flex-1 min-h-0">
+          {draft && !draftWith ? (
+            // Who to talk to, asked in the page rather than in a menu: this is
+            // the whole of what the reader came here to decide.
+            <div className="h-full overflow-auto p-6">
+              <div className="max-w-md mx-auto">
+                <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
+                  Who would you like to talk to?
+                </h2>
+                {draftAgent && loaded && (
+                  <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
+                    That agent is not one you can start a chat with. Pick another.
+                  </p>
+                )}
+                <div className="mt-4">
+                  <AgentList
+                    agents={chattable}
+                    href={(agent) => `/sessions/new?agent=${agent.id}`}
+                    autoFocus
+                    empty={
+                      <p className="text-sm text-surface-600 dark:text-surface-400">
+                        {loaded ? 'There is no agent you can start a chat with.' : 'Loading…'}
+                      </p>
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
           <AssistantRuntimeProvider runtime={runtime}>
             <Thread
-              disabled={!active || !canSend}
+              disabled={(!active && !draftWith) || !canSend}
               readOnly={!!active && !canSend}
               skills={skills}
               onRetry={retry}
@@ -415,6 +475,7 @@ export default function Chat() {
               takeAttachments={takeAttachments}
             />
           </AssistantRuntimeProvider>
+          )}
         </div>
       </div>
 

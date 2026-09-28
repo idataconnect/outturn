@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Chat from './Chat'
@@ -19,7 +19,10 @@ function setWidth(px: number) {
 }
 
 vi.mock('../lib/chat', () => ({
-  listAgents: vi.fn(async () => [{ id: 'a1', name: 'Helper' }]),
+  listAgents: vi.fn(async () => [
+    { id: 'a1', name: 'Helper', slug: 'helper', description: '', enabled: true, can_chat: true },
+    { id: 'a2', name: 'Other', slug: 'other', description: '', enabled: true, can_chat: true },
+  ]),
   listSessions: vi.fn(async () => [
     { id: 's1', agent_id: 'a1', title: 'First chat' },
     { id: 's2', agent_id: 'a1', title: 'Second chat' },
@@ -76,11 +79,14 @@ const signedIn: SessionState = {
   },
 }
 
-function show() {
+function show(at = '/sessions/s1') {
   return render(
-    <MemoryRouter initialEntries={['/sessions/s1']}>
+    <MemoryRouter initialEntries={[at]}>
       <SessionContext.Provider value={signedIn}>
-        <Chat />
+        <Routes>
+          <Route path="/sessions/new" element={<Chat draft />} />
+          <Route path="/sessions/:sessionId" element={<Chat />} />
+        </Routes>
       </SessionContext.Provider>
     </MemoryRouter>,
   )
@@ -98,7 +104,8 @@ describe('picking a session', () => {
     show()
 
     const second = await screen.findByText('Second chat')
-    expect(screen.getByText('First chat')).toBeInTheDocument()
+    // In the list, as well as in the header of the one that is open.
+    expect(within(document.querySelector('aside')!).getByText('First chat')).toBeInTheDocument()
 
     await user.click(second)
 
@@ -149,19 +156,37 @@ describe('asking for the cursor', () => {
     )
   })
 
-  it('is asked for when a session is started', async () => {
+  it('is asked for when an agent is chosen for a new chat', async () => {
     const user = userEvent.setup()
     setWidth(1440)
-    show()
+    show('/sessions/new')
+
+    // Two agents, so the page asks rather than choosing for the reader.
+    await user.click(await screen.findByRole('link', { name: 'Helper' }))
 
     const thread = await screen.findByTestId('thread')
-    const before = thread.dataset.focusRequest
+    expect(Number(thread.dataset.focusRequest)).toBeGreaterThan(0)
+  })
+})
 
-    await user.click(await screen.findByRole('button', { name: 'Helper' }))
+describe('starting a chat', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
 
-    await waitFor(() =>
-      expect(screen.getByTestId('thread').dataset.focusRequest).not.toBe(before),
-    )
+  it('creates nothing until something is sent', async () => {
+    // Choosing an agent and thinking better of it used to leave an empty
+    // session in everybody's history. The chat is made by the first send.
+    const { createSession } = await import('../lib/chat')
+    const user = userEvent.setup()
+    setWidth(1440)
+    show('/sessions/new')
+
+    await user.click(await screen.findByRole('link', { name: 'Helper' }))
+    await screen.findByTestId('thread')
+
+    expect(createSession).not.toHaveBeenCalled()
   })
 })
 

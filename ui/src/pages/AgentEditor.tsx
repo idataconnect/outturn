@@ -59,7 +59,7 @@ const label = 'block text-sm text-surface-700 dark:text-surface-300 mb-1'
 /**
  * One page for creating an agent and for changing one.
  *
- * `/agents/new` starts empty; `/agents/:id` loads the agent first. The slug
+ * `/agents/new` starts empty; `/agents/:id/edit` loads the agent first. The slug
  * is settled at creation -- it is how sessions and URLs name the agent -- so
  * it is shown but not editable afterwards. Everything else can change.
  */
@@ -127,7 +127,7 @@ export default function AgentEditor() {
         // does not unmount this component -- both routes render AgentEditor
         // in the same spot in the tree -- so saving must be cleared by hand.
         setSaving(false)
-        void navigate(`/agents/${made.id}`)
+        void navigate(`/agents/${made.id}/edit`)
         return
       }
       await api<Agent>(`/v1/agents/${id}`, {
@@ -140,7 +140,7 @@ export default function AgentEditor() {
         }),
       })
       setSaving(false)
-      void navigate('/agents')
+      void navigate(`/agents/${id}`)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save agent')
       setSaving(false)
@@ -150,7 +150,7 @@ export default function AgentEditor() {
   return (
     <div className="p-6 max-w-3xl">
       <Link
-        to="/agents"
+        to={creating ? '/agents' : `/agents/${id}`}
         className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
       >
         <ArrowLeft size={14} aria-hidden />
@@ -252,7 +252,7 @@ export default function AgentEditor() {
                 {saving ? 'Saving…' : creating ? 'Create agent' : 'Save changes'}
               </button>
               <Link
-                to="/agents"
+                to={creating ? '/agents' : `/agents/${id}`}
                 className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
               >
                 Cancel

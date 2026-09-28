@@ -386,6 +386,7 @@ function Shell() {
               nav simply stops offering it. */}
           <Route path="/" element={<Dashboard />} />
           <Route path="/sessions" element={<Chat />} />
+          <Route path="/sessions/new" element={<Chat draft />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
           <Route
             path="/agents"
@@ -428,9 +429,17 @@ function Shell() {
               </RequireAuthority>
             }
           />
-          {/* Read opens it; the form itself decides whether it can be saved. */}
           <Route
             path="/agents/:id"
+            element={
+              <RequireAuthority authority="agents:read">
+                <Agents />
+              </RequireAuthority>
+            }
+          />
+          {/* Read opens it; the form itself decides whether it can be saved. */}
+          <Route
+            path="/agents/:id/edit"
             element={
               <RequireAuthority authority="agents:read">
                 <AgentEditor />

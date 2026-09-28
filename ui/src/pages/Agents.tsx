@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router'
-import { Bot, OctagonX, Play, Plus, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router'
+import { MessageSquare, OctagonX, Play, Plus, Settings2, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
+import { listSessions, sessionName, type Agent, type AgentSession } from '../lib/chat'
+import { useBreakpoint } from '../lib/useBreakpoint'
+import AgentList from '../components/AgentList'
 import Holds from '../components/Holds'
 import StopDialog from '../components/StopDialog'
 import {
@@ -14,32 +17,36 @@ import {
   stopWorkspace,
   type Inhibitor,
 } from '../lib/inhibitors'
-import type { Agent } from './AgentEditor'
+
+/** How many of an agent's conversations its page lists. The rest are one
+ *  click away in the sessions list. */
+const RECENT = 5
 
 /**
- * The workspace's agents, as a list.
+ * The workspace's agents: a list to find one in, and a page for the one found.
  *
- * Creating and editing live on their own routes (`/agents/new`,
- * `/agents/:id`), so this page is only ever the list. An always-open editor
- * above the list made every visit look like a form to fill in, and left no
- * way to change an agent that already existed.
+ * People think of an agent before they think of a conversation with it, so
+ * this is where one is started from as well as looked after. Its
+ * configuration is a page of its own (`/agents/:id/edit`): what somebody who
+ * came to talk to an agent needs is what it is for and a way to start, not its
+ * system prompt.
  */
 export default function Agents() {
   const state = useSession()
+  const navigate = useNavigate()
+  const { id } = useParams<{ id?: string }>()
+  const breakpoint = useBreakpoint()
   const [agents, setAgents] = useState<Agent[]>([])
+  const [sessions, setSessions] = useState<AgentSession[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canCreate = authorities.includes('agents:create')
+  const canUpdate = authorities.includes('agents:update')
   const canDelete = authorities.includes('agents:delete')
   const canStopAgent = authorities.includes('agents:inhibit')
   const canStopWorkspace = authorities.includes('workspaces:inhibit')
-  // Only worth saying to somebody who can be looking at more than one workspace.
-  // To everybody else there is no "currently viewing" -- there is only their
-  // workspace -- and the sentence raises a question they cannot act on.
-  const manyWorkspaces =
-    state.status === 'authenticated' && state.session.workspaces.length > 1
 
   const [held, setHeld] = useState<Inhibitor[]>([])
 
@@ -88,154 +95,248 @@ export default function Agents() {
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   useEffect(() => {
     void refresh()
+    // A reader who may see agents but not conversations still gets the page;
+    // the recent list is what goes missing.
+    listSessions().then(setSessions, () => setSessions([]))
   }, [workspaceId])
+
+  // On a wide screen an empty right half is a page that has not finished its
+  // job, so open the first agent. On a phone the list is the page.
+  useEffect(() => {
+    if (!id && breakpoint !== 'phone' && agents.length > 0) {
+      void navigate(`/agents/${agents[0].id}`, { replace: true })
+    }
+  }, [id, breakpoint, agents, navigate])
 
   async function onDelete(agent: Agent) {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
     try {
       await api<void>(`/v1/agents/${agent.id}`, { method: 'DELETE' })
+      void navigate('/agents', { replace: true })
       await refresh()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to delete agent')
     }
   }
 
+  const selected = agents.find((a) => a.id === id)
+  const ownHold = selected
+    ? held.find((i) => i.scope.level === 'agent' && i.scope.agent_id === selected.id)
+    : undefined
+  const recent = selected ? sessions.filter((s) => s.agent_id === selected.id).slice(0, RECENT) : []
+  // A phone shows one half at a time: the list, or the agent picked from it.
+  const showList = breakpoint !== 'phone' || !id
+  const showDetail = breakpoint !== 'phone' || !!id
+
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
-          {manyWorkspaces && (
-            <p className="mt-2 text-surface-600 dark:text-surface-400">
-              Agents belong to the workspace you are currently viewing.
+    <div className="flex h-full">
+      {showList && (
+        <aside className="flex flex-col w-full sm:w-64 shrink-0 sm:border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900">
+          <div className="p-3 border-b border-surface-200 dark:border-surface-800 flex items-center justify-between gap-2">
+            <h1 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
+            {canCreate && (
+              <Link
+                to="/agents/new"
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+              >
+                <Plus size={14} aria-hidden />
+                New agent
+              </Link>
+            )}
+          </div>
+          <div className="flex-1 min-h-0 flex flex-col p-2">
+            {loading ? (
+              <p className="p-2 text-sm text-surface-600 dark:text-surface-400">Loading…</p>
+            ) : (
+              <AgentList
+                agents={agents}
+                href={(agent) => `/agents/${agent.id}`}
+                marksCurrent
+                empty={
+                  <p className="p-2 text-sm text-surface-600 dark:text-surface-400">
+                    No agents yet.
+                    {canCreate && (
+                      <>
+                        {' '}
+                        <Link to="/agents/new" className="underline underline-offset-2">
+                          Create one.
+                        </Link>
+                      </>
+                    )}
+                  </p>
+                }
+              />
+            )}
+          </div>
+          {/* Workspace-wide, so it lives with the list rather than with any one
+              agent: it stops every one of them. */}
+          {canStopWorkspace && !held.some((i) => i.scope.level === 'workspace') && (
+            <div className="p-3 border-t border-surface-200 dark:border-surface-800">
+              <button
+                type="button"
+                onClick={() => setStopping('workspace')}
+                className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/40"
+              >
+                <OctagonX size={14} aria-hidden />
+                Stop workspace
+              </button>
+            </div>
+          )}
+        </aside>
+      )}
+
+      {showDetail && (
+        <div className="flex-1 min-w-0 overflow-auto p-6">
+          {error && (
+            <p className="mb-4 text-sm text-red-600 dark:text-red-400" role="alert">
+              {error}
             </p>
           )}
-        </div>
-        {canStopWorkspace && !held.some((i) => i.scope.level === 'workspace') && (
-          <button
-            type="button"
-            onClick={() => setStopping('workspace')}
-            className="flex items-center gap-2 px-4 py-2 rounded-md border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 text-sm font-medium hover:bg-red-50 dark:hover:bg-red-950/40"
-          >
-            <OctagonX size={16} aria-hidden />
-            Stop workspace
-          </button>
-        )}
-        {canCreate && (
-          <Link
-            to="/agents/new"
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
-          >
-            <Plus size={16} aria-hidden />
-            New agent
-          </Link>
-        )}
-      </div>
 
-      {error && (
-        <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
-          {error}
-        </p>
-      )}
+          {/* Workspace-wide holds lead, because they explain why every agent
+              is quiet -- reading them per agent would say the same thing N
+              times. */}
+          {held.some((i) => i.scope.level !== 'agent') && (
+            <div className="mb-4">
+              <Holds
+                held={held.filter((i) => i.scope.level !== 'agent')}
+                canRelease={mayRelease}
+                onRelease={(hold) => void onRelease(hold)}
+              />
+            </div>
+          )}
 
-      {/* Workspace-wide holds lead, because they explain why every agent below
-          is quiet -- reading them per agent would say the same thing N times. */}
-      {held.some((i) => i.scope.level !== 'agent') && (
-        <div className="mt-4">
-          <Holds
-            held={held.filter((i) => i.scope.level !== 'agent')}
-            canRelease={mayRelease}
-            onRelease={(hold) => void onRelease(hold)}
-          />
-        </div>
-      )}
+          {breakpoint === 'phone' && (
+            <Link
+              to="/agents"
+              className="inline-block mb-3 text-sm text-surface-600 dark:text-surface-400"
+            >
+              ← Agents
+            </Link>
+          )}
 
-      <div className="mt-6 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
-        {loading ? (
-          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">Loading…</p>
-        ) : agents.length === 0 ? (
-          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">
-            No agents yet.
-            {canCreate && (
-              <>
-                {' '}
-                <Link to="/agents/new" className="underline underline-offset-2">
-                  Create one.
-                </Link>
-              </>
-            )}
-          </p>
-        ) : (
-          <ul className="divide-y divide-surface-200 dark:divide-surface-800">
-            {agents.map((agent) => (
-              <li key={agent.id} className="flex items-start gap-4 p-4">
-                <Bot size={16} className="mt-1 shrink-0 text-surface-400" aria-hidden />
-                <Link to={`/agents/${agent.id}`} className="flex-1 min-w-0 group">
-                  <p className="text-sm font-medium text-surface-900 dark:text-surface-100 truncate group-hover:underline underline-offset-2">
-                    {agent.name}
-                    {!agent.enabled && (
-                      <span className="ml-2 text-xs font-normal text-surface-600 dark:text-surface-400">
+          {selected ? (
+            <div className="max-w-2xl">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h2 className="text-2xl font-semibold text-surface-900 dark:text-surface-100 break-words">
+                    {selected.name}
+                    {!selected.enabled && (
+                      <span className="ml-2 align-middle text-xs font-normal text-surface-600 dark:text-surface-400">
                         disabled
                       </span>
                     )}
                     {/* Stopped is not disabled: one is a hold somebody took and
                         can lift, the other is how the agent is configured. */}
-                    {coveringAgent(held, agent.id).length > 0 && (
-                      <span className="ml-2 text-xs font-normal text-red-700 dark:text-red-400">
+                    {coveringAgent(held, selected.id).length > 0 && (
+                      <span className="ml-2 align-middle text-xs font-normal text-red-700 dark:text-red-400">
                         stopped
                       </span>
                     )}
+                  </h2>
+                  <p className="text-xs font-mono text-surface-500 dark:text-surface-400">
+                    {selected.slug}
                   </p>
-                  <p className="text-xs font-mono text-surface-600 dark:text-surface-400 truncate">
-                    {agent.slug}
-                  </p>
-                  {agent.system_prompt && (
-                    <p className="mt-1 text-xs text-surface-600 dark:text-surface-400 line-clamp-2">
-                      {agent.system_prompt}
-                    </p>
-                  )}
-                </Link>
-                {canStopAgent &&
-                  (held.some(
-                    (i) => i.scope.level === 'agent' && i.scope.agent_id === agent.id,
-                  ) ? (
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Link
+                    to={`/agents/${selected.id}/edit`}
+                    title={canUpdate ? 'Configure this agent' : 'See how this agent is configured'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-surface-700 dark:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-800"
+                  >
+                    <Settings2 size={16} aria-hidden />
+                    {canUpdate ? 'Configure' : 'Configuration'}
+                  </Link>
+                  {canStopAgent &&
+                    (ownHold ? (
+                      <button
+                        onClick={() => void onRelease(ownHold)}
+                        aria-label={`Start ${selected.name}`}
+                        title="Release this agent's hold"
+                        className="p-2 rounded-md text-surface-400 hover:text-green-700 dark:hover:text-green-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                      >
+                        <Play size={16} aria-hidden />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setStopping(selected)}
+                        aria-label={`Stop ${selected.name}`}
+                        title="Stop this agent"
+                        className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                      >
+                        <OctagonX size={16} aria-hidden />
+                      </button>
+                    ))}
+                  {canDelete && (
                     <button
-                      onClick={() => {
-                        const own = held.find(
-                          (i) => i.scope.level === 'agent' && i.scope.agent_id === agent.id,
-                        )
-                        if (own) void onRelease(own)
-                      }}
-                      aria-label={`Start ${agent.name}`}
-                      title="Release this agent's hold"
-                      className="p-2 rounded-md text-surface-400 hover:text-green-700 dark:hover:text-green-400 hover:bg-surface-100 dark:hover:bg-surface-800"
-                    >
-                      <Play size={16} aria-hidden />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setStopping(agent)}
-                      aria-label={`Stop ${agent.name}`}
-                      title="Stop this agent"
+                      onClick={() => void onDelete(selected)}
+                      aria-label={`Delete ${selected.name}`}
+                      title="Delete this agent"
                       className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
                     >
-                      <OctagonX size={16} aria-hidden />
+                      <Trash2 size={16} aria-hidden />
                     </button>
-                  ))}
-                {canDelete && (
-                  <button
-                    onClick={() => void onDelete(agent)}
-                    aria-label={`Delete ${agent.name}`}
-                    className="p-2 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-100 dark:hover:bg-surface-800"
-                  >
-                    <Trash2 size={16} aria-hidden />
-                  </button>
+                  )}
+                </div>
+              </div>
+
+              <p className="mt-4 text-surface-700 dark:text-surface-300 whitespace-pre-line">
+                {selected.description || (
+                  <span className="text-surface-500 dark:text-surface-400">
+                    No description yet.
+                    {canUpdate && ' Say what this agent is for, so people know when to use it.'}
+                  </span>
                 )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+              </p>
+
+              <div className="mt-6">
+                {selected.can_chat && selected.enabled ? (
+                  <Link
+                    to={`/sessions/new?agent=${selected.id}`}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
+                  >
+                    <MessageSquare size={16} aria-hidden />
+                    New chat
+                  </Link>
+                ) : (
+                  <p className="text-sm text-surface-600 dark:text-surface-400">
+                    {selected.enabled
+                      ? 'You cannot start a chat with this agent.'
+                      : 'This agent is disabled, so no chat can be started with it.'}
+                  </p>
+                )}
+              </div>
+
+              {recent.length > 0 && (
+                <div className="mt-8">
+                  <h3 className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
+                    Recent chats
+                  </h3>
+                  <ul className="mt-2 space-y-1">
+                    {recent.map((session) => (
+                      <li key={session.id}>
+                        <Link
+                          to={`/sessions/${session.id}`}
+                          className="block px-2 py-1.5 -mx-2 rounded-md text-sm text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50 truncate"
+                        >
+                          {sessionName(session)}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : (
+            !loading && (
+              <p className="text-sm text-surface-600 dark:text-surface-400">
+                {id ? 'That agent is not in this workspace.' : 'Choose an agent.'}
+              </p>
+            )
+          )}
+        </div>
+      )}
+
       {stopping && (
         <StopDialog
           subject={stopping === 'workspace' ? 'this whole workspace' : stopping.name}

@@ -473,6 +473,10 @@ export function useChatRuntime(
    *  rather than travelling beside it, so the transcript records what was
    *  actually asked. */
   takeAttachments?: () => string,
+  /** For a conversation that does not exist yet: makes it on the first send,
+   *  and is told once the message is in it. Deferred so that picking an agent
+   *  and thinking better of it leaves nothing behind in anybody's history. */
+  fresh?: { create: () => Promise<string>; opened: (id: string) => void },
 ) {
   // Kept in a ref so the feed's effects can reach the latest callback without
   // listing it as a dependency and tearing the stream down on every render.
@@ -480,9 +484,11 @@ export function useChatRuntime(
   // discarded, and a discarded render must not leave a ref behind it.
   const renamed = useRef(onRenamed)
   const attachments = useRef(takeAttachments)
+  const starting = useRef(fresh)
   useLayoutEffect(() => {
     renamed.current = onRenamed
     attachments.current = takeAttachments
+    starting.current = fresh
   })
   const [messages, setMessages] = useState<Message[]>([])
   /** Set by this tab the moment it sends, so the composer answers the click
@@ -924,7 +930,7 @@ export function useChatRuntime(
 
   const submit = useCallback(
     async (message: AppendMessage, delivery?: Delivery) => {
-      if (!sessionId) return
+      if (!sessionId && !starting.current) return
       const part = message.content[0]
       if (part?.type !== 'text') {
         throw new Error('only text messages are supported')
@@ -953,10 +959,12 @@ export function useChatRuntime(
       setError(null)
       setHeld(null)
       setSending(true)
+      let made: string | null = null
       try {
+        const target = sessionId ?? (made = await starting.current!.create())
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
-        const stored = await sendMessage(sessionId, text, delivery)
+        const stored = await sendMessage(target, text, delivery)
         // The POST does not say, but a message it accepted has a job queued
         // for it by construction: the two are written together.
         merge([{ ...stored, job_state: 'pending' }])
@@ -964,6 +972,10 @@ export function useChatRuntime(
         setSending(false)
         setError(e instanceof Error ? e.message : 'failed to send')
         throw e
+      } finally {
+        // Opened even when the send failed: the conversation exists by then,
+        // and leaving the reader on a blank "new" page would hide it from them.
+        if (made) starting.current?.opened(made)
       }
     },
     [sessionId, merge],
