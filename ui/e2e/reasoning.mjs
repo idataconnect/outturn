@@ -125,11 +125,12 @@ async function main() {
   if (events > 0) pass(`${events} chat.reasoning events reached the API`)
   else fail('no chat.reasoning event was ever produced -- thinking is still being dropped')
 
-  const stored = psql(
-    `select coalesce(length(metadata->>'reasoning'), 0) from agent_messages
-     where session_id='${session}' and role='assistant' order by id desc limit 1`,
+  const blocks = psql(
+    `select count(*) from agent_messages m,
+       jsonb_array_elements(coalesce(m.metadata->'parts', '[]'::jsonb)) p
+     where m.session_id='${session}' and m.role='assistant' and p->>'type'='reasoning'`,
   )
-  if (Number(stored) > 0) pass(`the reply stored ${stored} characters of thinking`)
+  if (Number(blocks) > 0) pass(`the reply stored ${blocks} block(s) of thinking, in place`)
   else fail('the reply stored no thinking')
 
   // The invariant that matters most: thinking is not the reply. If it leaked
@@ -140,8 +141,9 @@ async function main() {
      where session_id='${session}' and role='assistant' order by id desc limit 1`,
   )
   const thinking = psql(
-    `select coalesce(metadata->>'reasoning', '') from agent_messages
-     where session_id='${session}' and role='assistant' order by id desc limit 1`,
+    `select string_agg(p->>'text', '' order by ord) from agent_messages m,
+       jsonb_array_elements(coalesce(m.metadata->'parts', '[]'::jsonb)) with ordinality t(p, ord)
+     where m.session_id='${session}' and m.role='assistant' and p->>'type'='reasoning'`,
   )
   const firstWords = thinking.split(/\s+/).slice(0, 6).join(' ')
   if (firstWords && leaked.includes(firstWords)) {
@@ -149,6 +151,19 @@ async function main() {
   } else {
     pass('the stored reply holds no thinking')
   }
+
+  // Thinking is stored in `parts`, which is what the projection walks to build
+  // a model's history -- so the one thing that must hold is that it is dropped
+  // on the way out. A turn after this one proves it: if reasoning went back,
+  // the agent would be answering its own deliberation.
+  const inParts = psql(
+    `select count(*) from agent_messages m,
+       jsonb_array_elements(coalesce(m.metadata->'parts', '[]'::jsonb)) p
+     where m.session_id='${session}' and p->>'type' = 'text'
+       and p->>'text' like '%${thinking.slice(0, 30).replace(/'/g, "''")}%'`,
+  )
+  if (Number(inParts) === 0) pass('no thinking is stored as a text part')
+  else fail('thinking leaked into a text part, which is what reaches the model')
 
   // ---- and that a reader can actually get at it
   const toggle = page.getByRole('button', { name: /thought about this|thinking/i })

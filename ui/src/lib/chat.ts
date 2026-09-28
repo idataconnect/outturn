@@ -21,6 +21,10 @@ export type ToolCallRecord = {
 export type MessagePart =
   | { type: 'text'; text: string }
   | { type: 'call'; id: string }
+  /** Where the model stopped to think, and what it thought. Positioned rather
+   *  than collected: a model that thinks, calls a tool, reads the answer and
+   *  thinks again deliberated twice about two different things. */
+  | { type: 'reasoning'; text: string }
   /** The point a message the user sent mid-turn was handed to the agent,
    *  naming that message. The reply is drawn split here, with the message
    *  between its halves, since what follows is answering it. */
@@ -42,11 +46,6 @@ export type Message = {
      *  something the agent said, so a reader can see that their conversation
      *  was compacted and what it was replaced by. */
     summary_through?: string
-    /** The model's thinking, where it produced any. Beside the reply rather
-     *  than in it: it is not what the agent said, and it is never sent back to
-     *  a model as history. A reply with this and nothing else is a turn the
-     *  model spent thinking without ever answering. */
-    reasoning?: string
     /** Present when this message records somebody answering an approval.
      *  Drawn as a boundary rather than as speech: the agent did not say it,
      *  the platform recorded what a person decided. */

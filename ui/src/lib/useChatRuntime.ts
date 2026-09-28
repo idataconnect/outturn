@@ -294,28 +294,25 @@ export function parts(message: Annotated): ThreadMessageLike['content'] {
     argsText: JSON.stringify({ action: call.action }),
   })
 
-  // First, because it came first: the model thought and then answered. Drawn
-  // as a reasoning part so assistant-ui collapses it behind its own disclosure
-  // rather than presenting a model's private deliberation as the reply.
-  const thinking = message.metadata.reasoning
-  const thought =
-    thinking !== undefined && thinking !== ''
-      ? [{ type: 'reasoning' as const, text: thinking }]
-      : []
-
   const recorded = message.metadata.parts
   if (!recorded || recorded.length === 0) {
     return [
-      ...thought,
       ...calls.map(drawn),
       { type: 'text' as const, text: message.content },
     ] as ThreadMessageLike['content']
   }
 
-  const out = [...thought]
+  const out = []
   for (const part of recorded) {
     if (part.type === 'text') {
       if (part.text !== '') out.push({ type: 'text' as const, text: part.text })
+      continue
+    }
+    // In place, so a thought about a tool result is drawn after the call it is
+    // about rather than hoisted to the top of the reply as though the model had
+    // known the answer before it asked.
+    if (part.type === 'reasoning') {
+      if (part.text !== '') out.push({ type: 'reasoning' as const, text: part.text })
       continue
     }
     const call = calls.find((c) => c.id === part.id)
@@ -705,17 +702,20 @@ export function useChatRuntime(
               // to corrupt and a refetch would only show it twice.
               const { message_id, text } = event.payload
               setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === message_id
-                    ? {
-                        ...m,
-                        metadata: {
-                          ...m.metadata,
-                          reasoning: (m.metadata.reasoning ?? '') + text,
-                        },
-                      }
-                    : m,
-                ),
+                prev.map((m) => {
+                  if (m.id !== message_id) return m
+                  // Appended to the run of thinking in progress, or opened as a
+                  // new one. The same rule the API applies, so what streams and
+                  // what a reload rebuilds are the same message.
+                  const parts = [...(m.metadata.parts ?? [])]
+                  const last = parts[parts.length - 1]
+                  if (last && last.type === 'reasoning') {
+                    parts[parts.length - 1] = { type: 'reasoning', text: last.text + text }
+                  } else {
+                    parts.push({ type: 'reasoning', text })
+                  }
+                  return { ...m, metadata: { ...m.metadata, parts } }
+                }),
               )
               continue
             }

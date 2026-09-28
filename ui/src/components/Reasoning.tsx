@@ -11,10 +11,14 @@ import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
  * thinking used to render as an empty reply, so a reader could see that the
  * agent had answered nothing and had no way to find out why.
  *
- * Drawn as the agent's working rather than as something it said. The transcript
- * keeps it beside the reply for the same reason: thinking is never sent back to
- * a model as history, because a model handed its own reasoning as a past
- * utterance reads it as speech and answers it.
+ * There may be several in one reply, each where the model stopped to think: a
+ * thought before a tool call is about what to ask, and the one after it is
+ * about the answer. Collecting them into a single block would say the model
+ * deliberated once, about a result it had not yet seen.
+ *
+ * Drawn as the agent's working rather than as something it said. Thinking is
+ * never sent back to a model as history, because a model handed its own
+ * reasoning as a past utterance reads it as speech and answers it.
  */
 export default function Reasoning({ text, status }: ReasoningMessagePartProps) {
   const [open, setOpen] = useState(false)

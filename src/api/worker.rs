@@ -229,6 +229,16 @@ fn projected_with_sources(
 
         for part in &parts {
             match part["type"].as_str() {
+                // Never sent. Thinking is the model talking to itself, and a
+                // model handed its own reasoning back as a past utterance reads
+                // it as speech and answers it. It is stored so a reader can see
+                // it and dropped here so a later turn cannot.
+                //
+                // Stated rather than left to the catch-all below, because this
+                // is the whole reason thinking is safe to keep in `parts` at
+                // all: silence here would be a fall-through nobody could see
+                // was deliberate.
+                Some("reasoning") => continue,
                 Some("text") => {
                     let text = part["text"].as_str().unwrap_or("");
                     if text.is_empty() {
@@ -423,13 +433,6 @@ pub(super) struct TurnOutcome {
     /// the event stream, which is already in order -- the arrangement was
     /// never unknown, only discarded.
     parts: Vec<serde_json::Value>,
-    /// The model's thinking, where it produced any, joined across the turn.
-    ///
-    /// Kept beside the reply rather than in it. It is not what the agent said:
-    /// it never joins `content`, it is not a `parts` entry, and the projection
-    /// never sends it to a later turn -- a model handed its own reasoning back
-    /// as history reads it as something it said and answers it.
-    reasoning: String,
     /// Summed across every round of the turn, counted by the runtime host.
     usage: Usage,
     /// The endpoint that served it, for attributing spend.
@@ -594,7 +597,6 @@ impl Worker {
         let mut tools: Vec<serde_json::Value> = Vec::new();
         // Built as the events arrive, which is the order they happened in.
         let mut parts: Vec<serde_json::Value> = Vec::new();
-        let mut reasoning = String::new();
         // The session's account label, for the ledger. Read once, on the
         // first call that needs it, so a turn that makes no model call reads
         // nothing.
@@ -635,11 +637,25 @@ impl Worker {
                         }
                     }
                     Ok(ExecuteEvent::Reasoning { text }) => {
-                        // Accumulated for the transcript and announced for the
-                        // reader, the same two places a delta goes -- but into
-                        // its own field and its own event kind, because it is
-                        // not the reply and must never be concatenated to it.
-                        reasoning.push_str(&text);
+                        // A part, where it happened. A model that thinks, calls
+                        // a tool, reads the answer and thinks again produced two
+                        // separate thoughts about two different things, and one
+                        // block accumulating both says it deliberated once --
+                        // about a result it had not yet seen when it started.
+                        //
+                        // Coalesced with the part before it only when that is
+                        // also thinking, exactly as a text delta coalesces:
+                        // within one stretch of thinking the fragments are one
+                        // thought arriving a token at a time.
+                        match parts.last_mut() {
+                            Some(p) if p["type"] == "reasoning" => {
+                                let joined =
+                                    format!("{}{}", p["text"].as_str().unwrap_or(""), text);
+                                p["text"] = serde_json::json!(joined);
+                            }
+                            _ => parts
+                                .push(serde_json::json!({"type": "reasoning", "text": text})),
+                        }
                         events::append(
                             &self.pool,
                             payload.workspace_id,
@@ -881,7 +897,6 @@ impl Worker {
                             content,
                             tools,
                             parts,
-                            reasoning,
                             usage: Usage {
                                 // Recorded as signed, since a provider that
                                 // reports nothing should read as absent rather
@@ -1975,18 +1990,18 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
-        let mut metadata = if reply.tools.is_empty() {
+        // `parts` is kept whenever it says something the flat reply does not:
+        // which calls were made, and where the model stopped to think. A reply
+        // that is one run of prose needs none of it, and storing it there would
+        // be the same string twice.
+        let thought = reply.parts.iter().any(|p| p["type"] == "reasoning");
+        let metadata = if reply.tools.is_empty() && !thought {
             serde_json::json!({})
+        } else if reply.tools.is_empty() {
+            serde_json::json!({ "parts": reply.parts })
         } else {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
-        // A sibling of `parts`, never a member of it. Everything that builds a
-        // request to a model walks `parts`, so thinking kept here cannot reach
-        // one by accident -- and a turn that thought and said nothing else still
-        // has something in the transcript to explain where its tokens went.
-        if !reply.reasoning.is_empty() {
-            metadata["reasoning"] = serde_json::json!(reply.reasoning);
-        }
 
         let finished = self
             .chat
@@ -2142,6 +2157,42 @@ mod projection_tests {
             absorbed_by: None,
             job_state: None,
         }
+    }
+
+    /// Thinking is stored in `parts` so a reader can see where the model
+    /// stopped to deliberate -- and `parts` is exactly what the projection
+    /// walks to build a model's history. If it went back, the agent would read
+    /// its own reasoning as something it had said and answer it.
+    #[test]
+    fn thinking_is_never_sent_back_to_a_model() {
+        let reply = message(
+            "assistant",
+            "It won't suit them.",
+            serde_json::json!({
+                "tool_calls": [call("c1", Some("sleeps 2"))],
+                "parts": [
+                    {"type": "reasoning", "text": "I should look the room up."},
+                    {"type": "call", "id": "c1"},
+                    {"type": "reasoning", "text": "Sleeps two, so no."},
+                    {"type": "text", "text": "It won't suit them."},
+                ],
+            }),
+        );
+
+        let projected = project(&[reply]);
+        let wire = serde_json::to_string(&projected).expect("serialise");
+        assert!(
+            !wire.contains("reasoning"),
+            "no reasoning part may reach a model: {wire}"
+        );
+        assert!(!wire.contains("I should look the room up"));
+        assert!(!wire.contains("Sleeps two"));
+
+        // And what the model did say still goes, in order, with its call
+        // answered -- dropping thinking must not disturb the rest.
+        assert!(wire.contains("It won't suit them."));
+        assert!(wire.contains("sleeps 2"));
+        assert_well_formed(&projected);
     }
 
     fn call(id: &str, result: Option<&str>) -> serde_json::Value {
