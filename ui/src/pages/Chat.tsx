@@ -294,7 +294,14 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
             )
           ) : canStart && chattable.length > 0 ? (
             <Link
-              to="/sessions/new"
+              // Straight to the chat when there is nobody else to choose.
+              // Going by way of the picker drew it for a moment and then
+              // left it, which reads as something that failed to open.
+              to={
+                chattable.length === 1
+                  ? `/sessions/new?agent=${chattable[0].id}`
+                  : '/sessions/new'
+              }
               onClick={() => {
                 if (breakpoint === 'phone') toggleSessions(false)
               }}
@@ -434,7 +441,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
           </div>
         )}
         <div className="flex-1 min-h-0">
-          {draft && !draftWith ? (
+          {draft && !draftWith && (!loaded || chattable.length === 1) ? null : draft && !draftWith ? (
             // Who to talk to, asked in the page rather than in a menu: this is
             // the whole of what the reader came here to decide.
             <div className="h-full overflow-auto p-6">
@@ -454,7 +461,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                     autoFocus
                     empty={
                       <p className="text-sm text-surface-600 dark:text-surface-400">
-                        {loaded ? 'There is no agent you can start a chat with.' : 'Loading…'}
+                        There is no agent you can start a chat with.
                       </p>
                     }
                   />
