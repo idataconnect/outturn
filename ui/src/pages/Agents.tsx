@@ -132,18 +132,21 @@ export default function Agents() {
     <div className="flex h-full">
       {showList && (
         <aside className="flex flex-col w-full sm:w-64 shrink-0 sm:border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900">
-          <div className="p-3 border-b border-surface-200 dark:border-surface-800 flex items-center justify-between gap-2">
-            <h1 className="text-sm font-semibold text-surface-900 dark:text-surface-100">Agents</h1>
-            {canCreate && (
+          {/* The same header the sessions list has: one full-width button and
+              no title beside it, since the nav already says where this is.
+              The heading stays for whoever navigates by headings. */}
+          <h1 className="sr-only">Agents</h1>
+          {canCreate && (
+            <div className="p-3 border-b border-surface-200 dark:border-surface-800">
               <Link
                 to="/agents/new"
-                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
               >
                 <Plus size={14} aria-hidden />
                 New agent
               </Link>
-            )}
-          </div>
+            </div>
+          )}
           <div className="flex-1 min-h-0 flex flex-col p-2">
             {loading ? (
               <p className="p-2 text-sm text-surface-600 dark:text-surface-400">Loading…</p>
