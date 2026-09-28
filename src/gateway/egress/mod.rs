@@ -157,21 +157,64 @@ pub async fn fetch(
         ));
     }
     if let Some(gate) = request.gates.covering(&host, &method, url.path()) {
-        // Refused rather than held here. Parking the turn is the API's to do --
-        // it owns the job and the queue -- and this tier has a method, a URL and a
-        // token. What it can do is not make the call, and say why in words the
-        // guest can read, which is what every other refusal here does.
+        // Before anything is decided about approving it: a request missing a
+        // field the declaration says its approval is keyed on cannot be
+        // meaningfully approved, and must not become a differently-keyed request
+        // that raises a second question nobody can answer.
         //
-        // So the money does not move and get approved afterwards, which is the
-        // ordering that matters.
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "this needs approval before it can go out: {method} {} on {host} requires \"{}\"",
-                url.path(),
-                gate.requires,
-            ),
-        ));
+        // Named, because the guest is the only thing that can fix it and a bare
+        // refusal would have it guessing.
+        if let Some(field) =
+            crate::egress::grant::missing_bound_field(gate, request.body.as_deref())
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "this request is missing `{field}`, which the approval for \"{}\" \
+                     is keyed on. Send it as a top-level string or number and try again.",
+                    gate.requires,
+                ),
+            ));
+        }
+
+        // Unless somebody has already approved this particular request. The
+        // grant travels in the same commitment the gate does, so this is still
+        // the API's word rather than the caller's, and still no database read in
+        // this tier.
+        //
+        // Checked here rather than by leaving the gate out of the turn's
+        // commitment, which is what this did first: a gate that is not committed
+        // to is not enforced at all, so anything the omission was too broad about
+        // became an ungated request. And a `unit` grant can only be checked where
+        // the body is, which is here.
+        if let Some(granted) =
+            request
+                .gates
+                .permitted(gate, &method, &host, url.path(), request.body.as_deref())
+        {
+            tracing::info!(
+                workspace_id = %claims.workspace_id,
+                requires = %gate.requires,
+                extent = %granted.extent.as_str(),
+                "a gated request was approved, so it goes out"
+            );
+        } else {
+            // Refused rather than held here. Parking the turn is the API's to do --
+            // it owns the job and the queue -- and this tier has a method, a URL and a
+            // token. What it can do is not make the call, and say why in words the
+            // guest can read, which is what every other refusal here does.
+            //
+            // So the money does not move and get approved afterwards, which is the
+            // ordering that matters.
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "this needs approval before it can go out: {method} {} on {host} requires \"{}\"",
+                    url.path(),
+                    gate.requires,
+                ),
+            ));
+        }
     }
 
     // A credential travels only where it cannot be read on the way. A
@@ -430,6 +473,7 @@ mod gating {
             method: "POST".into(),
             path: "/charges".into(),
             identified_by: Some("booking_id".into()),
+            binds: vec!["amount_pence".into()],
         }
     }
 
@@ -486,6 +530,88 @@ mod gating {
             gates
                 .covering("outturn-hollowbrook", "POST", "/bookings")
                 .is_none()
+        );
+    }
+
+    /// What an approval is worth, at the tier that decides whether a request
+    /// goes out.
+    ///
+    /// The end of the loop and the part no end-to-end run has yet reached: a
+    /// resumed turn re-derives what it was doing through a model, and in every
+    /// live attempt so far it found the room already booked by its own earlier
+    /// try and declined before charging anything. That is honest model
+    /// behaviour, and it means the gateway honouring a grant was never
+    /// exercised -- so it is exercised here, where it is decidable.
+    #[test]
+    fn a_granted_request_is_let_through_the_gate_that_refused_it() {
+        use crate::egress::grant::{Extent, Granted, digest};
+
+        let gate = gate();
+        let body = r#"{"booking_id":"bk_8812","amount_pence":12000}"#;
+
+        // Refused first: without a grant the gate still catches it.
+        let bare = Gates::of(vec![gate.clone()]);
+        assert!(
+            bare.covering("outturn-hollowbrook", "POST", "/charges")
+                .is_some(),
+            "the gate has to catch this request or the test proves nothing"
+        );
+        assert!(
+            bare.permitted(&gate, "POST", "outturn-hollowbrook", "/charges", Some(body))
+                .is_none(),
+            "nothing is permitted before anybody approves"
+        );
+
+        // And let through once the turn carries the grant that answer minted.
+        let granted = Gates::of(vec![gate.clone()]).with_grants(vec![Granted {
+            requires: "charge".into(),
+            extent: Extent::Call,
+            keyed_on: digest(&gate, "POST", "outturn-hollowbrook", "/charges", Some(body)),
+        }]);
+        assert!(
+            granted
+                .permitted(&gate, "POST", "outturn-hollowbrook", "/charges", Some(body))
+                .is_some(),
+            "an approved request must go out, or the yes bought nothing"
+        );
+
+        // But only that request. The same grant against a larger amount is the
+        // £40-approval-covers-£4,000 hole the digest exists to close.
+        let larger = r#"{"booking_id":"bk_8812","amount_pence":400000}"#;
+        assert!(
+            granted
+                .permitted(
+                    &gate,
+                    "POST",
+                    "outturn-hollowbrook",
+                    "/charges",
+                    Some(larger)
+                )
+                .is_none(),
+            "a grant must not cover a charge nobody was shown"
+        );
+    }
+
+    /// A grant the runtime added to its copy does not verify, so it cannot be
+    /// used to let anything through.
+    #[test]
+    fn a_grant_that_is_not_committed_to_is_not_offered() {
+        use crate::egress::grant::{Extent, Granted};
+
+        let workspace = uuid::Uuid::from_bytes([7; 16]);
+        let committed = Gates::of(vec![gate()]);
+        let root = committed.root(workspace);
+
+        let forged = Gates::of(vec![gate()]).with_grants(vec![Granted {
+            requires: "charge".into(),
+            extent: Extent::Call,
+            keyed_on: "whatever this runtime wants".into(),
+        }]);
+
+        assert!(
+            !forged.matches(workspace, &root),
+            "a grant nobody committed to must fail the commitment check, which is \
+             what stops it ever reaching the permit check"
         );
     }
 }

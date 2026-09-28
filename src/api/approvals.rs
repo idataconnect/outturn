@@ -8,17 +8,22 @@
 //! carries no second copy of that (`docs/action-queue.md`), so releasing the
 //! hold is what answering *is*, and the queue row is a read model over it.
 //!
-//! What raises one, today, is this endpoint, called by hand. The automatic gate
-//! is built -- `egress::gate` commits to a turn's gates and the gateway refuses a
-//! request that matches one -- but it *refuses*; it does not raise an approval.
-//! Nothing turns that refusal into a request for somebody's word, and nothing
-//! mints the capability `docs/approvals.md` describes, so a turn that is approved
-//! and resumes into the same gate is refused a second time.
+//! Two endpoints, for the two ways an approval comes to be. `gated::raise` is
+//! the automatic one: the gateway refuses a request a skill declared as needing
+//! approval, the runtime relays the shape, and the API decides whether it really
+//! was gated before asking anybody. `request` below is the by-hand one, for a
+//! person who wants a conversation held on something no skill declared.
 //!
-//! That is the honest shape of it: the gate stops the money moving, and the
-//! approval path is driven from outside. Closing the loop is the capability plus a
-//! producer, and until both exist this endpoint is the whole of how an approval
-//! comes to be.
+//! They are authorised differently on purpose. Asking and answering are
+//! different acts, so the authority that gates one must not gate the other --
+//! otherwise anybody who may approve a payment may also park any conversation in
+//! the workspace.
+//!
+//! Answering is where a grant is minted (`api::grant`), which is what stops the
+//! resumed turn hitting the same gate and being refused a second time. The
+//! settle, the release, the grant and the resume commit together or not at all:
+//! separately, a release that failed after the settle left the item answered and
+//! the turn parked with no way back.
 
 use std::sync::Arc;
 
@@ -31,6 +36,7 @@ use uuid::Uuid;
 use crate::auth::Authority;
 
 use super::actions::{NewItem, Target};
+use super::grant::GateRecord;
 use super::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
 use super::router::{ApiError, ApiState, authenticate, authorize, require_in};
 
@@ -162,6 +168,7 @@ pub async fn request(
                 // then the hold travels in the payload, where the reader can
                 // find it and nothing depends on the column's name.
                 event_id: None,
+                inhibitor_id: Some(held.id),
                 payload,
                 targets,
                 expires_at: None,
@@ -211,6 +218,14 @@ pub struct AnswerApproval {
     /// worse than an answer with no sentence.
     #[serde(default)]
     pub note: Option<String>,
+    /// Whether the answerer ticked the wider extent the request offered.
+    ///
+    /// Ignored unless the item actually carried a `covers` offer. The offer is
+    /// never the grant: a person approves the instance they were shown and not
+    /// the class it belongs to, so this has to be a separate act from saying
+    /// yes -- see `docs/approvals.md`.
+    #[serde(default)]
+    pub covers_unit: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,20 +312,29 @@ pub async fn answer(
     // nothing has changed about whether the work may proceed, and lifting the
     // hold would let it run having been refused. Stopping the turn is the way out
     // that says so.
+    // What the yes is worth, built before the settle so it commits with it.
+    // Only on an approval: a decline grants nothing.
+    let grant = if input.approved {
+        grant_from(&item, &claims, input.covers_unit)
+    } else {
+        None
+    };
+
     let resumed = state
         .actions
-        .settle_and_release(
-            item.workspace_id,
-            item.id,
-            if input.approved {
+        .settle_and_release(super::actions::Settle {
+            workspace_id: item.workspace_id,
+            item_id: item.id,
+            state: if input.approved {
                 super::actions::State::Resolved
             } else {
                 super::actions::State::Cancelled
             },
-            Some(claims.subject),
-            input.note.as_deref(),
-            if input.approved { held } else { None },
-        )
+            resolved_by: Some(claims.subject),
+            note: input.note.as_deref(),
+            hold: if input.approved { held } else { None },
+            grant,
+        })
         .await
         .map_err(|e| match e {
             super::actions::ActionError::NotPending(state) => (
@@ -319,6 +343,62 @@ pub async fn answer(
             ),
             other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
         })?;
+
+    // Recorded in the conversation it was about. Best effort and after the
+    // settle: the decision is already made and the turn already resuming, so
+    // failing the request over the telling would leave the answerer thinking
+    // nothing happened when the money is already moving.
+    //
+    // Which makes this the one thing here that can fail quietly, so it is logged
+    // at warn rather than swallowed -- the visible symptom is a conversation
+    // that paused and carried on with nothing saying why.
+    if let Some(requires) = item.payload.get("requires").and_then(|v| v.as_str())
+        && let Some(session_id) = item
+            .payload
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Uuid>().ok())
+    {
+        let who = state.users.get(claims.subject).await.ok();
+        let recorded = state
+            .chat
+            .record_approval(
+                session_id,
+                super::chat::ApprovalAnswer {
+                    requires,
+                    approved: input.approved,
+                    answered_by: Some(claims.subject),
+                    answered_by_name: who.as_ref().map(|u| u.display_name.as_str()),
+                    note: input.note.as_deref(),
+                },
+            )
+            .await;
+
+        match recorded {
+            // Announced, so a tab that is already open shows it rather than
+            // waiting for a reload. The record is written outside the turn's own
+            // event stream -- it is the answer endpoint that writes it, not the
+            // runtime -- so without this the only thing that ever delivered it
+            // was the next page load.
+            Ok(message) => {
+                if let Ok(payload) = serde_json::to_value(&message) {
+                    let _ = crate::events::append(
+                        &state.pool,
+                        item.workspace_id,
+                        Some(session_id),
+                        "chat.message",
+                        payload,
+                    )
+                    .await;
+                }
+            }
+            Err(e) => tracing::warn!(
+                item_id = %item.id,
+                error = %e,
+                "an approval was answered but the conversation does not say so"
+            ),
+        }
+    }
 
     tracing::info!(
         workspace_id = %item.workspace_id,
@@ -339,3 +419,39 @@ pub async fn answer(
 /// bounded because an unbounded read here is one somebody else's backlog sets
 /// the cost of.
 const MAX_QUEUE_SCAN: i64 = 2_000;
+
+/// What an approval is worth, from the item that recorded the request.
+///
+/// Everything it needs was put in the payload by `gated::raise`, which is the
+/// tier that decided the request really was gated. Reading it back rather than
+/// recomputing keeps the grant keyed on the shape that was actually refused.
+///
+/// `None` for an approval raised by hand through `/v1/approvals`: it holds a
+/// conversation rather than standing for one request, so there is nothing to
+/// grant.
+fn grant_from(
+    item: &super::actions::ActionItem,
+    claims: &crate::auth::SessionClaims,
+    covers_unit: bool,
+) -> Option<super::grant::NewGrant> {
+    let record: GateRecord = serde_json::from_value(item.payload.clone()).ok()?;
+
+    // The wider extent only where one was offered and the answerer ticked it.
+    // Both conditions, because an offer nobody ticked is not a grant, and a tick
+    // against an item that offered nothing asks for an extent the gate never
+    // declared.
+    let (extent, keyed_on) = match (covers_unit, record.covers.as_ref()) {
+        (true, Some(covers)) => (super::grant::Extent::Unit, covers.unit.clone()),
+        _ => (super::grant::Extent::Call, record.shape),
+    };
+
+    Some(super::grant::NewGrant {
+        workspace_id: item.workspace_id,
+        session_id: record.session_id,
+        job_id: record.job_id,
+        requires: record.requires,
+        extent,
+        keyed_on,
+        granted_by: Some(claims.subject),
+    })
+}

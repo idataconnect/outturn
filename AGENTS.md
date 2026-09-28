@@ -347,10 +347,19 @@ parks a second time, which costs a claim and is the right way round to be wrong.
 so the call site cannot fold parking back into "nothing to do" -- which is what
 made `resumable` a promise with nothing behind it.
 
-What is still missing is what *takes* a suspended hold: both endpoints hardcode
-`Strength::Stopped`, so a suspended row is still only made by hand. That is the
-`approvals:answer` authority and the producer, in
-[docs/action-queue.md](docs/action-queue.md).
+A suspended hold is taken by `api::gated`, when the gateway refuses a request a
+skill declared as needing approval. The stop endpoints still write
+`Strength::Stopped`, which is right: an operator stopping a workspace is not
+asking a question.
+
+A hold taken while a turn is *already streaming* is the case `prepare_turn`
+cannot see, since that turn was claimed before the hold existed. The guest hears
+about it at its next round boundary, finishes what it holds and returns; the job
+then parks rather than completing, keeping the reply it wrote, so answering the
+approval has a turn to give back. Such a turn must not latch its session --
+latching is what makes a stop need a person, and an approval is lifted by one, so
+latching would leave the conversation stopped after the yes. `awaiting_approval`
+on the turn's result is what tells them apart.
 
 `parked` is a job state, so it is enumerated in the places the invariant below
 warns about: the accounted-for list in `chat::postgres` (left out, the first
@@ -422,12 +431,27 @@ cursor is already in the content, everything above is still to come. Read them
 separately and a reload replays deltas into content that already contains them
 — a message appends itself.
 
-**A reply hangs off the prompt it answers.** `agent_messages.replies_to`, with
-a unique index. A turn creates its reply empty and streams into it; when a
-worker dies mid-generation the job is retried, and the constraint makes the
-retry take back the reply it already made rather than orphaning it. Ownership
-is on the prompt rather than the session because two turns in one session run
-concurrently and must not claim each other's.
+**A reply hangs off the prompt it answers, once per attempt.**
+`agent_messages.replies_to` and `attempt`, unique together. A turn creates its
+reply empty and streams into it; when a worker dies mid-generation the job is
+retried, and the constraint makes the retry take back the reply it already made
+rather than orphaning it. Ownership is on the prompt rather than the session
+because two turns in one session run concurrently and must not claim each
+other's.
+
+The attempt is what lets a turn stopped for a person keep what it said. A crash
+retries its *own* attempt and takes the row back, because the first try produced
+nothing anybody saw. A turn resumed after an approval asks for the next one
+instead: the refusal it was stopped on is the thing the approver approved
+against, and taking the row back overwrote it -- leaving a transcript that showed
+a charge succeeding with a green "approved" beside it and nothing in it that ever
+needed approving. `chat::attempt_for` is the one place that decides which of the
+two this is, because two call sites claim the same placeholder for one turn and a
+number computed twice can differ.
+
+An attempt that never *finished* is taken back even when resuming: an empty reply
+stranded past a new attempt is what the abandoned-placeholder guard trips over,
+and that wedges the session.
 
 **Ordering rides on UUIDv7 keys.** No sequence columns, no offset pagination.
 Cursors are the last id seen; `Uuid::nil()` means the beginning.

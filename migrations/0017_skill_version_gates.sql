@@ -39,10 +39,48 @@ create table skill_version_gates (
     -- together often enough. The sibling tables key on `(version_id, <one
     -- column>)` because a version has one host per host and one file per path;
     -- here a path is not unique on its own.
-    primary key (version_id, path, requires)
+    --
+    -- And `host`, because a skill's declaration is written once and applies to
+    -- every host it names: the write loops over them inserting a row each. Left
+    -- out, the second host collided with the first and was dropped by `on
+    -- conflict do nothing` -- so adding a host to a gated skill quietly ungated
+    -- it, and a request there went out with nobody asked. A gate that is not
+    -- written is not a gate.
+    primary key (version_id, path, requires, host)
 );
 
 -- No index of its own. The read is per version, and the primary key above already
 -- leads with `version_id`, so it is served -- the sibling tables index their
 -- *other* column because their keys lead with the version too, and the reverse
 -- lookup is the one that needs help. Nothing here looks a gate up by host.
+
+-- What a person approving one of these is actually approving ------------------
+
+-- The request-body fields a grant is keyed on, in the order the skill declared
+-- them.
+--
+-- Without them a `call` grant is keyed on method, host and path alone, which
+-- reads as sufficient -- a retry of one call is the same shape by construction
+-- -- and is not: two *different* charges are the same shape too, so approving
+-- £40 for one booking let £4,000 for another straight through. See
+-- docs/approvals.md.
+--
+-- Ordered, so `binds: [a, b]` and `binds: [b, a]` are different declarations and
+-- reordering one invalidates the grants taken out under it. That is the safe
+-- direction: a grant whose meaning quietly changed is worse than one that has to
+-- be asked for again.
+--
+-- No `host` in the key, unlike the gate above. What a request binds does not
+-- vary by where it is sent, so these are written once per declaration and the
+-- repeats past the first host are no-ops.
+create table skill_version_gate_binds (
+    version_id  uuid    not null,
+    path        text    not null,
+    requires    text    not null,
+    -- Position in the declaration, which is part of the digest.
+    position    int     not null,
+    field       text    not null,
+
+    primary key (version_id, path, requires, position),
+    foreign key (version_id) references skill_versions (id) on delete cascade
+);

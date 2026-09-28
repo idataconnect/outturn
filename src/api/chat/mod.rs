@@ -56,6 +56,20 @@ pub struct Message {
     /// prompt with the reply being written for it, and so say where a
     /// message is in its life rather than showing an empty bubble.
     pub replies_to: Option<Uuid>,
+    /// Which attempt at answering its prompt this reply is. 1 for everything
+    /// that never had to be run twice, which is nearly everything.
+    #[serde(default)]
+    pub attempt: i32,
+    /// When this stopped being written, as distinct from when it was created.
+    ///
+    /// A reply's id is assigned when its placeholder is made, at the start of
+    /// the turn -- right to order by, wrong to show. A turn that waited
+    /// thirteen minutes for an approval produced a reply that said "13 minutes
+    /// ago" the moment it finished streaming.
+    ///
+    /// Null while a reply is still being written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     /// On a user message, the reply that took it mid-turn. Such a message is
     /// answered inside that reply and never gets one of its own.
     pub absorbed_by: Option<Uuid>,
@@ -84,6 +98,18 @@ pub struct History {
     /// page that happened to land on the boundary.
     #[serde(default)]
     pub has_more: bool,
+    /// The approval this conversation is waiting on, if it is waiting on one.
+    ///
+    /// Served with the history for the same reason the cursor is: a reader who
+    /// reloads has to learn everything that is true *now* from one answer. The
+    /// banner and the approval card were driven only by the live `chat.held`
+    /// event, so a tab that was not open when the turn parked -- or was
+    /// reloaded after -- showed a conversation that had simply stopped, with
+    /// the question it was waiting on nowhere on screen.
+    ///
+    /// Null when nothing is pending, which is nearly always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<serde_json::Value>,
 }
 
 /// How a message reaches a turn that is already running.
@@ -110,6 +136,30 @@ pub enum Delivery {
     /// Held until the agent would otherwise stop, then extends the turn.
     FollowUp,
 }
+
+/// What a settled approval left behind in the conversation.
+pub struct ApprovalAnswer<'a> {
+    /// The act, as the gate declared it: `charge`, `reach`.
+    pub requires: &'a str,
+    /// False for a decline, which stops the turn rather than resuming it and is
+    /// exactly as worth recording.
+    pub approved: bool,
+    /// Who answered. Absent only where the answer came from something other
+    /// than a person, which nothing does today.
+    pub answered_by: Option<Uuid>,
+    /// Their name, resolved once here rather than by every reader of the
+    /// transcript later.
+    pub answered_by_name: Option<&'a str>,
+    /// What they wanted recorded, where they said anything.
+    pub note: Option<&'a str>,
+}
+
+/// The metadata key marking a message as the record of an approval.
+///
+/// Named like `summarise::SUMMARY_MARK` and read the same way: the client
+/// switches on its presence to draw the message as a boundary rather than as
+/// something the agent said.
+pub const APPROVAL_MARK: &str = "approval";
 
 impl Default for Delivery {
     /// Steering is the default because it is what someone typing during a
@@ -249,6 +299,10 @@ pub trait ChatStore: Send + Sync {
         &self,
         replies_to: Uuid,
         session_id: Uuid,
+        // Which attempt this is. A crashed turn retries its own attempt and
+        // takes its row back; a turn resuming after an approval asks for the
+        // next one, so the refused reply stays in the transcript.
+        attempt: i32,
     ) -> Result<Placeholder, ChatError>;
 
     /// Whether this prompt was already answered inside an earlier turn.
@@ -291,7 +345,45 @@ pub trait ChatStore: Send + Sync {
     ///
     /// Without this a permanently failed turn leaves an empty message that
     /// `append_message` then refuses to follow, which would wedge the session.
-    async fn discard_placeholder(&self, replies_to: Uuid) -> Result<(), ChatError>;
+    async fn discard_placeholder(&self, replies_to: Uuid, attempt: i32) -> Result<(), ChatError>;
+
+    /// Which attempt a turn about to run should write as.
+    ///
+    /// The latest attempt this prompt already has, or the one after it when
+    /// that attempt is finished and this turn is resuming rather than retrying.
+    /// Derived here rather than counted by the caller, because two call sites
+    /// claim the same placeholder for one turn and a number computed twice is a
+    /// number that can differ -- which would have a turn write a second reply
+    /// halfway through itself.
+    ///
+    /// `resuming` is what tells them apart. A crashed turn retries its own
+    /// attempt and takes its row back; a turn given back after somebody answered
+    /// an approval starts a new one, so the refused reply stays in the
+    /// transcript with the question the reader approved against.
+    async fn attempt_for(&self, replies_to: Uuid, resuming: bool) -> Result<i32, ChatError>;
+
+    /// Records that somebody answered an approval, in the conversation it was
+    /// about.
+    ///
+    /// A message rather than an event, because an event is swept and this is the
+    /// audit trail: a person authorised a payment, and the place somebody would
+    /// look for that is the conversation. The grant row records it too, but
+    /// nobody reads grant rows to find out what happened in a chat.
+    ///
+    /// Marked rather than written as ordinary prose, the way a summary is: the
+    /// client draws it as the boundary it is, and a reader who reloads sees that
+    /// the conversation paused and why it carried on -- which is otherwise
+    /// invisible, since the banner is live-only and leaves no trace.
+    ///
+    /// Also what reconciles the refused tool call above it. Without this the
+    /// transcript keeps a failed `POST /charges` that was later approved and
+    /// succeeded, with nothing joining them, and reads as a failure followed by
+    /// an unexplained success.
+    async fn record_approval(
+        &self,
+        session_id: Uuid,
+        answer: ApprovalAnswer<'_>,
+    ) -> Result<Message, ChatError>;
 
     /// Appends a message, assigning the next sequence number for the session.
     async fn append_message(

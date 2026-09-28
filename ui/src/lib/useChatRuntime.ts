@@ -47,6 +47,14 @@ export type MessageStatus =
   | { kind: 'silent' }
   | { kind: 'failed'; message: string }
 
+/** An approval waiting on somebody, as the held event named it. */
+export type PendingApproval = {
+  item_id: string
+  requires?: string | null
+  reason?: string | null
+  covers?: { field?: string; unit?: string } | null
+}
+
 type Annotated = Message & {
   status?: MessageStatus | null
   /** On a reply: its turn is still running, so a call without a result is
@@ -93,9 +101,24 @@ export function annotate(
   retrying: Set<string>,
   failures: Map<string, string>,
 ): Annotated[] {
+  // The latest attempt at answering each prompt, and whether *any* attempt
+  // said something.
+  //
+  // A prompt can have more than one reply now: a turn stopped for an approval
+  // keeps what it wrote and the resumed turn writes a new attempt beside it.
+  // Keyed on `replies_to` alone, the last one won -- so a prompt whose first
+  // attempt made four tool calls and said its piece was judged by an empty
+  // second attempt and drawn as "the agent did not reply", directly above the
+  // reply it had in fact given.
   const replyFor = new Map<string, Message>()
+  const saidSomething = new Set<string>()
   for (const m of messages) {
-    if (m.role === 'assistant' && m.replies_to) replyFor.set(m.replies_to, m)
+    if (m.role === 'assistant' && m.replies_to) {
+      replyFor.set(m.replies_to, m)
+      if (m.content !== '' || (m.metadata.tool_calls?.length ?? 0) > 0) {
+        saidSomething.add(m.replies_to)
+      }
+    }
   }
 
 
@@ -137,10 +160,10 @@ export function annotate(
     }
 
     const reply = replyFor.get(m.id)
-    const replyUnderway =
-      reply !== undefined &&
-      (reply.content !== '' || (reply.metadata.tool_calls?.length ?? 0) > 0)
-    if (replyUnderway) return { ...m, status: null }
+    // Any attempt saying something is the prompt being answered. Judging only
+    // the latest calls a prompt unanswered the moment a resumed turn opens an
+    // empty reply beside the one that answered it.
+    if (saidSomething.has(m.id)) return { ...m, status: null }
 
     const failure = failures.get(m.id)
     if (failure !== undefined || m.job_state === 'failed') {
@@ -222,6 +245,15 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // here so the thread can draw it as the boundary it is: everything above
       // it is what the agent now remembers of what came before.
       summary: message.metadata.summary_through != null,
+      // What somebody decided about an approval, drawn as the boundary it is
+      // rather than as speech. Stored as a `system` message because the
+      // platform recorded it and the agent did not say it -- and without it a
+      // reader who reloads sees a refused tool call followed by a success with
+      // nothing joining them, the pause and the decision having left no trace.
+      approval: message.metadata.approval ?? null,
+      // When it stopped being written. The id is creation time, which for a
+      // reply that waited on an approval is not remotely the same thing.
+      finishedAt: message.finished_at ?? null,
       // Only the newest reply wears the finished mark. Every other one is
       // just conversation, and a line under each would be noise by the
       // twentieth turn.
@@ -423,7 +455,14 @@ export function useChatRuntime(
    *  Separate from `error` because a hold is not a failure: the turn was not
    *  lost, it was declined, and the reply the reader is waiting for arrives
    *  when the hold lifts or when they say something again. */
-  const [held, setHeld] = useState<{ message: string; resumable: boolean } | null>(null)
+  const [held, setHeld] = useState<{
+    message: string
+    resumable: boolean
+    /** The approval waiting on somebody, where the hold is one. Absent for a
+     *  spend cap or an operator's stop, neither of which is answerable here. */
+    approval?: PendingApproval
+  } | null>(null)
+  const clearHeld = useCallback(() => setHeld(null), [])
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
   /** Replies known to be starting over, until their first delta. */
@@ -487,6 +526,20 @@ export function useChatRuntime(
           (m) => m.job_state === 'pending' || m.job_state === 'running',
         ),
       )
+      // And what it is waiting on, which is durable in exactly the same sense.
+      // Driven only by the live `chat.held` event, a tab that was not open when
+      // the turn parked -- or was reloaded after -- showed a conversation that
+      // had simply stopped, with the question nowhere on screen and no way to
+      // answer it.
+      if (history.awaiting) {
+        setHeld({
+          message: 'Paused: this needs somebody to approve it',
+          resumable: true,
+          approval: history.awaiting,
+        })
+      } else {
+        setHeld(null)
+      }
       return history.cursor
     }
 
@@ -514,6 +567,37 @@ export function useChatRuntime(
           )
 
           // A tool announces itself before the reply that used it, so it
+          // Any event about a reply means its turn is still going. `job_state`
+          // was only ever written when a turn *finished*, so the working
+          // indicator animated only while the last fetch happened to catch the
+          // job as pending or running -- and stopped at the first tool call,
+          // because nothing afterwards said the turn was still alive. A reply
+          // that streamed for two more minutes sat there looking finished.
+          for (const event of result.events) {
+            if (
+              event.kind !== 'chat.delta' &&
+              event.kind !== 'chat.tool' &&
+              event.kind !== 'chat.tool_result'
+            ) {
+              continue
+            }
+            const { message_id } = event.payload as { message_id?: string }
+            if (!message_id) continue
+            setMessages((prev) => {
+              const reply = prev.find((m) => m.id === message_id)
+              // Only while the prompt it answers is not already finished: a
+              // late event arriving after `chat.done` must not restart the
+              // animation on a turn that has stopped.
+              if (!reply?.replies_to) return prev
+              const prompt = prev.find((m) => m.id === reply.replies_to)
+              if (!prompt || prompt.job_state === 'succeeded') return prev
+              if (prompt.job_state === 'running') return prev
+              return prev.map((m) =>
+                m.id === reply.replies_to ? { ...m, job_state: 'running' } : m,
+              )
+            })
+          }
+
           // lands on the message already on screen rather than appearing
           // after the answer it explains.
           for (const event of result.events) {
@@ -680,11 +764,12 @@ export function useChatRuntime(
           // something broke.
           const holding = result.events.find((e) => e.kind === 'chat.held')
           if (holding) {
-            const { message, resumable } = holding.payload as {
+            const { message, resumable, approval } = holding.payload as {
               message: string
               resumable: boolean
+              approval?: PendingApproval
             }
-            setHeld({ message, resumable })
+            setHeld({ message, resumable, approval: approval ?? undefined })
             setIsRunning(false)
             setStopping(false)
           }
@@ -928,7 +1013,7 @@ export function useChatRuntime(
   })
 
   return useMemo(
-    () => ({ runtime, error, held, isRunning, stopping, retry }),
-    [runtime, error, held, isRunning, stopping, retry],
+    () => ({ runtime, error, held, isRunning, stopping, retry, clearHeld }),
+    [runtime, error, held, isRunning, stopping, retry, clearHeld],
   )
 }

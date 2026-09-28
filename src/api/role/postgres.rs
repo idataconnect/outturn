@@ -335,6 +335,28 @@ impl RoleStore for PostgresRoleStore {
             .collect())
     }
 
+    async fn roles_with(
+        &self,
+        workspace_id: Uuid,
+        authority: Authority,
+    ) -> Result<Vec<Uuid>, RoleError> {
+        // Queried rather than read from the per-workspace cache, which is keyed
+        // by role name because that is what a token carries. This wants ids, and
+        // a second index on the same cache would be a second thing to invalidate.
+        let rows = sqlx::query(
+            "select r.id from roles r \
+               join role_authorities a on a.workspace_id = r.workspace_id and a.role_id = r.id \
+              where r.workspace_id = $1 and a.authority = $2 \
+              order by r.id",
+        )
+        .bind(workspace_id)
+        .bind(authority.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows.iter().map(|r| r.get("id")).collect())
+    }
+
     async fn templates(&self) -> Result<Vec<RoleTemplate>, RoleError> {
         let rows = sqlx::query(
             "select t.name, t.description, a.authority \

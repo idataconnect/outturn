@@ -8,6 +8,7 @@ fn item(targets: Vec<Target>) -> NewItem {
     NewItem {
         kind: "approval.charge".into(),
         event_id: None,
+        inhibitor_id: None,
         payload: serde_json::json!({}),
         targets,
         expires_at: None,

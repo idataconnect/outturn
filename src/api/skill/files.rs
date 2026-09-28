@@ -35,6 +35,9 @@ pub struct DeclaredGate {
     pub method: String,
     pub path_pattern: String,
     pub identified_by: Option<String>,
+    /// The request fields a grant under this gate is keyed on, in declared
+    /// order. Never empty: the frontmatter refuses a declaration without them.
+    pub binds: Vec<String>,
 }
 
 /// Every approval a set of files declares.
@@ -61,6 +64,7 @@ pub fn declared_gates(files: &[(SkillFile, Vec<u8>)]) -> Vec<DeclaredGate> {
             method: method.trim().to_ascii_uppercase(),
             path_pattern: pattern.trim().to_string(),
             identified_by: rule.identified_by,
+            binds: rule.binds,
         });
     }
     out
@@ -211,7 +215,7 @@ mod declarations {
         // `covers` with nothing to identify the unit by.
         let err = prepare(vec![file(
             "charge.md",
-            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n---\n",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n  covers: booking\n---\n",
         )])
         .unwrap_err();
         assert!(matches!(err, SkillError::Invalid(_)), "{err:?}");
@@ -251,7 +255,7 @@ mod declarations {
     fn a_good_declaration_is_read_off_the_file() {
         let prepared = prepare(vec![file(
             "charge.md",
-            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n  \
              covers: booking\n  identified_by: booking_id\n---\n# charge\n",
         )])
         .expect("prepare");
@@ -275,7 +279,7 @@ mod declarations {
     fn a_lower_case_method_is_stored_as_the_gateway_matches_it() {
         let prepared = prepare(vec![file(
             "charge.md",
-            "---\napproval:\n  requires: charge\n  matches: post /charges\n---\n",
+            "---\napproval:\n  requires: charge\n  matches: post /charges\n  binds: [amount_pence]\n---\n",
         )])
         .expect("prepare");
         assert_eq!(declared_gates(&prepared)[0].method, "POST");

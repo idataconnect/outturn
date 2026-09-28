@@ -132,6 +132,62 @@ Required. A rule with nothing to match is one the gateway cannot apply, and a
 file that declares an approval and gates nothing is worse than one that declares
 none: it says the operation is gated, and a reader believes it.
 
+### `binds` -- which fields a yes is about
+
+The names of the request-body fields a person is really approving. Required
+wherever an approval is declared, and the reason is the whole of what a grant is
+for.
+
+```yaml
+approval:
+  requires: charge
+  matches: POST /charges
+  binds: [payment_account_id, booking_id, amount_pence]
+```
+
+An approver is shown a rendered request -- *charge £120 to Visa 4471 for booking
+bk_8812* -- and says yes to **that**. So what the grant permits afterwards has to
+be the requests that are indistinguishable from what they saw, and nothing else.
+`binds` is how the platform knows which parts of the request made it that one.
+
+The grant is keyed on a digest over `requires`, the method, the host, the
+normalised path, and each bound field's value in declared order. A retry carries
+the same values and matches by construction. A second charge for a different
+amount does not, because `amount_pence` is in the digest.
+
+**The alternative was tried and is the bug this replaces.** Keying on method,
+host and path alone -- the "request shape" -- reads as obviously sufficient,
+because a retry of one call is the same shape by construction. The converse is
+what matters and is easy to miss: two *different* charges are also the same
+shape. Approving £40 for one booking then produced a grant that let £4,000 for
+another straight through, because nothing in the key mentioned the amount or the
+booking. A grant has to be keyed on what made the request the one somebody
+looked at.
+
+Declared rather than hashed whole, for two reasons that pull the same way. A
+digest over the entire body breaks its own approval the moment anything
+incidental varies -- a re-serialisation with different key order, a timestamp, a
+client-generated nonce -- and the failure is a person asked twice for one charge,
+who reasonably concludes the button does not work. And a whole-body digest says
+nothing about *why* a request is the one it is, so a reader of the skill cannot
+tell what their yes was bound to.
+
+The cost is that a field nobody declared may vary freely. A skill that omits
+`amount_pence` has an approval that does not bind the amount, which is exactly
+the hole above. So `binds` is required, and an `approval:` block without it is
+refused at publish -- the same treatment `matches` gets, and for the same reason:
+a rule half-applied is an operation the file says is gated and the platform does
+not gate.
+
+Only top-level fields, and only scalars. A path into a nested object is a small
+expression language, and the thing a security decision is keyed on is not where
+to grow one. An operation whose significant values are nested wants flattening in
+the API it documents rather than a query syntax here.
+
+A field a request does not carry is part of the digest as absent, distinctly from
+carrying the empty string. Otherwise omitting a field would be a way to collide
+with a grant taken out when it was present.
+
 ### `covers` -- the unit one yes may span
 
 Absent, an approval covers **this call and its retries, and nothing else**. That
@@ -168,14 +224,12 @@ was already approved.
 
 ## What a yes is worth
 
-**An approval should mint a capability the retry carries**, rather than flipping
-the request to approved and hoping the same path is taken. This section is
-design and not description: nothing mints one today, and the consequence is in
-*Not yet* -- an approved turn that resumes into the same gate is refused a
-second time -- the shape [inhibitors.md](inhibitors.md) asks for, and the shape
-this codebase already uses twice: an egress rule records the skill whose
-declaration opened it, and a turn carries a gateway token minted for that turn
-alone.
+**An approval mints a capability the retry carries**, rather than flipping the
+request to approved and hoping the same path is taken. Built: `approval_grants`,
+written when an answer settles and read when the next turn is prepared. It is
+the shape [inhibitors.md](inhibitors.md) asks for, and the shape this codebase
+already uses twice -- an egress rule records the skill whose declaration opened
+it, and a turn carries a gateway token minted for that turn alone.
 
 A row rather than a token, for two reasons. The wait crosses a park that may
 last days and a pod that may not survive it, so a signed capability would need
@@ -186,10 +240,20 @@ fact: a standing grant nobody can list is an authority the roles UI cannot see.
 
 Every grant states how far it reaches, because one that does not is standing.
 
-- **This call** -- the default, keyed as `docs/idempotency.md` derives keys:
-  `(session, turn, call-ordinal)`. Dedupes the retry of one call and nothing
-  else. This is what stops a resumed turn asking again, which is the whole
-  reason the capability exists.
+- **This call** -- the default, keyed on the `binds` digest above. Permits the
+  requests that are indistinguishable from the one somebody approved, which is
+  what makes a retry free and a different charge a fresh question. This is what
+  stops a resumed turn asking again, and it is the whole reason the capability
+  exists.
+
+  An earlier draft keyed this as `(session, turn, call-ordinal)`, borrowed from
+  `docs/idempotency.md`. No call ordinal exists, that document is unbuilt, and
+  building half of it here to serve this would have been a second spelling of a
+  design nobody has settled. The digest is better anyway: an ordinal identifies
+  *where* a call sat in a turn, and what a person approved is *what the call
+  said*. A guest may also send an `idempotency_key` -- Hollowbrook takes one --
+  but that is the guest asserting two requests are the same, which is a
+  deduplication hint and not a thing to key a permission on.
 - **This unit, this turn** -- what a ticked `covers` grants. It dies with the
   turn, so nothing accumulates and nothing granted at nine reaches a call at
   five. That bound is deliberate: "this session" reads as convenient and is the
@@ -353,15 +417,31 @@ depending on it.
 
 ## Not yet
 
-- **The capability**, and with it the loop. An approval releases the hold today
-  and nothing more: nothing records what was approved, so a turn that resumes
-  into the same gate is refused again. Everything under *What a yes is worth*
-  below is design, not description.
-- **Raising one from a refusal.** The gateway refuses a gated request and says
-  so in words the guest can read; nothing turns that into a held turn and a
-  queue item. Somebody calls `POST /v1/approvals` by hand, which means noticing
-  first. Those two together are what "the loop closes" would mean, and neither
-  is built. - What the queue row shows for a charge. The payload carries what
+- ~~**The capability**, and with it the loop.~~ Built: `approval_grants`, and
+  `egress::grant` for what a grant permits. A grant travels in the turn token
+  beside the gates, so the tier deciding whether a request goes out reads it from
+  a signature rather than from a database -- which is also the only tier that has
+  the request body, and a `unit` grant is keyed on a field of it.
+
+  The gate is *not* removed from the commitment when a grant exists. That was
+  tried and is the opposite of safe: a gate nobody commits to is a gate nobody
+  enforces, so anything an over-broad removal covered became an ungated request.
+  Keyed on the act alone, one approved `GET` uncommitted every `reach` gate for
+  every unreviewed host. The gate stays; the grant is what lets one request
+  through it.
+- ~~**Raising one from a refusal.**~~ Built: `api::gated`. The gateway still only
+  refuses -- it owns no job and no queue, and a write path there would put policy
+  in the tier kept free of it. The runtime relays the shape of what was refused,
+  and the API decides whether it really was gated by re-deriving the turn's own
+  gates. A runtime that invented a refusal gets nowhere; what it can still do is
+  decline to ask, which it could do anyway by not making the call.
+
+  The turn then winds down at its next round boundary -- never mid-round, since a
+  round cut partway has its tool calls refused wholesale -- and the job *parks*
+  rather than completing, keeping the reply it had written. Completing was the
+  bug: the hold was taken, the job succeeded, and answering the approval had
+  nothing to give back.
+- What the queue row shows for a charge. The payload carries what
   every target may see and no more (see `NewItem` in `api::actions`), which for
   a charge is the figure and the unit rather than the conversation that led to
   it. - Whether a declined approval is distinguishable from an expired one in

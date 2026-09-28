@@ -4,7 +4,7 @@ use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 use super::{
-    ActionError, ActionItem, ActionStore, Delivery, NewItem, State, Target, dedupe_targets,
+    ActionError, ActionItem, ActionStore, Delivery, NewItem, Settle, State, Target, dedupe_targets,
     validate,
 };
 
@@ -42,6 +42,13 @@ fn read_item(row: &sqlx::postgres::PgRow) -> Result<ActionItem, ActionError> {
         workspace_id: row.get("workspace_id"),
         kind: row.get("kind"),
         event_id: row.try_get("event_id").ok().flatten(),
+        // `get` rather than `try_get`: a column left out of a SELECT is a
+        // mistake, and `try_get(...).ok().flatten()` turns it into a null that
+        // reads exactly like an item with no hold. This one was written, read
+        // back as absent through three query lists that did not name it, and
+        // nothing failed -- the queue simply stopped saying what each item was
+        // waiting on.
+        inhibitor_id: row.get("inhibitor_id"),
         payload: row.get("payload"),
         state,
         resolved_note: row.try_get("resolved_note").ok().flatten(),
@@ -129,13 +136,14 @@ impl ActionStore for PostgresActionStore {
 
         sqlx::query(
             "insert into action_items \
-             (workspace_id, id, kind, event_id, payload, expires_at) \
-             values ($1, $2, $3, $4, $5, $6)",
+             (workspace_id, id, kind, event_id, inhibitor_id, payload, expires_at) \
+             values ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(workspace_id)
         .bind(id)
         .bind(&item.kind)
         .bind(item.event_id)
+        .bind(item.inhibitor_id)
         .bind(&item.payload)
         .bind(item.expires_at)
         .execute(&mut *tx)
@@ -176,9 +184,17 @@ impl ActionStore for PostgresActionStore {
         // including the two-people-answering-at-once race both versions exist to
         // get right -- went on asserting against the path nothing took. A fix to
         // one would have left the suite green.
-        self.settle_and_release(workspace_id, item_id, state, resolved_by, None, None)
-            .await
-            .map(|_| ())
+        self.settle_and_release(Settle {
+            workspace_id,
+            item_id,
+            state,
+            resolved_by,
+            note: None,
+            hold: None,
+            grant: None,
+        })
+        .await
+        .map(|_| ())
     }
 
     async fn add_targets(
@@ -277,7 +293,7 @@ impl ActionStore for PostgresActionStore {
         // it is what lets somebody who joins a role today see the item raised
         // yesterday, with no queue row written when membership changes.
         let rows = sqlx::query(
-            "select distinct i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
+            "select distinct i.workspace_id, i.id, i.kind, i.event_id, i.inhibitor_id, i.payload, \
                     i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              join action_targets t \
@@ -303,7 +319,7 @@ impl ActionStore for PostgresActionStore {
         role_id: Uuid,
     ) -> Result<Vec<ActionItem>, ActionError> {
         let rows = sqlx::query(
-            "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
+            "select i.workspace_id, i.id, i.kind, i.event_id, i.inhibitor_id, i.payload, \
                     i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              join action_targets t \
@@ -364,7 +380,7 @@ impl ActionStore for PostgresActionStore {
         // a sequential scan of the targets table and a full sort to return
         // fifty rows. As `exists`, the limit stops the work early.
         let rows = sqlx::query(
-            "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
+            "select i.workspace_id, i.id, i.kind, i.event_id, i.inhibitor_id, i.payload, \
                     i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              where i.state = 'pending' \
@@ -423,15 +439,49 @@ impl ActionStore for PostgresActionStore {
         Ok(count)
     }
 
-    async fn settle_and_release(
+    async fn approval_on_session(
         &self,
         workspace_id: Uuid,
-        item_id: Uuid,
-        state: State,
-        resolved_by: Option<Uuid>,
-        note: Option<&str>,
-        hold: Option<Uuid>,
-    ) -> Result<u64, ActionError> {
+        session_id: Uuid,
+    ) -> Result<Option<ActionItem>, ActionError> {
+        // Through the hold, which is what says a request is still open, rather
+        // than through the item's payload. The hold carries the session in a
+        // column of its own, so this is two index hits instead of a JSON
+        // extraction over every pending item in the workspace.
+        //
+        // And only approvals. A session-scoped hold of any other kind -- a spend
+        // cap, an operator -- carries no `requires` and nothing a grant can be
+        // minted from, so serving it as an approval puts Approve in front of a
+        // question nobody can answer that way: the hold lifts, no grant is
+        // written, and the resumed turn is refused at the same gate. It also
+        // makes `gated::raise` think somebody has already been asked and park a
+        // turn nobody will be asked about.
+        let row = sqlx::query(
+            "select i.* from action_items i \
+               join inhibitors h on h.id = i.inhibitor_id \
+              where i.workspace_id = $1 and i.state = 'pending' \
+                and i.kind like 'approval.%' \
+                and h.level = 'session' and h.session_id = $2 \
+              order by i.id desc limit 1",
+        )
+        .bind(workspace_id)
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        row.as_ref().map(read_item).transpose()
+    }
+
+    async fn settle_and_release(&self, settle: Settle<'_>) -> Result<u64, ActionError> {
+        let Settle {
+            workspace_id,
+            item_id,
+            state,
+            resolved_by,
+            note,
+            hold,
+            grant,
+        } = settle;
         if state.is_open() {
             return Err(ActionError::Invalid(
                 "settling an item requires a state that is not pending".into(),
@@ -515,6 +565,16 @@ impl ActionStore for PostgresActionStore {
                     .await
                     .map_err(|e| ActionError::Internal(e.to_string()))?;
             }
+        }
+
+        // Inside the transaction, with the settle and the resume. Written after
+        // it, the turn was back on the queue before the grant existed and a fast
+        // claim was refused a second time -- the exact outcome the grant removes,
+        // and indistinguishable from a model retrying.
+        if let Some(grant) = grant {
+            super::super::grant::write_tx(&mut tx, grant)
+                .await
+                .map_err(internal)?;
         }
 
         let targets = targets_of(&mut tx, workspace_id, item_id).await?;
@@ -621,7 +681,7 @@ impl ActionStore for PostgresActionStore {
         limit: i64,
     ) -> Result<Vec<ActionItem>, ActionError> {
         let rows = sqlx::query(
-            "select i.workspace_id, i.id, i.kind, i.event_id, i.payload, \
+            "select i.workspace_id, i.id, i.kind, i.event_id, i.inhibitor_id, i.payload, \
                     i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              where i.workspace_id = $1 and i.state = 'pending' \

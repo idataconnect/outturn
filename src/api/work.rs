@@ -77,7 +77,7 @@ pub struct Assignment {
 /// Header a runtime quotes its lease in.
 pub const LEASE_HEADER: &str = "x-outturn-lease";
 
-fn lease_from(headers: &axum::http::HeaderMap) -> Result<Uuid, ApiError> {
+pub(super) fn lease_from(headers: &axum::http::HeaderMap) -> Result<Uuid, ApiError> {
     headers
         .get(LEASE_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -145,7 +145,7 @@ pub async fn take(
                 ));
             };
 
-            match worker.prepare_turn(&payload).await {
+            match worker.prepare_turn(handle.job.id, &payload).await {
                 // Nothing left to do: the prompt was answered inside the turn
                 // it interrupted. The job is done rather than abandoned, and
                 // the runtime is not troubled with it.

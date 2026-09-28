@@ -12,7 +12,9 @@ use outturn::runtime::component::{AgentRunner, Message, RunOptions};
 use uuid::Uuid;
 
 mod common;
+
 use common::fake_gateway::{Behavior, FakeGateway};
+use outturn::runtime::component::Finished;
 
 fn component() -> Vec<u8> {
     std::fs::read("assets/agent_default.wasm").expect("component fixture")
@@ -64,6 +66,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_usage: None,
         on_write: None,
         on_absorbed: None,
+        on_gated: None,
         storage: None,
         workspace_id: Uuid::now_v7(),
         agent_id: Uuid::now_v7(),
@@ -118,7 +121,7 @@ async fn streams_deltas_and_returns_the_whole_reply() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     assert_eq!(reply, "one two three four");
 
@@ -147,7 +150,7 @@ async fn the_system_prompt_leads_the_conversation() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     let sent = gateway.requests();
     assert_eq!(sent.len(), 1);
@@ -217,7 +220,7 @@ async fn a_truncated_stream_returns_what_arrived() {
         )
         .await
         .expect("a truncated stream should still yield its text")
-        .0;
+        .reply;
 
     assert_eq!(reply, "one two ");
 }
@@ -283,7 +286,7 @@ async fn tool_names_are_offered_up_front_and_definitions_on_request() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     assert_eq!(reply, "It is Tuesday.");
 
@@ -396,7 +399,7 @@ async fn runs_a_tool_and_answers_with_its_result() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     assert_eq!(reply, "It is Tuesday.");
 
@@ -498,7 +501,7 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
         .run(&component(), user("When?"), String::new(), options)
         .await
         .expect("run")
-        .0;
+        .reply;
 
     let requests = gateway.requests();
     let content = requests[1]["messages"]
@@ -579,7 +582,7 @@ async fn a_looping_model_is_bounded_and_still_answers() {
         .run(&component(), user("Go forever."), String::new(), options)
         .await
         .expect("a bounded turn still returns a reply")
-        .0;
+        .reply;
 
     assert!(
         reply.contains("Working."),
@@ -708,7 +711,7 @@ async fn a_message_sent_mid_turn_reaches_the_next_round() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     assert_eq!(reply, "2026.");
     assert_eq!(
@@ -773,7 +776,7 @@ async fn rounds_are_separated_before_the_second_begins_not_after() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     let streamed = streamed.lock().expect("lock").clone();
     assert_eq!(reply, "Oh, one!\n\nTwo! Yay!");
@@ -859,7 +862,7 @@ async fn a_turn_reports_what_it_spent() {
     .await;
 
     let runner = runner();
-    let (_reply, cost, _held) = runner
+    let Finished { cost, .. } = runner
         .run(
             &component(),
             user("What day is it?"),
@@ -1993,7 +1996,7 @@ async fn a_tool_loaded_on_an_earlier_turn_stays_loaded() {
         .run(&component(), conversation, String::new(), options)
         .await
         .expect("run")
-        .0;
+        .reply;
 
     let results = seen.lock().unwrap().clone();
     let (content, is_error) = results.first().expect("the call was answered").clone();
@@ -2042,7 +2045,7 @@ async fn an_eager_tool_needs_no_loading() {
         )
         .await
         .expect("run")
-        .0;
+        .reply;
 
     assert_eq!(reply, "It is Saturday.");
     let requests = gateway.requests();

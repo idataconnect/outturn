@@ -44,6 +44,14 @@ pub struct ApprovalRule {
     /// Which field of the request names that unit. Required when `covers` is
     /// present and meaningless without it.
     pub identified_by: Option<String>,
+    /// The request-body fields a person approving this is really approving, in
+    /// declared order.
+    ///
+    /// What a `call` grant is keyed on. Required, because a grant keyed on less
+    /// than what made the request distinctive covers requests nobody looked at:
+    /// keyed on the path alone, a yes to charging £40 let £4,000 through. See
+    /// `docs/approvals.md`.
+    pub binds: Vec<String>,
 }
 
 /// What a file's frontmatter said, and the body below it.
@@ -130,6 +138,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
     let mut matches = None;
     let mut covers = None;
     let mut identified_by = None;
+    let mut binds: Option<Vec<String>> = None;
 
     for raw in yaml.lines() {
         let line = raw.trim_end();
@@ -187,6 +196,15 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             "matches" => &mut matches,
             "covers" => &mut covers,
             "identified_by" => &mut identified_by,
+            // A list rather than a scalar, so it is taken here and the scalar
+            // slot machinery below is left for the keys that are one value.
+            "binds" => {
+                if binds.is_some() {
+                    return Err(FrontmatterError::Invalid("binds is given twice".into()));
+                }
+                binds = Some(parse_binds(value)?);
+                continue;
+            }
             other => {
                 return Err(FrontmatterError::Invalid(format!(
                     "{other} is not a key of approval"
@@ -201,7 +219,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
 
     let Some(requires) = requires else {
         // The block was opened and said nothing that names the act.
-        if matches.is_some() || covers.is_some() || identified_by.is_some() {
+        if matches.is_some() || covers.is_some() || identified_by.is_some() || binds.is_some() {
             return Err(FrontmatterError::Invalid(
                 "approval needs a requires saying what is being asked".into(),
             ));
@@ -247,8 +265,20 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
     };
     check_matches(&matches)?;
 
+    let binds = binds.unwrap_or_default();
+    if binds.is_empty() {
+        // Refused for the same reason `matches` is: a rule half-applied is an
+        // operation the file says is gated and the platform does not gate. An
+        // approval with nothing bound would produce a grant covering every
+        // request to that path, which is a yes to one charge covering the next.
+        return Err(FrontmatterError::Invalid(
+            "approval needs binds naming the request fields the approval is about".into(),
+        ));
+    }
+
     Ok(Some(ApprovalRule {
         requires,
+        binds,
         matches,
         covers,
         identified_by,
@@ -333,7 +363,7 @@ mod tests {
     #[test]
     fn a_rule_is_read_and_the_body_starts_after_the_fence() {
         let parsed = parse(
-            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n  identified_by: booking_id\n---\n\n# charge\n",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [payment_account_id, amount_pence]\n  covers: booking\n  identified_by: booking_id\n---\n\n# charge\n",
         )
         .expect("parse");
         assert_eq!(
@@ -343,6 +373,7 @@ mod tests {
                 matches: "POST /charges".into(),
                 covers: Some("booking".into()),
                 identified_by: Some("booking_id".into()),
+                binds: vec!["payment_account_id".into(), "amount_pence".into()],
             })
         );
         assert_eq!(parsed.body, "\n# charge\n");
@@ -351,7 +382,7 @@ mod tests {
     #[test]
     fn the_narrow_form_needs_only_requires() {
         let parsed =
-            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n---\nbody")
+            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\nbody")
                 .expect("parse");
         let rule = parsed.approval.expect("a rule");
         assert_eq!(rule.requires, "charge");
@@ -363,13 +394,13 @@ mod tests {
         // A unit nobody can identify cannot be keyed on, so the grant would
         // quietly become one for every call.
         let err =
-            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  covers: booking\n---\n").unwrap_err();
+            parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n  covers: booking\n---\n").unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
 
     #[test]
     fn identified_by_without_covers_is_refused() {
-        let err = parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  identified_by: booking_id\n---\n")
+        let err = parse("---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n  identified_by: booking_id\n---\n")
             .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
@@ -397,7 +428,7 @@ mod tests {
         // Under a block we act on, a key we do not know may be the difference
         // between gated and not.
         let err = parse(
-            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  unless: friday\n---\n",
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n  unless: friday\n---\n",
         )
         .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
@@ -407,8 +438,13 @@ mod tests {
     fn an_unknown_top_level_key_is_left_alone() {
         // A file written for a later version of this platform still reads here.
         let parsed =
-            parse("---\ntitle: Charging\napproval:\n  requires: charge\n  matches: POST /charges\n---\nbody").expect("parse");
-        assert_eq!(parsed.approval.expect("a rule").requires, "charge");
+            parse("---\ntitle: Charging\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\nbody").expect("parse");
+        let rule = parsed.approval.expect("a rule");
+        assert_eq!(rule.requires, "charge");
+        // The list too: a carriage return left on the end of the last field
+        // would make it compare unequal to the field a request carries, and the
+        // grant would be keyed on a name nothing matches.
+        assert_eq!(rule.binds, vec!["amount_pence".to_string()]);
     }
 
     #[test]
@@ -444,7 +480,7 @@ mod tests {
     #[test]
     fn quotes_and_comments_are_tolerated() {
         let parsed = parse(
-            "---\n# what this needs\napproval:\n  requires: \"charge\"\n  matches: POST /charges\n  covers: 'booking'\n  identified_by: booking_id\n---\n",
+            "---\n# what this needs\napproval:\n  requires: \"charge\"\n  matches: POST /charges\n  binds: [amount_pence]\n  covers: 'booking'\n  identified_by: booking_id\n---\n",
         )
         .expect("parse");
         let rule = parsed.approval.expect("a rule");
@@ -455,7 +491,7 @@ mod tests {
     #[test]
     fn windows_line_endings_parse() {
         let parsed = parse(
-            "---\r\napproval:\r\n  requires: charge\r\n  matches: POST /charges\r\n---\r\nbody",
+            "---\r\napproval:\r\n  requires: charge\r\n  matches: POST /charges\r\n  binds: [amount_pence]\r\n---\r\nbody",
         )
         .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
@@ -537,7 +573,7 @@ mod what_it_must_not_do_quietly {
         // YAML accepts `approval :`, so somebody writes it. Matching the literal
         // `approval:` left this unrecognised, its children skipped, and the
         // operation ungated.
-        let parsed = parse("---\napproval :\n  requires: charge\n  matches: POST /charges\n---\n")
+        let parsed = parse("---\napproval :\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n")
             .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
@@ -553,7 +589,7 @@ mod what_it_must_not_do_quietly {
     #[test]
     fn a_wholly_indented_block_is_refused_rather_than_ignored() {
         let err =
-            parse("---\n  approval:\n    requires: charge\n    matches: POST /charges\n---\n")
+            parse("---\n  approval:\n    requires: charge\n    matches: POST /charges\n  binds: [amount_pence]\n---\n")
                 .unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
     }
@@ -597,9 +633,44 @@ mod what_it_must_not_do_quietly {
     #[test]
     fn a_stray_line_in_the_frontmatter_does_not_open_the_block() {
         let parsed = parse(
-            "---\njust prose\napproval:\n  requires: charge\n  matches: POST /charges\n---\n",
+            "---\njust prose\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n",
         )
         .expect("parse");
         assert_eq!(parsed.approval.expect("a rule").requires, "charge");
     }
+}
+
+/// The `binds` list: `[a, b]` or a bare `a`.
+///
+/// Hand-parsed like the rest of this module, and narrow on purpose. A flow
+/// sequence of quoted or bare scalars is the whole contract; a block sequence,
+/// a nested collection or an anchor is refused rather than half-read.
+fn parse_binds(value: &str) -> Result<Vec<String>, FrontmatterError> {
+    let inner = match value.strip_prefix('[') {
+        Some(rest) => rest.strip_suffix(']').ok_or_else(|| {
+            FrontmatterError::Invalid("binds opens a list and does not close it".into())
+        })?,
+        // A bare scalar, which is the one-field case written the obvious way.
+        None => value,
+    };
+
+    let mut fields = Vec::new();
+    for raw in inner.split(',') {
+        let field = unquote(raw.trim())?;
+        if field.is_empty() {
+            return Err(FrontmatterError::Invalid(
+                "binds has an empty field name".into(),
+            ));
+        }
+        // A duplicate would be hashed twice and mean nothing more than once,
+        // but it is a declaration somebody got wrong and the digest it produces
+        // is not the one they meant.
+        if fields.iter().any(|f| f == field) {
+            return Err(FrontmatterError::Invalid(format!(
+                "binds names {field} twice"
+            )));
+        }
+        fields.push(field.to_string());
+    }
+    Ok(fields)
 }

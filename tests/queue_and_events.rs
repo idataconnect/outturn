@@ -1288,13 +1288,13 @@ async fn a_retried_turn_reuses_its_reply_rather_than_orphaning_it() {
         .expect("prompt");
 
     let first = store
-        .claim_placeholder(prompt.id, session_id)
+        .claim_placeholder(prompt.id, session_id, 1)
         .await
         .expect("first attempt");
     // The worker dies here: no cleanup runs, the lease expires, another
     // worker claims the same job.
     let second = store
-        .claim_placeholder(prompt.id, session_id)
+        .claim_placeholder(prompt.id, session_id, 1)
         .await
         .expect("retry");
 
@@ -1360,7 +1360,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
     .await
     .expect("first job");
     let first_reply = store
-        .claim_placeholder(first_prompt.id, session_id)
+        .claim_placeholder(first_prompt.id, session_id, 1)
         .await
         .expect("first reply");
 
@@ -1378,7 +1378,7 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
         .await
         .expect("second prompt");
     let second_reply = store
-        .claim_placeholder(second_prompt.id, session_id)
+        .claim_placeholder(second_prompt.id, session_id, 1)
         .await
         .expect("second reply");
 
@@ -1441,7 +1441,7 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
 
     // And the reply it left is a tool call with no prose after it.
     let reply = store
-        .claim_placeholder(prompt.id, session_id)
+        .claim_placeholder(prompt.id, session_id, 1)
         .await
         .expect("reply");
     store
@@ -1493,7 +1493,7 @@ async fn an_abandoned_reply_refuses_further_messages() {
     // No job was ever enqueued for this prompt, so nothing is filling the
     // reply -- the state a worker that died without retrying leaves behind.
     store
-        .claim_placeholder(prompt.id, session_id)
+        .claim_placeholder(prompt.id, session_id, 1)
         .await
         .expect("reply");
 
@@ -1516,7 +1516,10 @@ async fn an_abandoned_reply_refuses_further_messages() {
 
     // Discarding it unwedges the session, which is what a permanently failed
     // turn does.
-    store.discard_placeholder(prompt.id).await.expect("discard");
+    store
+        .discard_placeholder(prompt.id, 1)
+        .await
+        .expect("discard");
     store
         .append_message(
             session_id,
@@ -2678,7 +2681,7 @@ async fn a_turn_reports_against_its_reply_not_its_prompt() {
         .expect("prompt");
 
     let placeholder = chat
-        .claim_placeholder(prompt.id, session_id)
+        .claim_placeholder(prompt.id, session_id, 1)
         .await
         .expect("placeholder");
 

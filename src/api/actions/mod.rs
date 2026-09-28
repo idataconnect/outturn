@@ -33,6 +33,30 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Answering one item: what it becomes, what that releases, and what it grants.
+///
+/// One struct rather than six positional arguments, and more to the point one
+/// transaction. The grant used to be written after this call returned, which left
+/// a window the feature exists to close: `resume_for_scope` puts the turn back on
+/// the queue the moment it commits, so a runtime could claim it and prepare it
+/// before the grant row existed -- and be refused a second time, looking exactly
+/// like a model that retried.
+pub struct Settle<'a> {
+    pub workspace_id: Uuid,
+    pub item_id: Uuid,
+    pub state: State,
+    pub resolved_by: Option<Uuid>,
+    /// Kept rather than logged. See `resolved_note` on `ActionItem`.
+    pub note: Option<&'a str>,
+    /// The hold to lift, which is what lets the turn run again. `None` on a
+    /// decline: nothing has changed about whether the work may proceed.
+    pub hold: Option<Uuid>,
+    /// What the yes is worth, where it is worth something. `None` for an
+    /// approval raised by hand, which holds a conversation rather than standing
+    /// for one request.
+    pub grant: Option<super::grant::NewGrant>,
+}
+
 /// Who an item is waiting on.
 ///
 /// A role rather than the people in it, because membership outlives the
@@ -114,6 +138,8 @@ pub struct ActionItem {
     pub workspace_id: Uuid,
     pub kind: String,
     pub event_id: Option<Uuid>,
+    /// The hold this item stands for, where it stands for one.
+    pub inhibitor_id: Option<Uuid>,
     pub payload: serde_json::Value,
     pub state: State,
     /// What whoever settled it wanted recorded. Absent on an open item, and on a
@@ -183,6 +209,14 @@ impl State {
 pub struct NewItem {
     pub kind: String,
     pub event_id: Option<Uuid>,
+    /// The hold this item stands for, where it stands for one.
+    ///
+    /// The truth of whether the request is still open lives on the hold, so an
+    /// item that names it can be found by asking about the hold rather than by
+    /// reading its payload -- and `docs/action-queue.md` asks for exactly this
+    /// column, so the queue's lifecycle can eventually be derived rather than
+    /// stored.
+    pub inhibitor_id: Option<Uuid>,
     pub payload: serde_json::Value,
     pub targets: Vec<Target>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -351,16 +385,21 @@ pub trait ActionStore: Send + Sync {
     /// settle and nothing else, which is honest: there is nothing to lift.
     ///
     /// Returns how many parked turns were given back.
-    async fn settle_and_release(
+    async fn settle_and_release(&self, settle: Settle<'_>) -> Result<u64, ActionError>;
+
+    /// The open approval on a conversation, if there is one.
+    ///
+    /// Found through the hold it names rather than by reading its payload: the
+    /// hold is the truth of whether a request is still open (see
+    /// `docs/action-queue.md`), and `inhibitor_id` is the column that makes
+    /// asking it an index hit. Both readers used to extract JSON out of
+    /// `payload`, which no index covers -- on the path of every held turn,
+    /// including the spend caps and operator stops that are not approvals.
+    async fn approval_on_session(
         &self,
         workspace_id: Uuid,
-        item_id: Uuid,
-        state: State,
-        resolved_by: Option<Uuid>,
-        // Kept rather than logged. See `resolved_note` on `ActionItem`.
-        note: Option<&str>,
-        hold: Option<Uuid>,
-    ) -> Result<u64, ActionError>;
+        session_id: Uuid,
+    ) -> Result<Option<ActionItem>, ActionError>;
 
     /// What became of one item that is no longer open, if it was ever this
     /// person's to answer.

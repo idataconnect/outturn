@@ -48,6 +48,11 @@ use super::commit::Hash;
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
 const TAG_LEAF: &[u8] = b"outturn:gate:leaf:v1\0";
+/// A grant's leaf, tagged apart from a gate's so the two can never be read as
+/// each other. They share one tree because they answer one question -- what this
+/// turn may do about an approval -- and a second claim would be a second thing
+/// for a forger to strip independently.
+const TAG_GRANT_LEAF: &[u8] = b"outturn:grant:leaf:v1\0";
 const TAG_NODE: &[u8] = b"outturn:gate:node:v1\0";
 const TAG_EMPTY: &[u8] = b"outturn:gate:empty:v1\0";
 
@@ -71,6 +76,15 @@ pub struct Gate {
     /// The field of the request body that names the unit a wider grant may span.
     /// Absent when the declaration offered no `covers`.
     pub identified_by: Option<String>,
+    /// The request-body fields a person approving this is really approving, in
+    /// the order the skill declared them.
+    ///
+    /// What a `call` grant is keyed on. Required wherever an approval is
+    /// declared, because a grant keyed on less than what made the request
+    /// distinctive is a grant that covers requests nobody looked at -- see
+    /// `egress::grant`.
+    #[serde(default)]
+    pub binds: Vec<String>,
 }
 
 impl Gate {
@@ -94,8 +108,8 @@ impl Gate {
         {
             return false;
         }
-        let path = normalise(path);
-        let pattern = normalise(&self.path);
+        let path = normalise_path(path);
+        let pattern = normalise_path(&self.path);
         match pattern.strip_suffix('*') {
             Some(prefix) => path.starts_with(prefix),
             None => path == pattern,
@@ -120,7 +134,7 @@ impl Gate {
 /// servers, so folding them would gate `/Charges` as well and refuse work nobody
 /// meant to gate -- and the failure direction there is a conversation that cannot
 /// proceed rather than a charge that slips through.
-fn normalise(path: &str) -> String {
+pub fn normalise_path(path: &str) -> String {
     let decoded = percent_decode(path);
     let mut out = String::with_capacity(decoded.len());
     let mut last_was_slash = false;
@@ -209,6 +223,13 @@ pub fn for_unreviewed_hosts(allowed: &[String], exempt: &[String]) -> Vec<Gate> 
                 method: method.to_string(),
                 path: "/*".to_string(),
                 identified_by: None,
+                // Nothing from the body. What a person approves here is a host,
+                // and reaching it twice is the same act both times -- which is
+                // the test `docs/inhibitors.md` sets and the reason the egress
+                // model can approve a host at all. A `reach` grant is therefore
+                // keyed on the host and path alone, which is what an empty
+                // `binds` digests to.
+                binds: Vec::new(),
             })
         })
         .collect()
@@ -221,7 +242,17 @@ pub fn for_unreviewed_hosts(allowed: &[String], exempt: &[String]) -> Vec<Gate> 
 /// permission is proven by the request that wants it, and an obligation has to be
 /// known in full before a request can be said not to match any of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Gates(Vec<Gate>);
+pub struct Gates {
+    gates: Vec<Gate>,
+    /// What somebody has already approved for this turn.
+    ///
+    /// Carried beside the gates rather than subtracted from them. A gate removed
+    /// from the set is a gate nobody enforces, so an over-broad removal is an
+    /// ungated request; a grant leaves the gate standing and permits one thing
+    /// through it. See `api::grant::Granted`.
+    #[serde(default)]
+    grants: Vec<super::grant::Granted>,
+}
 
 impl Gates {
     /// A turn nothing gates.
@@ -229,7 +260,43 @@ impl Gates {
     /// Distinct from a missing commitment, which is refused. This is the API
     /// saying "I looked and there are none", and it is signed.
     pub fn none() -> Self {
-        Self(Vec::new())
+        Self {
+            gates: Vec::new(),
+            grants: Vec::new(),
+        }
+    }
+
+    /// The same set, plus what has been approved for this turn.
+    pub fn with_grants(mut self, mut grants: Vec<super::grant::Granted>) -> Self {
+        // Sorted for the same reason the gates are: the commitment is over a
+        // tree whose leaves must be built in one order on both sides.
+        grants.sort_by(|a, b| {
+            (&a.requires, a.extent.as_str(), &a.keyed_on).cmp(&(
+                &b.requires,
+                b.extent.as_str(),
+                &b.keyed_on,
+            ))
+        });
+        self.grants = grants;
+        self
+    }
+
+    /// Whether any grant here permits this request through the gate that caught
+    /// it.
+    ///
+    /// The gate is passed in because a unit grant is keyed on the field the
+    /// *declaration* named, never on anything the caller chose.
+    pub fn permitted(
+        &self,
+        gate: &Gate,
+        method: &str,
+        host: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Option<&super::grant::Granted> {
+        self.grants
+            .iter()
+            .find(|g| g.permits(gate, method, host, path, body))
     }
 
     pub fn of(mut gates: Vec<Gate>) -> Self {
@@ -244,11 +311,14 @@ impl Gates {
                 &b.requires,
             ))
         });
-        Self(gates)
+        Self {
+            gates,
+            grants: Vec::new(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.gates.is_empty()
     }
 
     /// The gates, for a caller adding to them before committing.
@@ -257,7 +327,7 @@ impl Gates {
     /// skipped: a set that went out unsorted would decide which of two overlapping
     /// gates names a refusal by whatever order it was built in.
     pub fn into_vec(self) -> Vec<Gate> {
-        self.0
+        self.gates
     }
 
     /// The gate that covers this request, if any.
@@ -273,7 +343,7 @@ impl Gates {
     /// reasonably change, which is the same reason `leaves` sorts rather than
     /// assuming.
     pub fn covering(&self, host: &str, method: &str, path: &str) -> Option<&Gate> {
-        self.0
+        self.gates
             .iter()
             .find(|gate| gate.covers_request(host, method, path))
     }
@@ -299,7 +369,13 @@ impl Gates {
     fn leaves(&self, workspace_id: Uuid) -> Vec<Hash> {
         // `commit::ordered`, shared: the dedup is what makes the carry-up tree
         // safe, and a copy of it here is a copy that can lose it.
-        super::commit::ordered(self.0.iter().map(|g| leaf(workspace_id, g)).collect())
+        super::commit::ordered(
+            self.gates
+                .iter()
+                .map(|g| leaf(workspace_id, g))
+                .chain(self.grants.iter().map(|g| grant_leaf(workspace_id, g)))
+                .collect(),
+        )
     }
 }
 
@@ -322,6 +398,29 @@ fn leaf(workspace_id: Uuid, gate: &Gate) -> Hash {
             Some(gate.method.as_str()),
             Some(gate.path.as_str()),
             gate.identified_by.as_deref(),
+        ]
+        .into_iter()
+        // The bound fields are part of what the gate is, because they decide
+        // what a grant taken out under it covers. A runtime that could drop one
+        // would widen every later grant to ignore that field.
+        .chain(gate.binds.iter().map(|b| Some(b.as_str()))),
+    );
+    Hash(h.finalize().into())
+}
+
+/// A grant's leaf. Tagged apart from a gate's, and over every field that decides
+/// what it permits -- a grant whose `keyed_on` could be changed without changing
+/// the root would be a grant a runtime could point at a different booking.
+fn grant_leaf(workspace_id: Uuid, granted: &super::grant::Granted) -> Hash {
+    let mut h = Sha256::new();
+    h.update(TAG_GRANT_LEAF);
+    h.update(workspace_id.as_bytes());
+    super::commit::hash_fields(
+        &mut h,
+        [
+            Some(granted.requires.as_str()),
+            Some(granted.extent.as_str()),
+            Some(granted.keyed_on.as_str()),
         ],
     );
     Hash(h.finalize().into())
@@ -350,11 +449,92 @@ mod tests {
             method: method.into(),
             path: path.into(),
             identified_by: Some("booking_id".into()),
+            binds: vec!["amount_pence".into()],
         }
     }
 
     fn workspace() -> Uuid {
         Uuid::from_bytes([7; 16])
+    }
+
+    /// A grant is part of what the token vouches for.
+    ///
+    /// The one thing standing between a compromised runtime and permission to
+    /// send whatever it likes: it relays the gate set and the grants, so if the
+    /// commitment did not cover them it could add a grant for the request it
+    /// wants and the gateway would honour it. Left out of the tree, every other
+    /// test in this crate still passed.
+    #[test]
+    fn a_grant_the_runtime_added_does_not_verify() {
+        let workspace = workspace();
+        let committed = Gates::of(vec![gate("charge", "POST", "/charges")]);
+        let root = committed.root(workspace);
+
+        let forged = Gates::of(vec![gate("charge", "POST", "/charges")]).with_grants(vec![
+            super::super::grant::Granted {
+                requires: "charge".into(),
+                extent: super::super::grant::Extent::Call,
+                keyed_on: "whatever this runtime wants".into(),
+            },
+        ]);
+
+        assert!(
+            !forged.matches(workspace, &root),
+            "a grant nobody committed to must not verify"
+        );
+    }
+
+    /// And one whose key was altered is a different grant.
+    #[test]
+    fn a_grant_cannot_be_repointed_after_it_is_committed() {
+        let workspace = workspace();
+        let granted = |keyed_on: &str| {
+            Gates::of(vec![gate("charge", "POST", "/charges")]).with_grants(vec![
+                super::super::grant::Granted {
+                    requires: "charge".into(),
+                    extent: super::super::grant::Extent::Call,
+                    keyed_on: keyed_on.into(),
+                },
+            ])
+        };
+
+        let root = granted("the-approved-charge").root(workspace);
+        assert!(
+            !granted("some-other-charge").matches(workspace, &root),
+            "changing what a grant is keyed on must break the commitment"
+        );
+    }
+
+    /// Two turns' grants are not interchangeable, because the workspace is in
+    /// every leaf.
+    #[test]
+    fn a_grant_does_not_verify_in_another_workspace() {
+        let grants = vec![super::super::grant::Granted {
+            requires: "charge".into(),
+            extent: super::super::grant::Extent::Call,
+            keyed_on: "a-charge".into(),
+        }];
+        let gates = Gates::of(vec![gate("charge", "POST", "/charges")]).with_grants(grants);
+
+        let mine = workspace();
+        let theirs = Uuid::now_v7();
+        assert!(!gates.matches(theirs, &gates.root(mine)));
+    }
+
+    /// The bound fields are part of the gate, so a runtime cannot widen every
+    /// later grant by dropping one.
+    #[test]
+    fn dropping_a_bound_field_breaks_the_commitment() {
+        let workspace = workspace();
+        let declared = Gates::of(vec![gate("charge", "POST", "/charges")]);
+        let root = declared.root(workspace);
+
+        let mut stripped = gate("charge", "POST", "/charges");
+        stripped.binds.clear();
+        assert!(
+            !Gates::of(vec![stripped]).matches(workspace, &root),
+            "a gate whose binds were dropped must not verify"
+        );
     }
 
     #[test]
@@ -565,6 +745,7 @@ mod bypasses {
             method: "POST".into(),
             path: "/charges".into(),
             identified_by: None,
+            binds: Vec::new(),
         }
     }
 
@@ -669,6 +850,7 @@ mod hosts {
             method: "POST".into(),
             path: "/v1/charges".into(),
             identified_by: None,
+            binds: Vec::new(),
         };
         assert!(g.covers_request("api.stripe.com", "POST", "/v1/charges"));
         assert!(g.covers_request("files.stripe.com", "POST", "/v1/charges"));
@@ -685,6 +867,7 @@ mod hosts {
             method: "POST".into(),
             path: "/charges".into(),
             identified_by: None,
+            binds: Vec::new(),
         };
         assert!(g.covers_request("outturn-hollowbrook", "POST", "/charges"));
         assert!(!g.covers_request("sub.outturn-hollowbrook", "POST", "/charges"));
@@ -699,6 +882,7 @@ mod hosts {
             method: "POST".into(),
             path: "/v1/charges".into(),
             identified_by: None,
+            binds: Vec::new(),
         };
         for host in ["api.stripe.com.", "API.STRIPE.COM", "Api.Stripe.Com."] {
             assert!(
@@ -805,6 +989,7 @@ mod the_tree_shape {
             method: "POST".into(),
             path: "/charges".into(),
             identified_by: None,
+            binds: Vec::new(),
         }
     }
 

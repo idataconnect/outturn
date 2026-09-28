@@ -8,6 +8,8 @@ pub mod egress;
 mod events;
 pub mod extract;
 mod files;
+pub mod gated;
+pub mod grant;
 pub mod inhibitor;
 mod login;
 pub mod naming;

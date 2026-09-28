@@ -227,10 +227,27 @@ pub async fn gates_for_turn(
         return Ok(crate::egress::gate::Gates::none());
     }
     let versions: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
+    // The bound fields come back with the gate, aggregated in declared order.
+    // Read in one statement rather than two: a gate whose binds arrived
+    // separately could be committed to without them if the second read failed,
+    // and a gate with no binds is one whose grants cover every request to that
+    // path.
     let rows = sqlx::query(
-        "select requires, host, method, path_pattern, identified_by \
-         from skill_version_gates where version_id = any($1) \
-         order by host, method, path_pattern, requires",
+        "select g.requires, g.host, g.method, g.path_pattern, g.identified_by, \
+                coalesce( \
+                    array_agg(b.field order by b.position) \
+                        filter (where b.field is not null), \
+                    '{}' \
+                ) as binds \
+         from skill_version_gates g \
+         left join skill_version_gate_binds b \
+                on b.version_id = g.version_id \
+               and b.path = g.path \
+               and b.requires = g.requires \
+         where g.version_id = any($1) \
+         group by g.version_id, g.path, g.requires, g.host, g.method, \
+                  g.path_pattern, g.identified_by \
+         order by g.host, g.method, g.path_pattern, g.requires",
     )
     .bind(&versions)
     .fetch_all(pool)
@@ -246,8 +263,39 @@ pub async fn gates_for_turn(
             method: r.get("method"),
             path: r.get("path_pattern"),
             identified_by: r.try_get("identified_by").ok().flatten(),
+            binds: r.get("binds"),
+        })
+        .filter(|gate: &crate::egress::gate::Gate| {
+            // A declared gate that binds nothing is refused rather than served.
+            // Its grants would be keyed on the act, method, host and path alone
+            // -- the £40-covers-£4,000 hole `egress::grant` exists to close.
+            //
+            // The frontmatter refuses such a declaration now, but a version
+            // published before that rule still has none and a version is
+            // immutable, so the refusal cannot reach back. Dropping the gate
+            // rather than the binds is the safe direction *here* and only here:
+            // this is the skill-declared set, so a dropped gate means the
+            // operation is ungated and the request simply goes out, which is
+            // what it did before the gate was ever declared. A grant that
+            // covered every charge to the path would be worse -- it would look
+            // approved.
+            //
+            // `for_unreviewed_hosts` binds nothing on purpose and does not come
+            // through here: what a person approves there is a host, and
+            // reaching it twice is the same act both times.
+            if gate.binds.is_empty() {
+                tracing::warn!(
+                    requires = %gate.requires,
+                    host = %gate.host,
+                    "a declared gate binds no fields, so it is not applied; \
+                     republish the skill to declare what its approval is about"
+                );
+                return false;
+            }
+            true
         })
         .collect();
+
     Ok(crate::egress::gate::Gates::of(gates))
 }
 

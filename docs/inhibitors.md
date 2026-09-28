@@ -57,11 +57,11 @@ A hold also cuts a turn already running: the gateway polls for it on the same
 tick it polls for cancels, and the reason rides the trailer so the runtime can
 say what stopped it rather than looking like a provider that hung up.
 
-Still to come: suspension. Nothing takes a suspended hold -- `POST
-/v1/workspace/stop` and `POST /v1/agents/{id}/stop` both write
-`Strength::Stopped`, so a suspended row can only be made by hand. The verdict
-arm exists and refuses a turn like a stop but without latching: the job
-completes, nothing is requeued, and the next turn re-evaluates.
+Suspension is taken now, by `api::gated`: a request a skill declared as needing
+approval is refused by the gateway, and the API takes a `Strength::Suspended`
+hold on the conversation while somebody is asked. The two stop endpoints still
+write `Strength::Stopped`, which is right -- an operator stopping a workspace is
+not asking a question.
 
 That last part was the gap and is now closed. A suspension pauses where the
 conversation is consistent and resumes of its own accord -- which is why it
@@ -74,9 +74,43 @@ session's queue closed. There is a test that fails if that exclusion ever widens
 to cover parked, because a suspension that froze the whole conversation would be
 worse than the decline it replaced.
 
-What still cannot happen is a suspended hold being *taken*: both endpoints write
-`Strength::Stopped`. Who may answer an approval, and what raises one, is in
-[action-queue.md](action-queue.md).
+A hold taken while a turn is already streaming is the case `prepare_turn` cannot
+see, because that turn was claimed before the hold existed. The guest hears about
+it at its next round boundary -- never mid-round, since a round cut partway has
+its tool calls refused wholesale -- finishes what it is holding, and returns what
+it has. The job then *parks* rather than completing, keeping the reply it wrote,
+so answering the approval has a turn to give back. Completing was the bug: the
+hold was taken, the job succeeded, and the yes resumed nothing.
+
+One thing such a turn must not do is latch its session. Latching is what makes a
+stop need a person to lift it, and an approval is lifted *by* a person -- so
+latching would leave the conversation stopped after the yes, with the hold
+released and the turn resumed and the session refusing to run it. The two are
+told apart by `awaiting_approval` on the turn's result rather than by reading the
+reason.
+
+**A stop that lands over a pending approval does not latch.** The two holds
+stack the ordinary way and the stop wins, so the turn is refused -- but a latch
+is the wrong thing to leave behind on a conversation that was already *waiting*
+rather than stopped. A latch outlives the hold that set it, which is its whole
+purpose; here that means the approver answers, the suspension is released, the
+turn is given back, and it refuses again on a latch nobody can see, with the
+approval already gone from the queue. They did exactly what they were asked and
+the conversation stayed dead.
+
+So `should_latch` asks whether any contributor is a suspension. Two stops are
+still a stop. The stop refuses the turn on its own and lifts of its own accord,
+which is also why such a turn is announced as resumable: telling its reader to
+send a message would have them typing into a conversation that is already coming
+back, and clearing a latch that is not there.
+
+It is a free function rather than a branch inside `worker::inhibited` because
+that branch is unreachable from a test without a live worker -- inverted, every
+test in the crate still passed.
+
+Who may answer an approval, and what raises one, is in
+[action-queue.md](action-queue.md); what a yes is then worth is in
+[approvals.md](approvals.md).
 
 A reader looking at a paused conversation is told, and by its own event. A
 refused turn is declined before a placeholder exists, so without one the message
