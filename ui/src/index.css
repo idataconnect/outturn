@@ -1,6 +1,13 @@
-@import "tailwindcss";
-/* The deployment's tokens. Selected by VITE_THEME; see themes/README.md. */
+/* The deployment's tokens. Selected by VITE_THEME; see themes/README.md.
+ *
+ * Ahead of Tailwind, because CSS requires every `@import` to precede every
+ * rule and Tailwind's expands into some seventeen hundred of them. A theme
+ * that imports anything itself -- a webfont, say -- would have its import land
+ * after all of those and be refused, taking the whole stylesheet with it and
+ * leaving a page with no styles at all. Only a theme with a font of its own
+ * trips it, so the default theme hid this until `hollowbrook` was used. */
 @import "virtual:theme.css";
+@import "tailwindcss";
 
 /*
  * Dark mode follows a `dark` class on <html> rather than the media query

@@ -96,6 +96,29 @@ export function withQuote(text: string, custom: unknown): string {
   return `${block}\n\n${text}`
 }
 
+/** Whether a turn is running in this session, from the transcript alone.
+ *
+ * Derived rather than remembered, because the thing it drives has to be true
+ * for whoever is looking. `isRunning` used to be set only by this tab sending,
+ * retrying or requeueing -- so somebody watching a colleague's session was
+ * offered no stop button, and a message they typed mid-reply was enqueued as a
+ * new turn rather than steered into the running one. The library picks between
+ * `enqueue` and `steer` on the same flag, so both followed from one gap.
+ *
+ * Named states only, and only the two that mean work is outstanding. Every
+ * terminal state -- `succeeded`, `failed`, `cancelled` -- and `parked`, which is
+ * a turn waiting on a person rather than on a model, must read as not running,
+ * or the composer offers stop for ever and every later message becomes a steer
+ * into nothing. `job_state` is also null in the window between storing a
+ * message and enqueueing its turn, which reads as not running and corrects
+ * itself on the next poll.
+ */
+export function turnIsRunning(messages: Message[]): boolean {
+  return messages.some(
+    (m) => m.role === 'user' && (m.job_state === 'pending' || m.job_state === 'running'),
+  )
+}
+
 export function annotate(
   messages: Message[],
   retrying: Set<string>,
@@ -454,7 +477,10 @@ export function useChatRuntime(
     attachments.current = takeAttachments
   })
   const [messages, setMessages] = useState<Message[]>([])
-  const [isRunning, setIsRunning] = useState(false)
+  /** Set by this tab the moment it sends, so the composer answers the click
+   *  that caused it rather than waiting for a poll to confirm what we just
+   *  did. Not the whole answer: see `isRunning` below. */
+  const [sending, setSending] = useState(false)
   /** A stop has been asked for and the turn has not ended yet.
    *
    *  Separate from `isRunning` because the gap between them is real: the turn
@@ -528,16 +554,17 @@ export function useChatRuntime(
       // events belongs to the stream it came from.
       setRetrying(new Set())
       setFailures(new Map())
-      // Whether a turn is in flight is a fact about the transcript rather
-      // than about this tab having sent something. A conversation opened
-      // while it is being answered -- a reload mid-reply, a second window --
-      // must find it running, or the composer offers no way to stop what is
-      // plainly still going.
-      setIsRunning(
-        history.messages.some(
-          (m) => m.job_state === 'pending' || m.job_state === 'running',
-        ),
-      )
+      // Whether a turn is in flight is a fact about the transcript rather than
+      // about this tab having sent something -- which `isRunning` now reads
+      // directly out of `messages` through `turnIsRunning`, on every render
+      // rather than only when a snapshot lands. So there is nothing to set
+      // here: this was the same derivation, done once and then left to go
+      // stale until the next reload.
+      //
+      // The local flag is cleared instead. It exists only to cover the moment
+      // between this tab sending and the first poll that reports the job, and
+      // a snapshot is that poll.
+      setSending(false)
       // And what it is waiting on, which is durable in exactly the same sense.
       // Driven only by the live `chat.held` event, a tab that was not open when
       // the turn parked -- or was reloaded after -- showed a conversation that
@@ -791,7 +818,7 @@ export function useChatRuntime(
                 m.id === reply.replies_to ? { ...m, job_state: 'succeeded' } : m,
               )
             })
-            setIsRunning(false)
+            setSending(false)
             setStopping(false)
           }
 
@@ -807,7 +834,7 @@ export function useChatRuntime(
               approval?: PendingApproval
             }
             setHeld({ message, resumable, approval: approval ?? undefined })
-            setIsRunning(false)
+            setSending(false)
             setStopping(false)
           }
 
@@ -836,7 +863,7 @@ export function useChatRuntime(
                 ),
               )
               setError(null)
-              setIsRunning(true)
+              setSending(true)
             }
           }
 
@@ -847,7 +874,7 @@ export function useChatRuntime(
               message_id?: string
             }
             setError(message)
-            setIsRunning(false)
+            setSending(false)
             setStopping(false)
             if (message_id) {
               setFailures((prev) => new Map(prev).set(message_id, message))
@@ -913,7 +940,7 @@ export function useChatRuntime(
 
       setError(null)
       setHeld(null)
-      setIsRunning(true)
+      setSending(true)
       try {
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
@@ -922,7 +949,7 @@ export function useChatRuntime(
         // for it by construction: the two are written together.
         merge([{ ...stored, job_state: 'pending' }])
       } catch (e) {
-        setIsRunning(false)
+        setSending(false)
         setError(e instanceof Error ? e.message : 'failed to send')
         throw e
       }
@@ -1027,7 +1054,7 @@ export function useChatRuntime(
         ),
       )
       setError(null)
-      setIsRunning(true)
+      setSending(true)
       try {
         await retryTurn(sessionId, messageId)
       } catch (e) {
@@ -1039,12 +1066,18 @@ export function useChatRuntime(
             m.id === messageId && m.job_state === 'pending' ? { ...m, job_state: 'failed' } : m,
           ),
         )
-        setIsRunning(false)
+        setSending(false)
         setError(e instanceof Error ? e.message : 'could not run that turn again')
       }
     },
     [sessionId, failures],
   )
+
+  // What this tab did, or what the transcript says is happening -- whichever
+  // is true. The local half alone left a viewer of somebody else's session
+  // with no stop button and no way to steer; the derived half alone would
+  // flicker off between sending and the poll that first reports the job.
+  const isRunning = sending || turnIsRunning(messages)
 
   const runtime = useExternalStoreRuntime({
     messages: annotated,
