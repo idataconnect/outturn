@@ -84,6 +84,7 @@ function show(at = '/sessions/s1') {
     <MemoryRouter initialEntries={[at]}>
       <SessionContext.Provider value={signedIn}>
         <Routes>
+          <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/new" element={<Chat draft />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
         </Routes>
@@ -212,5 +213,38 @@ describe('what the composer attaches', () => {
       'function',
     )
     expect(take?.()).toBe('[image: session/a.png]')
+  })
+})
+
+describe('a new chat', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('does not ask who with when there is only one to have it with', async () => {
+    const { listAgents } = await import('../lib/chat')
+    vi.mocked(listAgents).mockResolvedValueOnce([
+      { id: 'a1', name: 'Helper', slug: 'helper', description: '', enabled: true, can_chat: true },
+    ])
+    setWidth(1440)
+    show('/sessions/new')
+
+    // Straight to the composer, with the picker never drawn on the way.
+    expect(await screen.findByText('New chat with Helper')).toBeInTheDocument()
+    expect(screen.queryByText(/who would you like/i)).toBeNull()
+  })
+
+  it('drops a notice about a dead link once somebody starts a new chat', async () => {
+    const user = userEvent.setup()
+    setWidth(1440)
+    show('/sessions/gone')
+
+    expect(await screen.findByText(/not available in this workspace/i)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('link', { name: /new chat/i }))
+
+    await screen.findByText(/who would you like/i)
+    expect(screen.queryByText(/not available in this workspace/i)).toBeNull()
   })
 })

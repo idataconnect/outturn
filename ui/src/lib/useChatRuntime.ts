@@ -485,10 +485,13 @@ export function useChatRuntime(
   const renamed = useRef(onRenamed)
   const attachments = useRef(takeAttachments)
   const starting = useRef(fresh)
+  /** Which conversation is on screen now, for a send that outlives it. */
+  const showing = useRef(sessionId)
   useLayoutEffect(() => {
     renamed.current = onRenamed
     attachments.current = takeAttachments
     starting.current = fresh
+    showing.current = sessionId
   })
   const [messages, setMessages] = useState<Message[]>([])
   /** Set by this tab the moment it sends, so the composer answers the click
@@ -930,7 +933,18 @@ export function useChatRuntime(
 
   const submit = useCallback(
     async (message: AppendMessage, delivery?: Delivery) => {
-      if (!sessionId && !starting.current) return
+      // Taken now rather than read after the awaits below: by then the reader
+      // may have opened another conversation, or another agent's new chat,
+      // and what this send does next is about the page it was sent from.
+      const start = sessionId ? undefined : starting.current
+      const target: (() => Promise<string>) | null = sessionId
+        ? () => Promise.resolve(sessionId)
+        : start
+          ? () => start.create()
+          : null
+      if (!target) return
+      /** Whether the reader is still looking at what this send began in. */
+      const stillHere = () => showing.current === sessionId && starting.current === start
       const part = message.content[0]
       if (part?.type !== 'text') {
         throw new Error('only text messages are supported')
@@ -961,21 +975,30 @@ export function useChatRuntime(
       setSending(true)
       let made: string | null = null
       try {
-        const target = sessionId ?? (made = await starting.current!.create())
+        const id = await target()
+        if (!sessionId) made = id
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
-        const stored = await sendMessage(target, text, delivery)
+        const stored = await sendMessage(id, text, delivery)
+        // Merged only into the conversation it belongs to. The reader who
+        // moved on meanwhile finds it there, and the list already has it.
+        if (!stillHere()) {
+          setSending(false)
+          return
+        }
         // The POST does not say, but a message it accepted has a job queued
         // for it by construction: the two are written together.
         merge([{ ...stored, job_state: 'pending' }])
       } catch (e) {
         setSending(false)
-        setError(e instanceof Error ? e.message : 'failed to send')
+        if (stillHere()) setError(e instanceof Error ? e.message : 'failed to send')
         throw e
       } finally {
         // Opened even when the send failed: the conversation exists by then,
-        // and leaving the reader on a blank "new" page would hide it from them.
-        if (made) starting.current?.opened(made)
+        // and leaving the reader on a blank "new" page would hide it from
+        // them. Not when they have left that page: taking them back to it
+        // would undo a choice they made while waiting.
+        if (made && stillHere()) start?.opened(made)
       }
     },
     [sessionId, merge],

@@ -56,6 +56,39 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   /** Filled by the composer; read by the runtime as a message is sent. */
   const takeAttachments = useRef<(() => string) | null>(null)
 
+  // Who a new chat could be with: the agents this reader may start one with
+  // and that will answer, which the API says rather than this page guessing.
+  const chattable = useMemo(() => agents.filter((a) => a.can_chat), [agents])
+  // Who this new chat is with: the one the URL names, or -- when there is only
+  // one to have -- that one, since a choice of one is not worth asking.
+  const draftWith = !draft
+    ? undefined
+    : draftAgent
+      ? chattable.find((a) => a.id === draftAgent)
+      : chattable.length === 1
+        ? chattable[0]
+        : undefined
+
+  // One per agent chosen, so the runtime can tell a send begun for this new
+  // chat from one begun for a different one.
+  const draftWithId = draftWith?.id
+  const fresh = useMemo(
+    () =>
+      draftWithId
+        ? {
+            create: async () => {
+              const session = await createSession(draftWithId)
+              setSessions((prev) => [session, ...prev])
+              return session.id
+            },
+            // Replaced rather than pushed: back from the conversation should
+            // not land on an empty "new" page for a chat that now exists.
+            opened: (id: string) => void navigate(`/sessions/${id}`, { replace: true }),
+          }
+        : undefined,
+    [draftWithId, navigate],
+  )
+
   const { runtime, error: chatError, held, stopping, retry, clearHeld } = useChatRuntime(
     active,
     (title) => {
@@ -66,18 +99,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     // is where the attachments are: the runtime is created here, and the two
     // would otherwise have no way to meet.
     () => takeAttachments.current?.() ?? '',
-    draftAgent
-      ? {
-          create: async () => {
-            const session = await createSession(draftAgent)
-            setSessions((prev) => [session, ...prev])
-            return session.id
-          },
-          // Replaced rather than pushed: back from the conversation should not
-          // land on an empty "new" page for a chat that now exists.
-          opened: (id) => void navigate(`/sessions/${id}`, { replace: true }),
-        }
-      : undefined,
+    fresh,
   )
 
   // Agents and sessions are workspace-scoped, so switching workspace reloads both.
@@ -172,7 +194,13 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
 
   // Reconcile the URL against what this workspace can actually see, once loaded.
   useEffect(() => {
-    if (!loaded || draft) return
+    if (!loaded) return
+    // A new chat names no session, so there is nothing to reconcile -- but a
+    // notice about a link that went nowhere is not about this page either.
+    if (draft) {
+      setMissing(null)
+      return
+    }
 
     // Land on the most recent session when none was named. Replace rather than
     // push, so the back button does not return to an empty /sessions that
@@ -198,23 +226,10 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     if (sessionId !== landed.current) setMissing(null)
   }, [loaded, draft, sessionId, sessions, navigate])
 
-  // Who a new chat could be with. Only agents this reader may start one
-  // with: offering the rest invites a refusal.
-  const chattable = useMemo(() => agents.filter((a) => a.can_chat && a.enabled), [agents])
-
-  const draftWith = draftAgent ? chattable.find((a) => a.id === draftAgent) : undefined
-
   // Whoever just chose who to talk to is about to type to them.
   useEffect(() => {
     if (draftWith) setFocusRequest((n) => n + 1)
   }, [draftWith])
-
-  // One agent is not a choice, so do not ask it.
-  useEffect(() => {
-    if (draft && !draftAgent && loaded && chattable.length === 1) {
-      void navigate(`/sessions/new?agent=${chattable[0].id}`, { replace: true })
-    }
-  }, [draft, draftAgent, loaded, chattable, navigate])
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
   const shown = error ?? chatError ?? missing
@@ -242,7 +257,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   const current = sessions.find((s) => s.id === active)
   // What the composer's `/` menu offers. Keyed on the open session's agent,
   // so switching sessions switches the menu with it.
-  const skills = useSkillCommands(current?.agent_id ?? draftAgent)
+  const skills = useSkillCommands(current?.agent_id ?? draftWithId ?? null)
   const activeTitle = active
     ? sessionName(current)
     : draftWith
@@ -294,14 +309,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
             )
           ) : canStart && chattable.length > 0 ? (
             <Link
-              // Straight to the chat when there is nobody else to choose.
-              // Going by way of the picker drew it for a moment and then
-              // left it, which reads as something that failed to open.
-              to={
-                chattable.length === 1
-                  ? `/sessions/new?agent=${chattable[0].id}`
-                  : '/sessions/new'
-              }
+              to="/sessions/new"
               onClick={() => {
                 if (breakpoint === 'phone') toggleSessions(false)
               }}
@@ -441,7 +449,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
           </div>
         )}
         <div className="flex-1 min-h-0">
-          {draft && !draftWith && (!loaded || chattable.length === 1) ? null : draft && !draftWith ? (
+          {draft && !draftWith ? (
             // Who to talk to, asked in the page rather than in a menu: this is
             // the whole of what the reader came here to decide.
             <div className="h-full overflow-auto p-6">
@@ -461,7 +469,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                     autoFocus
                     empty={
                       <p className="text-sm text-surface-600 dark:text-surface-400">
-                        There is no agent you can start a chat with.
+                        {loaded ? 'There is no agent you can start a chat with.' : 'Loading…'}
                       </p>
                     }
                   />

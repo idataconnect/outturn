@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavLink } from 'react-router'
+import { Link } from 'react-router'
 import { Search } from 'lucide-react'
 
 import type { Agent } from '../lib/chat'
@@ -24,16 +24,17 @@ export default function AgentList({
   href,
   empty,
   autoFocus,
-  marksCurrent = false,
+  current,
 }: {
   agents: Agent[]
   href: (agent: Agent) => string
   /** Said when there are no agents at all, as opposed to none matching. */
   empty: React.ReactNode
   autoFocus?: boolean
-  /** Highlight the agent whose page is open. Off where the links differ only
-   *  by query string, which a route match cannot tell apart. */
-  marksCurrent?: boolean
+  /** The agent to mark as the one open, if any. Said by the page rather than
+   *  matched from the route: the page may be showing an agent the URL does
+   *  not name, and links that differ only by query string all match. */
+  current?: string
 }) {
   const [query, setQuery] = useState('')
   const shown = agents.filter((a) => matches(a, query))
@@ -61,16 +62,15 @@ export default function AgentList({
       <ul className="mt-2 space-y-1 overflow-auto">
         {shown.map((agent) => (
           <li key={agent.id}>
-            <NavLink
+            <Link
               to={href(agent)}
               title={agent.description || agent.name}
-              className={({ isActive }) =>
-                `block px-2 py-1.5 rounded-md text-sm ${
-                  isActive && marksCurrent
-                    ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
-                    : 'text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50'
-                }`
-              }
+              aria-current={agent.id === current ? 'page' : undefined}
+              className={`block px-2 py-1.5 rounded-md text-sm ${
+                agent.id === current
+                  ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
+                  : 'text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50'
+              }`}
             >
               <span className="block truncate">{agent.name}</span>
               {agent.description && (
@@ -78,7 +78,7 @@ export default function AgentList({
                   {agent.description}
                 </span>
               )}
-            </NavLink>
+            </Link>
           </li>
         ))}
         {shown.length === 0 && (
