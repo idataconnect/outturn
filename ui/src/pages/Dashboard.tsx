@@ -7,6 +7,7 @@ import { TOKEN_KINDS, compact, dayLabel, exact, measured, share } from '../lib/v
 import UsageArea, { type Bucket } from '../components/UsageArea'
 import UsageRanked, { type Slice } from '../components/UsageRanked'
 import StatTile from '../components/StatTile'
+import SkillStatsPanel, { type SkillStats } from '../components/SkillStats'
 
 type Summary = {
   from: string
@@ -54,6 +55,7 @@ export default function Dashboard() {
   const state = useSession()
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canRead = authorities.includes('usage:read')
+  const canReadSkills = authorities.includes('skills:read')
   const isOperator =
     state.status === 'authenticated' && state.session.roles.includes('system_admin')
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
@@ -65,12 +67,19 @@ export default function Dashboard() {
   // itself without being asked, and there is a test holding it to that.
   const [everywhere, setEverywhere] = useState(false)
   const [summary, setSummary] = useState<Summary | null>(null)
+  // Fetched beside the usage summary rather than with it: a different authority
+  // reads it, and somebody who may see skills but not spend should still get
+  // this panel. Its absence is not an error on this page.
+  const [skills, setSkills] = useState<SkillStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [table, setTable] = useState(false)
 
   useEffect(() => {
-    if (!canRead) {
+    // Not gated on `canRead` alone: the two panels read different things under
+    // different authorities, and somebody who may see skills but not spend
+    // should still get theirs.
+    if (!canRead && !canReadSkills) {
       setLoading(false)
       return
     }
@@ -87,7 +96,28 @@ export default function Dashboard() {
       const start = new Date(end)
       start.setUTCDate(start.getUTCDate() - days)
 
+      // Skills are workspace-owned and this endpoint offers no platform-wide
+      // cut, so an operator looking at everything simply gets no skills panel
+      // rather than one that quietly narrowed to their own workspace.
+      if (canReadSkills && !(everywhere && isOperator)) {
+        void api<SkillStats>(
+          `/v1/skills/stats?from=${start.toISOString()}&to=${end.toISOString()}`,
+        )
+          .then((data) => {
+            if (current) setSkills(data)
+          })
+          .catch(() => {
+            if (current) setSkills(null)
+          })
+      } else if (current) {
+        setSkills(null)
+      }
+
       const scope = everywhere && isOperator ? '&scope=all' : ''
+      if (!canRead) {
+        if (current) setLoading(false)
+        return
+      }
       try {
         const data = await api<Summary>(
           `/v1/usage/summary?from=${start.toISOString()}&to=${end.toISOString()}${scope}`,
@@ -108,7 +138,7 @@ export default function Dashboard() {
     return () => {
       current = false
     }
-  }, [days, everywhere, isOperator, canRead, workspaceId])
+  }, [days, everywhere, isOperator, canRead, canReadSkills, workspaceId])
 
   const totals = summary?.totals
   // Summed over the one list of kinds rather than by naming five fields here,
@@ -134,7 +164,10 @@ export default function Dashboard() {
     }
   }, [summary])
 
-  if (!canRead) {
+  // Only when there is nothing at all to show. Somebody holding `skills:read`
+  // and not `usage:read` gets the skills panel rather than a page telling them
+  // they may not read something they did not ask for.
+  if (!canRead && !skills) {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Dashboard</h1>
@@ -376,6 +409,12 @@ export default function Dashboard() {
             />
           </section>
         </>
+      )}
+
+      {skills && (
+        <div className="mt-8">
+          <SkillStatsPanel stats={skills} />
+        </div>
       )}
     </div>
   )

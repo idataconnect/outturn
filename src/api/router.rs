@@ -32,6 +32,7 @@ pub struct ApiState {
     /// What a workspace's roles mean. Consulted on every authorised request.
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
+    pub(super) skill_stats: Arc<dyn super::skill::stats::SkillStatsStore>,
     pub(super) settings: Arc<dyn super::settings::SettingsStore>,
     /// Which agents a person's narrowed authorities apply to. Consulted on
     /// every request that names one.
@@ -93,6 +94,10 @@ impl ApiState {
         shutdown: Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
+            // Built here rather than passed in: it holds no cache and nothing
+            // invalidates it, so a second one is the same store. The pool is
+            // already a parameter for the same reason.
+            skill_stats: Arc::new(super::skill::PostgresSkillStatsStore::new(pool.clone())),
             workspaces,
             users,
             sessions,
@@ -963,6 +968,67 @@ struct UsageQuery {
 /// own however they ask. `scope=all` is how the operator says so -- an absent
 /// scope means the caller's own workspace, so a dashboard cannot widen itself
 /// by forgetting a parameter.
+/// What the workspace's skills are doing, over a window.
+///
+/// `SkillsRead` rather than `UsageRead`: these are facts about skills, and
+/// somebody who may read the skills themselves learns nothing new from a count
+/// of the turns they served. Spend is not among the figures -- nothing
+/// attributes tokens to a skill, and a number that looked like it did would be
+/// a guess presented as a fact.
+///
+/// One workspace only, and deliberately no platform-wide cut. Usage figures
+/// aggregate to a number; a list of every workspace's skill names is their
+/// content rather than a statistic about it.
+async fn skill_statistics(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
+) -> Result<Json<super::skill::stats::SkillStats>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
+
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your workspace's skills".into()));
+            }
+            other
+        }
+        Some(own) => own,
+        None => claims.workspace_id,
+    };
+
+    // The same window rules the usage summary applies, for the same reasons:
+    // closed so the figures mean something without knowing when they were
+    // asked for, and bounded so nobody asks for everything by accident.
+    let to = query.to.unwrap_or_else(|| {
+        let now = chrono::Utc::now();
+        now.date_naive()
+            .succ_opt()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc())
+            .unwrap_or(now)
+    });
+    let from = query
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::days(30));
+    if from >= to {
+        return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
+    }
+    if to - from > chrono::Duration::days(370) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "window may not exceed 370 days".into(),
+        ));
+    }
+
+    let stats = state
+        .skill_stats
+        .stats(workspace_id, from, to, 20)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(stats))
+}
+
 async fn summarise_usage(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -1509,6 +1575,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/usage", get(export_usage))
         .route("/v1/usage/summary", get(summarise_usage))
+        .route("/v1/skills/stats", get(skill_statistics))
         .route("/v1/inhibitors", get(list_inhibitors))
         .route(
             "/v1/inhibitors/{id}",
