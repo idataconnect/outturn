@@ -476,7 +476,14 @@ export function useChatRuntime(
   /** For a conversation that does not exist yet: makes it on the first send,
    *  and is told once the message is in it. Deferred so that picking an agent
    *  and thinking better of it leaves nothing behind in anybody's history. */
-  fresh?: { create: () => Promise<string>; opened: (id: string) => void },
+  fresh?: {
+    /** Who the new chat is with. What says a send is still for the page on
+     *  screen: compared by value, so a parent re-rendering does not read as
+     *  the reader having left. */
+    agent: string
+    create: () => Promise<string>
+    opened: (id: string) => void
+  },
 ) {
   // Kept in a ref so the feed's effects can reach the latest callback without
   // listing it as a dependency and tearing the stream down on every render.
@@ -944,7 +951,8 @@ export function useChatRuntime(
           : null
       if (!target) return
       /** Whether the reader is still looking at what this send began in. */
-      const stillHere = () => showing.current === sessionId && starting.current === start
+      const stillHere = () =>
+        showing.current === sessionId && starting.current?.agent === start?.agent
       const part = message.content[0]
       if (part?.type !== 'text') {
         throw new Error('only text messages are supported')
@@ -982,16 +990,17 @@ export function useChatRuntime(
         const stored = await sendMessage(id, text, delivery)
         // Merged only into the conversation it belongs to. The reader who
         // moved on meanwhile finds it there, and the list already has it.
-        if (!stillHere()) {
-          setSending(false)
-          return
-        }
+        // `sending` too is left alone: it belongs to the page on screen now,
+        // which was reset when it was opened and may be sending itself.
+        if (!stillHere()) return
         // The POST does not say, but a message it accepted has a job queued
         // for it by construction: the two are written together.
         merge([{ ...stored, job_state: 'pending' }])
       } catch (e) {
-        setSending(false)
-        if (stillHere()) setError(e instanceof Error ? e.message : 'failed to send')
+        if (stillHere()) {
+          setSending(false)
+          setError(e instanceof Error ? e.message : 'failed to send')
+        }
         throw e
       } finally {
         // Opened even when the send failed: the conversation exists by then,

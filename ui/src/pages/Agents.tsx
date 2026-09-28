@@ -38,6 +38,9 @@ export default function Agents() {
   const breakpoint = useBreakpoint()
   const [agents, setAgents] = useState<Agent[]>([])
   const [sessions, setSessions] = useState<AgentSession[]>([])
+  /** Why the recent list is missing, kept apart from `error`: the roster
+   *  loads at the same time and clears that when it succeeds. */
+  const [recentError, setRecentError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -103,8 +106,12 @@ export default function Agents() {
       setSessions([])
       return
     }
-    listSessions().then(setSessions, (e) =>
-      setError(e instanceof ApiError ? e.message : 'failed to load recent chats'),
+    listSessions().then(
+      (list) => {
+        setSessions(list)
+        setRecentError(null)
+      },
+      (e) => setRecentError(e instanceof ApiError ? e.message : 'failed to load recent chats'),
     )
   }, [workspaceId, canReadSessions])
 
@@ -112,6 +119,9 @@ export default function Agents() {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
     try {
       await api<void>(`/v1/agents/${agent.id}`, { method: 'DELETE' })
+      // Out of the list before the page moves, or a wide screen falls back
+      // to the first agent in the old one -- which may be this one.
+      setAgents((prev) => prev.filter((a) => a.id !== agent.id))
       void navigate('/agents', { replace: true })
       await refresh()
     } catch (e) {
@@ -314,6 +324,11 @@ export default function Agents() {
                 )}
               </div>
 
+              {recentError && (
+                <p className="mt-8 text-sm text-red-600 dark:text-red-400" role="alert">
+                  Recent chats could not be loaded: {recentError}
+                </p>
+              )}
               {recent.length > 0 && (
                 <div className="mt-8">
                   <h3 className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">

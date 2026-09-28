@@ -69,13 +69,12 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
         ? chattable[0]
         : undefined
 
-  // One per agent chosen, so the runtime can tell a send begun for this new
-  // chat from one begun for a different one.
   const draftWithId = draftWith?.id
   const fresh = useMemo(
     () =>
       draftWithId
         ? {
+            agent: draftWithId,
             create: async () => {
               const session = await createSession(draftWithId)
               setSessions((prev) => [session, ...prev])
@@ -194,13 +193,8 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
 
   // Reconcile the URL against what this workspace can actually see, once loaded.
   useEffect(() => {
-    if (!loaded) return
-    // A new chat names no session, so there is nothing to reconcile -- but a
-    // notice about a link that went nowhere is not about this page either.
-    if (draft) {
-      setMissing(null)
-      return
-    }
+    // A new chat names no session, so there is nothing to reconcile.
+    if (!loaded || draft) return
 
     // Land on the most recent session when none was named. Replace rather than
     // push, so the back button does not return to an empty /sessions that
@@ -232,7 +226,9 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   }, [draftWith])
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? 'Agent'
-  const shown = error ?? chatError ?? missing
+  // A notice about a link that went nowhere is about the page that link
+  // landed on, and a new chat is not it.
+  const shown = error ?? chatError ?? (draft ? null : missing)
 
   // `render` closes over the session id, so the tab list is rebuilt only when
   // that changes; a new component identity on every render would remount the
@@ -449,7 +445,10 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
           </div>
         )}
         <div className="flex-1 min-h-0">
-          {draft && !draftWith ? (
+          {/* A new chat draws nothing until the agents are in: whether to ask
+              who with depends on how many there are, and a guess either way
+              is drawn and then taken back. */}
+          {draft && !loaded ? null : draft && !draftWith ? (
             // Who to talk to, asked in the page rather than in a menu: this is
             // the whole of what the reader came here to decide.
             <div className="h-full overflow-auto p-6">
@@ -469,7 +468,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                     autoFocus
                     empty={
                       <p className="text-sm text-surface-600 dark:text-surface-400">
-                        {loaded ? 'There is no agent you can start a chat with.' : 'Loading…'}
+                        There is no agent you can start a chat with.
                       </p>
                     }
                   />
