@@ -50,6 +50,27 @@ pub fn total_cost(conversation: &[Value]) -> usize {
     conversation.iter().map(cost).sum()
 }
 
+/// What is left of the budget once the instructions are paid for.
+///
+/// The system prompt goes to the model on every round, exactly as the
+/// conversation does, but it is a separate field and nothing here can trim it:
+/// it is rebuilt from the agent and its skills each turn. So it is not
+/// *compacted* -- it is **spent**, before anything else gets to.
+///
+/// Left uncounted, the budget quietly meant something other than it said. Ten
+/// long skills bound to an agent could exceed it on their own while `to_fit`
+/// reported the conversation was comfortably inside, and the turn failed at the
+/// provider's real limit with no trim log and nothing to explain it.
+///
+/// Saturating, so a prompt larger than the whole budget leaves zero rather than
+/// wrapping. That case is a misconfiguration -- it means the instructions alone
+/// do not fit -- and the honest response is to compact the conversation to
+/// nothing and let the provider refuse the prompt, rather than to pretend there
+/// is room by underflowing into a very large number.
+pub fn room_for_conversation(budget: usize, system_prompt: &str) -> usize {
+    budget.saturating_sub(system_prompt.len())
+}
+
 /// What a trim did, for the caller to record.
 ///
 /// Worth reporting rather than doing quietly: a turn that silently lost half
@@ -439,5 +460,71 @@ mod tests {
         let (out, report) = to_fit(conversation, 10);
         assert_eq!(out.len(), 1);
         assert_eq!(report.messages_dropped, 0);
+    }
+
+    /// The gap this closes. The system prompt is sent on every round exactly as
+    /// the conversation is, and nothing can trim it -- so a budget that ignored
+    /// it meant something other than it said, and ten long skills could exceed
+    /// it on their own while the trim reported everything comfortably inside.
+    #[test]
+    fn the_instructions_come_out_of_the_budget() {
+        assert_eq!(room_for_conversation(1000, &"x".repeat(200)), 800);
+    }
+
+    #[test]
+    fn nothing_to_pay_leaves_the_budget_whole() {
+        assert_eq!(room_for_conversation(1000, ""), 1000);
+    }
+
+    /// Instructions larger than the entire budget are a misconfiguration: they
+    /// do not fit whatever the conversation does. Zero is the honest answer --
+    /// the conversation compacts to nothing and the provider refuses the prompt,
+    /// which is a legible failure. Underflowing to `usize::MAX` would instead
+    /// report enormous room and trim nothing, and the turn would fail with the
+    /// trim log saying it had been well inside its budget.
+    #[test]
+    fn instructions_bigger_than_the_budget_leave_no_room_rather_than_wrapping() {
+        assert_eq!(room_for_conversation(100, &"x".repeat(500)), 0);
+    }
+
+    /// No room at all is survivable, because the trim already had to survive
+    /// it. The floor holds: the last message stays whatever the budget says,
+    /// since a turn with nothing to answer is an error in the guest rather
+    /// than a small prompt. Instructions that leave no room are a
+    /// misconfiguration, and the honest outcome is a turn carrying only what
+    /// it must and a trim report saying so.
+    #[test]
+    fn no_room_still_leaves_the_message_being_answered() {
+        let conversation = vec![user("hello"), user("still here?")];
+        let (out, report) = to_fit(conversation, 0);
+        assert_eq!(out.len(), 1, "the floor holds even at nothing");
+        assert_eq!(out[0]["parts"][0]["text"], "still here?");
+        assert!(report.messages_dropped > 0);
+    }
+
+    /// The figure that decides a trim is the remaining room, not the budget.
+    /// A conversation that fits the budget but not what is left of it after the
+    /// instructions must be trimmed -- that being the whole point.
+    /// Two messages, comfortably inside the budget, and outside what is left of
+    /// it once long instructions are paid for. Before this the second figure
+    /// was never computed, so the trim reported nothing to do and the turn went
+    /// to the provider over its real limit.
+    #[test]
+    fn a_conversation_inside_the_budget_can_still_be_outside_the_room() {
+        let conversation = vec![user(&"x".repeat(300)), user("and this?")];
+        let budget = 1000;
+        let instructions = "y".repeat(800);
+
+        let (kept, untouched) = to_fit(conversation.clone(), budget);
+        assert!(untouched.is_empty(), "it fits the budget on its own");
+        assert_eq!(kept.len(), 2);
+
+        let room = room_for_conversation(budget, &instructions);
+        let (left, trimmed) = to_fit(conversation, room);
+        assert!(
+            !trimmed.is_empty(),
+            "but not once the instructions are paid for: room was {room}"
+        );
+        assert_eq!(left.len(), 1, "and what is answered survives");
     }
 }

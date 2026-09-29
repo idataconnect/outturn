@@ -108,7 +108,10 @@ pub async fn create_session(
         .await?;
     // After the authority, so a caller who may not start conversations learns
     // nothing about an agent's configuration from being refused.
-    let agent = state.agents.get(claims.workspace_id, input.agent_id).await?;
+    let agent = state
+        .agents
+        .get(claims.workspace_id, input.agent_id)
+        .await?;
     if !agent.takes_conversations() {
         return Err((StatusCode::CONFLICT, "this agent is disabled".into()));
     }

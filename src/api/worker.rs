@@ -1620,6 +1620,15 @@ impl Worker {
                     let projected = answered(projected, &gates, &granted);
                     let projected = marked(projected, restarting_from.as_ref());
 
+                    // What the conversation may actually have. The system
+                    // prompt is sent on every round too and nothing can trim
+                    // it, so it is spent before any of this -- see
+                    // `trim::room_for_conversation`.
+                    let room = super::chat::trim::room_for_conversation(
+                        settings.context_budget,
+                        &system_prompt,
+                    );
+
                     // Over budget is where compaction begins. A summary is tried
                     // first because it loses less: the early turns become a
                     // paragraph rather than disappearing. It is a model call the
@@ -1630,7 +1639,7 @@ impl Worker {
                             &projected,
                             &sources,
                             &system_prompt,
-                            settings.context_budget,
+                            room,
                             payload.session_id,
                             payload.workspace_id,
                             payload.agent_id,
@@ -1643,8 +1652,7 @@ impl Worker {
                     // save, this drops -- and when there is no model to ask, or
                     // the summary itself would not fit, this is the whole of what
                     // happens.
-                    let (projected, trimmed) =
-                        super::chat::trim::to_fit(projected, settings.context_budget);
+                    let (projected, trimmed) = super::chat::trim::to_fit(projected, room);
                     if !trimmed.is_empty() {
                         // Said out loud: a turn that quietly lost half its history
                         // is one nobody can explain afterwards, and these numbers
@@ -1658,6 +1666,11 @@ impl Worker {
                             was = trimmed.was,
                             now = trimmed.now,
                             budget = settings.context_budget,
+                            // Both, because the difference is the whole point:
+                            // a reader wondering why a generous budget trimmed
+                            // anything is looking at the instructions.
+                            room,
+                            instructions = system_prompt.len(),
                             "conversation trimmed to fit"
                         );
                     }

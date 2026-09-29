@@ -785,6 +785,17 @@ the shape that works from the first turn. Compact against a fraction of the
 window rather than the whole of it, leaving room for the reply, for tool
 results arriving mid-turn, and for the compaction call itself.
 
+The system prompt is **spent**, not compacted. It goes to the model on every
+round exactly as the conversation does, but it is a separate field nothing can
+trim -- rebuilt from the agent and its skills each turn -- so it comes out of
+`context_budget` before the conversation gets any (`trim::room_for_conversation`).
+Uncounted, the budget quietly meant something else: ten long skills could
+exceed it on their own while the trim reported the conversation comfortably
+inside, and the turn failed at the provider's real limit with no trim log and
+nothing to explain it. Anything that later contributes to the prompt -- carry-
+over is the obvious candidate -- is spending the same way and must be counted
+the same way.
+
 Compact with hysteresis: cut to a mark well below the budget in one step, then
 leave the prefix alone. Trimming a little every turn changes the start of the
 history on every request, and a provider's prompt cache misses from there on
