@@ -89,6 +89,10 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     [draftWithId, navigate],
   )
 
+  /** Bumped when the composer or the agent stores or removes a file, so the files panel
+   *  shows what happened without anyone reopening it. */
+  const [storedChange, setStoredChange] = useState(0)
+
   const { runtime, error: chatError, held, stopping, retry, clearHeld } = useChatRuntime(
     active,
     (title) => {
@@ -100,6 +104,9 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     // would otherwise have no way to meet.
     () => takeAttachments.current?.() ?? '',
     fresh,
+    // What the agent stores lands in the same panel as what the composer
+    // does, so it is told the same way.
+    () => setStoredChange((n) => n + 1),
   )
 
   // Agents and sessions are workspace-scoped, so switching workspace reloads both.
@@ -149,9 +156,6 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   // Bumped by choosing a session, new or existing: whoever just picked a
   // conversation is about to type into it.
   const [focusRequest, setFocusRequest] = useState(0)
-  /** Bumped when the composer stores or removes a file, so the files panel
-   *  shows what happened without anyone reopening it. */
-  const [storedChange, setStoredChange] = useState(0)
 
   function onStoredChange(failure?: string) {
     if (failure) {
