@@ -473,6 +473,13 @@ type DeltaProgress = Map<string, number>
  * changed -- the namer working after a turn, or somebody else's rename --
  * so the sidebar and header follow without a reload.
  */
+/**
+ * The tools that store or remove a file, whose results mean a files view is out
+ * of date. Listed by name rather than inferred, since a tool that only reads a
+ * file finishing says nothing changed.
+ */
+const FILE_TOOLS = new Set(['write_object', 'delete_object', 'expand_archive', 'create_archive'])
+
 export function useChatRuntime(
   sessionId: string | null,
   onRenamed?: (title: string) => void,
@@ -493,6 +500,10 @@ export function useChatRuntime(
     create: () => Promise<string>
     opened: (id: string) => void
   },
+  /** Told when the agent has stored or removed a file, so a files view can
+   *  show it. The agent writes straight to the object store, which the API
+   *  never sees, so a finished file tool is the only word that anything moved. */
+  onFilesChanged?: () => void,
 ) {
   // Kept in a ref so the feed's effects can reach the latest callback without
   // listing it as a dependency and tearing the stream down on every render.
@@ -501,12 +512,14 @@ export function useChatRuntime(
   const renamed = useRef(onRenamed)
   const attachments = useRef(takeAttachments)
   const starting = useRef(fresh)
+  const filesChanged = useRef(onFilesChanged)
   /** Which conversation is on screen now, for a send that outlives it. */
   const showing = useRef(sessionId)
   useLayoutEffect(() => {
     renamed.current = onRenamed
     attachments.current = takeAttachments
     starting.current = fresh
+    filesChanged.current = onFilesChanged
     showing.current = sessionId
   })
   const [messages, setMessages] = useState<Message[]>([])
@@ -539,6 +552,9 @@ export function useChatRuntime(
   const clearHeld = useCallback(() => setHeld(null), [])
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
+  /** Which tool each call in flight is, by call id. A result names only the
+   *  call it answers, and whether it moved a file depends on the tool. */
+  const callTools = useRef<Map<string, string>>(new Map())
   /** When the thought each reply is writing now began, from its first
    *  fragment's id. The browser's half of `parts::Builder::thinking_since`. */
   const thinkingSince = useRef<Map<string, number>>(new Map())
@@ -702,6 +718,7 @@ export function useChatRuntime(
               message_id: string
               call: ToolCallRecord
             }
+            callTools.current.set(call.id, call.name)
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== message_id) return m
@@ -721,6 +738,7 @@ export function useChatRuntime(
 
           // A tool's result lands on the call it answers, so the browser
           // holds one object per tool rather than two to reconcile.
+          let moved = false
           for (const event of result.events) {
             if (event.kind !== 'chat.tool_result') continue
             const { message_id, id, details, is_error } = event.payload as {
@@ -729,6 +747,10 @@ export function useChatRuntime(
               details: string
               is_error: boolean
             }
+            // Refreshed on a failure too: an archive that failed halfway may
+            // have written some of its files, and a list is cheap to read.
+            if (FILE_TOOLS.has(callTools.current.get(id) ?? '')) moved = true
+            callTools.current.delete(id)
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== message_id) return m
@@ -739,6 +761,8 @@ export function useChatRuntime(
               }),
             )
           }
+
+          if (moved) filesChanged.current?.()
 
           // A message taken mid-turn is answered inside the running reply.
           // Marking it is what stops it reading as queued for ever.
