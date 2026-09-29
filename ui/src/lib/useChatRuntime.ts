@@ -12,6 +12,7 @@ import {
   retryTurn,
   saidSomething as hasContent,
   sendMessage,
+  type Asleep,
   type Delivery,
   type Message,
   type MessagePart,
@@ -282,6 +283,10 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // reader who reloads sees a refused tool call followed by a success with
       // nothing joining them, the pause and the decision having left no trace.
       approval: message.metadata.approval ?? null,
+      // The note an agent woke to, which nobody sent. Drawn as a boundary for
+      // the same reason: in a bubble on the right it reads as the reader
+      // telling the agent it had been asleep.
+      wake: message.metadata.wake ?? null,
       // When it stopped being written. The id is creation time, which for a
       // reply that waited on an approval is not remotely the same thing.
       finishedAt: message.finished_at ?? null,
@@ -526,6 +531,9 @@ export function useChatRuntime(
     /** The approval waiting on somebody, where the hold is one. Absent for a
      *  spend cap or an operator's stop, neither of which is answerable here. */
     approval?: PendingApproval
+    /** The sleep, where the hold is one: the agent asked for it, and a person
+     *  can end it early. */
+    asleep?: Asleep
   } | null>(null)
   const clearHeld = useCallback(() => setHeld(null), [])
 
@@ -603,6 +611,8 @@ export function useChatRuntime(
           resumable: true,
           approval: history.awaiting,
         })
+      } else if (history.asleep) {
+        setHeld({ message: 'Asleep', resumable: true, asleep: history.asleep })
       } else {
         setHeld(null)
       }
@@ -631,6 +641,21 @@ export function useChatRuntime(
               .filter((e) => e.kind === 'chat.message')
               .map((e) => e.payload as Message),
           )
+
+          // Asleep, and awake again. The note it wakes to is the one thing both
+          // ways of waking write, so it is what clears the banner -- in every
+          // tab, including the one that did not press the button.
+          const sleeping = result.events.find((e) => e.kind === 'chat.sleeping')
+          if (sleeping) {
+            setHeld({ message: 'Asleep', resumable: true, asleep: sleeping.payload as Asleep })
+          }
+          if (
+            result.events.some(
+              (e) => e.kind === 'chat.message' && (e.payload as Message).metadata?.wake,
+            )
+          ) {
+            setHeld((prev) => (prev?.asleep ? null : prev))
+          }
 
           // A tool announces itself before the reply that used it, so it
           // Any event about a reply means its turn is still going. `job_state`
@@ -859,12 +884,18 @@ export function useChatRuntime(
           // something broke.
           const holding = result.events.find((e) => e.kind === 'chat.held')
           if (holding) {
-            const { message, resumable, approval } = holding.payload as {
+            const { message, resumable, approval, asleep } = holding.payload as {
               message: string
               resumable: boolean
               approval?: PendingApproval
+              asleep?: Asleep | null
             }
-            setHeld({ message, resumable, approval: approval ?? undefined })
+            setHeld({
+              message,
+              resumable,
+              approval: approval ?? undefined,
+              asleep: asleep ?? undefined,
+            })
             setSending(false)
             setStopping(false)
           }

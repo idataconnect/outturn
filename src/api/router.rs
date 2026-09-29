@@ -1492,6 +1492,12 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/agent-sessions/{id}/cancel",
             post(super::sessions::cancel_turn),
         )
+        // Ending a sleep early. Also the conversation's rather than the
+        // sleep's: a conversation has at most one.
+        .route(
+            "/v1/agent-sessions/{id}/wake",
+            post(super::wake::wake_now),
+        )
         // Running a failed turn again. Under the message rather than the
         // session, unlike cancel: stopping means the turn in flight, of which
         // there is one, and retrying means a particular prompt that failed,
@@ -1567,6 +1573,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // require GatewayInvoke, which is the platform's own tier rather than
         // a workspace's.
         .route("/v1/work/gated", post(super::gated::raise))
+        .route("/v1/work/wait", post(super::wake::wait))
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))

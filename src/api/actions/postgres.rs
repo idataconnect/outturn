@@ -192,6 +192,7 @@ impl ActionStore for PostgresActionStore {
             note: None,
             hold: None,
             grant: None,
+            wake: None,
         })
         .await
         .map(|_| ())
@@ -484,6 +485,7 @@ impl ActionStore for PostgresActionStore {
             note,
             hold,
             grant,
+            wake,
         } = settle;
         if state.is_open() {
             return Err(ActionError::Invalid(
@@ -526,6 +528,15 @@ impl ActionStore for PostgresActionStore {
                 Some(s) => ActionError::NotPending(s.as_str()),
                 None => ActionError::NotFound,
             });
+        }
+
+        // Before the resume, in the same transaction: the turns the resume
+        // gives back must find their messages already answered by the note, or
+        // each would wake and answer its own message a second time.
+        if let Some(wake) = wake {
+            super::super::wake::write_tx(&mut tx, wake)
+                .await
+                .map_err(|e| ActionError::Internal(e.to_string()))?;
         }
 
         let mut resumed = 0;

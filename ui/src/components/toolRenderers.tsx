@@ -2,6 +2,7 @@ import type { ToolCallMessagePartComponent } from '@assistant-ui/react'
 import ToolClock from './ToolClock'
 import ToolLoad from './ToolLoad'
 import ToolTarget from './ToolTarget'
+import ToolTimer from './ToolTimer'
 
 /**
  * Tools that render as something other than their verb.
@@ -31,6 +32,10 @@ const toolRenderers: Record<string, ToolCallMessagePartComponent> = {
   fetch_url: ToolTarget,
   get_current_time: ToolClock,
   load_tools: ToolLoad,
+  sleep: ToolTimer,
+  set_timer: ToolTimer,
+  list_timers: ToolTimer,
+  cancel_timer: ToolTimer,
 }
 
 export default toolRenderers

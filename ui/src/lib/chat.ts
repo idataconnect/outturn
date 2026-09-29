@@ -67,6 +67,26 @@ export function saidSomething(m: Pick<Message, 'content' | 'metadata'>): boolean
   return m.metadata.parts?.some((p) => p.type === 'reasoning') ?? false
 }
 
+/** What the platform recorded when an agent woke. See `api::wake`. */
+export type WakeRecord = {
+  kind: 'sleep' | 'timer'
+  reason: string
+  set_at: string
+  due_at: string
+  woke_at: string
+  /** Who pressed Wake now, where somebody did. */
+  woken_by?: string | null
+  /** The messages sent while it slept, which the wake answers together. */
+  answers?: string[]
+}
+
+/** A conversation whose agent is asleep, and how to end it early. */
+export type Asleep = {
+  item_id: string
+  until: string
+  reason: string
+}
+
 export type Message = {
   /** UUIDv7: ordering is carried by the id, so there is no separate sequence. */
   id: string
@@ -97,6 +117,10 @@ export type Message = {
       answered_by_name?: string | null
       note?: string | null
     }
+    /** Present when this message is the note an agent woke to, after a sleep
+     *  or a timer. Written by the platform rather than sent by anybody, so it
+     *  is drawn as a boundary rather than as somebody's message. */
+    wake?: WakeRecord
   }
   /** How many deltas `content` already accounts for. */
   delta_next: number
@@ -143,6 +167,8 @@ export type History = {
     reason?: string | null
     covers?: { field?: string; unit?: string } | null
   } | null
+  /** Whether the agent is asleep, for the same reason. */
+  asleep?: Asleep | null
 }
 
 export type ChatEvent =
@@ -199,6 +225,9 @@ export type ChatEvent =
       kind: 'chat.held'
       payload: { message: string; message_id?: string; resumable: boolean }
     }
+  /** The agent went to sleep. Nothing it is sent is answered until it wakes,
+   *  which it does at `until` or when somebody presses Wake now. */
+  | { id: string; kind: 'chat.sleeping'; payload: Asleep }
   /** A user message was taken into a turn already running, and will be
    *  answered inside that reply rather than getting one of its own. */
   | {
@@ -301,6 +330,15 @@ export type Cancelled = {
  */
 export const cancelTurn = (sessionId: string) =>
   api<Cancelled>(`/v1/agent-sessions/${sessionId}/cancel`, { method: 'POST' })
+
+/**
+ * Ends the agent's sleep now.
+ *
+ * `woke` is false when it was already awake -- somebody else pressed it, or the
+ * time came -- which is not an error: either way it is awake.
+ */
+export const wakeSession = (sessionId: string) =>
+  api<{ woke: boolean }>(`/v1/agent-sessions/${sessionId}/wake`, { method: 'POST' })
 
 /** What asking for a failed turn to run again achieved. */
 export type Retried = {

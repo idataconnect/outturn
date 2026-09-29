@@ -1,4 +1,4 @@
-import { CircleUser, Clock, Inbox, ShieldQuestion } from 'lucide-react'
+import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
 import type { ActionItem } from '../lib/actions'
 import { elapsedSince } from '../lib/elapsed'
@@ -167,6 +167,8 @@ function label(kind: string): string {
   switch (kind) {
     case 'approval.charge':
       return 'Charge to approve'
+    case 'sleep':
+      return 'Agent asleep'
     default:
       // `approval.something_else` reads better than the raw key, and says
       // enough: the producer builds the kind from the act it is asking about
@@ -182,9 +184,10 @@ function label(kind: string): string {
  * during render is a new type on every render as far as React is concerned, so
  * the icon unmounts and remounts each time.
  */
-const ICONS = { approval: ShieldQuestion, other: CircleUser } as const
+const ICONS = { approval: ShieldQuestion, sleep: Moon, other: CircleUser } as const
 
 function iconKey(kind: string): keyof typeof ICONS {
+  if (kind === 'sleep') return 'sleep'
   return kind.startsWith('approval.') ? 'approval' : 'other'
 }
 

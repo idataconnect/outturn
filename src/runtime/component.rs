@@ -18,7 +18,7 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
+    Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, TimerDue, Limits,
     Message, ObjectInfo, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
@@ -161,6 +161,39 @@ pub type GatedSink = Arc<
         + Sync,
 >;
 
+/// A request to be woken later, as the guest made it.
+///
+/// Relayed to the API rather than acted on here: a wakeup is a job, a sleep is a
+/// hold on the conversation and an item in somebody's queue, and all of it lives
+/// in the tier with the database. The runtime executes workspace code and holds
+/// none of those.
+#[derive(Debug, Clone)]
+pub enum WaitRequest {
+    Sleep {
+        seconds: u64,
+        reason: String,
+    },
+    Timer {
+        /// Exactly one of these, as the guest checked and the API checks again.
+        at: Option<String>,
+        seconds: Option<u64>,
+        reason: String,
+    },
+    ListTimers,
+    CancelTimer {
+        id: String,
+    },
+}
+
+/// Relays a wait to the API and returns what to tell the model, or why not.
+pub type WaitSink = Arc<
+    dyn Fn(
+            WaitRequest,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// What was refused, as the runtime saw it.
 #[derive(Debug, Clone)]
 pub struct GatedRequest {
@@ -222,6 +255,7 @@ pub struct AgentHost {
     /// Told when the gateway refuses for want of an approval. Relays the shape
     /// of the request; decides nothing about it.
     on_gated: Option<GatedSink>,
+    on_wait: Option<WaitSink>,
     default_model: String,
     http: reqwest::Client,
     progress: Option<ProgressSink>,
@@ -1184,6 +1218,49 @@ impl outturn::agent::host::Host for AgentHost {
         arrivals
     }
 
+    async fn sleep(&mut self, seconds: u64, reason: String) -> Result<String, String> {
+        let Some(relay) = &self.on_wait else {
+            return Err("sleeping is not available here".into());
+        };
+        let answer = relay(WaitRequest::Sleep { seconds, reason }).await?;
+        // The turn ends at its next round boundary, on the flag a stop uses --
+        // which is the only place stopping is safe. It is not a cancellation:
+        // the job completes normally, the reply written so far is kept, and
+        // the conversation is held until the wakeup, which the API arranged.
+        self.cancelled = true;
+        Ok(answer)
+    }
+
+    async fn set_timer(&mut self, due: TimerDue, reason: String) -> Result<String, String> {
+        let Some(relay) = &self.on_wait else {
+            return Err("timers are not available here".into());
+        };
+        let (at, seconds) = match due {
+            TimerDue::At(at) => (Some(at), None),
+            TimerDue::Seconds(s) => (None, Some(s)),
+        };
+        relay(WaitRequest::Timer {
+            at,
+            seconds,
+            reason,
+        })
+        .await
+    }
+
+    async fn list_timers(&mut self) -> Result<String, String> {
+        let Some(relay) = &self.on_wait else {
+            return Err("timers are not available here".into());
+        };
+        relay(WaitRequest::ListTimers).await
+    }
+
+    async fn cancel_timer(&mut self, id: String) -> Result<String, String> {
+        let Some(relay) = &self.on_wait else {
+            return Err("timers are not available here".into());
+        };
+        relay(WaitRequest::CancelTimer { id }).await
+    }
+
     async fn current_limits(&mut self) -> Limits {
         Limits {
             max_tool_rounds: self.max_tool_rounds,
@@ -1701,6 +1778,8 @@ pub struct RunOptions {
     pub on_absorbed: Option<AbsorbedSink>,
     /// Called when the gateway refuses a request for want of an approval.
     pub on_gated: Option<GatedSink>,
+    /// Relays `sleep` and `set-timer` to the API.
+    pub on_wait: Option<WaitSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognised or absent means the clock answers in UTC.
@@ -1833,6 +1912,7 @@ impl AgentRunner {
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
             on_gated: options.on_gated,
+            on_wait: options.on_wait,
             on_usage: options.on_usage,
             on_write: options.on_write,
             on_absorbed: options.on_absorbed,

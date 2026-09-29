@@ -55,6 +55,12 @@ pub struct Settle<'a> {
     /// approval raised by hand, which holds a conversation rather than standing
     /// for one request.
     pub grant: Option<super::grant::NewGrant>,
+    /// The note a sleep wakes with, where the item stands for a sleep. Written
+    /// in the same transaction as the settle and the release, so of two things
+    /// ending one sleep -- somebody pressing Wake now, the timer coming due --
+    /// only the one that wins writes a note, and the queued turns are marked
+    /// answered before they can be resumed.
+    pub wake: Option<super::wake::Note>,
 }
 
 /// Who an item is waiting on.

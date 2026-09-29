@@ -276,6 +276,27 @@ impl Puller {
                 })
             }),
             on_absorbed: Some(sinks.on_absorbed),
+            // Sleeping and timers are the API's to arrange -- a wakeup is a job,
+            // a sleep a hold and a queue item -- so this only carries the ask
+            // there, under the lease, as an approval request is carried.
+            on_wait: Some({
+                let api_url = self.api_url.clone();
+                let runtime_key = self.runtime_key.clone();
+                let http = self.http.clone();
+                let session_id = request.session_id;
+                Arc::new(move |wait: crate::runtime::component::WaitRequest| {
+                    let api_url = api_url.clone();
+                    let runtime_key = runtime_key.clone();
+                    let http = http.clone();
+                    Box::pin(async move {
+                        report_wait(&http, &api_url, &runtime_key, lease, session_id, job_id, wait)
+                            .await
+                    })
+                        as std::pin::Pin<
+                            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+                        >
+                })
+            }),
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,
@@ -459,6 +480,65 @@ async fn refresh_token(
     }
     let refreshed: Refreshed = response.json().await.ok()?;
     Some((refreshed.gateway_token, refreshed.gateway_token_expires_at))
+}
+
+/// Carries a sleep or a timer to the API, and brings back what to tell the model.
+///
+/// A refusal comes back as the API's own words, which are written for the
+/// model -- "at most thirty days", "that time has passed" -- so it can correct
+/// the request rather than guess why it failed.
+async fn report_wait(
+    http: &reqwest::Client,
+    api_url: &str,
+    runtime_key: &str,
+    lease: Uuid,
+    session_id: Uuid,
+    job_id: Uuid,
+    wait: crate::runtime::component::WaitRequest,
+) -> Result<String, String> {
+    use crate::runtime::component::WaitRequest;
+    let body = match wait {
+        WaitRequest::Sleep { seconds, reason } => serde_json::json!({
+            "job_id": job_id, "session_id": session_id,
+            "kind": "sleep", "seconds": seconds, "reason": reason,
+        }),
+        WaitRequest::Timer {
+            at,
+            seconds,
+            reason,
+        } => serde_json::json!({
+            "job_id": job_id, "session_id": session_id,
+            "kind": "timer", "at": at, "seconds": seconds, "reason": reason,
+        }),
+        WaitRequest::ListTimers => serde_json::json!({
+            "job_id": job_id, "session_id": session_id, "kind": "list",
+        }),
+        WaitRequest::CancelTimer { id } => serde_json::json!({
+            "job_id": job_id, "session_id": session_id, "kind": "cancel", "id": id,
+        }),
+    };
+    let response = http
+        .post(format!("{}/v1/work/wait", api_url.trim_end_matches('/')))
+        .bearer_auth(runtime_key)
+        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("could not reach the platform to arrange that: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let why = response.text().await.unwrap_or_default();
+        return Err(if why.is_empty() { status.to_string() } else { why });
+    }
+    #[derive(serde::Deserialize)]
+    struct Arranged {
+        message: String,
+    }
+    response
+        .json::<Arranged>()
+        .await
+        .map(|a| a.message)
+        .map_err(|e| format!("the platform's answer could not be read: {e}"))
 }
 
 async fn report_gated(

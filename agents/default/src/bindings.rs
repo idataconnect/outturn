@@ -292,6 +292,29 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// When a timer is due: at a moment, or after a wait.
+            #[derive(Clone)]
+            pub enum TimerDue {
+                /// RFC 3339. With an offset it names one moment wherever it is read;
+                /// without one it is read in the zone of the person the turn is for.
+                At(_rt::String),
+                Seconds(u64),
+            }
+            impl ::core::fmt::Debug for TimerDue {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    match self {
+                        TimerDue::At(e) => {
+                            f.debug_tuple("TimerDue::At").field(e).finish()
+                        }
+                        TimerDue::Seconds(e) => {
+                            f.debug_tuple("TimerDue::Seconds").field(e).finish()
+                        }
+                    }
+                }
+            }
             /// What a tool produced.
             #[derive(Clone)]
             pub struct ToolOutcome {
@@ -1169,6 +1192,368 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// Pauses the conversation for `seconds`, then wakes it.
+            ///
+            /// The turn that asks ends at its next round boundary, and the conversation
+            /// is held until the sleep is over: anything said meanwhile waits, and is
+            /// shown to the agent when it wakes, with how long it slept and why. The
+            /// reason is shown to the people waiting, so it is a first-class part of
+            /// the request rather than a note.
+            ///
+            /// Nothing is held open while it sleeps. The host records a wakeup and
+            /// returns; the conversation's next turn starts when the wakeup is due.
+            /// Refused beyond thirty days.
+            pub fn sleep(
+                seconds: u64,
+                reason: &str,
+            ) -> Result<_rt::String, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = reason;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "sleep"]
+                        fn wit_import2(_: i64, _: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(
+                        _: i64,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import2(_rt::as_i64(&seconds), ptr0.cast_mut(), len0, ptr1)
+                    };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result10 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len6 = l5;
+                                let bytes6 = _rt::Vec::from_raw_parts(
+                                    l4.cast(),
+                                    len6,
+                                    len6,
+                                );
+                                _rt::string_lift(bytes6)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l7 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l8 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len9 = l8;
+                                let bytes9 = _rt::Vec::from_raw_parts(
+                                    l7.cast(),
+                                    len9,
+                                    len9,
+                                );
+                                _rt::string_lift(bytes9)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result10
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Asks to be woken later, without pausing anything.
+            ///
+            /// The conversation carries on as normal until the timer fires, and then
+            /// the agent is woken with the reason it gave. Refused beyond thirty days
+            /// or in the past.
+            pub fn set_timer(
+                due: &TimerDue,
+                reason: &str,
+            ) -> Result<_rt::String, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let (result1_0, result1_1, result1_2) = match due {
+                        TimerDue::At(e) => {
+                            let vec0 = e;
+                            let ptr0 = vec0.as_ptr().cast::<u8>();
+                            let len0 = vec0.len();
+                            (
+                                0i32,
+                                {
+                                    let mut t = ::core::mem::MaybeUninit::<u64>::uninit();
+                                    t.as_mut_ptr().cast::<*mut u8>().write(ptr0.cast_mut());
+                                    t
+                                },
+                                len0,
+                            )
+                        }
+                        TimerDue::Seconds(e) => {
+                            (
+                                1i32,
+                                ::core::mem::MaybeUninit::new(_rt::as_i64(e) as u64),
+                                0usize,
+                            )
+                        }
+                    };
+                    let vec2 = reason;
+                    let ptr2 = vec2.as_ptr().cast::<u8>();
+                    let len2 = vec2.len();
+                    let ptr3 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "set-timer"]
+                        fn wit_import4(
+                            _: i32,
+                            _: ::core::mem::MaybeUninit<u64>,
+                            _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: *mut u8,
+                        );
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import4(
+                        _: i32,
+                        _: ::core::mem::MaybeUninit<u64>,
+                        _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: *mut u8,
+                    ) {
+                        unreachable!()
+                    }
+                    unsafe {
+                        wit_import4(
+                            result1_0,
+                            result1_1,
+                            result1_2,
+                            ptr2.cast_mut(),
+                            len2,
+                            ptr3,
+                        )
+                    };
+                    let l5 = i32::from(*ptr3.add(0).cast::<u8>());
+                    let result12 = match l5 {
+                        0 => {
+                            let e = {
+                                let l6 = *ptr3
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l7 = *ptr3
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len8 = l7;
+                                let bytes8 = _rt::Vec::from_raw_parts(
+                                    l6.cast(),
+                                    len8,
+                                    len8,
+                                );
+                                _rt::string_lift(bytes8)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l9 = *ptr3
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l10 = *ptr3
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len11 = l10;
+                                let bytes11 = _rt::Vec::from_raw_parts(
+                                    l9.cast(),
+                                    len11,
+                                    len11,
+                                );
+                                _rt::string_lift(bytes11)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result12
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// The timers pending in this conversation, with their ids.
+            pub fn list_timers() -> Result<_rt::String, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "list-timers"]
+                        fn wit_import1(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = i32::from(*ptr0.add(0).cast::<u8>());
+                    let result9 = match l2 {
+                        0 => {
+                            let e = {
+                                let l3 = *ptr0
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l4 = *ptr0
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len5 = l4;
+                                let bytes5 = _rt::Vec::from_raw_parts(
+                                    l3.cast(),
+                                    len5,
+                                    len5,
+                                );
+                                _rt::string_lift(bytes5)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l6 = *ptr0
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l7 = *ptr0
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len8 = l7;
+                                let bytes8 = _rt::Vec::from_raw_parts(
+                                    l6.cast(),
+                                    len8,
+                                    len8,
+                                );
+                                _rt::string_lift(bytes8)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result9
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
+            /// Removes one pending timer by the id `set-timer` or `list-timers` gave.
+            pub fn cancel_timer(id: &str) -> Result<_rt::String, _rt::String> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 3 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 3
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = id;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "cancel-timer"]
+                        fn wit_import2(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import2(ptr0.cast_mut(), len0, ptr1) };
+                    let l3 = i32::from(*ptr1.add(0).cast::<u8>());
+                    let result10 = match l3 {
+                        0 => {
+                            let e = {
+                                let l4 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l5 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len6 = l5;
+                                let bytes6 = _rt::Vec::from_raw_parts(
+                                    l4.cast(),
+                                    len6,
+                                    len6,
+                                );
+                                _rt::string_lift(bytes6)
+                            };
+                            Ok(e)
+                        }
+                        1 => {
+                            let e = {
+                                let l7 = *ptr1
+                                    .add(::core::mem::size_of::<*const u8>())
+                                    .cast::<*mut u8>();
+                                let l8 = *ptr1
+                                    .add(2 * ::core::mem::size_of::<*const u8>())
+                                    .cast::<usize>();
+                                let len9 = l8;
+                                let bytes9 = _rt::Vec::from_raw_parts(
+                                    l7.cast(),
+                                    len9,
+                                    len9,
+                                );
+                                _rt::string_lift(bytes9)
+                            };
+                            Err(e)
+                        }
+                        _ => _rt::invalid_enum_discriminant(),
+                    };
+                    result10
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// Lists objects beneath a prefix.
             pub fn list_objects(
                 prefix: &str,
@@ -1520,7 +1905,8 @@ pub mod outturn {
             /// Names, matching the tools the guest exposes to the model; anything
             /// unrecognised is ignored, so a policy naming a tool this component does
             /// not have is harmless rather than fatal. An empty list defers
-            /// everything, which is the default.
+            /// everything, which is the default -- and is what the runtime sends
+            /// today, there being no policy yet that decides what to promote.
             ///
             /// Separate from `limits` because it is read once at the start of a turn,
             /// while `limits` is deliberately re-read every round to catch a stop
@@ -2647,9 +3033,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1649] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xef\x0b\x01A\x02\x01\
-A\x05\x01BT\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1797] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x83\x0d\x01A\x02\x01\
+A\x05\x01B^\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -2662,28 +3048,31 @@ parts\x06\x0dfinish-reason\x07\x05usage\x12\x04\0\x0acompletion\x03\0\x13\x01r\x
 \x04paths\x04sizew\x04\0\x0bobject-info\x03\0\x17\x01o\x02ss\x01p\x19\x01r\x04\x06\
 methods\x03urls\x07headers\x1a\x04body\x07\x04\0\x0chttp-request\x03\0\x1b\x01r\x04\
 \x06status{\x07headers\x1a\x04bodys\x09truncated\x7f\x04\0\x0dhttp-response\x03\0\
-\x1d\x01r\x04\x02ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctool-outco\
-me\x03\0\x1f\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0!\x01r\x02\x0f\
-max-tool-roundsy\x09cancelled\x7f\x04\0\x06limits\x03\0#\x01r\x04\x03nows\x07wee\
-kdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\0%\x01p}\x01j\x01'\x01s\x01\
-@\x03\x04paths\x06offsetw\x03leny\0(\x04\0\x0bread-object\x01)\x01j\x01s\x01s\x01\
-@\x02\x04paths\x08questions\0*\x04\0\x0edescribe-image\x01+\x04\0\x0aread-bytes\x01\
-)\x01j\x01\x18\x01s\x01@\x01\x04paths\0,\x04\0\x0bstat-object\x01-\x01j\x01w\x01\
-s\x01@\x02\x04paths\x04data'\0.\x04\0\x0cwrite-object\x01/\x01j\0\x01s\x01@\x01\x04\
-paths\00\x04\0\x0ddelete-object\x011\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\0\
-2\x04\0\x05fetch\x013\x01p\x18\x01j\x014\x01s\x01@\x01\x06prefixs\05\x04\0\x0cli\
-st-objects\x016\x01@\x01\x07outcome\x20\x01\0\x04\0\x0dtool-finished\x017\x01@\x01\
-\x08activity\x16\x01\0\x04\0\x0ctool-started\x018\x01p\"\x01@\0\09\x04\0\x0dpend\
-ing-input\x01:\x01@\0\0$\x04\0\x0ecurrent-limits\x01;\x01ps\x01@\0\0<\x04\0\x0be\
-ager-tools\x01=\x01j\x01\x14\x01s\x01@\x01\x07request\x0f\0>\x04\0\x04chat\x01?\x01\
-@\0\0&\x04\0\x0ccurrent-time\x01@\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01A\
-\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01B\x03\0\x18outturn:agent/h\
-ost@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07mes\
-sage\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prom\
-pts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1f\
-outturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09\
-producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
-t\x060.41.0";
+\x1d\x01q\x02\x02at\x01s\0\x07seconds\x01w\0\x04\0\x09timer-due\x03\0\x1f\x01r\x04\
+\x02ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0!\x01\
+r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0#\x01r\x02\x0fmax-tool-roun\
+dsy\x09cancelled\x7f\x04\0\x06limits\x03\0%\x01r\x04\x03nows\x07weekdays\x08time\
+zones\x0cabbreviations\x04\0\x05clock\x03\0'\x01p}\x01j\x01)\x01s\x01@\x03\x04pa\
+ths\x06offsetw\x03leny\0*\x04\0\x0bread-object\x01+\x01j\x01s\x01s\x01@\x02\x04p\
+aths\x08questions\0,\x04\0\x0edescribe-image\x01-\x04\0\x0aread-bytes\x01+\x01j\x01\
+\x18\x01s\x01@\x01\x04paths\0.\x04\0\x0bstat-object\x01/\x01j\x01w\x01s\x01@\x02\
+\x04paths\x04data)\00\x04\0\x0cwrite-object\x011\x01j\0\x01s\x01@\x01\x04paths\0\
+2\x04\0\x0ddelete-object\x013\x01j\x01\x1e\x01s\x01@\x01\x07request\x1c\04\x04\0\
+\x05fetch\x015\x01@\x02\x07secondsw\x06reasons\0,\x04\0\x05sleep\x016\x01@\x02\x03\
+due\x20\x06reasons\0,\x04\0\x09set-timer\x017\x01@\0\0,\x04\0\x0blist-timers\x01\
+8\x01@\x01\x02ids\0,\x04\0\x0ccancel-timer\x019\x01p\x18\x01j\x01:\x01s\x01@\x01\
+\x06prefixs\0;\x04\0\x0clist-objects\x01<\x01@\x01\x07outcome\"\x01\0\x04\0\x0dt\
+ool-finished\x01=\x01@\x01\x08activity\x16\x01\0\x04\0\x0ctool-started\x01>\x01p\
+$\x01@\0\0?\x04\0\x0dpending-input\x01@\x01@\0\0&\x04\0\x0ecurrent-limits\x01A\x01\
+ps\x01@\0\0\xc2\0\x04\0\x0beager-tools\x01C\x01j\x01\x14\x01s\x01@\x01\x07reques\
+t\x0f\0\xc4\0\x04\0\x04chat\x01E\x01@\0\0(\x04\0\x0ccurrent-time\x01F\x01@\x01\x04\
+texts\x01\0\x04\0\x08progress\x01G\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03\
+log\x01H\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\
+\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0c\
+conversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:a\
+gent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\
+\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compone\
+nt\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

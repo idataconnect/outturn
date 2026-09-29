@@ -176,6 +176,14 @@ fn projected_with_sources(
                     "[the platform recorded this; it is not something you said]\n\n{}",
                     message.content
                 )
+            } else if message.metadata.get(super::wake::WAKE_MARK).is_some() {
+                // In the user position, because it is what the wake turn
+                // answers, but nobody in the conversation typed it -- and read as
+                // theirs, "you slept" becomes the person telling the agent so.
+                format!(
+                    "[the platform wrote this; nobody in the conversation sent it]\n\n{}",
+                    message.content
+                )
             } else {
                 message.content.clone()
             };
@@ -717,6 +725,11 @@ impl Worker {
             .ok()
             .flatten()
             .map(|item| super::gated::answerable(&item));
+        // Or the sleep, which a person can end from the same place.
+        let asleep = super::wake::asleep(&self.pool, payload.workspace_id, payload.session_id)
+            .await
+            .ok()
+            .flatten();
 
         self.announce(
             payload,
@@ -729,6 +742,7 @@ impl Worker {
                 // hold does.
                 "resumable": resumable,
                 "approval": pending,
+                "asleep": asleep,
             }),
         )
         .await;

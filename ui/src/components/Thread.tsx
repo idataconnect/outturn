@@ -34,7 +34,7 @@ import toolRenderers from './toolRenderers'
 import Working from './Working'
 import SkillMenu from './SkillMenu'
 import type { SkillCommand } from '../lib/useSkillCommands'
-import { deleteFile, uploadFile, uploadPastedImage } from '../lib/chat'
+import { deleteFile, uploadFile, uploadPastedImage, type WakeRecord } from '../lib/chat'
 import { ApiError } from '../lib/api'
 
 /**
@@ -179,12 +179,14 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
     (s) => (s.message.metadata.custom?.status as MessageStatus | null | undefined) ?? null,
   )
   const id = useAuiState((s) => s.message.id)
+  const wake = useAuiState((s) => s.message.metadata.custom?.wake as WakeRecord | null | undefined)
 
   const finishedAt = useAuiState(
     (s) => s.message.metadata.custom?.finishedAt as string | null | undefined,
   )
   const { phrase, shown, handlers } = useMessageAge(id ?? '', finishedAt)
   const held = status ? heldLabel(status) : null
+  if (wake) return <WakeMark wake={wake} />
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
       <div
@@ -214,6 +216,43 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
           <Working phase="held" label={held} />
         </span>
       )}
+    </MessagePrimitive.Root>
+  )
+}
+
+/**
+ * Where the agent woke, drawn across the width like an approval's record.
+ *
+ * What the agent was told is not shown: it is written for a model, and the
+ * reader already has everything in it -- the reason they saw on the banner, the
+ * messages they sent above this. What they have not seen is that the wait is
+ * over and why it ended, which is what this says.
+ */
+function WakeMark({ wake }: { wake: WakeRecord }) {
+  const at = (iso: string) =>
+    new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  const answering = wake.answers?.length ?? 0
+  return (
+    <MessagePrimitive.Root className="flex justify-center">
+      <div className="my-2 w-full rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-xs text-brand-900 dark:border-brand-900 dark:bg-brand-950/40 dark:text-brand-200">
+        <p className="mb-1 text-[10px] font-medium tracking-wide uppercase">
+          {wake.kind === 'timer' ? 'Timer' : 'Awake'}
+        </p>
+        <p>
+          {wake.kind === 'timer'
+            ? `A timer set at ${at(wake.set_at)} went off`
+            : wake.woken_by
+              ? `${wake.woken_by} woke the agent at ${at(wake.woke_at)}, before ${at(wake.due_at)}`
+              : `Slept from ${at(wake.set_at)} to ${at(wake.woke_at)}`}
+          {wake.reason ? `: ${wake.reason}` : '.'}
+        </p>
+        {answering > 0 && (
+          <p className="mt-1 text-brand-700 dark:text-brand-300">
+            Answering {answering === 1 ? 'the message' : `the ${answering} messages`} sent
+            meanwhile.
+          </p>
+        )}
+      </div>
     </MessagePrimitive.Root>
   )
 }
