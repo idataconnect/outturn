@@ -55,12 +55,11 @@ pub async fn list_agents(
             .map(|agent| ListedAgent {
                 // The two things `create_session` checks, in its order.
                 can_chat: super::router::may_for_agent(
-                        &held,
-                        &reach,
-                        Authority::SessionsCreate,
-                        agent.id,
-                    )
-                    && agent.takes_conversations(),
+                    &held,
+                    &reach,
+                    Authority::SessionsCreate,
+                    agent.id,
+                ) && agent.takes_conversations(),
                 agent,
             })
             .collect(),
