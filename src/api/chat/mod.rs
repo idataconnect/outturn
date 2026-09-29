@@ -378,6 +378,15 @@ pub trait ChatStore: Send + Sync {
     /// transcript with the question the reader approved against.
     async fn attempt_for(&self, replies_to: Uuid, resuming: bool) -> Result<i32, ChatError>;
 
+    /// The attempt this prompt's latest reply is, deciding nothing.
+    ///
+    /// For callers after `attempt_for` has already chosen: the report that
+    /// streams into the reply, and the path that gives up on it. Asking
+    /// `attempt_for` again there is asking it to decide again -- and a turn
+    /// mid-stream looks exactly like one interrupted, so it would seal its own
+    /// reply and move on to a second one halfway through itself.
+    async fn current_attempt(&self, replies_to: Uuid) -> Result<i32, ChatError>;
+
     /// Records that somebody answered an approval, in the conversation it was
     /// about.
     ///

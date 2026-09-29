@@ -188,6 +188,76 @@ impl PostgresChatStore {
     }
 }
 
+impl PostgresChatStore {
+    /// Writes an interrupted attempt down from what it streamed, and says
+    /// whether there was anything to write.
+    ///
+    /// The row of a reply still streaming is empty; its words, calls and
+    /// thoughts are events until the turn finishes. A turn that never finishes
+    /// -- its lease reaped, its pod gone -- would otherwise stay that way, and
+    /// every predicate that reads the row (`said_something`, the discard, the
+    /// abandoned-placeholder guard) would call it empty while the reader had
+    /// watched it work. Folded by `replay`, the same fold a reload mid-turn uses,
+    /// so what is kept is what was on screen.
+    ///
+    /// Marked `interrupted`, because it is not a reply that ended: it is the
+    /// record of one that stopped, and the attempt after it is the answer.
+    async fn seal_interrupted(&self, message_id: Uuid) -> Result<bool, ChatError> {
+        let events: serde_json::Value = sqlx::query_scalar(
+            "select coalesce(jsonb_agg(jsonb_build_object( \
+                        'kind', e.kind, 'payload', e.payload, 'at', e.created_at) \
+                        order by e.id), '[]'::jsonb) \
+             from agent_messages m \
+             join events e on e.session_id = m.session_id \
+             where m.id = $1 \
+               and e.kind in ('chat.delta', 'chat.reasoning', 'chat.tool', \
+                              'chat.tool_result', 'chat.steer') \
+               and (e.payload->>'message_id')::uuid = m.id",
+        )
+        .bind(message_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let said = events.as_array().is_some_and(|events| {
+            events.iter().any(|e| {
+                matches!(
+                    e["kind"].as_str(),
+                    Some("chat.delta" | "chat.tool" | "chat.reasoning")
+                )
+            })
+        });
+        if !said {
+            return Ok(false);
+        }
+
+        let content: String = events
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["kind"] == "chat.delta")
+            .filter_map(|e| e["payload"]["text"].as_str())
+            .collect();
+        let mut metadata = replay(serde_json::json!({}), &events);
+        metadata["interrupted"] = serde_json::Value::Bool(true);
+
+        // `finished_at is null`: a turn that did finish in the meantime wrote
+        // the better record, and this one must not replace it.
+        sqlx::query(
+            "update agent_messages \
+             set content = $2, metadata = metadata || $3, finished_at = now() \
+             where id = $1 and finished_at is null",
+        )
+        .bind(message_id)
+        .bind(content)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(true)
+    }
+}
+
 /// A reply still being written, rebuilt from the events it has produced.
 ///
 /// Its row is empty until the turn ends, so the text comes back from the
@@ -595,8 +665,8 @@ impl ChatStore for PostgresChatStore {
     }
 
     async fn attempt_for(&self, replies_to: Uuid, resuming: bool) -> Result<i32, ChatError> {
-        let latest: Option<(i32, bool, bool)> = sqlx::query_as(
-            "select attempt, finished_at is not null, \
+        let latest: Option<(Uuid, i32, bool, bool)> = sqlx::query_as(
+            "select id, attempt, finished_at is not null, \
                     said_something(content, metadata) \
              from agent_messages where replies_to = $1 \
              order by attempt desc limit 1",
@@ -611,7 +681,7 @@ impl ChatStore for PostgresChatStore {
             None => 1,
             // Resuming after somebody answered, and the attempt they answered
             // about is finished. The next one, so that reply stays as it was.
-            Some((attempt, true, _)) if resuming => attempt + 1,
+            Some((_, attempt, true, _)) if resuming => attempt + 1,
             // An attempt that put something on the reader's screen. The next
             // one, whatever brought this turn back.
             //
@@ -623,15 +693,33 @@ impl ChatStore for PostgresChatStore {
             // with a one-sentence answer. The calls were on screen while they
             // happened and then were not, which is the message changing under
             // the reader by a path nobody had thought of.
-            //
-            // So the question is not whether the attempt finished but whether
-            // it said anything, which is the same `said_something` the discard
-            // and the abandoned guard use. An attempt that truly produced
-            // nothing is still taken back, because an empty row stranded past a
-            // new one is what the abandoned-placeholder guard trips over.
-            Some((attempt, _, true)) => attempt + 1,
-            Some((attempt, _, _)) => attempt,
+            Some((_, attempt, _, true)) => attempt + 1,
+            // Unfinished, and its row empty -- which is what *every* attempt
+            // still streaming looks like, because a reply's row is written once,
+            // when it finishes. What it said is in its events. Asking the row
+            // alone kept nothing a crash interrupted, which was the whole case.
+            Some((id, attempt, false, false)) => {
+                if self.seal_interrupted(id).await? {
+                    attempt + 1
+                } else {
+                    // Truly nothing: taken back, because an empty row stranded
+                    // past a new one is what the abandoned-placeholder guard
+                    // trips over.
+                    attempt
+                }
+            }
+            Some((_, attempt, true, false)) => attempt,
         })
+    }
+
+    async fn current_attempt(&self, replies_to: Uuid) -> Result<i32, ChatError> {
+        let latest: Option<i32> =
+            sqlx::query_scalar("select max(attempt) from agent_messages where replies_to = $1")
+                .bind(replies_to)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(latest.unwrap_or(1))
     }
 
     async fn discard_placeholder(&self, replies_to: Uuid, attempt: i32) -> Result<(), ChatError> {
