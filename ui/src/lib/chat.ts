@@ -83,6 +83,10 @@ export type Message = {
      *  something the agent said, so a reader can see that their conversation
      *  was compacted and what it was replaced by. */
     summary_through?: string
+    /** Present on a reply whose turn was cut off -- its runtime lost, its
+     *  lease reaped -- and started again. What it streamed is kept, because the
+     *  reader watched it happen; the attempt after it is the answer. */
+    interrupted?: boolean
     /** Present when this message records somebody answering an approval.
      *  Drawn as a boundary rather than as speech: the agent did not say it,
      *  the platform recorded what a person decided. */

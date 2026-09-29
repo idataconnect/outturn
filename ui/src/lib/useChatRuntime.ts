@@ -271,6 +271,11 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // here so the thread can draw it as the boundary it is: everything above
       // it is what the agent now remembers of what came before.
       summary: message.metadata.summary_through != null,
+      // A reply cut off partway and started again. Kept rather than replaced,
+      // because the reader watched it happen -- but drawn as ordinary speech
+      // with nothing to say it stopped, it reads as an answer followed by a
+      // second, unrelated one.
+      interrupted: message.metadata.interrupted === true,
       // What somebody decided about an approval, drawn as the boundary it is
       // rather than as speech. Stored as a `system` message because the
       // platform recorded it and the agent did not say it -- and without it a
