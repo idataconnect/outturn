@@ -4,12 +4,19 @@ A skill as a set of files rather than one body: which of them the prompt
 carries, which the agent reads when it needs them, and why the set has to be
 versioned as a whole.
 
-Built, except the UI. A version carries files: stored by hash, listed with
+Built. A version carries files: stored by hash, listed with
 the version, carried forward by a body-only edit, copied by a fork, and
 readable through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An
 agent reads them as `skill/<slug>/<path>`, from the version its binding
 resolved to, whatever its storage scopes. Hollowbrook's component installs
 this way.
+
+The skill editor edits the files beside the instructions, as a set published
+with the version: a change to either is a new version, an edit to the
+instructions alone keeps the files, and restoring an old version brings its
+files back with its words. It flags a file the instructions never name, since
+files are never sent and the agent reads only what it is pointed at -- and
+marks one that declares an approval.
 
 ## Why a body is not enough
 

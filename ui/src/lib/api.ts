@@ -26,14 +26,24 @@ export class NetworkError extends Error {}
  * that fails is the session really over.
  */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return withRefresh(path, () => call<T>(path, init))
+}
+
+/** As `api`, for an endpoint that answers with text rather than JSON -- a
+ *  skill file, which is prose and stored as it was written. */
+export async function apiText(path: string, init: RequestInit = {}): Promise<string> {
+  return withRefresh(path, () => call<string>(path, init, 'text'))
+}
+
+async function withRefresh<T>(path: string, attempt: () => Promise<T>): Promise<T> {
   try {
-    return await call<T>(path, init)
+    return await attempt()
   } catch (e) {
     if (!(e instanceof ApiError) || e.status !== 401 || path === REFRESH_PATH) {
       throw e
     }
     await refreshSession()
-    return await call<T>(path, init)
+    return await attempt()
   }
 }
 
@@ -53,7 +63,11 @@ function refreshSession(): Promise<void> {
   return refreshInFlight
 }
 
-async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function call<T>(
+  path: string,
+  init: RequestInit = {},
+  as: 'json' | 'text' = 'json',
+): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !headers.has('content-type')) {
     headers.set('content-type', 'application/json')
@@ -87,5 +101,6 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (response.status === 204) return undefined as T
+  if (as === 'text') return (await response.text()) as T
   return (await response.json()) as T
 }

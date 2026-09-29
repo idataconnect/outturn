@@ -58,7 +58,7 @@ turn, so everything in it is paid for continuously.
 
 **Package** — **one skill** published as a body plus a set of files, versioned
 together. The body is a manifest naming operations; each file says how to call
-one, read on demand with `read_object`. Built, but for the UI.
+one, read on demand with `read_object`. Built.
 [skill-packages.md](skill-packages.md).
 
 **Bundle** — **several skills** shipped, enabled and versioned as one thing,
