@@ -433,10 +433,13 @@ async fn a_turn_resuming_after_an_approval_keeps_the_refused_reply() {
         2,
         "a resumed turn must not take back the reply somebody answered against"
     );
+    // Nor does a crash take it back, now that the question is whether the
+    // attempt said anything rather than whether it finished. This reply has
+    // words in it; a reader saw them.
     assert_eq!(
         chat.attempt_for(prompt, false).await.expect("retrying"),
-        1,
-        "a crashed retry still takes its own attempt back"
+        2,
+        "a crash must not overwrite a reply the reader already saw"
     );
 
     let second = chat
@@ -647,6 +650,83 @@ async fn a_declined_turn_keeps_the_reply_it_was_refused_on() {
         kept, "I need approval to charge that.",
         "the refusal the person declined is the record of what they declined"
     );
+
+    db.cleanup().await;
+}
+
+/// A crashed retry takes its attempt back only when there is nothing to lose.
+///
+/// The empty case is why the rule exists: a placeholder stranded past a newer
+/// attempt is what the abandoned-placeholder guard trips over, and that wedges
+/// the session.
+#[tokio::test]
+async fn a_crash_takes_back_an_attempt_that_said_nothing() {
+    use outturn::api::chat::{ChatStore, PostgresChatStore};
+
+    let (db, ws) = setup().await;
+    let (chat, prompt) = a_prompt(&db, ws).await;
+
+    // Claimed and never written to: the pod died before the first token.
+    chat.claim_placeholder(prompt, prompt_session(&db, prompt).await, 1)
+        .await
+        .expect("placeholder");
+
+    assert_eq!(
+        chat.attempt_for(prompt, false).await.expect("retrying"),
+        1,
+        "an empty attempt is taken back rather than stranded"
+    );
+
+    db.cleanup().await;
+}
+
+/// The bug a real session found: a turn that streamed tool calls, was reaped
+/// mid-flight, and had the calls overwritten by the retry's one-line answer.
+///
+/// Eight minutes, six calls, all of it on the reader's screen while it
+/// happened -- and then replaced. The old rule kept only a *finished* attempt,
+/// on the reasoning that a crash had produced nothing anybody saw. A turn that
+/// streams makes that false.
+#[tokio::test]
+async fn a_crash_keeps_an_unfinished_attempt_that_made_tool_calls() {
+    use outturn::api::chat::{ChatStore, PostgresChatStore};
+
+    let (db, ws) = setup().await;
+    let (chat, prompt) = a_prompt(&db, ws).await;
+
+    let streaming = chat
+        .claim_placeholder(prompt, prompt_session(&db, prompt).await, 1)
+        .await
+        .expect("placeholder");
+
+    // Calls recorded as they were made. No content and no `finished_at`: the
+    // turn is still running, which is exactly when the lease was reaped.
+    sqlx::query("update agent_messages set metadata = $2 where id = $1")
+        .bind(streaming.message.id)
+        .bind(serde_json::json!({
+            "tool_calls": [
+                {"id": "c1", "name": "fetch_url", "action": "Checking the Rose Room"},
+                {"id": "c2", "name": "fetch_url", "action": "Checking Friday"},
+            ],
+        }))
+        .execute(&db.pool)
+        .await
+        .expect("calls");
+
+    assert_eq!(
+        chat.attempt_for(prompt, false).await.expect("retrying"),
+        2,
+        "a reaped turn must not overwrite the calls a reader watched happen"
+    );
+
+    let kept: i32 = sqlx::query_scalar(
+        "select jsonb_array_length(metadata->'tool_calls') from agent_messages where id = $1",
+    )
+    .bind(streaming.message.id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("still there");
+    assert_eq!(kept, 2, "and the calls are still in the transcript");
 
     db.cleanup().await;
 }

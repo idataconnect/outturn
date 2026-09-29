@@ -474,6 +474,14 @@ needed approving. `chat::attempt_for` is the one place that decides which of the
 two this is, because two call sites claim the same placeholder for one turn and a
 number computed twice can differ.
 
+What decides is whether the attempt *said* anything, not whether it finished.
+The rule used to keep only a finished attempt, reasoning that a crash had
+produced nothing anybody saw -- which a streaming turn makes false. One ran for
+eight minutes, made six tool calls, had its lease reaped, and the retry took the
+row back and overwrote all of it with a one-sentence answer: the calls were on
+the reader's screen while they happened and then were not. `said_something` is
+the question, the same predicate the discard and the abandoned guard ask.
+
 An attempt that never *finished* is taken back even when resuming: an empty reply
 stranded past a new attempt is what the abandoned-placeholder guard trips over,
 and that wedges the session.
