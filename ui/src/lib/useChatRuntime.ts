@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { mintedAt } from './elapsed'
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -538,6 +539,9 @@ export function useChatRuntime(
   const clearHeld = useCallback(() => setHeld(null), [])
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
+  /** When the thought each reply is writing now began, from its first
+   *  fragment's id. The browser's half of `parts::Builder::thinking_since`. */
+  const thinkingSince = useRef<Map<string, number>>(new Map())
   /** Replies known to be starting over, until their first delta. */
   const [retrying, setRetrying] = useState<Set<string>>(() => new Set())
   /** Why a user message's turn failed, by user message id. */
@@ -785,6 +789,13 @@ export function useChatRuntime(
               // folded into content, so there is nothing for a missing fragment
               // to corrupt and a refetch would only show it twice.
               const { message_id, text } = event.payload
+              // Timed from the events' own ids, which are when the API stored
+              // each fragment -- the clock a reload measures with, so a thought
+              // reads the same duration streamed as reloaded. Measured here
+              // rather than waiting for the stored parts, which a tab that
+              // watched the turn never reads: its thoughts showed no time at
+              // all until somebody reloaded.
+              const at = mintedAt(event.id)
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== message_id) return m
@@ -793,13 +804,23 @@ export function useChatRuntime(
                   // what a reload rebuilds are the same message.
                   const parts = [...(m.metadata.parts ?? [])]
                   const last = parts[parts.length - 1]
-                  // Live, the duration is measured by the API and arrives with
-                  // the stored parts; while streaming the reader has the pulsing
-                  // "Thinking..." instead, which says the same thing better than
-                  // a number climbing a tenth at a time.
                   if (last && last.type === 'reasoning') {
-                    parts[parts.length - 1] = { ...last, text: last.text + text }
+                    // A thought this tab did not see begin -- it was reloaded
+                    // partway -- is taken to have run up to its stored length
+                    // without a gap, which errs by at most one poll.
+                    const since =
+                      thinkingSince.current.get(m.id) ??
+                      (at === null ? undefined : at - (last.ms ?? 0))
+                    if (since !== undefined) thinkingSince.current.set(m.id, since)
+                    const ms = at === null || since === undefined ? last.ms : Math.max(0, at - since)
+                    parts[parts.length - 1] = {
+                      type: 'reasoning',
+                      text: last.text + text,
+                      ...(ms === undefined ? {} : { ms }),
+                    }
                   } else {
+                    if (at === null) thinkingSince.current.delete(m.id)
+                    else thinkingSince.current.set(m.id, at)
                     parts.push({ type: 'reasoning', text })
                   }
                   return { ...m, metadata: { ...m.metadata, parts } }
