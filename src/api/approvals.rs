@@ -286,6 +286,17 @@ pub async fn answer(
         }
     };
 
+    // Only approvals are answered here. A sleep sits in the same queue but ends
+    // through `wake::wake_now`, which writes the note the agent wakes to in the
+    // same transaction; settled here, the hold would lift with no note, and each
+    // message sent meanwhile would get a turn of its own.
+    if !item.kind.starts_with("approval.") {
+        return Err((
+            StatusCode::CONFLICT,
+            "this is not an approval".to_string(),
+        ));
+    }
+
     // Now that the item is known, and before anything is written.
     require_in(
         &state,
@@ -348,6 +359,7 @@ pub async fn answer(
             note: input.note.as_deref(),
             hold: held,
             grant,
+            wake: None,
         })
         .await
         .map_err(|e| match e {

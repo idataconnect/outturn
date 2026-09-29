@@ -72,6 +72,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_write: None,
         on_absorbed: None,
         on_gated: None,
+        on_wait: None,
         storage: None,
         workspace_id: Uuid::now_v7(),
         agent_id: Uuid::now_v7(),

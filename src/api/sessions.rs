@@ -71,7 +71,7 @@ pub async fn list_sessions(
 /// long as they like. Refusing new sessions while leaving old ones live
 /// narrows the roster and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ownership {
+pub(super) enum Ownership {
     /// Started it, so it is theirs.
     Suffices,
     /// Started it, and that is not the question being asked.
@@ -92,7 +92,7 @@ enum Ownership {
 /// accounting agent's conversations cannot be deleted either -- otherwise the
 /// narrowing hides conversations it leaves fully writable to whoever has the
 /// id, and ids travel in URLs.
-async fn session_for(
+pub(super) async fn session_for(
     state: &ApiState,
     claims: &crate::auth::SessionClaims,
     id: Uuid,

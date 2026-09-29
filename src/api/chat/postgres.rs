@@ -168,8 +168,17 @@ impl PostgresChatStore {
             None => None,
         };
 
+        // And whether it is asleep, for the same reason.
+        let asleep = match workspace_id {
+            Some(workspace_id) => super::super::wake::asleep(&self.pool, workspace_id, session_id)
+                .await
+                .map_err(internal)?,
+            None => None,
+        };
+
         Ok(History {
             awaiting,
+            asleep,
             messages: rows
                 .iter()
                 .map(|row| {

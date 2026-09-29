@@ -213,6 +213,40 @@ interface host {
     /// location asks for it.
     fetch: func(request: http-request) -> result<http-response, string>;
 
+    /// When a timer is due: at a moment, or after a wait.
+    variant timer-due {
+        /// RFC 3339. With an offset it names one moment wherever it is read;
+        /// without one it is read in the zone of the person the turn is for.
+        at(string),
+        seconds(u64),
+    }
+
+    /// Pauses the conversation for `seconds`, then wakes it.
+    ///
+    /// The turn that asks ends at its next round boundary, and the conversation
+    /// is held until the sleep is over: anything said meanwhile waits, and is
+    /// shown to the agent when it wakes, with how long it slept and why. The
+    /// reason is shown to the people waiting, so it is a first-class part of
+    /// the request rather than a note.
+    ///
+    /// Nothing is held open while it sleeps. The host records a wakeup and
+    /// returns; the conversation's next turn starts when the wakeup is due.
+    /// Refused beyond thirty days.
+    sleep: func(seconds: u64, reason: string) -> result<string, string>;
+
+    /// Asks to be woken later, without pausing anything.
+    ///
+    /// The conversation carries on as normal until the timer fires, and then
+    /// the agent is woken with the reason it gave. Refused beyond thirty days
+    /// or in the past.
+    set-timer: func(due: timer-due, reason: string) -> result<string, string>;
+
+    /// The timers pending in this conversation, with their ids.
+    list-timers: func() -> result<string, string>;
+
+    /// Removes one pending timer by the id `set-timer` or `list-timers` gave.
+    cancel-timer: func(id: string) -> result<string, string>;
+
     /// Lists objects beneath a prefix.
     list-objects: func(prefix: string) -> result<list<object-info>, string>;
 

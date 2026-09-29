@@ -13,6 +13,7 @@ pub mod grant;
 pub mod inhibitor;
 mod login;
 pub mod naming;
+pub mod wake;
 pub mod role;
 mod router;
 pub mod schedule;

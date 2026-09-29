@@ -6,6 +6,7 @@ import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
 import { useSkillCommands } from '../lib/useSkillCommands'
 
 import ApprovalPrompt from '../components/ApprovalPrompt'
+import SleepBanner from '../components/SleepBanner'
 import Thread from '../components/Thread'
 import AgentList from '../components/AgentList'
 import FilesPanel from '../components/FilesPanel'
@@ -416,17 +417,24 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
           // shape, and the band that is holding the conversation up looks like
           // part of the transcript rather than something across it.
           <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
-            <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
-              {/* "Hold" is a word from inside this platform, and the sentence
-                  was also passive about something the reader is often the one
-                  to do. Said as what happens next, to them. */}
-              {held.message}
-              {held.resumable
-                ? held.approval
-                  ? ' \u2014 it will carry on as soon as somebody answers.'
-                  : ' \u2014 it will carry on by itself once this is sorted.'
-                : ' \u2014 send a message to pick it up again once this is sorted.'}
-            </p>
+            {/* A sleep is a pause the agent chose, not a fault or a question,
+                so it is not drawn in the amber of one. Anybody who may send
+                here may end it: sending is what it holds back. */}
+            {held.asleep && active ? (
+              <SleepBanner sessionId={active} asleep={held.asleep} onWoken={clearHeld} />
+            ) : (
+              <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+                {/* "Hold" is a word from inside this platform, and the sentence
+                    was also passive about something the reader is often the one
+                    to do. Said as what happens next, to them. */}
+                {held.message}
+                {held.resumable
+                  ? held.approval
+                    ? ' \u2014 it will carry on as soon as somebody answers.'
+                    : ' \u2014 it will carry on by itself once this is sorted.'
+                  : ' \u2014 send a message to pick it up again once this is sorted.'}
+              </p>
+            )}
             {/* Answerable here when the hold is an approval. The queue remains
                 the place to find every pending decision; this is for the person
                 who was already looking -- and whether they may answer is the

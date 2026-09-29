@@ -111,6 +111,10 @@ pub struct History {
     /// Null when nothing is pending, which is nearly always.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting: Option<serde_json::Value>,
+    /// The sleep this conversation is in, if the agent is asleep. See
+    /// `wake::asleep`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asleep: Option<serde_json::Value>,
 }
 
 /// How a message reaches a turn that is already running.

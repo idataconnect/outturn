@@ -38,6 +38,14 @@ const EXPAND_ARCHIVE: &str = "expand_archive";
 const DESCRIBE_IMAGE: &str = "describe_image";
 const CREATE_ARCHIVE: &str = "create_archive";
 
+/// The model's names for waiting. Two tools rather than one with a flag, because
+/// the choice is one the model reasons about: whether the conversation should
+/// stop while it waits, or carry on.
+const SLEEP: &str = "sleep";
+const TIMER: &str = "set_timer";
+const LIST_TIMERS: &str = "list_timers";
+const CANCEL_TIMER: &str = "cancel_timer";
+
 /// The model's name for the tool that loads other tools.
 ///
 /// Always offered, and never itself deferred: it is the only way to reach
@@ -194,6 +202,56 @@ fn all_tools() -> Vec<ToolDefinition> {
                       new location."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Absolute https URL."},"method":{"type":"string","description":"GET, POST, PUT, PATCH, DELETE or HEAD. Defaults to GET.","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]},"headers":{"type":"object","description":"Extra headers, as a flat object. Leave authorization out; it is added for you.","additionalProperties":{"type":"string"}},"body":{"type":"string","description":"Request body, for methods that take one."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking up the exchange rate."}},"required":["url","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: SLEEP.to_string(),
+        description: "Pause this conversation for a number of seconds, then carry \
+                      on. Use it when you are waiting on something outside the \
+                      conversation -- a payment to clear, a job to finish -- and \
+                      nothing useful can happen until then. Your turn ends when \
+                      you call it. While you sleep the conversation is paused: \
+                      anything the user sends waits, and when you wake you are \
+                      shown it together with how long you slept and why. The \
+                      reason is shown to the user while you sleep, so write it \
+                      for them. If the conversation should carry on meanwhile, \
+                      use set_timer instead."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":2592000,"description":"How long to sleep, in seconds. At most 30 days."},"reason":{"type":"string","description":"What you are waiting for, written for the user, e.g. Waiting for the deposit to clear."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Waiting for the deposit to clear."}},"required":["seconds","reason","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: TIMER.to_string(),
+        description: "Ask to be woken later, without pausing anything. The \
+                      conversation carries on as normal -- you can keep working \
+                      and replying -- and when the timer fires you are woken \
+                      with the reason you gave. Use it to come back to \
+                      something: check again tomorrow at nine, follow up in an \
+                      hour. Give either an exact time or a number of seconds, \
+                      not both. For an exact time, call get_current_time first \
+                      rather than guessing today's date. Setting a timer never \
+                      replaces one: to move a timer, cancel the old one with \
+                      cancel_timer and set a new one."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"at":{"type":"string","description":"When to wake, as a local date and time in the user's own time zone with no offset, e.g. 2026-10-01T09:00:00. Only add an offset if the user named a different zone, and then it must be that zone's offset."},"seconds":{"type":"integer","minimum":1,"maximum":2592000,"description":"How long from now to wake, in seconds. At most 30 days."},"reason":{"type":"string","description":"What to do when woken, e.g. Check whether the invoice was paid."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Setting a reminder for tomorrow."}},"required":["reason","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: LIST_TIMERS.to_string(),
+        description: "List the timers pending in this conversation: each one's \
+                      id, when it fires and why. Check this before telling the \
+                      user what reminders are set."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking your reminders."}},"required":["action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: CANCEL_TIMER.to_string(),
+        description: "Cancel a pending timer by its id, from set_timer or \
+                      list_timers. Use it when a reminder is no longer wanted, \
+                      or to move one: cancel it, then set a new one."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"id":{"type":"string","description":"The timer's id."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Cancelling the 9pm reminder."}},"required":["id","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -864,6 +922,72 @@ fn create_archive(args: &serde_json::Value) -> String {
 /// request and its answer into something worth reading: a refusal says why in
 /// a sentence, because a tool that fails opaquely gets called again the same
 /// way, and a body that was cut short says so rather than trailing off.
+/// Asks the host to pause the conversation and wake it later.
+///
+/// Nothing else here: the host ends the turn at its next round boundary, and
+/// the wakeup, the hold and who is told are the platform's to arrange.
+fn sleep(args: &serde_json::Value) -> String {
+    let Some(seconds) = args.get("seconds").and_then(|s| s.as_u64()).filter(|s| *s > 0) else {
+        return serde_json::json!({ "error": "seconds must be a whole number above zero" })
+            .to_string();
+    };
+    let reason = arg(args, "reason");
+    if reason.trim().is_empty() {
+        return serde_json::json!({ "error": "give a reason: it is shown to the user while you sleep" })
+            .to_string();
+    }
+    match host::sleep(seconds, reason) {
+        Ok(result) => result,
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
+/// Asks the host to wake this conversation later, pausing nothing.
+fn set_timer(args: &serde_json::Value) -> String {
+    let at = arg(args, "at");
+    let seconds = args.get("seconds").and_then(|s| s.as_u64());
+    let due = match (at.trim().is_empty(), seconds) {
+        (false, None) => host::TimerDue::At(at.trim().to_string()),
+        (true, Some(s)) if s > 0 => host::TimerDue::Seconds(s),
+        (false, Some(_)) => {
+            return serde_json::json!({ "error": "give either at or seconds, not both" }).to_string();
+        }
+        _ => {
+            return serde_json::json!({ "error": "give at (an RFC 3339 time) or seconds (above zero)" })
+                .to_string();
+        }
+    };
+    let reason = arg(args, "reason");
+    if reason.trim().is_empty() {
+        return serde_json::json!({ "error": "give a reason: it is what you are woken with" })
+            .to_string();
+    }
+    match host::set_timer(&due, reason) {
+        Ok(result) => result,
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
+/// The timers pending in this conversation, as the platform lists them.
+fn list_timers() -> String {
+    match host::list_timers() {
+        Ok(result) => result,
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
+/// Asks the host to remove one pending timer.
+fn cancel_timer(args: &serde_json::Value) -> String {
+    let id = arg(args, "id").trim();
+    if id.is_empty() {
+        return serde_json::json!({ "error": "give the id of the timer to cancel" }).to_string();
+    }
+    match host::cancel_timer(id) {
+        Ok(result) => result,
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
+}
+
 fn fetch_url(args: &serde_json::Value) -> String {
     let url = arg(args, "url");
     if url.is_empty() {
@@ -963,6 +1087,10 @@ fn run_tool(
         DESCRIBE_IMAGE => describe_image(&args),
         EXPAND_ARCHIVE => expand_archive(&args),
         CREATE_ARCHIVE => create_archive(&args),
+        SLEEP => sleep(&args),
+        TIMER => set_timer(&args),
+        LIST_TIMERS => list_timers(),
+        CANCEL_TIMER => cancel_timer(&args),
         CURRENT_TIME => {
             let clock = host::current_time();
             // The weekday is given rather than left to be worked out: a model

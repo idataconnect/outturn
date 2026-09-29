@@ -212,6 +212,13 @@ async fn main() {
         );
     }
 
+    // Sleeps and timers coming due. Needs only the database, so it runs
+    // whatever else is configured.
+    outturn::api::wake::spawn(
+        pool.clone(),
+        std::sync::Arc::new(outturn::api::actions::PostgresActionStore::new(pool.clone())),
+        health.shutdown_signal(),
+    );
     outturn::api::naming::spawn(
         pool.clone(),
         chat.clone(),
