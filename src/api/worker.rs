@@ -604,6 +604,16 @@ pub(super) struct TurnOutcome {
     provider: Option<String>,
 }
 
+/// A runtime reported on a turn it no longer holds.
+///
+/// Its own type so the report endpoint can answer it as a refusal rather than a
+/// fault: the lease lapsed, the turn was handed on, and this pod's account of it
+/// is simply no longer wanted. Folded into every other error it came back as a
+/// 500, which reads as the API being broken.
+#[derive(Debug, thiserror::Error)]
+#[error("the lease on this turn lapsed while it was being reported")]
+pub struct LeaseLost;
+
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
@@ -2129,6 +2139,18 @@ impl Worker {
             Ok(reply) => reply,
             Err(e) => {
                 tracing::error!(job_id = %job_id, error = %e, "chat turn failed");
+                // Before anything is said about the failure. A pod whose lease
+                // lapsed is reporting on a turn another pod may now be running:
+                // announcing `chat.error` would tell that session's reader a
+                // live turn had failed, and abandoning would discard the reply
+                // the new holder is streaming into.
+                let still_ours = match lease_token {
+                    Some(token) => jobs::holds_lease(&self.pool, job_id, token).await?,
+                    None => true,
+                };
+                if !still_ours {
+                    return Err(LeaseLost.into());
+                }
                 if job.attempts >= job.max_attempts {
                     self.abandon_payload(&payload, &e.to_string()).await;
                 } else {
@@ -2141,14 +2163,20 @@ impl Worker {
                     )
                     .await;
                 }
-                jobs::fail(
+                match jobs::fail(
                     &self.pool,
                     job_id,
                     &e.to_string(),
                     Duration::from_secs(5),
                     lease_token,
                 )
-                .await?;
+                .await
+                {
+                    Ok(()) => {}
+                    // Lost between the check above and here.
+                    Err(jobs::JobError::NotFound) => return Err(LeaseLost.into()),
+                    Err(other) => return Err(other.into()),
+                }
                 return Ok(());
             }
         };
@@ -2164,7 +2192,7 @@ impl Worker {
             None => false,
         };
         if !still_ours {
-            anyhow::bail!("the lease on this turn lapsed while it was being reported");
+            return Err(LeaseLost.into());
         }
 
         let agent = self
