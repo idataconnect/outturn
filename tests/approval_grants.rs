@@ -766,3 +766,62 @@ async fn a_crash_keeps_an_unfinished_attempt_that_made_tool_calls() {
 
     db.cleanup().await;
 }
+
+/// The other way the same row lied: a turn that streamed and then failed for
+/// good had its reply *deleted*, because the discard asked the row whether it
+/// said anything and the row is written only when a turn finishes. Six tool
+/// calls a reader had watched vanished on the last failed attempt.
+#[tokio::test]
+async fn giving_up_keeps_a_reply_that_streamed_and_drops_one_that_did_not() {
+    use outturn::api::chat::ChatStore;
+
+    let (db, ws) = setup().await;
+    let (chat, prompt) = a_prompt(&db, ws).await;
+    let session = prompt_session(&db, prompt).await;
+
+    let streamed = chat
+        .claim_placeholder(prompt, session, 1)
+        .await
+        .expect("placeholder");
+    outturn::events::append(
+        &db.pool,
+        ws,
+        Some(session),
+        "chat.tool",
+        serde_json::json!({"message_id": streamed.message.id,
+            "call": {"id": "c1", "name": "fetch_url", "action": "Checking the Rose Room"}}),
+    )
+    .await
+    .expect("event");
+
+    chat.discard_placeholder(prompt, 1).await.expect("discard");
+    let kept: Option<bool> = sqlx::query_scalar(
+        "select (metadata->>'interrupted')::bool from agent_messages where id = $1",
+    )
+    .bind(streamed.message.id)
+    .fetch_optional(&db.pool)
+    .await
+    .expect("read");
+    assert_eq!(
+        kept,
+        Some(true),
+        "the reply the reader watched is kept, marked"
+    );
+
+    // A second prompt whose reply never streamed a thing is still cleared, or
+    // it strands the session on the abandoned-placeholder guard.
+    let (chat, prompt) = a_prompt(&db, ws).await;
+    let empty = chat
+        .claim_placeholder(prompt, prompt_session(&db, prompt).await, 1)
+        .await
+        .expect("placeholder");
+    chat.discard_placeholder(prompt, 1).await.expect("discard");
+    let gone: Option<Uuid> = sqlx::query_scalar("select id from agent_messages where id = $1")
+        .bind(empty.message.id)
+        .fetch_optional(&db.pool)
+        .await
+        .expect("read");
+    assert!(gone.is_none(), "an empty reply is still cleared");
+
+    db.cleanup().await;
+}

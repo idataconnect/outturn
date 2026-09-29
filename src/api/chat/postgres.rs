@@ -737,6 +737,24 @@ impl ChatStore for PostgresChatStore {
         // abandoned-placeholder guard below. Written out twice before that, and
         // the two had already drifted once: an exclusion added here was missed
         // there, under a comment claiming a parity that did not exist.
+        //
+        // Asked of the row, "nothing in it" is also true of a reply that
+        // streamed for minutes and then died, because the row is written only
+        // when a turn finishes. That deleted six tool calls a reader had
+        // watched, on the turn's last failed attempt. So an unfinished reply is
+        // first sealed from its events, which makes it say something if it did.
+        let unfinished: Option<Uuid> = sqlx::query_scalar(
+            "select id from agent_messages \
+             where replies_to = $1 and attempt = $2 and finished_at is null",
+        )
+        .bind(replies_to)
+        .bind(attempt)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if let Some(id) = unfinished {
+            self.seal_interrupted(id).await?;
+        }
         sqlx::query(
             "delete from agent_messages \
              where replies_to = $1 and attempt = $2 \
