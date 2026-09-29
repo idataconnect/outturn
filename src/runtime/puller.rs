@@ -36,6 +36,9 @@ const ERROR_PAUSE: Duration = Duration::from_secs(2);
 struct Assignment {
     job_id: Uuid,
     gateway_token: String,
+    /// Absent from an API that predates refreshing, which then never happens.
+    #[serde(default)]
+    gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Quoted back on every report, so the API can tell this pod's account
     /// of the turn from a later holder's.
     lease_token: Uuid,
@@ -211,6 +214,27 @@ impl Puller {
             session_id: request.session_id,
             gateway_url: self.gateway_url.clone(),
             gateway_token: assignment.gateway_token,
+            gateway_token_expires_at: assignment.gateway_token_expires_at,
+            refresh_token: Some({
+                let api_url = self.api_url.clone();
+                let runtime_key = self.runtime_key.clone();
+                let http = self.http.clone();
+                Arc::new(move |current: String| {
+                    let api_url = api_url.clone();
+                    let runtime_key = runtime_key.clone();
+                    let http = http.clone();
+                    Box::pin(async move {
+                        refresh_token(&http, &api_url, &runtime_key, lease, job_id, current).await
+                    })
+                        as std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = Option<(String, chrono::DateTime<chrono::Utc>)>,
+                                    > + Send,
+                            >,
+                        >
+                })
+            }),
             // Relayed, not read. The gateway checks it against the commitment in
             // the turn token, which this tier cannot write.
             gates: request.gates.clone(),
@@ -399,6 +423,44 @@ impl Puller {
 /// Returns whether the turn should expect to park. False on any failure: the
 /// request has already been refused, so the worst case is an agent told less
 /// than it could have been rather than one that proceeds when it should not.
+/// Trades a running turn's gateway token for a fresh one.
+///
+/// Presents the lease as every other report does, and the current token so the
+/// API can copy its commitments into the new one rather than recompute them.
+/// `None` on any failure: the caller keeps the token it has.
+async fn refresh_token(
+    http: &reqwest::Client,
+    api_url: &str,
+    runtime_key: &str,
+    lease: Uuid,
+    job_id: Uuid,
+    current: String,
+) -> Option<(String, chrono::DateTime<chrono::Utc>)> {
+    #[derive(serde::Deserialize)]
+    struct Refreshed {
+        gateway_token: String,
+        gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let response = http
+        .post(format!(
+            "{}/v1/work/{job_id}/token",
+            api_url.trim_end_matches('/')
+        ))
+        .bearer_auth(runtime_key)
+        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .json(&serde_json::json!({ "gateway_token": current }))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), %job_id, "the API would not refresh a turn token");
+        return None;
+    }
+    let refreshed: Refreshed = response.json().await.ok()?;
+    Some((refreshed.gateway_token, refreshed.gateway_token_expires_at))
+}
+
 async fn report_gated(
     http: &reqwest::Client,
     api_url: &str,

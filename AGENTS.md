@@ -579,6 +579,18 @@ for a workspace whose turn it is not running, or reach a host nobody allowed.
 Narrowing it further is a scheduling decision rather than a code one: do not
 put turns from different tenants on one pod.
 
+**A turn token outlives nothing, but is replaced before it lapses.** It is
+minted for thirty minutes, and a turn has no upper bound while it works --
+onboarding in long-horizon mode can run for hours. So the runtime checks before
+every gateway call and, with under fifteen minutes left, trades the token in at
+`POST /v1/work/{job_id}/token` under its lease. The API copies the commitments
+out of the presented token rather than recomputing them: the runtime carries the
+rules the turn started with, and a token committing to different ones would fail
+every request. So removing a host does not reach into a turn already running.
+Only a still-good token is accepted; there is no path that reads an expired one.
+Not a heartbeat, deliberately: a check tied to calls means a stopped or parked
+turn simply never asks.
+
 **A token is good for one audience.** Browser tokens carry `outturn:api`,
 turn tokens carry `outturn:gateway`, and each validator insists on its own.
 Before this, a turn token was a working API credential for its workspace and an

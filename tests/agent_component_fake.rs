@@ -59,6 +59,8 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         gateway_url: gateway.url.clone(),
         gates: outturn::egress::gate::Gates::none(),
         gateway_token: "test-token".into(),
+        gateway_token_expires_at: None,
+        refresh_token: None,
         default_model: "fake".into(),
         progress,
         // Not exercised here: these suites assert what a guest does with a

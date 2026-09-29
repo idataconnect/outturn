@@ -39,6 +39,7 @@ struct Harness {
     /// Signs with the same key the app validates against, so a test can issue
     /// the platform's own credentials the way the platform does.
     minter: TokenMinter,
+    gateway_validator: TokenValidator,
     roles: Arc<dyn outturn::api::role::RoleStore>,
     /// The same instance the app holds. A second store would have a second
     /// cache, and without the listener a test runs without, writing through
@@ -72,11 +73,13 @@ async fn harness() -> Harness {
             .to_bytes()
             .to_vec()
     };
-    let validator = TokenValidator::new(
-        &public_bytes.try_into().expect("32-byte key"),
-        outturn::auth::AUDIENCE_API,
-    )
-    .expect("validator");
+    let public_key: [u8; 32] = public_bytes.try_into().expect("32-byte key");
+    let validator =
+        TokenValidator::new(&public_key, outturn::auth::AUDIENCE_API).expect("validator");
+    // What the gateway would check a turn token with, for tests that need to
+    // read one the API minted.
+    let gateway_validator = TokenValidator::new(&public_key, outturn::auth::AUDIENCE_GATEWAY)
+        .expect("gateway validator");
     let runtime_key = outturn::auth::RuntimeKey::new(TEST_RUNTIME_KEY).expect("runtime key");
 
     let workspaces: Arc<dyn WorkspaceStore> = Arc::new(PostgresWorkspaceStore::new(pool.clone()));
@@ -146,6 +149,7 @@ async fn harness() -> Harness {
         skills,
         db,
         minter: test_minter,
+        gateway_validator,
         roles,
         scopes,
     }
@@ -7840,4 +7844,141 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
 
     // Somebody who may not start conversations at all is offered none.
     assert!(chat_with(viewer).await.is_empty());
+}
+
+/// A running turn trades its gateway token in before it runs out.
+///
+/// A turn has no upper bound while it works -- onboarding in long-horizon mode
+/// can run for hours -- and a five-minute token failed an eight-minute turn on
+/// its next `fetch_url`. The runtime now asks for a fresh one once less than
+/// fifteen minutes remain, and these are the rules the API holds it to.
+#[tokio::test]
+async fn a_running_turn_can_refresh_its_gateway_token() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    let session_id: Uuid = session["id"].as_str().expect("id").parse().expect("uuid");
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job").to_string();
+    let lease = assignment["lease_token"]
+        .as_str()
+        .expect("lease")
+        .to_string();
+    let original = assignment["gateway_token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    assert!(
+        assignment["gateway_token_expires_at"].is_string(),
+        "the runtime is told when its token runs out: {body}"
+    );
+
+    let refresh = |lease: String, token: String| {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/work/{job}/token"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {runtime}"))
+            .header(outturn::api::work::LEASE_HEADER, lease)
+            .body(Body::from(
+                serde_json::json!({ "gateway_token": token }).to_string(),
+            ))
+            .expect("request");
+        h.send(req)
+    };
+
+    // The ordinary case: the new token says exactly what the old one did.
+    let (status, body) = refresh(lease.clone(), original.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let refreshed: serde_json::Value = serde_json::from_str(&body).expect("refreshed");
+    let before = h.gateway_validator.validate(&original).expect("original");
+    let after = h
+        .gateway_validator
+        .validate(refreshed["gateway_token"].as_str().expect("token"))
+        .expect("refreshed token is a gateway token");
+    assert_eq!(after.subject, before.subject);
+    assert_eq!(after.workspace_id, before.workspace_id);
+    assert_eq!(
+        after.egress_commitment, before.egress_commitment,
+        "a reissued token may claim no more reach than the one it replaced"
+    );
+    assert_eq!(after.gate_commitment, before.gate_commitment);
+
+    // Somebody else's lease: this pod is not running the turn.
+    let (status, _) = refresh(Uuid::now_v7().to_string(), original.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A browser token cannot be traded in for a turn token.
+    let (status, _) = refresh(lease.clone(), admin.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Another conversation's turn token, under this turn's lease. A runtime
+    // holding two turns must not be able to swap one tenant's reach for
+    // another's.
+    let other = h
+        .minter
+        .mint_turn(
+            Uuid::now_v7(),
+            acme,
+            before.egress_commitment.expect("egress"),
+            before.gate_commitment.expect("gates"),
+        )
+        .expect("mint");
+    let (status, _) = refresh(lease.clone(), other).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // An expired token is refused rather than read. A path honouring expired
+    // credentials is the exception that outlives its reason.
+    let expired = h
+        .minter
+        .mint_with_lifetime(
+            outturn::auth::AUDIENCE_GATEWAY,
+            session_id,
+            acme,
+            &[Role::Turn.to_string()],
+            before.egress_commitment,
+            before.gate_commitment,
+            std::time::Duration::from_secs(1),
+        )
+        .expect("mint");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let (status, _) = refresh(lease, expired).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

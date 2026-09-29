@@ -139,6 +139,22 @@ pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// Carries the shape of the refused request and nothing else. Naming the act is
 /// the API's to do -- see `api::gated` -- because a `requires` chosen in this
 /// tier would be a policy decision made by the sandbox's own host.
+/// Trades the current turn token for a fresh one, returning it and its expiry.
+///
+/// `None` when the API would not reissue it; the caller keeps the token it has
+/// and lets the gateway say whether it is still good.
+pub type TokenRefresher = Arc<
+    dyn Fn(
+            String,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Option<(String, chrono::DateTime<chrono::Utc>)>>
+                    + Send,
+            >,
+        > + Send
+        + Sync,
+>;
+
 pub type GatedSink = Arc<
     dyn Fn(GatedRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
         + Send
@@ -157,6 +173,35 @@ pub struct GatedRequest {
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
 
+impl AgentHost {
+    /// The turn token to present, replaced first if it is close to running out.
+    ///
+    /// Checked before every gateway call rather than at round boundaries: a
+    /// round can hold one long model call and then a tool call, and the token
+    /// that was good when the round started can lapse between them -- which is
+    /// how an eight-minute turn failed its `fetch_url` with "token expired".
+    ///
+    /// A refusal to reissue is not fatal here. The old token may still have
+    /// minutes in it, and if it has not the gateway will say so on the call,
+    /// which is a better-placed error than one raised speculatively.
+    async fn current_token(&mut self) -> String {
+        let due = self.gateway_token_expires_at.is_some_and(|at| {
+            at - chrono::Utc::now()
+                < chrono::Duration::seconds(crate::auth::TURN_TOKEN_REFRESH_BELOW_SECS as i64)
+        });
+        if due && let Some(refresh) = &self.refresh_token {
+            match refresh(self.gateway_token.clone()).await {
+                Some((token, expires_at)) => {
+                    self.gateway_token = token;
+                    self.gateway_token_expires_at = Some(expires_at);
+                }
+                None => tracing::warn!("could not refresh this turn's gateway token"),
+            }
+        }
+        self.gateway_token.clone()
+    }
+}
+
 impl wasmtime::component::HasData for HostData {
     type Data<'a> = &'a mut AgentHost;
 }
@@ -166,6 +211,10 @@ pub struct AgentHost {
     table: ResourceTable,
     gateway_url: String,
     gateway_token: String,
+    /// When `gateway_token` stops being good. `None` from an API that does not
+    /// say, in which case the token is never refreshed -- what it always was.
+    gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    refresh_token: Option<TokenRefresher>,
     /// What the API said gates this turn. Relayed to the gateway with every
     /// outbound request and read by nothing here: it is checked against the
     /// commitment in the turn token, which this tier cannot write.
@@ -592,10 +641,11 @@ impl outturn::agent::host::Host for AgentHost {
             }) as ProgressSink
         });
 
+        let token = self.current_token().await;
         let (completion, arrivals, served) = stream_completion(
             &self.http,
             &self.gateway_url,
-            &self.gateway_token,
+            &token,
             &self.traffic_type,
             &self.reply_id,
             body,
@@ -704,9 +754,10 @@ impl outturn::agent::host::Host for AgentHost {
         let path = url.path().to_string();
         let host_name = url.host_str().unwrap_or_default().to_string();
 
+        let token = self.current_token().await;
         let outcome = crate::runtime::fetch::through_gateway(
             &self.gateway_url,
-            &self.gateway_token,
+            &token,
             crate::runtime::fetch::GatewayFetch {
                 method: request.method,
                 url: request.url,
@@ -833,10 +884,11 @@ impl outturn::agent::host::Host for AgentHost {
         // route is how a deployment says otherwise.
         let body = vision::request(&self.default_model, media_type, &encoded, &question);
 
+        let token = self.current_token().await;
         let response = self
             .http
             .post(format!("{}/v1/chat/completions", self.gateway_url))
-            .bearer_auth(&self.gateway_token)
+            .bearer_auth(&token)
             .header("x-outturn-traffic", vision::TRAFFIC_TYPE)
             .json(&body)
             .send()
@@ -1634,6 +1686,10 @@ pub struct RunOptions {
     pub session_id: uuid::Uuid,
     pub gateway_url: String,
     pub gateway_token: String,
+    pub gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Asks the API for a fresh turn token. A turn has no upper bound while it
+    /// works, and its token has to outlast it.
+    pub refresh_token: Option<TokenRefresher>,
     pub gates: crate::egress::gate::Gates,
     pub default_model: String,
     pub progress: Option<ProgressSink>,
@@ -1767,6 +1823,8 @@ impl AgentRunner {
             table: ResourceTable::new(),
             gateway_url: options.gateway_url,
             gateway_token: options.gateway_token,
+            gateway_token_expires_at: options.gateway_token_expires_at,
+            refresh_token: options.refresh_token,
             gates: options.gates,
             default_model: options.default_model,
             http: crate::http_client::streaming_client(options.idle_timeout),

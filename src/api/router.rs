@@ -1556,6 +1556,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
         .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
+        .route("/v1/work/{job_id}/token", post(super::work::refresh_token))
         .route("/v1/agent-sessions/{id}/files", get(super::files::list))
         // Looking at a file rather than keeping it: served inline, for a short
         // allowlist of types decided by the bytes. Separate from the download

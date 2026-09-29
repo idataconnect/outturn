@@ -98,6 +98,8 @@ async fn component_runs_a_turn_and_streams_progress() {
                 session_id,
                 gateway_url,
                 gateway_token: dev_token(session_id, workspace_id),
+                gateway_token_expires_at: None,
+                refresh_token: None,
                 // Named by whoever runs this, since it is their model and
                 // possibly their money: nothing here picks one for them.
                 default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
