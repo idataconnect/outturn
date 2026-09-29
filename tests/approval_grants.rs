@@ -400,7 +400,7 @@ async fn a_decline_is_recorded_as_a_decline() {
 /// approving.
 #[tokio::test]
 async fn a_turn_resuming_after_an_approval_keeps_the_refused_reply() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore, Usage};
+    use outturn::api::chat::{ChatStore, Usage};
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
@@ -470,7 +470,7 @@ async fn a_turn_resuming_after_an_approval_keeps_the_refused_reply() {
 /// which wedges the session.
 #[tokio::test]
 async fn an_unfinished_attempt_is_taken_back_even_when_resuming() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore};
+    use outturn::api::chat::ChatStore;
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
@@ -491,7 +491,7 @@ async fn an_unfinished_attempt_is_taken_back_even_when_resuming() {
 /// `finished_at` is when a reply stopped being written, not when it was made.
 #[tokio::test]
 async fn a_reply_records_when_it_finished() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore, Usage};
+    use outturn::api::chat::{ChatStore, Usage};
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
@@ -606,7 +606,7 @@ async fn prompt_session(db: &common::TestDb, prompt: Uuid) -> Uuid {
 /// The predicate is "a person answered", which a decline satisfies.
 #[tokio::test]
 async fn a_declined_turn_keeps_the_reply_it_was_refused_on() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore, Usage};
+    use outturn::api::chat::{ChatStore, Usage};
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
@@ -661,7 +661,7 @@ async fn a_declined_turn_keeps_the_reply_it_was_refused_on() {
 /// the session.
 #[tokio::test]
 async fn a_crash_takes_back_an_attempt_that_said_nothing() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore};
+    use outturn::api::chat::ChatStore;
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
@@ -689,7 +689,7 @@ async fn a_crash_takes_back_an_attempt_that_said_nothing() {
 /// streams makes that false.
 #[tokio::test]
 async fn a_crash_keeps_an_unfinished_attempt_that_made_tool_calls() {
-    use outturn::api::chat::{ChatStore, PostgresChatStore};
+    use outturn::api::chat::ChatStore;
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;

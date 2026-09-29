@@ -40,7 +40,23 @@ pub const AUDIENCE_GATEWAY: &str = "outturn:gateway";
 
 /// Per-turn gateway tokens: short-lived because one is minted for every turn,
 /// so a leaked one is useful only briefly.
-pub const SERVICE_TOKEN_LIFETIME_SECS: u64 = 300;
+///
+/// Half an hour rather than the five minutes this once was, and not the bound
+/// on a turn: a turn has no upper bound while it is working, and one running
+/// for hours is a use this platform is for. A runtime asks for a fresh token
+/// once less than `TURN_TOKEN_REFRESH_BELOW_SECS` remains -- see
+/// `api::work::refresh_token`. Five minutes failed an eight-minute turn on its
+/// next `fetch_url` with "token expired".
+pub const SERVICE_TOKEN_LIFETIME_SECS: u64 = 1800;
+
+/// How much life a turn token may have left before the runtime replaces it.
+///
+/// Half the lifetime, so the gap it covers -- the longest stretch a turn can
+/// go without calling the gateway and still find its token good -- is fifteen
+/// minutes. The check runs before every gateway call rather than on a timer,
+/// which also catches a single long model call followed by a tool call in the
+/// same round.
+pub const TURN_TOKEN_REFRESH_BELOW_SECS: u64 = 900;
 
 /// Browser access tokens. Short, because the refresh token silently renews
 /// them: this bounds how long a stolen access token is useful, and how long a
@@ -306,6 +322,18 @@ pub struct TokenValidator {
 }
 
 impl TokenValidator {
+    /// The same trusted keys, checking a different audience.
+    ///
+    /// For the API reading a turn token back when it reissues one: it trusts
+    /// the same keys as the gateway, and needs the gateway's audience check so
+    /// a browser token cannot be traded in for a turn token.
+    pub fn for_audience(&self, audience: &'static str) -> Self {
+        Self {
+            keys: self.keys.clone(),
+            audience,
+        }
+    }
+
     pub fn new(public_bytes: &[u8; 32], audience: &'static str) -> Result<Self, AuthError> {
         Self::with_keys(&[*public_bytes], audience)
     }
