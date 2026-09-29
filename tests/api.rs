@@ -7982,3 +7982,126 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
     let (status, _) = refresh(lease, expired).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// Takes one turn and returns its job id, lease, and session id.
+async fn a_leased_turn(h: &Harness) -> (String, String, Uuid, String) {
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
+        )
+        .await;
+    let session_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    h.post(
+        &format!("/v1/agent-sessions/{session_id}/messages"),
+        Some(&admin),
+        r#"{"content":"hello"}"#,
+    )
+    .await;
+    let runtime = h.runtime_token(acme);
+    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    let a: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    (
+        a["job_id"].as_str().unwrap().to_string(),
+        a["lease_token"].as_str().unwrap().to_string(),
+        session_id,
+        runtime,
+    )
+}
+
+/// Reports a turn over a stream that stays open while the lease is taken away,
+/// then sends `last` (or nothing) and closes -- the shape of a real turn whose
+/// pod stalled long enough to be reaped.
+async fn report_while_the_lease_is_lost(h: &Harness, last: Option<&'static str>) -> StatusCode {
+    let (job, lease, _, runtime) = a_leased_turn(h).await;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+        .expect("request");
+
+    let pool = h.db.pool.clone();
+    let job_id: Uuid = job.parse().unwrap();
+    let feed = async move {
+        // Past the endpoint's upfront lease check, then reaped and handed on.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        sqlx::query("update jobs set lease_token = $2 where id = $1")
+            .bind(job_id)
+            .bind(Uuid::now_v7())
+            .execute(&pool)
+            .await
+            .expect("hand the lease on");
+        if let Some(line) = last {
+            tx.send(Ok(bytes::Bytes::from(format!("{line}\n"))))
+                .await
+                .ok();
+        }
+        drop(tx);
+    };
+    let ((status, _), ()) = tokio::join!(h.send(req), feed);
+    status
+}
+
+/// A turn that finished after its lease was handed on is refused, not a fault.
+///
+/// Found on a real session: the pod stalled, was reaped, and reported its
+/// result once the model finally answered -- and got a 500, which reads as the
+/// API being broken rather than as "this turn is someone else's now".
+#[tokio::test]
+async fn a_report_whose_lease_lapsed_midway_is_refused_cleanly() {
+    let h = harness_or_skip!();
+    let status = report_while_the_lease_is_lost(
+        &h,
+        Some(r#"{"kind":"done","content":"late","prompt_tokens":1,"completion_tokens":1}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// The same, where the turn failed rather than finished -- and nothing is said
+/// about the failure, because the session is now another pod's to speak for.
+#[tokio::test]
+async fn a_failed_turn_whose_lease_lapsed_says_nothing_to_the_session() {
+    let h = harness_or_skip!();
+    let before: i64 = sqlx::query_scalar("select count(*) from events where kind = 'chat.error'")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+
+    let status = report_while_the_lease_is_lost(&h, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let after: i64 = sqlx::query_scalar("select count(*) from events where kind = 'chat.error'")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        after, before,
+        "a pod that no longer holds the turn told its reader it had failed"
+    );
+}

@@ -419,7 +419,18 @@ pub async fn report(
     worker
         .finish_turn(job_id, lease, body.into_data_stream())
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            // A lease that lapsed mid-report is the same refusal as one that
+            // had lapsed before it started, not a fault in this tier.
+            if e.downcast_ref::<super::worker::LeaseLost>().is_some() {
+                (
+                    StatusCode::CONFLICT,
+                    "that turn is no longer leased to this runtime".to_string(),
+                )
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
