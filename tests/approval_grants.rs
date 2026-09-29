@@ -693,40 +693,76 @@ async fn a_crash_keeps_an_unfinished_attempt_that_made_tool_calls() {
 
     let (db, ws) = setup().await;
     let (chat, prompt) = a_prompt(&db, ws).await;
+    let session = prompt_session(&db, prompt).await;
 
     let streaming = chat
-        .claim_placeholder(prompt, prompt_session(&db, prompt).await, 1)
+        .claim_placeholder(prompt, session, 1)
         .await
         .expect("placeholder");
+    let reply = streaming.message.id;
 
-    // Calls recorded as they were made. No content and no `finished_at`: the
-    // turn is still running, which is exactly when the lease was reaped.
-    sqlx::query("update agent_messages set metadata = $2 where id = $1")
-        .bind(streaming.message.id)
-        .bind(serde_json::json!({
-            "tool_calls": [
-                {"id": "c1", "name": "fetch_url", "action": "Checking the Rose Room"},
-                {"id": "c2", "name": "fetch_url", "action": "Checking Friday"},
-            ],
-        }))
-        .execute(&db.pool)
-        .await
-        .expect("calls");
+    // Streamed the way a turn streams: as events, with the row left empty and
+    // unfinished until the turn ends -- which it never does, because its lease
+    // is reaped here. An earlier version of this test wrote the calls onto the
+    // row instead, a state nothing in production produces, and passed while the
+    // real case was still overwritten.
+    for (kind, payload) in [
+        (
+            "chat.delta",
+            serde_json::json!({"message_id": reply, "text": "Let me look. "}),
+        ),
+        (
+            "chat.tool",
+            serde_json::json!({"message_id": reply,
+                "call": {"id": "c1", "name": "fetch_url", "action": "Checking the Rose Room"}}),
+        ),
+        (
+            "chat.tool_result",
+            serde_json::json!({"message_id": reply, "id": "c1", "details": "{}", "is_error": false}),
+        ),
+        (
+            "chat.tool",
+            serde_json::json!({"message_id": reply,
+                "call": {"id": "c2", "name": "fetch_url", "action": "Checking Friday"}}),
+        ),
+    ] {
+        outturn::events::append(&db.pool, ws, Some(session), kind, payload)
+            .await
+            .expect("event");
+    }
 
+    assert_eq!(
+        chat.current_attempt(prompt).await.expect("current"),
+        1,
+        "asking which attempt exists decides nothing"
+    );
     assert_eq!(
         chat.attempt_for(prompt, false).await.expect("retrying"),
         2,
         "a reaped turn must not overwrite the calls a reader watched happen"
     );
 
-    let kept: i32 = sqlx::query_scalar(
-        "select jsonb_array_length(metadata->'tool_calls') from agent_messages where id = $1",
-    )
-    .bind(streaming.message.id)
-    .fetch_one(&db.pool)
-    .await
-    .expect("still there");
-    assert_eq!(kept, 2, "and the calls are still in the transcript");
+    let (content, calls, interrupted, finished): (String, i32, Option<bool>, bool) =
+        sqlx::query_as(
+            "select content, jsonb_array_length(metadata->'tool_calls'), \
+                    (metadata->>'interrupted')::bool, finished_at is not null \
+             from agent_messages where id = $1",
+        )
+        .bind(reply)
+        .fetch_one(&db.pool)
+        .await
+        .expect("still there");
+    assert_eq!(content, "Let me look. ");
+    assert_eq!(
+        calls, 2,
+        "and the calls are written down, not only in events"
+    );
+    assert_eq!(interrupted, Some(true), "marked as a reply that stopped");
+    assert!(finished, "sealed, so the abandoned guard reads it as said");
+
+    // Deciding again -- the second claim of the same turn -- lands on the same
+    // attempt rather than a third.
+    assert_eq!(chat.attempt_for(prompt, false).await.expect("again"), 2);
 
     db.cleanup().await;
 }

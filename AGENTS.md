@@ -482,6 +482,14 @@ row back and overwrote all of it with a one-sentence answer: the calls were on
 the reader's screen while they happened and then were not. `said_something` is
 the question, the same predicate the discard and the abandoned guard ask.
 
+Asked of the row alone it answers wrong for exactly that case: a reply's row
+is written once, when it finishes, so every attempt still streaming reads as
+empty and what it said is only in its events. `attempt_for` therefore seals an
+interrupted attempt from its events -- the same `replay` a reload mid-turn
+uses -- and marks it `interrupted` before moving on. Only `prepare_turn` may
+ask it; anything after that asks `current_attempt`, because a turn mid-stream
+looks exactly like one interrupted and deciding again would seal it.
+
 An attempt that never *finished* is taken back even when resuming: an empty reply
 stranded past a new attempt is what the abandoned-placeholder guard trips over,
 and that wedges the session.

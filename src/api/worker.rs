@@ -660,11 +660,10 @@ impl Worker {
     async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
         // The attempt being abandoned is the latest one: earlier attempts are
         // finished, and one of them may hold the refusal somebody approved
-        // against. `attempt_for(.., false)` is "the attempt that already
-        // exists", which is the one this turn was writing.
+        // against. `current_attempt` is the one this turn was writing.
         let attempt = self
             .chat
-            .attempt_for(payload.message_id, false)
+            .current_attempt(payload.message_id)
             .await
             .unwrap_or(1);
         if let Err(e) = self
@@ -1450,10 +1449,11 @@ impl Worker {
         // the tier that reports its own rules.
         let egress_commitment = crate::egress::commit::root(payload.workspace_id, &egress);
 
-        // A turn carrying grants is one somebody answered an approval for, so
-        // it writes a new attempt rather than taking back the reply that was
-        // refused. Anything else -- including an ordinary crashed retry -- takes
-        // its own attempt back, which is what makes that idempotent.
+        // A turn somebody answered an approval for writes a new attempt rather
+        // than taking back the reply that was refused, and so does one retried
+        // after its last attempt showed the reader something. A crashed retry
+        // that showed nothing takes its own attempt back, which is what makes
+        // that idempotent. The one place this is decided: see `attempt_for`.
         // Read once, here, because the attempt has to be settled before a
         // placeholder is claimed and the same set is committed into the token
         // further down. Two reads was the first shape, with a comment claiming
@@ -2115,14 +2115,13 @@ impl Worker {
         // indicator that never resolves.
         //
         // Taken back rather than passed in, because this tier is reached by a
-        // runtime reporting a job id and nothing else. `false` here is not a
-        // claim that nothing was resumed: it asks for the attempt that already
-        // exists, which is the one `prepare_turn` settled on when it started
-        // this turn. Deciding again here could pick a different number and have
-        // one turn write two replies.
+        // runtime reporting a job id and nothing else. `current_attempt` asks
+        // for the attempt that already exists, which is the one `prepare_turn`
+        // settled on when it started this turn. Deciding again here could pick
+        // a different number and have one turn write two replies.
         let attempt = self
             .chat
-            .attempt_for(payload.message_id, false)
+            .current_attempt(payload.message_id)
             .await
             .map_err(|e| anyhow::anyhow!("attempt: {e}"))?;
         let placeholder = self
