@@ -11,6 +11,7 @@ import {
   KeyRound,
   Menu,
   PanelLeftClose,
+  PanelLeftOpen,
   X,
 } from 'lucide-react'
 
@@ -270,8 +271,11 @@ function Shell() {
         } shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex-col transition-[width]`}
       >
         <div
-          className={`flex items-center gap-2 border-b border-surface-200 dark:border-surface-800 ${
-            railed ? 'justify-center p-3' : 'p-4'
+          // Top-aligned, with the same padding above in both states, so the
+          // mark stays put when the nav opens: centred, it dropped to the
+          // middle of a product name long enough to wrap.
+          className={`flex items-start gap-2 border-b border-surface-200 dark:border-surface-800 ${
+            railed ? 'justify-center p-3' : 'px-4 py-3'
           }`}
         >
           {/* The mark is the toggle, both ways. Railed it is the only way
@@ -295,13 +299,31 @@ function Shell() {
               }
               aria-expanded={expanded}
               title={expanded ? 'Collapse navigation' : 'Expand navigation'}
-              className={iconButton}
+              className={`group ${iconButton}`}
             >
-              <Logo />
+              {/* Railed, the mark gives way to the expand icon under the
+                  pointer or the keyboard: nothing else on a rail says a logo
+                  is a control, and this is the one way back out. Expanded it
+                  stays the mark, since the chevron beside it already says
+                  what clicking does. */}
+              {railed ? (
+                <>
+                  <span className="flex group-hover:hidden group-focus-visible:hidden">
+                    <Logo />
+                  </span>
+                  {/* In the mark's own box, so the rail does not shift. */}
+                  <span className="hidden h-6 w-6 items-center justify-center group-hover:flex group-focus-visible:flex">
+                    <PanelLeftOpen size={16} aria-hidden />
+                  </span>
+                </>
+              ) : (
+                <Logo />
+              )}
             </button>
           )}
           {labelled && (
-            <h1 className="flex-1 text-lg font-display font-semibold text-surface-900 dark:text-surface-100">
+            // The first line level with the mark's 32px button.
+            <h1 className="mt-0.5 flex-1 text-lg font-display font-semibold text-surface-900 dark:text-surface-100">
               {productName}
             </h1>
           )}
@@ -314,7 +336,11 @@ function Shell() {
               title="Collapse navigation"
               className={iconButton}
             >
-              <PanelLeftClose size={16} aria-hidden />
+              {/* In a box the mark's size, so the two buttons are the same
+                  height and line up whatever the rows around them do. */}
+              <span className="flex h-6 w-6 items-center justify-center">
+                <PanelLeftClose size={16} aria-hidden />
+              </span>
             </button>
           )}
           {phone && (
