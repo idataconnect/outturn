@@ -534,11 +534,10 @@ async fn a_silent_provider_is_abandoned_rather_than_waited_on_forever() {
     let gateway = FakeGateway::start(Behavior::Hang).await;
     let runner = runner();
 
-    // Compiled before the clock starts. The runner's cache does not make
-    // concurrent misses wait for one another, so at the start of the suite
-    // every test compiles the component at once, and in a debug build that
-    // took forty-seven seconds of this test's sixty -- the turn itself then
-    // ended two seconds after it began, which is its deadline firing on time.
+    // Compiled before the clock starts. At the start of the suite this test
+    // can be waiting on the one shared compile, which under a loaded machine
+    // once took forty-seven seconds of its sixty -- the turn itself then ended
+    // two seconds after it began, which is its deadline firing on time.
     // Compiling is not what is under test, and nothing about it can hang.
     runner.verify(&component()).expect("component compiles");
 

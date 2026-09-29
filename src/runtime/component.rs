@@ -1496,6 +1496,13 @@ const COMPILED_CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(
 /// costs less than the bookkeeping to avoid it.
 struct CompiledCache<T = Component> {
     entries: Mutex<Vec<CompiledEntry<T>>>,
+    /// One lock per key being compiled, so a miss that arrives while the same
+    /// bytes are already compiling waits for that build instead of starting
+    /// its own. Without it every concurrent miss compiled in parallel: forty
+    /// of them at once took forty-seven seconds apiece in a debug build, where
+    /// one took a few, and a node handed a burst of turns for a newly deployed
+    /// agent would do the same.
+    compiling: Mutex<std::collections::HashMap<[u8; 32], Arc<Mutex<()>>>>,
 }
 
 struct CompiledEntry<T> {
@@ -1508,7 +1515,48 @@ impl<T: Clone> CompiledCache<T> {
     fn new() -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            compiling: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// What is held for `key`, or what `compile` makes of it, compiled once
+    /// however many ask at the same time.
+    ///
+    /// A failed build is not cached and not shared: the next caller in line
+    /// tries again, which for a component that does not compile is a fast
+    /// failure rather than a slow one.
+    fn get_or_compile(
+        &self,
+        key: [u8; 32],
+        compile: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        if let Some(found) = self.get(&key) {
+            return Ok(found);
+        }
+
+        let gate = self
+            .compiling
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_default()
+            .clone();
+        // Poisoning only means an earlier compile panicked; the lock guards
+        // nothing but the right to compile, so the next caller may.
+        let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Whoever held the lock before us may have left the build behind.
+        let result = match self.get(&key) {
+            Some(found) => Ok(found),
+            None => compile().inspect(|built| self.insert(key, built.clone())),
+        };
+
+        // Dropped by the last one out, so a key is not remembered for ever.
+        let mut compiling = self.compiling.lock().unwrap_or_else(|e| e.into_inner());
+        if Arc::strong_count(&gate) == 2 {
+            compiling.remove(&key);
+        }
+        result
     }
 
     fn get(&self, key: &[u8; 32]) -> Option<T> {
@@ -1660,20 +1708,16 @@ impl AgentRunner {
         use sha2::{Digest, Sha256};
 
         let key: [u8; 32] = Sha256::digest(bytes).into();
-        if let Some(component) = self.compiled.get(&key) {
-            return Ok(component);
-        }
-
-        let started = std::time::Instant::now();
-        let component = Component::new(&self.engine, bytes)?;
-        tracing::debug!(
-            bytes = bytes.len(),
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "compiled a guest component"
-        );
-
-        self.compiled.insert(key, component.clone());
-        Ok(component)
+        self.compiled.get_or_compile(key, || {
+            let started = std::time::Instant::now();
+            let component = Component::new(&self.engine, bytes)?;
+            tracing::debug!(
+                bytes = bytes.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "compiled a guest component"
+            );
+            Ok(component)
+        })
     }
 
     /// Checks that this host can link this component, before taking any work.
@@ -1917,6 +1961,38 @@ mod compiled_cache_tests {
         }
         assert_eq!(c.get(&key(1)), None, "an idle build outlived its welcome");
         assert!(c.entries.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn concurrent_misses_share_one_build() {
+        let c = Arc::new(cache());
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (c, builds) = (c.clone(), builds.clone());
+                std::thread::spawn(move || {
+                    c.get_or_compile(key(1), || {
+                        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        // Long enough that the others arrive while it runs.
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        Ok(11)
+                    })
+                    .expect("build")
+                })
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().expect("thread"), 11);
+        }
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(c.compiling.lock().expect("lock").is_empty(), "a finished key was kept");
+    }
+
+    #[test]
+    fn a_failed_build_is_not_what_the_next_caller_gets() {
+        let c = cache();
+        assert!(c.get_or_compile(key(1), || anyhow::bail!("broken")).is_err());
+        assert_eq!(c.get_or_compile(key(1), || Ok(11)).expect("build"), 11);
     }
 
     #[test]
