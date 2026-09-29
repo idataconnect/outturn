@@ -12,13 +12,16 @@ import {
   listVersions,
   parseHosts,
   publishVersion,
+  readVersionFiles,
   retireSkill,
   slugify,
   updateSkill,
+  type DraftFile,
   type Skill,
   type SkillVersion,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
+import SkillFiles from '../components/SkillFiles'
 import VersionContents from '../components/VersionContents'
 
 /**
@@ -60,6 +63,12 @@ export default function SkillEditor() {
     hosts: '',
   })
   const [slugEdited, setSlugEdited] = useState(false)
+  // The files as being edited. Sent only when they changed: left out, a new
+  // version keeps the previous one's, which is what editing the prose alone
+  // means -- and resending hundreds of unchanged files would be the same
+  // version with a longer request.
+  const [files, setFiles] = useState<DraftFile[]>([])
+  const [filesChanged, setFilesChanged] = useState(false)
   // Only an operator sees this, and only when writing something new.
   const [forEveryone, setForEveryone] = useState(false)
   const [loading, setLoading] = useState(!creating)
@@ -70,6 +79,9 @@ export default function SkillEditor() {
   // so the same page serves both and the difference is who is looking.
   const operators = skill !== null && skill.workspace_id !== workspaceId
   const editable = canWrite && (creating || !operators || isOperator)
+  // An override speaks about its base's instructions and carries no files of
+  // its own; the API refuses them.
+  const carriesFiles = !overriding && skill?.kind !== 'override'
 
   useEffect(() => {
     if (creating) {
@@ -94,6 +106,8 @@ export default function SkillEditor() {
         const [s, v, all] = await Promise.all([getSkill(id), listVersions(id), listSkills()])
         setSkill(s)
         setVersions(v)
+        setFiles(v[0] ? await readVersionFiles(v[0]) : [])
+        setFilesChanged(false)
         setBase(all.find((x) => x.id === s.base_skill_id) ?? null)
         setForm({
           name: s.name,
@@ -124,6 +138,7 @@ export default function SkillEditor() {
           body: form.body,
           hosts: parseHosts(form.hosts),
           ...(overriding ? { base_skill_id: overriding } : {}),
+          ...(carriesFiles && files.length > 0 ? { files } : {}),
         },
         // An override always belongs to the workspace that wrote it, whoever
         // is signed in: it is that workspace's variation, not the operator's.
@@ -150,16 +165,25 @@ export default function SkillEditor() {
           operators,
         )
       }
-      // A version carries its hosts, so a change to either publishes one.
+      // A version carries its hosts and files, so a change to any of them
+      // publishes one.
       const live = versions[0]
       const hosts = parseHosts(form.hosts)
       const hostsChanged = hosts.join('\n') !== skill.hosts.join('\n')
-      if (!live || live.body !== form.body || hostsChanged) {
-        await publishVersion(skill.id, form.body, form.note, hosts, operators)
+      if (!live || live.body !== form.body || hostsChanged || filesChanged) {
+        await publishVersion(
+          skill.id,
+          form.body,
+          form.note,
+          hosts,
+          operators,
+          filesChanged ? files : undefined,
+        )
       }
       const [s, v] = await Promise.all([getSkill(skill.id), listVersions(skill.id)])
       setSkill(s)
       setVersions(v)
+      setFilesChanged(false)
       setForm((f) => ({ ...f, note: '' }))
       setError(null)
     } catch (e) {
@@ -216,8 +240,17 @@ export default function SkillEditor() {
   /** Loads an old body into the draft rather than publishing behind the
    *  reader's back: a rollback is a version like any other, and this is the
    *  moment where that is worth showing rather than explaining. */
-  function onRestore(v: SkillVersion) {
+  async function onRestore(v: SkillVersion) {
     setForm((f) => ({ ...f, body: v.body, note: `rolled back to v${v.ordinal}` }))
+    // The files too. A version is its instructions and its files together, and
+    // restoring only the words would put back a table of contents pointing at
+    // files the current version may no longer have.
+    try {
+      setFiles(await readVersionFiles(v))
+      setFilesChanged(true)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "failed to read that version's files")
+    }
   }
 
   const title = creating ? (overriding ? 'New override' : 'New skill') : loading ? 'Skill' : form.name
@@ -359,8 +392,14 @@ export default function SkillEditor() {
 
           <label className="block">
             <span className="text-sm font-medium text-surface-800 dark:text-surface-200">
-              {overriding || skill?.kind === 'override' ? 'Your instructions' : 'The skill'}
+              {overriding || skill?.kind === 'override' ? 'Your instructions' : 'Instructions'}
             </span>
+            {carriesFiles && (
+              <span className="block text-xs text-surface-600 dark:text-surface-400">
+                Sent to the agent on every turn. Keep it to what the skill is for and which
+                file to read for what; put the details in files below.
+              </span>
+            )}
             <textarea
               value={form.body}
               disabled={!editable}
@@ -369,6 +408,19 @@ export default function SkillEditor() {
               className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
             />
           </label>
+
+          {carriesFiles && (
+            <SkillFiles
+              files={files}
+              onChange={(next) => {
+                setFiles(next)
+                setFilesChanged(true)
+              }}
+              body={form.body}
+              slug={form.slug}
+              editable={editable}
+            />
+          )}
 
           <label className="block">
             <span className="text-sm font-medium text-surface-800 dark:text-surface-200">
@@ -506,7 +558,7 @@ export default function SkillEditor() {
                 {editable && v.ordinal !== skill?.ordinal && (
                   <button
                     type="button"
-                    onClick={() => onRestore(v)}
+                    onClick={() => void onRestore(v)}
                     className="px-3 py-1.5 rounded-md border border-surface-300 dark:border-surface-700 text-xs font-medium text-surface-800 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-800"
                   >
                     Restore

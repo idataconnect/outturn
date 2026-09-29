@@ -303,7 +303,7 @@ reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
 A skill as a body plus files versioned together -- a *package* -- is in
-[docs/skill-packages.md](docs/skill-packages.md), built but for the UI. A
+[docs/skill-packages.md](docs/skill-packages.md), built. A
 version carries its files, a fork copies them, and an agent reads them as
 `skill/<slug>/<path>` from the version its binding resolved to.
 

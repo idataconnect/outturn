@@ -1,4 +1,4 @@
-import { api } from './api'
+import { api, apiText } from './api'
 
 /**
  * A skill is instructions an agent is given beside its system prompt.
@@ -80,7 +80,12 @@ export type NewSkill = {
   /** Set to write an override of another skill rather than a skill of one's own. */
   base_skill_id?: string
   hosts?: string[]
+  /** The first version's files. An override carries none. */
+  files?: DraftFile[]
 }
+
+/** A file as written in the editor: a path under the skill, and its text. */
+export type DraftFile = { path: string; content: string }
 
 /**
  * Creating, editing and publishing all come in two flavours.
@@ -115,11 +120,70 @@ export function publishVersion(
   note: string,
   hosts: string[],
   platform = false,
+  /** The whole set, when it changed. Left out, the new version keeps the
+   *  previous one's files -- which is what an edit to the prose alone means. */
+  files?: DraftFile[],
 ): Promise<SkillVersion> {
   return api<SkillVersion>(
     platform ? `/v1/platform/skills/${id}/versions` : `/v1/skills/${id}/versions`,
-    { method: 'POST', body: JSON.stringify({ body, note, hosts }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({ body, note, hosts, ...(files ? { files } : {}) }),
+    },
   )
+}
+
+/** One file of a version, as it was published. */
+export function readVersionFile(id: string, versionId: string, path: string): Promise<string> {
+  const encoded = path.split('/').map(encodeURIComponent).join('/')
+  return apiText(`/v1/skills/${id}/versions/${versionId}/files/${encoded}`)
+}
+
+/** Every file a version carries, with its text, in path order. */
+export async function readVersionFiles(v: SkillVersion): Promise<DraftFile[]> {
+  const files = await Promise.all(
+    v.files.map(async (f) => ({
+      path: f.path,
+      content: await readVersionFile(v.skill_id, v.id, f.path),
+    })),
+  )
+  return files.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** The most a file may hold: what an agent reads in one call. Mirrors the API. */
+export const MAX_FILE_BYTES = 32 * 1024
+
+/** Why a path would be refused, or null. The API's rules, checked as somebody
+ *  types so they are not learned one publish at a time. */
+export function pathProblem(path: string, others: string[]): string | null {
+  if (path.length === 0) return 'needs a name'
+  if (new TextEncoder().encode(path).length > 256) return 'is too long'
+  if (path.startsWith('/')) return 'must not start with /'
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(path)) return 'contains a backslash or a control character'
+  if (path.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) {
+    return 'has an empty, . or .. part'
+  }
+  if (others.includes(path)) return 'is already a file here'
+  return null
+}
+
+/**
+ * Whether the main instructions mention a file at all.
+ *
+ * Files are never sent to the agent; it reads one only when the instructions
+ * tell it to. A file they never name is one the agent will not know exists, so
+ * it is flagged rather than left to be discovered by nobody. Either the full
+ * path the agent reads (`skill/<slug>/<path>`) or the bare path counts.
+ */
+export function mentionedIn(body: string, slug: string, path: string): boolean {
+  return body.includes(`skill/${slug}/${path}`) || body.includes(path)
+}
+
+/** Whether a file declares that the operation it documents needs approving. */
+export function declaresApproval(content: string): boolean {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)
+  return m !== null && /^approval\s*:/m.test(m[1])
 }
 
 /**

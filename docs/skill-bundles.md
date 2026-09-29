@@ -4,7 +4,7 @@ Several skills shipped, enabled and versioned as one thing, because the job
 they do together is the thing somebody actually wants.
 
 Nothing here is built. It rests on skill packages
-([skill-packages.md](skill-packages.md), built but for the UI) and overlaps
+([skill-packages.md](skill-packages.md), built) and overlaps
 heavily with integrations ([integrations.md](integrations.md), designed and
 unbuilt) -- a bundle without the hosts and credentials its skills need is a
 bundle that cannot do its job, so the two arrive together or the first is a
