@@ -257,6 +257,9 @@ function AssistantMessage() {
   // watched: a component only knows what it saw, so every reply it watched
   // finish would keep its line and a refresh would clear them all.
   const newest = useAuiState((s) => s.message.metadata.custom?.newest === true)
+  // A reply whose turn was cut off and started again. Said under it, because
+  // what follows is the retry's answer and not a second thought.
+  const interrupted = useAuiState((s) => s.message.metadata.custom?.interrupted === true)
 
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
@@ -329,6 +332,11 @@ function AssistantMessage() {
           }}
         />
       </div>
+      {interrupted && (
+        <p className="mt-1 text-xs italic text-surface-500 dark:text-surface-400">
+          Interrupted here. The agent started this reply again below.
+        </p>
+      )}
       <div className="flex items-center gap-1">
         <MessageAge phrase={phrase} shown={shown} />
         {/* Copy, which until now meant selecting the reply by hand and
