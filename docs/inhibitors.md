@@ -487,7 +487,7 @@ to change when suspension arrives.
 
 **The approval *rule* waits for something to point at.** Now it has one:
 [approvals.md](approvals.md) puts the declaration in the skill file that
-documents the operation, which skill-bundles.md made versioned, immutable and
+documents the operation, which skill-packages.md made versioned, immutable and
 editable only under the skill's own authorities. HITL's mechanism --
 suspend, hold, resume -- is independent of what triggers it and can be built
 whenever. How an integration's endpoint declares that it needs approval is not:

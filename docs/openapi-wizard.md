@@ -70,7 +70,7 @@ what the categories below are for.
 ### Where the files go
 
 Into the skill itself, as files of the same version as the manifest
-([skill-bundles.md](skill-bundles.md)). An agent reads them as
+([skill-packages.md](skill-packages.md)). An agent reads them as
 `skill/<slug>/<path>`, read-only whatever its scopes, and an operator's skill
 brings them to every workspace that binds it.
 
@@ -283,8 +283,8 @@ the main case.
 
 That is also why the output cannot live in `workspace/` scope: an operator's
 skill sits in the platform workspace, and files in the platform workspace's
-scope are unreachable from every other one. The wizard writes a skill bundle
-([skill-bundles.md](skill-bundles.md)), whose files belong to the skill and
+scope are unreachable from every other one. The wizard writes a skill package
+([skill-packages.md](skill-packages.md)), whose files belong to the skill and
 resolve wherever it is bound.
 
 Proposed rather than saved, because a generated skill is a draft. Whoever runs

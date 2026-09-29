@@ -5,8 +5,11 @@ not. Where a word has a document of its own, this says the sentence and links
 to it.
 
 Here because the vocabulary is load-bearing and some of it is easy to misread.
-"Bundle" is the one that has already cost somebody ten minutes: it means a
-single skill shipped as a body plus its files, not a set of related skills.
+"Bundle" is the one that has already cost people time, and it has **changed
+meaning**: it used to mean a single skill shipped as a body plus its files, and
+the glossary warned against reading it as a set of related skills. Readers kept
+making that mistake because a set is the thing they wanted. The one-skill
+concept is now a **package**; a **bundle** is several skills shipped together.
 
 ## People and tenancy
 
@@ -53,22 +56,27 @@ it was forked from.
 **Body** — the part composed into the system prompt on every round of every
 turn, so everything in it is paid for continuously.
 
-**Bundle** — **one skill** published as a body plus a set of files, versioned
+**Package** — **one skill** published as a body plus a set of files, versioned
 together. The body is a manifest naming operations; each file says how to call
-one, read on demand with `read_object`. *Not* a set of related skills — an agent
-given several skills has several rows in `agent_skills`, enabled and ordered
-individually. [skill-bundles.md](skill-bundles.md).
+one, read on demand with `read_object`. Built, but for the UI.
+[skill-packages.md](skill-packages.md).
 
-**Skill package** — reserved, unbuilt. The thing "bundle" is sometimes misread
-as: several skills, and possibly the egress rules and credentials they need,
-shipped and enabled as one unit. Closest existing design is
-[integrations.md](integrations.md), which is about the same problem from the
-credential end. Do not use "bundle" for this.
+**Bundle** — **several skills** shipped, enabled and versioned as one thing,
+with the hosts they reach and the credentials those need: "Accounts Receivable"
+rather than any one skill in it. Designed and unbuilt,
+[skill-bundles.md](skill-bundles.md). A bundle is not itself a skill and
+composes into no prompt — installing one gives an agent its skills
+individually, as rows in `agent_skills`, exactly as a hand-built assembly
+would.
+
+Until recently these two words meant the opposite of what they mean now. A
+document or comment that says "bundle" for one skill and its files predates the
+swap and means *package*.
 
 **Override** — a skill in its own right that speaks about another's body rather
 than replacing it. **Fork** — a copy that stops following its origin.
 
-**Frontmatter** — YAML between `---` fences at the top of a bundle's file, for
+**Frontmatter** — YAML between `---` fences at the top of a package's file, for
 the *platform* rather than the model. Today one key: `approval`
 ([approvals.md](approvals.md)). Anything the model needs to know belongs in the
 body where it can see it.

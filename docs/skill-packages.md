@@ -1,0 +1,199 @@
+# Skills as packages
+
+A skill as a set of files rather than one body: which of them the prompt
+carries, which the agent reads when it needs them, and why the set has to be
+versioned as a whole.
+
+Built, except the UI. A version carries files: stored by hash, listed with
+the version, carried forward by a body-only edit, copied by a fork, and
+readable through `GET /v1/skills/{id}/versions/{version_id}/files/{path}`. An
+agent reads them as `skill/<slug>/<path>`, from the version its binding
+resolved to, whatever its storage scopes. Hollowbrook's component installs
+this way.
+
+## Why a body is not enough
+
+A skill body is composed into the system prompt on every round of every turn
+(`skill::compose`), so everything a skill says is paid for continuously whether
+or not the turn needs it. For short prose that is the right trade: it is always
+there and the model never has to decide to go and get it. For an API, or any
+skill whose detail runs to pages, it is a cost that grows with the skill and
+buys nothing on the turns that never use it.
+
+The answer the guest already gives for its own tools is lazy loading:
+`load_tools` offers names and hands over definitions when asked. The same trade
+works for prose. A small **body** says what exists and where to read more; the
+detail sits in **files** the agent reads with `read_object` when it decides it
+needs one. [openapi-wizard.md](openapi-wizard.md) is that trade applied to a
+specification, and `k8s/components/hollowbrook/skill/` is one run of it done by
+hand -- a model that read a manifest line went and read the file, every time,
+which is the assumption everything here rests on.
+
+## What goes wrong when the files live outside the skill
+
+Hollowbrook's install script puts the body in the skill and the detail in
+`workspace/api/hollowbrook/`. It works, and it shows where the seams are:
+
+- **Only half of it is versioned.** The body appends a version; the files are
+  written over in place. They are not independent -- the body names operations
+  and the files say how to call them -- so the history can say what the body was
+  on a date and not what the files beside it said. A binding pinned to a
+  version, "for a workspace that wants changes reviewed before they arrive",
+  pins the half that is not the detail. The text that actually ran is recorded
+  for the body and inferred for the rest.
+- **Nothing owns the files.** Retiring or deleting the skill leaves them where
+  they were. Forking it copies the body and not the detail, so the fork's
+  manifest points at files the original can still rewrite.
+- **The wrong authority edits them.** Anyone with `StorageWorkspaceWrite` can
+  change what agents are told about an API, without a version, a note or the
+  skill's own permissions. It is prose governing behaviour, edited through the
+  path meant for reference spreadsheets.
+- **The operator cannot ship one.** A skill in the platform workspace reaches
+  every workspace, but its files would sit in the platform workspace's
+  `workspace/` scope, which no other workspace's agent can read. A split skill
+  is therefore something only a workspace can write for itself -- and the
+  expected author of split skills is the operator, running the OpenAPI wizard
+  once for integrations every workspace binds. This is the one that makes the
+  rest urgent: under the current layout the wizard's main case cannot work.
+- **They sit among a person's own files.** The files panel lists them beside
+  whatever was uploaded, where they read as clutter at best and invitation to
+  edit at worst.
+- **Installing needs a detour.** The files endpoint lives under a session, so
+  the script opens a throwaway session to upload through. Its glob also uploads
+  `index.md`, so the body is stored twice and the two copies can drift.
+
+Every one of these is the same fact: the detail is part of the skill and is
+stored as if it were not.
+
+## The shape
+
+**A version is a body and a set of files, published together.** Appending a
+version appends both; a version is immutable once written, files included. A
+skill with no files is exactly today's skill, so the simple case does not
+change and nobody writing three paragraphs has to know files exist.
+
+```
+skill_version_files (version_id, path, sha256, bytes)
+```
+
+Content lives by hash, so a version that changes one file of forty stores one
+file, and a redeploy that changes nothing stores nothing -- the same rule the
+install script applies to the body today, applied to the whole set.
+
+**The agent reads them through a scope of their own**, `skill/<slug>/<path>`,
+read-only whatever the settings say. `scope::resolve` maps it against the
+version the turn actually resolved, not the live one: a pinned agent reads its
+pinned files, and a turn that started before an edit reads what it started
+with. The API sends the turn a table of exactly those
+names and the content each resolves to (`skill_files` on the assignment); the
+runtime looks names up in it and decides nothing, as with the scopes. A skill
+the turn was not bound to is not in the table, so an agent cannot read the
+detail of skills it was not given. Two bound skills can share a slug -- the
+operator's and a workspace's own -- and then the one bound first is
+reachable and the other is logged.
+
+**Stored under the owning workspace**, scope-first as [storage.md](storage.md)
+requires, and untouched by the session lifecycle rule. An operator skill's
+files live under the platform workspace and resolve for every workspace bound
+to it, which is the thing the current layout cannot do.
+
+**Written through the skill**, `PUT /v1/skills/{id}/versions` taking the files
+with the body, under the skill authorities. The files panel does not list them;
+the skills UI shows them inside the version they belong to, where a diff
+between versions covers the whole of what changed.
+
+**Forks and overrides follow.** A fork copies the file list, which costs
+nothing because the content is shared by hash. An override stays prose: it
+speaks about its base's files the way it speaks about its base's body, and does
+not replace them. Whether an override should be able to add files of its own
+is a question to answer when somebody needs it.
+
+## The public convention, and where this parts from it
+
+The body/name/description shape is deliberately the same as the Agent Skills
+convention a `SKILL.md` follows -- a description that decides relevance, a body
+paid for when it is loaded -- because that is the same problem with the same
+answer, and this repo has one of those files itself for the agent that works on
+it (`.agents/skills/onboarding/SKILL.md`). A body written for one pastes in here
+usefully, which is the point of not inventing a different shape.
+
+What does not carry across is most of what makes these governable, so this is a
+family resemblance rather than a claim of compatibility:
+
+- **A skill here is a row, not a directory.** Versions, overrides, forks,
+  retirement and the hosts it declares are the substance of it, and a file has
+  nowhere to put them. Dropping a directory in would not work.
+- **`allowed-tools` has no meaning.** What a tenant's agent may reach is an
+  egress rule and a set of host imports, decided outside anything the skill can
+  say. A declaration in a file would be a permission that is not one.
+- **The frontmatter below is ours**, on a per-operation file -- a level the
+  convention has no equivalent of, since it has no notion of a body plus files
+  versioned as one unit.
+
+The two also serve different readers. `.agents/skills/` is for an agent working
+on this codebase, with a filesystem and a shell; a skill here is prose for a
+tenant's agent, which has neither.
+
+## Frontmatter, and what may live in it
+
+A file may open with YAML between `---` fences. Today one key is defined --
+`approval`, in [approvals.md](approvals.md) -- and the reason it belongs here
+rather than anywhere else is everything this document argues: a version is
+immutable and published whole, so what a rule said on a date is recorded rather
+than inferred; it is written under `SkillsWrite` rather than
+`StorageWorkspaceWrite`, so prose that governs behaviour is not editable through
+the path meant for spreadsheets; and the agent reads it through a scope that is
+read-only, resolved against the version its turn bound.
+
+A file with no frontmatter is an ordinary file, which is nearly all of them. The
+fences are not a place for anything a *model* should read: the prose is what the
+agent is told, and a declaration in frontmatter is for the platform. Anything
+the model needs to know belongs in the body where it can see it.
+
+## When to split
+
+Recommended past a size, not required. Splitting has a cost of its own: the
+model has to decide to read a file, and a weaker one may guess instead, which
+is what [skill-evaluation.md](skill-evaluation.md) exists to catch. So the
+recommendation should come from numbers the platform already has rather than a
+rule of thumb:
+
+- **What the body costs.** Bytes composed into every round, shown beside the
+  skill, so a body that has grown is visible as a standing cost.
+- **Whether the split is working.** For a split skill, how often a turn read the
+  file before making the call it describes, against how often it made the call
+  without reading. That is a query over transcripts, not an inference.
+
+A body that is large and whose sections are rarely relevant to a given turn is
+the case to split. One that is large and needed on every turn is not, and
+splitting it only adds a round.
+
+## Help with splitting
+
+Two ways in, both proposals a person reviews rather than changes that land:
+
+- **From a specification.** The OpenAPI wizard, which produces a package
+  directly: a manifest body and a file per operation. It should write into this
+  shape rather than into `workspace/`, so it is worth building this first and
+  not setting the current layout in stone.
+- **From prose.** A skill whose body has grown can be offered a split: a model
+  reads it and proposes a body naming the sections and a file for each. A
+  one-off task at edit time, not on the turn path, so it can afford a capable
+  model. The proposal is a new version, so accepting it is reversible and the
+  history says it happened.
+
+The same rule as the wizard's applies to the files a split produces: each
+readable in one `read_object` call, named so the path can be derived from the
+body, and no URL in the body for a weaker model to mistake for a tool name.
+
+## What this changed for Hollowbrook
+
+Its install script publishes the files with the version instead of through a
+throwaway session, leaves `index.md` out of the file set because it is the
+body, and the manifest's paths became `skill/hollowbrook/<operation>.md`.
+Nothing about the prose changed: the shape was right, and only where it was
+stored was not.
+
+Tried on 2026-09-25 against `gemini-3.7-flash`: asked what a booking needs, the
+agent loaded `read_object`, read `skill/hollowbrook/create_booking.md`, and
+asked for exactly the four fields that file marks as required.
