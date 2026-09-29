@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { declaresApproval, mentionedIn, pathProblem } from './skills'
+import { declaresApproval, fileChanges, mentionedIn, pathProblem } from './skills'
 
 describe('a file the instructions never mention', () => {
   const body = 'Read `skill/hollowbrook/get_room.md` before describing a room.'
@@ -51,5 +51,31 @@ describe('a file that declares an approval', () => {
 
   it('is not confused by other frontmatter', () => {
     expect(declaresApproval('---\ntitle: x\n---\n')).toBe(false)
+  })
+})
+
+describe('which files a version changed', () => {
+  const f = (path: string, sha256: string) => ({ path, sha256 })
+
+  /// The case the history could not show: one operation's file edited and
+  /// nothing else, which listed as the same names as the version before.
+  it('names the one file that was edited', () => {
+    expect(
+      fileChanges(
+        [f('charge.md', 'a'), f('rooms.md', 'b')],
+        [f('charge.md', 'c'), f('rooms.md', 'b')],
+      ),
+    ).toEqual([{ path: 'charge.md', change: 'changed' }])
+  })
+
+  it('tells an added file from a removed one', () => {
+    expect(fileChanges([f('old.md', 'a')], [f('new.md', 'b')])).toEqual([
+      { path: 'new.md', change: 'added' },
+      { path: 'old.md', change: 'removed' },
+    ])
+  })
+
+  it('says nothing when the files are the same', () => {
+    expect(fileChanges([f('a.md', 'x')], [f('a.md', 'x')])).toEqual([])
   })
 })
