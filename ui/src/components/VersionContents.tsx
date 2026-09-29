@@ -2,6 +2,14 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, GitCompare, Globe } from 'lucide-react'
 
 import { collapse, hasChanges, lineDiff, MAX_LINES, type Change } from '../lib/lineDiff'
+import { fileChanges, type FileChange } from '../lib/skills'
+
+type CarriedFile = { path: string; bytes: number; sha256?: string }
+
+/** Reads one file of one version, for the diff of a file that changed. Passed
+ *  in rather than called directly, so the component can be tested without a
+ *  network and so the page decides whose route it goes through. */
+export type ReadFile = (versionId: string, path: string) => Promise<string>
 
 /**
  * What a version of a skill actually says, under the row that names it.
@@ -21,11 +29,22 @@ export default function VersionContents({
   version,
   live,
   isLive,
+  previousFiles,
+  liveFiles,
+  liveVersionId,
+  readFile,
 }: {
-  version: { body: string; hosts: string[]; files?: { path: string; bytes: number }[] }
+  version: { id?: string; body: string; hosts: string[]; files?: CarriedFile[] }
   /** The live version's body, for the diff. Absent when this *is* the live one. */
   live?: string
   isLive: boolean
+  /** The files of the version before this one, to say what this one changed.
+   *  Absent for the first version, which changed nothing it could be compared to. */
+  previousFiles?: CarriedFile[]
+  /** The live version's files, compared with this one's under "Compare with live". */
+  liveFiles?: CarriedFile[]
+  liveVersionId?: string
+  readFile?: ReadFile
 }) {
   const [shown, setShown] = useState<'closed' | 'body' | 'diff'>('closed')
 
@@ -38,8 +57,17 @@ export default function VersionContents({
     return hasChanges(changes) ? collapse(changes) : 'identical' as const
   }, [shown, live, version.body])
 
+  // Against the version before, from the hashes alone: an edit to one file and
+  // nothing else used to list under the same names as the version it replaced,
+  // leaving no way to see from the history which file had changed.
+  const changedHere = useMemo(
+    () => (previousFiles ? fileChanges(hashed(previousFiles), hashed(version.files)) : []),
+    [previousFiles, version.files],
+  )
+
   return (
     <div className="mt-2">
+      {changedHere.length > 0 && <ChangedHere changes={changedHere} />}
       <div className="flex flex-wrap items-center gap-2">
         <Toggle
           active={shown === 'body'}
@@ -83,7 +111,15 @@ export default function VersionContents({
             </p>
           )}
           {Array.isArray(sections) && <Diff sections={sections} />}
-          <Carried hosts={version.hosts} files={version.files} />
+          <Carried hosts={version.hosts} />
+          {liveFiles && (
+            <FilesAgainstLive
+              changes={fileChanges(hashed(liveFiles), hashed(version.files))}
+              versionId={version.id}
+              liveVersionId={liveVersionId}
+              readFile={readFile}
+            />
+          )}
         </div>
       )}
     </div>
@@ -134,13 +170,172 @@ function Pre({ children }: { children: string }) {
   )
 }
 
+/** Files that carry a hash, which is every file a version records. */
+function hashed(files: CarriedFile[] | undefined): { path: string; sha256: string }[] {
+  return (files ?? []).flatMap((f) => (f.sha256 ? [{ path: f.path, sha256: f.sha256 }] : []))
+}
+
+const WORD: Record<FileChange['change'], string> = {
+  added: 'added',
+  removed: 'removed',
+  changed: 'changed',
+}
+
+/** One line saying which files this version changed from the one before. */
+function ChangedHere({ changes }: { changes: FileChange[] }) {
+  const by = (kind: FileChange['change']) =>
+    changes.filter((c) => c.change === kind).map((c) => c.path)
+  const parts = (['changed', 'added', 'removed'] as const).flatMap((kind) => {
+    const paths = by(kind)
+    return paths.length === 0 ? [] : [{ kind, paths }]
+  })
+  return (
+    <p className="mb-2 flex flex-wrap items-baseline gap-x-2 text-xs text-surface-600 dark:text-surface-400">
+      <FileText size={11} className="self-center" aria-hidden />
+      {parts.map(({ kind, paths }) => (
+        <span key={kind}>
+          {WORD[kind]} <span className="font-mono text-surface-800 dark:text-surface-200">{paths.join(', ')}</span>
+        </span>
+      ))}
+    </p>
+  )
+}
+
+/**
+ * The files that differ from the live version, each openable to its own diff.
+ *
+ * In the same direction as the prose diff above it: something only the live
+ * version has shows as removed, something only this one has as added -- what
+ * restoring this version would do. File contents are read only when one is
+ * opened; a version can carry hundreds, and listing what changed needs none.
+ */
+function FilesAgainstLive({
+  changes,
+  versionId,
+  liveVersionId,
+  readFile,
+}: {
+  changes: FileChange[]
+  versionId?: string
+  liveVersionId?: string
+  readFile?: ReadFile
+}) {
+  if (changes.length === 0) {
+    return (
+      <p className="text-xs text-surface-600 dark:text-surface-400">
+        Its files are the same as the live version&apos;s.
+      </p>
+    )
+  }
+  return (
+    <div className="text-xs">
+      <p className="text-surface-600 dark:text-surface-400">Files that differ from the live version</p>
+      <ul className="mt-1 space-y-1">
+        {changes.map((c) => (
+          <FileDiff
+            key={c.path}
+            change={c}
+            versionId={versionId}
+            liveVersionId={liveVersionId}
+            readFile={readFile}
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function FileDiff({
+  change,
+  versionId,
+  liveVersionId,
+  readFile,
+}: {
+  change: FileChange
+  versionId?: string
+  liveVersionId?: string
+  readFile?: ReadFile
+}) {
+  const [open, setOpen] = useState(false)
+  const [state, setState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'failed'; message: string }
+    | { kind: 'ready'; sections: ReturnType<typeof collapse> | null }
+  >({ kind: 'idle' })
+  const canRead = readFile !== undefined && versionId !== undefined && liveVersionId !== undefined
+
+  async function toggle() {
+    const next = !open
+    setOpen(next)
+    if (!next || state.kind !== 'idle' || !canRead) return
+    setState({ kind: 'loading' })
+    try {
+      // An added file has nothing on the live side and a removed one nothing on
+      // this side, so each is its whole text as added or removed.
+      const [before, after] = await Promise.all([
+        change.change === 'added' ? '' : readFile(liveVersionId, change.path),
+        change.change === 'removed' ? '' : readFile(versionId, change.path),
+      ])
+      const changes = lineDiff(before, after)
+      setState({ kind: 'ready', sections: changes === null ? null : collapse(changes) })
+    } catch (e) {
+      setState({ kind: 'failed', message: e instanceof Error ? e.message : 'could not read it' })
+    }
+  }
+
+  const tone =
+    change.change === 'added'
+      ? 'text-green-700 dark:text-green-400'
+      : change.change === 'removed'
+        ? 'text-red-700 dark:text-red-400'
+        : 'text-amber-700 dark:text-amber-400'
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        aria-expanded={open}
+        disabled={!canRead}
+        className="inline-flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-surface-100 dark:hover:bg-surface-800 disabled:hover:bg-transparent"
+      >
+        {canRead &&
+          (open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />)}
+        <span className="font-mono text-surface-800 dark:text-surface-200">{change.path}</span>
+        <span className={tone}>{WORD[change.change]}</span>
+      </button>
+      {open && (
+        <div className="mt-1">
+          {state.kind === 'loading' && (
+            <p className="text-surface-600 dark:text-surface-400">Reading…</p>
+          )}
+          {state.kind === 'failed' && (
+            <p className="text-red-600 dark:text-red-400" role="alert">
+              {state.message}
+            </p>
+          )}
+          {state.kind === 'ready' &&
+            (state.sections === null ? (
+              <p className="text-surface-600 dark:text-surface-400">
+                Too long to compare here — over {MAX_LINES.toLocaleString()} lines.
+              </p>
+            ) : (
+              <Diff sections={state.sections} />
+            ))}
+        </div>
+      )}
+    </li>
+  )
+}
+
 /** The hosts and files a version carried, which are part of it as much as its prose. */
 function Carried({
   hosts,
   files,
 }: {
   hosts: string[]
-  files?: { path: string; bytes: number }[]
+  files?: CarriedFile[]
 }) {
   if (hosts.length === 0 && !files?.length) return null
   return (

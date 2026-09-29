@@ -245,3 +245,30 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60)
 }
+
+/** How one file differs between two versions. */
+export type FileChange = { path: string; change: 'added' | 'removed' | 'changed' }
+
+type Carried = { path: string; sha256: string }
+
+/**
+ * Which files differ between two versions, by path, going from `from` to `to`.
+ *
+ * Compared by hash, which every version already records, so a history of many
+ * versions can say what each one changed without reading a byte of any file.
+ * Files that are the same are left out: the question is what changed.
+ */
+export function fileChanges(from: Carried[], to: Carried[]): FileChange[] {
+  const before = new Map(from.map((f) => [f.path, f.sha256]))
+  const after = new Map(to.map((f) => [f.path, f.sha256]))
+  const out: FileChange[] = []
+  for (const [path, hash] of after) {
+    const was = before.get(path)
+    if (was === undefined) out.push({ path, change: 'added' })
+    else if (was !== hash) out.push({ path, change: 'changed' })
+  }
+  for (const path of before.keys()) {
+    if (!after.has(path)) out.push({ path, change: 'removed' })
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
+}

@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import VersionContents from './VersionContents'
 
@@ -144,5 +144,79 @@ describe('which version is compared against', () => {
     const removed = screen.getByText('new wording').closest('p')
     expect(added?.textContent).toContain('added')
     expect(removed?.textContent).toContain('removed')
+  })
+})
+
+describe('the files a version changed', () => {
+  const file = (path: string, sha256: string) => ({ path, sha256, bytes: 10 })
+
+  /// The gap this closes: an edit to one file and nothing else listed under
+  /// the same names as the version before it, so the history could not say
+  /// which file had changed.
+  it('names the file this version changed, without opening anything', () => {
+    render(
+      <VersionContents
+        version={version({ files: [file('charge.md', 'new'), file('rooms.md', 'same')] })}
+        isLive
+        previousFiles={[file('charge.md', 'old'), file('rooms.md', 'same')]}
+      />,
+    )
+    expect(screen.getByText('changed')).toBeInTheDocument()
+    expect(screen.getByText('charge.md')).toBeInTheDocument()
+    expect(screen.queryByText('rooms.md')).not.toBeInTheDocument()
+  })
+
+  it('opens a changed file to its own diff against the live version', async () => {
+    const read = vi.fn(async (versionId: string) =>
+      versionId === 'live' ? 'take the money\n' : 'ask first\ntake the money\n',
+    )
+    render(
+      <VersionContents
+        version={version({ id: 'old', files: [file('charge.md', 'a')] })}
+        live={version().body}
+        isLive={false}
+        liveFiles={[file('charge.md', 'b')]}
+        liveVersionId="live"
+        readFile={read}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Compare with live/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /charge\.md/ }))
+    expect(await screen.findByText('ask first')).toBeInTheDocument()
+    expect(read).toHaveBeenCalledWith('live', 'charge.md')
+    expect(read).toHaveBeenCalledWith('old', 'charge.md')
+  })
+
+  /// Contents are read only when a file is opened; listing what changed needs
+  /// the hashes alone, and a version can carry hundreds of files.
+  it('reads nothing until a file is opened', () => {
+    const read = vi.fn(async () => '')
+    render(
+      <VersionContents
+        version={version({ id: 'old', files: [file('a.md', 'x')] })}
+        live="other"
+        isLive={false}
+        liveFiles={[file('a.md', 'y')]}
+        liveVersionId="live"
+        readFile={read}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Compare with live/ }))
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('says so when the files match the live version', () => {
+    render(
+      <VersionContents
+        version={version({ files: [file('a.md', 'x')] })}
+        live="other"
+        isLive={false}
+        liveFiles={[file('a.md', 'x')]}
+        liveVersionId="live"
+        readFile={async () => ''}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Compare with live/ }))
+    expect(screen.getByText(/same as the live version/)).toBeInTheDocument()
   })
 })

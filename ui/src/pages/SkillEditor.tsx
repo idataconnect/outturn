@@ -12,6 +12,7 @@ import {
   listVersions,
   parseHosts,
   publishVersion,
+  readVersionFile,
   readVersionFiles,
   retireSkill,
   slugify,
@@ -528,7 +529,7 @@ export default function SkillEditor() {
             restoring it would change.
           </p>
           <ul className="mt-4 divide-y divide-surface-200 dark:divide-surface-800 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
-            {versions.map((v) => (
+            {versions.map((v, at) => (
               <li key={v.id} className="flex items-start gap-4 p-4">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-surface-900 dark:text-surface-100">
@@ -553,6 +554,13 @@ export default function SkillEditor() {
                     version={v}
                     live={versions.find((other) => other.ordinal === skill?.ordinal)?.body}
                     isLive={v.ordinal === skill?.ordinal}
+                    // Newest first, so the version this one replaced is the next.
+                    previousFiles={versions[at + 1]?.files}
+                    liveFiles={versions.find((other) => other.ordinal === skill?.ordinal)?.files}
+                    liveVersionId={versions.find((other) => other.ordinal === skill?.ordinal)?.id}
+                    readFile={(versionId, path) =>
+                      readVersionFile(skill?.id ?? v.skill_id, versionId, path)
+                    }
                   />
                 </div>
                 {editable && v.ordinal !== skill?.ordinal && (
