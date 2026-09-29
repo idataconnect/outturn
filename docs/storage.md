@@ -30,7 +30,7 @@ out.
 A skill version's files sit under a fourth prefix, `skills/<workspace>/<sha256>`,
 written through the skills API rather than the files API and never swept: a
 version is immutable, and what it said has to stay readable
-([skill-bundles.md](skill-bundles.md)). An agent reads them as
+([skill-packages.md](skill-packages.md)). An agent reads them as
 `skill/<slug>/<path>`, read-only, through the table its turn was sent rather
 than by listing the prefix, which holds every version's content by hash.
 

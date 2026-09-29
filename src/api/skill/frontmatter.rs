@@ -1,6 +1,6 @@
 //! The declaration at the top of a skill's operation file.
 //!
-//! See `docs/approvals.md` for what the keys mean and `docs/skill-bundles.md`
+//! See `docs/approvals.md` for what the keys mean and `docs/skill-packages.md`
 //! for why a skill file is a safe place to put a governance rule -- versioned
 //! with its body, immutable once published, written under `SkillsWrite`, and
 //! read-only to the agent it governs.

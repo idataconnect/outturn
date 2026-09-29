@@ -302,10 +302,16 @@ every round of every turn and a real specification is megabytes. The agent
 reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
-A skill as a body plus files versioned together, rather than a body with its
-detail loose in `workspace/` scope, is designed but unbuilt in
-[docs/skill-bundles.md](docs/skill-bundles.md) — the Hollowbrook split works,
-but only the body is versioned, and nothing owns the files.
+A skill as a body plus files versioned together -- a *package* -- is in
+[docs/skill-packages.md](docs/skill-packages.md), built but for the UI. A
+version carries its files, a fork copies them, and an agent reads them as
+`skill/<slug>/<path>` from the version its binding resolved to.
+
+Several skills shipped and versioned as one thing -- a *bundle*, "Accounts
+Receivable" rather than any one skill in it -- is designed and unbuilt in
+[docs/skill-bundles.md](docs/skill-bundles.md). It wants integrations first:
+a bundle whose hosts and credentials a workspace must still arrange by hand
+cannot do its job.
 
 How somebody finds out their skill is not working is designed but unbuilt, in
 [docs/skill-evaluation.md](docs/skill-evaluation.md) — a skill that documents
@@ -380,7 +386,7 @@ ask for pods to run work nobody can take.
 What declares that an operation needs approving, and what a yes is worth once
 given, is in [docs/approvals.md](docs/approvals.md) -- the rule lives in the
 skill file that documents the operation, as frontmatter, because
-skill-bundles.md made those files versioned, immutable and writable only under
+skill-packages.md made those files versioned, immutable and writable only under
 `SkillsWrite`. Who gets asked once a request is pending, and how they find out,
 is in [docs/action-queue.md](docs/action-queue.md) -- partly built, ahead of the advice
 in inhibitors.md that said to wait for something to notify about. The queue
@@ -409,9 +415,10 @@ limit has always been refused — see the truncation guard in
 
 Words this codebase uses in a particular way are in
 [docs/glossary.md](docs/glossary.md) -- worth a look before a design
-conversation, since a few are easy to misread. "Bundle" is one skill shipped as
-a body plus its files, not a set of related skills; a *skill package* is the
-reserved name for that second thing, which does not exist.
+conversation, since a few are easy to misread — and two of them recently swapped.
+A *package* is one skill shipped as a body plus its files; a *bundle* is several
+skills shipped together. Until recently "bundle" meant the first, so anything
+written before the swap that says "bundle" for one skill means *package*.
 
 ## Invariants worth knowing before you change things
 

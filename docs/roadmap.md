@@ -55,9 +55,9 @@ a model guesses the call from a manifest line, so that is the assumption worth
 having tested before building on it. See *The shape, tried once* in
 [openapi-wizard.md](openapi-wizard.md).
 
-### Skills as bundles
+### Skills as packages
 
-[skill-bundles.md](skill-bundles.md).
+[skill-packages.md](skill-packages.md).
 
 A skill version as a body plus a set of files, versioned together and read
 through a `skill/` scope resolved against the version the turn bound. Today the
@@ -230,6 +230,29 @@ customer's public API never touches the internal path.
 
 Not tool registration. An integration is a permitted host, a bound credential,
 and a skill saying what to call -- all of which `fetch_url` already serves.
+
+### Skill bundles
+
+[skill-bundles.md](skill-bundles.md).
+
+Several skills shipped, enabled and versioned as one thing, with the hosts they
+reach and the credentials those need -- "Accounts Receivable" rather than any
+one skill in it. The unit somebody actually wants, and the thing a workspace
+assembles by hand today in a dozen steps where stopping halfway is worse than
+not starting.
+
+Wants integrations first, or most of it: a bundle whose hosts and credentials
+a workspace must still arrange by hand is a bundle that cannot do its job. The
+two are the same problem from opposite ends -- that document approaches it from
+the credential, this one from the work.
+
+Installing must be a plan a person approves rather than an act, since the
+alternative is a catalogue click that reaches a host and takes a credential.
+The unsettled part is versioning: whether a workspace may edit a bundle's
+skills, and what an upgrade does when they have.
+
+Note this word changed meaning. It used to mean one skill and its files, which
+is now a *package* -- see [skill-packages.md](skill-packages.md).
 
 ### Egress rules in the UI
 

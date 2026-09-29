@@ -12,7 +12,7 @@ needs approving, what an approval is worth once given, and how far it reaches.
 
 An approval rule is prose about an operation: *charging a card needs a manager*.
 The place that already holds prose about operations is the skill that documents
-them, one file per operation, and [skill-bundles.md](skill-bundles.md) made
+them, one file per operation, and [skill-packages.md](skill-packages.md) made
 those files into something a rule can safely live in:
 
 - **Versioned and immutable.** A version is a body and its files published
