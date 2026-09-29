@@ -595,8 +595,9 @@ impl ChatStore for PostgresChatStore {
     }
 
     async fn attempt_for(&self, replies_to: Uuid, resuming: bool) -> Result<i32, ChatError> {
-        let latest: Option<(i32, bool)> = sqlx::query_as(
-            "select attempt, finished_at is not null \
+        let latest: Option<(i32, bool, bool)> = sqlx::query_as(
+            "select attempt, finished_at is not null, \
+                    said_something(content, metadata) \
              from agent_messages where replies_to = $1 \
              order by attempt desc limit 1",
         )
@@ -608,14 +609,28 @@ impl ChatStore for PostgresChatStore {
         Ok(match latest {
             // Nothing yet: the first attempt.
             None => 1,
-            // Resuming after an approval, and the attempt it was refused on is
-            // finished. The next one, so that reply stays as it was.
-            Some((attempt, true)) if resuming => attempt + 1,
-            // Anything else takes the latest attempt back: a crashed retry, and
-            // a resume whose previous attempt never finished streaming -- which
-            // has nothing worth preserving and would otherwise leave an empty
-            // reply behind for the abandoned-placeholder guard to trip over.
-            Some((attempt, _)) => attempt,
+            // Resuming after somebody answered, and the attempt they answered
+            // about is finished. The next one, so that reply stays as it was.
+            Some((attempt, true, _)) if resuming => attempt + 1,
+            // An attempt that put something on the reader's screen. The next
+            // one, whatever brought this turn back.
+            //
+            // The rule used to be that only a *finished* attempt was worth
+            // keeping, on the reasoning that a crash had produced nothing
+            // anybody saw. That premise is false the moment a turn streams:
+            // one ran for eight minutes, made six tool calls, and had its lease
+            // reaped -- and the retry took the row back and overwrote all of it
+            // with a one-sentence answer. The calls were on screen while they
+            // happened and then were not, which is the message changing under
+            // the reader by a path nobody had thought of.
+            //
+            // So the question is not whether the attempt finished but whether
+            // it said anything, which is the same `said_something` the discard
+            // and the abandoned guard use. An attempt that truly produced
+            // nothing is still taken back, because an empty row stranded past a
+            // new one is what the abandoned-placeholder guard trips over.
+            Some((attempt, _, true)) => attempt + 1,
+            Some((attempt, _, _)) => attempt,
         })
     }
 

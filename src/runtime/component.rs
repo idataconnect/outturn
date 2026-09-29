@@ -1985,13 +1985,19 @@ mod compiled_cache_tests {
             assert_eq!(t.join().expect("thread"), 11);
         }
         assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(c.compiling.lock().expect("lock").is_empty(), "a finished key was kept");
+        assert!(
+            c.compiling.lock().expect("lock").is_empty(),
+            "a finished key was kept"
+        );
     }
 
     #[test]
     fn a_failed_build_is_not_what_the_next_caller_gets() {
         let c = cache();
-        assert!(c.get_or_compile(key(1), || anyhow::bail!("broken")).is_err());
+        assert!(
+            c.get_or_compile(key(1), || anyhow::bail!("broken"))
+                .is_err()
+        );
         assert_eq!(c.get_or_compile(key(1), || Ok(11)).expect("build"), 11);
     }
 
