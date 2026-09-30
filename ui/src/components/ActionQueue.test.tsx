@@ -158,3 +158,11 @@ describe('opening an item', () => {
     expect(onOpen).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('something that has only just arrived', () => {
+  it('reads as part of the sentence, not as a heading', () => {
+    // "Just now" stands alone; after "waiting" it is lower case.
+    render(<ActionQueue items={[item({ id: idAt(NOW) })]} now={NOW} />)
+    expect(screen.getByText(/waiting just now/)).toBeInTheDocument()
+  })
+})

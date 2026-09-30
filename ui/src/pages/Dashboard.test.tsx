@@ -2,7 +2,11 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { MemoryRouter } from 'react-router'
+
 import Dashboard from './Dashboard'
+import type { ActionItem } from '../lib/actions'
+import { InboxContext, type Inbox } from '../lib/inbox'
 import { SessionContext, type SessionState } from '../lib/session'
 
 const asked: string[] = []
@@ -35,11 +39,25 @@ function signedIn(over: { authorities?: string[]; roles?: string[] } = {}): Sess
   } as unknown as SessionState
 }
 
+/** What the inbox holds, for the card at the top. Empty unless a test says. */
+let waiting: ActionItem[] = []
+
 function show(state: SessionState) {
+  const inbox: Inbox = {
+    items: waiting,
+    count: waiting.length,
+    capped: false,
+    loaded: true,
+    refresh: () => {},
+  }
   return render(
-    <SessionContext.Provider value={state}>
-      <Dashboard />
-    </SessionContext.Provider>,
+    <MemoryRouter>
+      <SessionContext.Provider value={state}>
+        <InboxContext.Provider value={inbox}>
+          <Dashboard />
+        </InboxContext.Provider>
+      </SessionContext.Provider>
+    </MemoryRouter>,
   )
 }
 
@@ -182,5 +200,44 @@ describe('Dashboard', () => {
     summary = quiet
     show(signedIn())
     expect(await screen.findByText('No model calls in this window.')).toBeInTheDocument()
+  })
+})
+
+describe('what is waiting on the reader', () => {
+  const item = (id: string, reason: string): ActionItem => ({
+    id,
+    workspace_id: 'w1',
+    kind: 'approval.charge',
+    event_id: null,
+    payload: { reason },
+    state: 'pending',
+    created_at: '2026-09-30T00:00:00Z',
+    expires_at: null,
+  })
+
+  beforeEach(() => {
+    summary = fixture()
+    waiting = []
+  })
+
+  it('leads the page with the oldest few, and a way into the inbox', async () => {
+    waiting = [
+      item('01a0f3a6-0001-7000-8000-000000000001', 'Charge for Alvarez'),
+      item('01a0f3a6-0002-7000-8000-000000000002', 'Charge for Brandt'),
+      item('01a0f3a6-0003-7000-8000-000000000003', 'Charge for Castell'),
+      item('01a0f3a6-0004-7000-8000-000000000004', 'Charge for Dunmore'),
+    ]
+    show(signedIn())
+    expect(await screen.findByText(/Waiting on you/)).toBeInTheDocument()
+    expect(screen.getByText('(4)')).toBeInTheDocument()
+    expect(screen.getByText(/Charge for Alvarez/)).toBeInTheDocument()
+    expect(screen.queryByText(/Charge for Dunmore/)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Open the inbox/ })).toHaveAttribute('href', '/inbox')
+  })
+
+  it('says nothing at all when nothing is waiting', async () => {
+    show(signedIn())
+    await hero()
+    expect(screen.queryByText(/Waiting on you/)).not.toBeInTheDocument()
   })
 })
