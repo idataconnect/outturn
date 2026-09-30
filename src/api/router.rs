@@ -867,7 +867,10 @@ async fn list_roles(
             auth::AuthError::Forbidden.to_string(),
         ));
     }
-    let items = state.roles.list(claims.workspace_id, query.after, limit).await?;
+    let items = state
+        .roles
+        .list(claims.workspace_id, query.after, limit)
+        .await?;
     Ok(Json(super::Page::from_rows(items, |r| r.id)))
 }
 
@@ -1253,7 +1256,9 @@ async fn list_inhibitors(
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
-    let items = store.in_workspace(claims.workspace_id, query.after, limit).await?;
+    let items = store
+        .in_workspace(claims.workspace_id, query.after, limit)
+        .await?;
     Ok(Json(super::Page::from_rows(items, |i| i.id)))
 }
 

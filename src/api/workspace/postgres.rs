@@ -27,7 +27,11 @@ fn map_sqlx_error(e: sqlx::Error, slug: &str) -> WorkspaceError {
 
 #[async_trait]
 impl WorkspaceStore for PostgresWorkspaceStore {
-    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<Workspace>, WorkspaceError> {
+    async fn list(
+        &self,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<Workspace>, WorkspaceError> {
         sqlx::query_as::<_, Workspace>(
             "select id, name, slug from workspaces \
              where ($1::uuid is null or id > $1) order by id limit $2",

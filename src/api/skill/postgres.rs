@@ -330,7 +330,12 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
 
 #[async_trait]
 impl SkillStore for PostgresSkillStore {
-    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Skill>, SkillError> {
+    async fn list(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<Skill>, SkillError> {
         // The operator's skills read as though they were the workspace's own to
         // look at, because deciding whether to override one requires seeing it.
         let rows = sqlx::query(select_skill!(
@@ -647,7 +652,11 @@ impl SkillStore for PostgresSkillStore {
                     .into_iter()
                     .zip(hashes)
                     .zip(sizes)
-                    .map(|((path, sha256), bytes)| SkillFile { path, sha256, bytes })
+                    .map(|((path, sha256), bytes)| SkillFile {
+                        path,
+                        sha256,
+                        bytes,
+                    })
                     .collect();
                 SkillVersion {
                     id: r.get("id"),

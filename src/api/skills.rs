@@ -95,7 +95,10 @@ pub async fn list_skills(
 ) -> Result<Json<super::Page<Skill>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let items = state.skills.list(claims.workspace_id, query.after, limit).await?;
+    let items = state
+        .skills
+        .list(claims.workspace_id, query.after, limit)
+        .await?;
     Ok(Json(super::Page::from_rows(items, |s| s.id)))
 }
 
@@ -182,7 +185,10 @@ pub async fn list_versions(
 ) -> Result<Json<super::Page<SkillVersion>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let items = state.skills.versions(claims.workspace_id, id, query.after, limit).await?;
+    let items = state
+        .skills
+        .versions(claims.workspace_id, id, query.after, limit)
+        .await?;
     Ok(Json(super::Page::from_rows(items, |v| v.id)))
 }
 
@@ -331,7 +337,9 @@ pub async fn list_agent_skills(
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     // Proves the agent is this workspace's before answering for it.
     state.agents.get(claims.workspace_id, agent_id).await?;
-    Ok(Json(state.skills.bindings(claims.workspace_id, agent_id).await?))
+    Ok(Json(
+        state.skills.bindings(claims.workspace_id, agent_id).await?,
+    ))
 }
 
 pub async fn set_agent_skills(
