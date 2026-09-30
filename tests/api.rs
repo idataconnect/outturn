@@ -266,7 +266,10 @@ impl Harness {
 
         let workspace_id = match workspace_role {
             Some((id, _)) => id,
-            None => self.workspaces.list(None, 1).await.expect("list")[0].id,
+            // Where a system administrator with no workspace role lands. Named
+            // rather than taken as the first row listed, which it was until the
+            // list stopped offering it.
+            None => outturn::api::usage::PLATFORM_WORKSPACE,
         };
 
         let req = Request::builder()
@@ -8694,4 +8697,57 @@ async fn a_list_says_there_is_more_only_when_there_is() {
         page["next"].is_null(),
         "a full last page pointed past itself: {body}"
     );
+}
+
+/// The platform's own row is not a workspace to manage: it is not listed, and
+/// it cannot be opened, renamed or deleted as one. Deleting it was refused
+/// before this, by a trigger, as an internal error.
+#[tokio::test]
+async fn the_platform_workspace_is_not_managed_as_a_workspace() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("root@test.invalid", Some(Role::SystemAdmin), None)
+        .await;
+    let platform = outturn::api::usage::PLATFORM_WORKSPACE;
+
+    let (status, body) = h.get("/v1/workspaces", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed: Vec<String> = items(&body)
+        .iter()
+        .map(|w| w["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(listed, vec![acme.to_string()], "{body}");
+
+    let (status, _) = h
+        .get(&format!("/v1/workspaces/{platform}"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/workspaces/{platform}"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"name":"Renamed"}"#))
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the platform workspace was renamed"
+    );
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/workspaces/{platform}"))
+        .header("authorization", format!("Bearer {admin}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A real workspace still opens.
+    let (status, _) = h.get(&format!("/v1/workspaces/{acme}"), Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    h.db.cleanup().await;
 }

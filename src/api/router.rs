@@ -437,12 +437,31 @@ async fn create_workspace(
     Ok((StatusCode::CREATED, Json(workspace)))
 }
 
+/// The platform workspace is not one to open, rename or delete.
+///
+/// It is a reserved row rather than a tenant: what the operator's own work
+/// bills to, and what owns the platform's defaults and skills -- both edited
+/// through their own routes, never by treating this as a workspace. Listed
+/// beside the customers it read as one of them, and renaming it or trying to
+/// delete it was a way to break something that looks like it should allow it.
+/// Deleting was already refused by a trigger, as a database error.
+fn not_the_platform(id: Uuid) -> Result<(), ApiError> {
+    if id == super::usage::PLATFORM_WORKSPACE {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "the platform workspace is managed under Platform, not as a workspace".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn get_workspace(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Workspace>, ApiError> {
     authorize(&state, &headers, Authority::WorkspacesRead).await?;
+    not_the_platform(id)?;
     Ok(Json(state.workspaces.get(id).await?))
 }
 
@@ -453,6 +472,7 @@ async fn update_workspace(
     Json(input): Json<super::workspace::UpdateWorkspace>,
 ) -> Result<Json<Workspace>, ApiError> {
     let claims = authorize(&state, &headers, Authority::WorkspacesUpdate).await?;
+    not_the_platform(id)?;
     let workspace = state.workspaces.rename(id, &input.name).await?;
     tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace renamed");
     Ok(Json(workspace))
@@ -464,6 +484,7 @@ async fn delete_workspace(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::WorkspacesDelete).await?;
+    not_the_platform(id)?;
     state.workspaces.delete(id).await?;
     tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace deleted");
     Ok(StatusCode::NO_CONTENT)
