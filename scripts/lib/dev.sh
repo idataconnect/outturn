@@ -153,6 +153,27 @@ dev_write_overlay() {
     echo "                  - name: CONTEXT_BUDGET"
     echo "                    value: \"$dev_context_budget\""
 
+    # Where the gateway reaches the model. The base overlays name ollama's
+    # port, so another server has to say where it is -- translated from this
+    # machine's address to one a pod can reach.
+    local base_url
+    base_url=$(dev_gateway_base_url)
+    if [[ -n "$base_url" ]]; then
+      echo "  - patch: |"
+      echo "      apiVersion: apps/v1"
+      echo "      kind: Deployment"
+      echo "      metadata:"
+      echo "        name: outturn-gateway"
+      echo "      spec:"
+      echo "        template:"
+      echo "          spec:"
+      echo "            containers:"
+      echo "              - name: gateway"
+      echo "                env:"
+      echo "                  - name: OPENAI_BASE_URL"
+      echo "                    value: \"$base_url\""
+    fi
+
     if [[ -n "$hosts" ]]; then
       # Both tiers, because both halves of the decision read it: the gateway
       # to decide whether a connection may go out, and the API to decide
@@ -253,7 +274,9 @@ dev_machine_defaults() {
   dev_model=$(awk '/name: OUTTURN_DEFAULT_MODEL/ { getline; gsub(/.*value: "|"$/, ""); print; exit }' \
     "k8s/overlays/$base/kustomization.yaml")
   dev_context_window=32768
+  dev_server=ollama
   dev_ollama_url=http://localhost:11434
+  dev_llama_url=http://localhost:8080
   dev_hint=""
 
   if [[ "$base" == local-mac ]]; then
@@ -288,12 +311,17 @@ dev_machine_defaults() {
   dev_context_budget=$(dev_budget_for "$dev_context_window")
 }
 
-# Sets dev_model, dev_context_window, dev_context_budget and dev_ollama_url:
-# the file's values over the defaults. Read line by line rather than sourced,
-# so a stray line in a hand-edited file is ignored rather than run.
+# Sets dev_model, dev_context_window, dev_context_budget, dev_server and the
+# server's address: the file's values over the defaults. Read line by line
+# rather than sourced, so a stray line in a hand-edited file is ignored rather
+# than run.
+#
+# A file written before there was a choice of server has no
+# OUTTURN_DEV_SERVER, and meant ollama wherever it named one and some other
+# server where it left the address empty -- so that is what it still means.
 dev_machine_load() {
   dev_machine_defaults
-  local file key value
+  local file key value server=""
   file=$(dev_machine_file)
   if [[ -f "$file" ]]; then
     while IFS='=' read -r key value; do
@@ -301,11 +329,30 @@ dev_machine_load() {
         OUTTURN_DEV_MODEL) dev_model=$value ;;
         OUTTURN_DEV_CONTEXT_WINDOW) dev_context_window=$value ;;
         OUTTURN_DEV_CONTEXT_BUDGET) dev_context_budget=$value ;;
+        OUTTURN_DEV_SERVER) server=$value ;;
         OUTTURN_DEV_OLLAMA_URL) dev_ollama_url=$value ;;
+        OUTTURN_DEV_LLAMA_URL) dev_llama_url=$value ;;
       esac
     done <"$file"
+    if [[ -n "$server" ]]; then
+      dev_server=$server
+    elif [[ -z "$dev_ollama_url" ]]; then
+      dev_server=other
+    fi
   fi
   dev_served_model=$(dev_served_model_for "$dev_model" "$dev_context_window")
+}
+
+# Where the gateway, in the cluster, reaches the model server. Empty for
+# ollama and for another server, whose address the base overlay already
+# names. For llama.cpp, this machine's address as a pod sees it: a Mac's
+# loopback is host.docker.internal from inside Docker Desktop or colima, and
+# a Linux host is the Docker bridge the ../local overlay already uses.
+dev_gateway_base_url() {
+  [[ "${dev_server:-}" == llama.cpp ]] || return 0
+  local host
+  if [[ "$(dev_machine_base)" == local-mac ]]; then host=host.docker.internal; else host=172.18.0.1; fi
+  echo "$dev_llama_url" | sed -E "s#//(localhost|127\.0\.0\.1)([:/]|\$)#//$host\2#"
 }
 
 # The model the cluster asks for. With ollama, a tag of our own derived from
@@ -313,13 +360,21 @@ dev_machine_load() {
 # answered here whatever the server was started with, and the name says what
 # it is wherever it shows up. Without ollama, the model as answered, and the
 # window is the server's business.
+#
+# llama.cpp gets the same kind of name, as the alias llama-server is started
+# with: the GGUF's file name without its organisation, so a log line says
+# which model and which window rather than a Hugging Face path.
 dev_served_model_for() {
-  if [[ -n "$dev_ollama_url" ]]; then
-    echo "outturn/$(echo "$1" | tr ':' '-')-ctx$2"
-  else
-    echo "$1"
-  fi
+  case "${dev_server:-ollama}" in
+    ollama) echo "outturn/$(echo "$1" | tr ':' '-')-ctx$2" ;;
+    llama.cpp) echo "outturn/$(echo "${1##*/}" | tr ':' '-')-ctx$2" ;;
+    *) echo "$1" ;;
+  esac
 }
+
+# What each server wants as a model name, suggested when the server changes
+# and the model answered was the other kind of name.
+dev_llama_default_model=ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0
 
 # Asks, with the current values as the suggestions, and writes the file.
 dev_machine_ask() {
@@ -332,7 +387,29 @@ dev_machine_ask() {
   echo
 
   while :; do
-    read -r -p "Model, as ollama names it [$dev_model]: " answer
+    read -r -p "Model server: ollama, llama.cpp or other [$dev_server]: " answer
+    answer=${answer:-$dev_server}
+    case "$answer" in ollama | llama.cpp | other) break ;; esac
+    echo "  ollama, llama.cpp or other"
+  done
+  # A model named for one server is a wrong suggestion for another: ollama's
+  # names have no organisation, llama.cpp's are a Hugging Face GGUF with a
+  # quantization after the colon.
+  if [[ "$answer" == llama.cpp && "$dev_model" != */*:* ]]; then
+    dev_model=$dev_llama_default_model
+  elif [[ "$answer" == ollama && "$dev_model" == */*:* ]]; then
+    dev_machine_defaults
+  fi
+  dev_server=$answer
+
+  local naming
+  case "$dev_server" in
+    ollama) naming="as ollama names it" ;;
+    llama.cpp) naming="a Hugging Face GGUF, organisation/repository:quantization" ;;
+    *) naming="as the server names it" ;;
+  esac
+  while :; do
+    read -r -p "Model, $naming [$dev_model]: " answer
     answer=${answer:-$dev_model}
     [[ "$answer" =~ ^[A-Za-z0-9._:/-]+$ ]] && break
     echo "  letters, digits and ._:/- only"
@@ -359,10 +436,20 @@ dev_machine_ask() {
   done
   dev_context_budget=$answer
 
-  read -r -p "ollama, from this machine [${dev_ollama_url:--}] (- if the model server is not ollama): " answer
-  answer=${answer:-${dev_ollama_url:--}}
-  [[ "$answer" == - ]] && answer=""
-  dev_ollama_url=${answer%/}
+  case "$dev_server" in
+    ollama)
+      read -r -p "ollama, from this machine [${dev_ollama_url:-http://localhost:11434}]: " answer
+      answer=${answer:-${dev_ollama_url:-http://localhost:11434}}
+      dev_ollama_url=${answer%/}
+      ;;
+    llama.cpp)
+      read -r -p "llama-server, from this machine [$dev_llama_url]: " answer
+      answer=${answer:-$dev_llama_url}
+      dev_llama_url=${answer%/}
+      dev_ollama_url=""
+      ;;
+    *) dev_ollama_url="" ;;
+  esac
 
   cat >"$file" <<EOF
 # This machine's answers for local development, written by
@@ -371,8 +458,14 @@ dev_machine_ask() {
 #
 # See docs/local-development.md for what each one drives.
 
+# ollama, llama.cpp, or other: some OpenAI-compatible server at the address
+# the base overlay names, which nothing here starts or checks.
+OUTTURN_DEV_SERVER=$dev_server
+
 # Pulled if missing. With ollama, served as a tag of its own carrying the
-# window below, and that tag is what agents with no model of their own use.
+# window below; with llama.cpp, a Hugging Face GGUF that llama-server
+# downloads, served under an alias carrying the window. Either name is what
+# agents with no model of their own use.
 OUTTURN_DEV_MODEL=$dev_model
 
 # Tokens. Set on the model through that tag, so it is this number whatever
@@ -385,6 +478,9 @@ OUTTURN_DEV_CONTEXT_BUDGET=$dev_context_budget
 # Where this machine reaches ollama. Empty if the model server is something
 # else, in which case the model is used as named and the window is its own.
 OUTTURN_DEV_OLLAMA_URL=$dev_ollama_url
+
+# Where this machine reaches llama-server, when that is the server.
+OUTTURN_DEV_LLAMA_URL=$dev_llama_url
 EOF
   echo
   echo "wrote $file"
@@ -408,6 +504,105 @@ dev_machine_setup() {
     return
   fi
   dev_machine_ask
+}
+
+# Readies whichever server this machine answered, before skaffold.
+dev_model_server_prepare() {
+  case "$dev_server" in
+    ollama) dev_ollama_prepare ;;
+    llama.cpp) dev_llamacpp_prepare ;;
+    *) echo "model server is not one this starts; asking it for $dev_model as named" ;;
+  esac
+}
+
+# Where a llama-server this script started keeps its process id and its log:
+# per clone, beside the answers, so two clones do not stop each other's.
+dev_llamacpp_pidfile() { echo "$(dirname "$(dev_machine_file)")/.llama-server.pid"; }
+dev_llamacpp_log() { echo "$(dirname "$(dev_machine_file)")/.llama-server.log"; }
+
+# The command that serves this machine's answers.
+#
+# --jinja because that is what gives llama-server the model's own chat
+# template and its tool-call parser, which streams a call as it is written and
+# is the reason to use this over ollama; without it tools are not offered at
+# all. The alias is the name the cluster asks for.
+dev_llamacpp_command() {
+  local port
+  port=$(echo "$dev_llama_url" | sed -nE 's#.*:([0-9]+)(/.*)?$#\1#p')
+  echo "llama-server -hf $dev_model --jinja -c $dev_context_window --alias $dev_served_model --host 127.0.0.1 --port ${port:-8080}"
+}
+
+# What a running llama-server is serving, as "alias window", or nothing.
+dev_llamacpp_serving() {
+  local alias window
+  alias=$(curl -sf "$dev_llama_url/v1/models" | sed -nE 's/.*"id":"([^"]*)".*/\1/p' | head -1)
+  window=$(curl -sf "$dev_llama_url/props" | sed -nE 's/.*"n_ctx":([0-9]+).*/\1/p' | head -1)
+  [[ -n "$alias" ]] && echo "$alias ${window:-?}"
+}
+
+# Makes llama-server serve this machine's answers.
+#
+# One already serving them is used as it is. One this script started for
+# different answers is stopped and started again, since that is what changing
+# an answer means; one somebody else started is left alone and named, because
+# stopping a server nobody asked this to own is not a setup step.
+#
+# Starting is the caller's, as with ollama: dev_llamacpp_start, where defined.
+dev_llamacpp_prepare() {
+  local serving pidfile
+  pidfile=$(dev_llamacpp_pidfile)
+  serving=$(dev_llamacpp_serving || true)
+  if [[ "$serving" == "$dev_served_model $dev_context_window" ]]; then
+    echo "llama-server already serving $dev_served_model at $dev_context_window tokens"
+    return
+  fi
+  if [[ -n "$serving" ]]; then
+    if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "llama-server is serving $serving; restarting it for $dev_served_model at $dev_context_window"
+      kill "$(cat "$pidfile")"
+      for _ in $(seq 30); do curl -sf "$dev_llama_url/health" >/dev/null || break; sleep 1; done
+    else
+      echo "something else on $dev_llama_url is serving $serving, not $dev_served_model at $dev_context_window." >&2
+      echo "stop it, or answer another address in: scripts/dev-setup.sh --reconfigure" >&2
+      exit 1
+    fi
+  fi
+
+  if ! command -v llama-server >/dev/null; then
+    echo "llama-server is not installed. Either:" >&2
+    echo "  brew install llama.cpp" >&2
+    echo "  or a release from https://github.com/ggml-org/llama.cpp/releases, on your PATH" >&2
+    exit 1
+  fi
+  if declare -F dev_llamacpp_start >/dev/null; then
+    dev_llamacpp_start
+  else
+    echo "nothing is serving $dev_served_model on $dev_llama_url. Start it with:" >&2
+    echo "  $(dev_llamacpp_command)" >&2
+    exit 1
+  fi
+
+  # A first run downloads the model, which is minutes rather than seconds;
+  # the log says how far along it is, so the wait is shown rather than silent.
+  echo "waiting for llama-server (a first run downloads $dev_model; see $(dev_llamacpp_log))"
+  local waited=0
+  until curl -sf "$dev_llama_url/health" >/dev/null; do
+    if [[ -f "$pidfile" ]] && ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "llama-server stopped. The end of its log:" >&2
+      tail -20 "$(dev_llamacpp_log)" >&2
+      exit 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    # llama-server logs nothing while it downloads, so say how much has
+    # arrived in Hugging Face's cache instead, which is where it goes.
+    if (( waited % 60 == 0 )); then
+      local repo=${dev_model%%:*} got
+      got=$(du -sh "$HOME/.cache/huggingface/hub/models--${repo//\//--}" 2>/dev/null | cut -f1)
+      echo "  still loading after ${waited}s${got:+, $got downloaded}"
+    fi
+  done
+  echo "llama-server serving $(dev_llamacpp_serving)"
 }
 
 # Makes the served model exist and loads it. Before skaffold, so the first
