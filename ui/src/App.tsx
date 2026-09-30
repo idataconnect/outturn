@@ -299,7 +299,9 @@ function Shell() {
               }
               aria-expanded={expanded}
               title={expanded ? 'Collapse navigation' : 'Expand navigation'}
-              className={`group ${iconButton}`}
+              // Not shrunk to make room for a long product name: it squeezed
+              // the mark to 20px wide beside one that wrapped.
+              className={`group shrink-0 ${iconButton}`}
             >
               {/* Railed, the mark gives way to the expand icon under the
                   pointer or the keyboard: nothing else on a rail says a logo
@@ -334,7 +336,7 @@ function Shell() {
               aria-label="Collapse navigation"
               aria-expanded
               title="Collapse navigation"
-              className={iconButton}
+              className={`shrink-0 ${iconButton}`}
             >
               {/* In a box the mark's size, so the two buttons are the same
                   height and line up whatever the rows around them do. */}
