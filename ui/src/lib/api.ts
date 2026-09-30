@@ -1,5 +1,27 @@
 export type Page<T> = { items: T[]; next: string | null }
 
+/**
+ * Every row of a paged list, one bounded page at a time.
+ *
+ * For the lists this app still shows whole -- agents, users, roles and the
+ * rest. Taking only the first page cut each of them off at fifty or a hundred
+ * with nothing on screen saying there was more. Each request stays bounded;
+ * what is unbounded is the list, which is what these pages showed before they
+ * were paged. A list that outgrows that wants scrolling or search, not this.
+ */
+export async function allPages<T>(path: string): Promise<T[]> {
+  const items: T[] = []
+  let after: string | null = null
+  do {
+    const joiner = path.includes('?') ? '&' : '?'
+    const url: string = after ? `${path}${joiner}after=${encodeURIComponent(after)}` : path
+    const page: Page<T> = await api<Page<T>>(url)
+    items.push(...page.items)
+    after = page.next
+  } while (after)
+  return items
+}
+
 export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a parameter property,
   // which erasableSyntaxOnly disallows.

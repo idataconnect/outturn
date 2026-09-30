@@ -415,8 +415,8 @@ async fn list_workspaces(
 ) -> Result<Json<super::Page<Workspace>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     authorize(&state, &headers, Authority::WorkspacesRead).await?;
-    let items = state.workspaces.list(query.after, limit).await?;
-    Ok(Json(super::Page::from_rows(items, |w| w.id)))
+    let items = state.workspaces.list(query.after, limit + 1).await?;
+    Ok(Json(super::Page::from_rows(items, limit, |w| w.id)))
 }
 
 async fn create_workspace(
@@ -487,8 +487,9 @@ async fn list_egress_rules(
 ) -> Result<Json<super::Page<super::egress::Rule>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    let items = super::egress::list(&state.pool, claims.workspace_id, query.after, limit).await?;
-    Ok(Json(super::Page::from_rows(items, |r| r.id)))
+    let items =
+        super::egress::list(&state.pool, claims.workspace_id, query.after, limit + 1).await?;
+    Ok(Json(super::Page::from_rows(items, limit, |r| r.id)))
 }
 
 async fn create_egress_rule(
@@ -539,14 +540,14 @@ async fn list_users(
     // workspace is the isolation boundary, and a user list that crossed it
     // named every other customer's staff.
     let users = if claims.is_system_admin() {
-        state.users.list(query.after, limit).await?
+        state.users.list(query.after, limit + 1).await?
     } else {
         state
             .users
-            .list_for_workspace(claims.workspace_id, query.after, limit)
+            .list_for_workspace(claims.workspace_id, query.after, limit + 1)
             .await?
     };
-    Ok(Json(super::Page::from_rows(users, |u| u.id)))
+    Ok(Json(super::Page::from_rows(users, limit, |u| u.id)))
 }
 
 /// A user, with where they belong.
@@ -869,9 +870,9 @@ async fn list_roles(
     }
     let items = state
         .roles
-        .list(claims.workspace_id, query.after, limit)
+        .list(claims.workspace_id, query.after, limit + 1)
         .await?;
-    Ok(Json(super::Page::from_rows(items, |r| r.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |r| r.id)))
 }
 
 async fn get_role(
@@ -1257,9 +1258,9 @@ async fn list_inhibitors(
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
     let items = store
-        .in_workspace(claims.workspace_id, query.after, limit)
+        .in_workspace(claims.workspace_id, query.after, limit + 1)
         .await?;
-    Ok(Json(super::Page::from_rows(items, |i| i.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |i| i.id)))
 }
 
 #[derive(serde::Deserialize)]

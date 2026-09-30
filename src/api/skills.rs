@@ -97,9 +97,9 @@ pub async fn list_skills(
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let items = state
         .skills
-        .list(claims.workspace_id, query.after, limit)
+        .list(claims.workspace_id, query.after, limit + 1)
         .await?;
-    Ok(Json(super::Page::from_rows(items, |s| s.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |s| s.id)))
 }
 
 pub async fn create_skill(
@@ -187,9 +187,9 @@ pub async fn list_versions(
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let items = state
         .skills
-        .versions(claims.workspace_id, id, query.after, limit)
+        .versions(claims.workspace_id, id, query.after, limit + 1)
         .await?;
-    Ok(Json(super::Page::from_rows(items, |v| v.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |v| v.id)))
 }
 
 pub async fn get_version(

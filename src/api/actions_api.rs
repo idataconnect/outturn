@@ -92,11 +92,11 @@ pub async fn queue(
 
     let items = state
         .actions
-        .queue_for_user_everywhere(claims.subject, query.after, limit)
+        .queue_for_user_everywhere(claims.subject, query.after, limit + 1)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(super::Page::from_rows(items, |i| i.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |i| i.id)))
 }
 
 /// How many items are waiting on the caller. Read on every page load.
@@ -148,10 +148,10 @@ async fn wait_for_change(
     let read = || async {
         let items = state
             .actions
-            .queue_for_user_everywhere(user_id, after, limit)
+            .queue_for_user_everywhere(user_id, after, limit + 1)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        Ok(super::Page::from_rows(items, |i| i.id))
+        Ok(super::Page::from_rows(items, limit, |i| i.id))
     };
 
     let deadline = tokio::time::sleep(POLL_TIMEOUT);

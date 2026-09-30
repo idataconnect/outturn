@@ -1,4 +1,4 @@
-import { api, type Page } from './api'
+import { api, allPages } from './api'
 
 /**
  * A hold on work: a kill switch, and later a turn waiting for somebody.
@@ -23,7 +23,7 @@ export type Inhibitor = {
 
 /** Everything held anywhere in the workspace being viewed. */
 export function listInhibitors() {
-  return api<Page<Inhibitor>>('/v1/inhibitors').then(p => p.items)
+  return allPages<Inhibitor>('/v1/inhibitors')
 }
 
 export function stopWorkspace(reason: string) {

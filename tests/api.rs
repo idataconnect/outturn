@@ -161,6 +161,18 @@ macro_rules! harness_or_skip {
     };
 }
 
+/// The rows of one page of a list endpoint, which answers `{items, next}`.
+///
+/// Fails on a bare array rather than accepting either, so a list endpoint that
+/// quietly stopped paging is noticed here.
+fn items(body: &str) -> Vec<Value> {
+    let page: Value = serde_json::from_str(body).expect("a page of json");
+    page["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("not a page: {body}"))
+        .clone()
+}
+
 /// Drops the test's schema. Skipped on failure, so a failing test leaves its
 /// rows behind to inspect.
 macro_rules! finish {
@@ -1361,7 +1373,7 @@ async fn a_pasted_url_becomes_an_egress_rule() {
     // Nothing to begin with, which is what an agent can reach to begin with.
     let (status, body) = h.get("/v1/egress-rules", Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert_eq!(body, "[]");
+    assert_eq!(body, r#"{"items":[],"next":null}"#);
 
     let (status, body) = h
         .post(
@@ -1466,7 +1478,10 @@ async fn egress_rules_do_not_cross_workspaces() {
 
     let (status, body) = h.get("/v1/egress-rules", Some(&globex_token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "[]", "one workspace saw another's rules: {body}");
+    assert_eq!(
+        body, r#"{"items":[],"next":null}"#,
+        "one workspace saw another's rules: {body}"
+    );
 
     // Knowing an id is not the same as being able to use it.
     let req = Request::builder()
@@ -1841,7 +1856,7 @@ async fn roles_in_use_stay_and_unknown_roles_cannot_be_granted() {
         .await;
 
     let (_, body) = h.get("/v1/roles", Some(&admin)).await;
-    let roles: Vec<serde_json::Value> = serde_json::from_str(&body).expect("roles");
+    let roles = items(&body);
     let admin_role = roles
         .iter()
         .find(|r| r["name"] == "admin")
@@ -2550,7 +2565,7 @@ async fn a_version_read_back_names_its_hosts() {
     let (_, body) = h
         .get(&format!("/v1/skills/{id}/versions"), Some(&admin))
         .await;
-    let list: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let list = items(&body);
     assert_eq!(list[0]["hosts"][0], "api.inn.example", "{body}");
     let (_, body) = h
         .get(&format!("/v1/skills/{id}/versions/{v}"), Some(&admin))
@@ -2993,7 +3008,7 @@ async fn a_rollback_appends_rather_than_moving_backwards() {
     let (_, body) = h
         .get(&format!("/v1/skills/{id}/versions"), Some(&admin))
         .await;
-    let versions: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+    let versions = items(&body);
     assert_eq!(versions.len(), 3, "a rollback lost history: {body}");
     assert_eq!(versions[0]["ordinal"], 3, "newest first");
     assert_eq!(
@@ -3894,7 +3909,7 @@ async fn stopping_an_org_needs_more_than_stopping_an_agent() {
     // Both show up, with their reasons, to anyone who can see agents.
     let (status, body) = h.get("/v1/inhibitors", Some(&operator)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    let held: Vec<serde_json::Value> = serde_json::from_str(&body).expect("inhibitors");
+    let held = items(&body);
     assert_eq!(held.len(), 2, "{held:?}");
     let reasons: Vec<&str> = held.iter().map(|i| i["reason"].as_str().unwrap()).collect();
     assert!(reasons.contains(&"looping on the same tool"), "{reasons:?}");
@@ -4410,7 +4425,7 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
     // The roster is not narrowed: an administrator still sees what runs here.
     let (status, body) = h.get("/v1/agents", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    let agents: Vec<serde_json::Value> = serde_json::from_str(&body).expect("agents");
+    let agents = items(&body);
     assert_eq!(agents.len(), 2, "the roster was narrowed too: {body}");
 
     // And removing the narrowing puts everything back. The notification that
@@ -5441,7 +5456,7 @@ async fn the_hourly_ceiling_refuses_rather_than_queueing() {
     // And the refusal is recorded, because a hook dropping traffic silently
     // looks exactly like a sender that stopped sending.
     let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
-    let rows: Value = serde_json::from_str(&listed).expect("json");
+    let rows = Value::Array(items(&listed));
     assert_eq!(
         rows[0]["refused"], 1,
         "the refusal was not counted: {listed}"
@@ -5543,7 +5558,7 @@ async fn a_refusal_before_the_credential_is_proved_writes_nothing() {
     }
 
     let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
-    let rows: Value = serde_json::from_str(&listed).expect("json");
+    let rows = Value::Array(items(&listed));
     assert_eq!(
         rows[0]["refused"], 0,
         "an unauthenticated caller moved the refusal counter: {listed}"
@@ -5589,7 +5604,7 @@ async fn a_disabled_trigger_refuses_without_saying_it_exists() {
         StatusCode::NOT_FOUND
     );
     let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
-    let rows: Value = serde_json::from_str(&listed).expect("json");
+    let rows = Value::Array(items(&listed));
     assert_eq!(
         rows[0]["refused"], 0,
         "a disabled trigger was written to: {listed}"
@@ -5937,7 +5952,7 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
 
     // And a replay does not move the ceiling's counter, which means one thing.
     let (_, listed) = h.get("/v1/webhook-triggers", Some(&token)).await;
-    let rows: Value = serde_json::from_str(&listed).expect("json");
+    let rows = Value::Array(items(&listed));
     assert_eq!(
         rows[0]["refused"], 0,
         "a replay was counted against the hourly ceiling: {listed}"
@@ -7789,7 +7804,7 @@ async fn the_roster_says_which_agents_a_caller_may_talk_to() {
         async move {
             let (status, body) = h.get("/v1/agents", Some(&token)).await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
-            let listed: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+            let listed = items(&body);
             // The whole roster either way: narrowing hides conversations, not
             // which agents exist.
             assert_eq!(listed.len(), 3);
@@ -8624,4 +8639,59 @@ async fn timers_can_be_listed_and_cancelled_and_only_here() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     h.db.cleanup().await;
+}
+
+/// A page says there is another only when there is, and walking `next` visits
+/// every row once. `next` used to be set on any page that had rows, so the last
+/// page always sent a client back for an empty one.
+#[tokio::test]
+async fn a_list_says_there_is_more_only_when_there_is() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    for host in ["a.example", "b.example", "c.example"] {
+        let (status, body) = h
+            .post(
+                "/v1/egress-rules",
+                Some(&token),
+                &serde_json::json!({ "host": host }).to_string(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let uri = match &after {
+            Some(a) => format!("/v1/egress-rules?limit=2&after={a}"),
+            None => "/v1/egress-rules?limit=2".to_string(),
+        };
+        let (_, body) = h.get(&uri, Some(&token)).await;
+        let page: Value = serde_json::from_str(&body).expect("page");
+        seen.extend(items(&body).into_iter().map(|r| r["host"].clone()));
+        pages += 1;
+        match page["next"].as_str() {
+            Some(next) => after = Some(next.to_string()),
+            None => break,
+        }
+        assert!(pages < 5, "paging never ended: {body}");
+    }
+    assert_eq!(
+        pages, 2,
+        "two pages of two for three rows, and no empty third"
+    );
+    assert_eq!(seen.len(), 3);
+
+    // Exactly a page's worth is one page, not one and an empty one.
+    let (_, body) = h.get("/v1/egress-rules?limit=3", Some(&token)).await;
+    let page: Value = serde_json::from_str(&body).expect("page");
+    assert_eq!(items(&body).len(), 3);
+    assert!(
+        page["next"].is_null(),
+        "a full last page pointed past itself: {body}"
+    );
 }

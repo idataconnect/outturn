@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { Building2, Plus } from 'lucide-react'
 
-import { ApiError, api, type Page } from '../lib/api'
+import { ApiError, allPages } from '../lib/api'
 import type { Workspace } from './WorkspaceEditor'
 
 /**
@@ -20,7 +20,7 @@ export default function Workspaces() {
   useEffect(() => {
     void (async () => {
       try {
-        setWorkspaces((await api<Page<Workspace>>('/v1/workspaces')).items)
+        setWorkspaces(await allPages<Workspace>('/v1/workspaces'))
       } catch (e) {
         setError(e instanceof ApiError ? e.message : 'failed to load workspaces')
       } finally {

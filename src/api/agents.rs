@@ -50,7 +50,7 @@ pub async fn list_agents(
     let reach = super::router::reach_of(&state, &claims).await?;
     let items: Vec<ListedAgent> = state
         .agents
-        .list(claims.workspace_id, query.after, limit)
+        .list(claims.workspace_id, query.after, limit + 1)
         .await?
         .into_iter()
         .map(|agent| ListedAgent {
@@ -64,7 +64,7 @@ pub async fn list_agents(
             agent,
         })
         .collect();
-    Ok(Json(super::Page::from_rows(items, |a| a.agent.id)))
+    Ok(Json(super::Page::from_rows(items, limit, |a| a.agent.id)))
 }
 
 pub async fn create_agent(
