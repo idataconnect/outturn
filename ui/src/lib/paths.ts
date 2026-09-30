@@ -10,6 +10,9 @@
  * Written once here so that moving a page is one edit, not twenty strings.
  */
 export const paths = {
+  inbox: '/inbox',
+  inboxItem: (id: string) => `/inbox/${id}`,
+
   settings: '/settings',
   users: '/settings/users',
   newUser: '/settings/users/new',

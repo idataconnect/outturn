@@ -4,6 +4,7 @@ import {
   Bot,
   Building2,
   Globe,
+  Inbox as InboxIcon,
   LayoutDashboard,
   MessageSquare,
   Settings,
@@ -21,6 +22,8 @@ import AccountMenu from './components/AccountMenu'
 import Logo from './components/Logo'
 import { productName } from './lib/brand'
 import SectionLayout from './components/SectionLayout'
+import InboxProvider from './components/InboxProvider'
+import { useInbox } from './lib/inbox'
 import { ApiError, api } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
 import { useBreakpoint } from './lib/useBreakpoint'
@@ -47,6 +50,7 @@ import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import PlatformDefaults from './pages/PlatformDefaults'
+import Inbox from './pages/Inbox'
 import { paths } from './lib/paths'
 import { iconButton, iconButtonLarge } from './lib/buttons'
 
@@ -74,8 +78,12 @@ const navItems: {
   anyOf?: string[]
   under?: string
   divider?: boolean
+  /** Carries the count of what is waiting on the reader. */
+  counted?: boolean
 }[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', authority: 'usage:read' },
+  // For everybody: anyone can be asked something, and the count is what says so.
+  { to: paths.inbox, icon: InboxIcon, label: 'Inbox', counted: true },
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions', under: '/agents' },
   { to: '/skills', icon: BookText, label: 'Skills', authority: 'skills:read' },
@@ -252,8 +260,14 @@ function PlatformSection() {
   )
 }
 
+/** The inbox count as the navigation shows it. */
+function waiting(count: number, capped: boolean): string {
+  return capped ? `${count}+` : String(count)
+}
+
 function Shell() {
   const state = useSession()
+  const inbox = useInbox()
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const visible = navItems.filter(
     (item) =>
@@ -392,7 +406,8 @@ function Shell() {
           )}
         </div>
         <div className="flex-1 p-2 space-y-1">
-          {visible.map(({ to, icon: Icon, label, under, divider }) => {
+          {visible.map(({ to, icon: Icon, label, under, divider, counted }) => {
+            const count = counted && inbox.count > 0 ? waiting(inbox.count, inbox.capped) : null
             const nested = Boolean(under) && visible.some((item) => item.to === under)
             return (
             <div key={to}>
@@ -405,8 +420,8 @@ function Shell() {
               end={to === '/'}
               // The name has to survive the label going away, or a rail of
               // unexplained glyphs is all that is left.
-              title={label}
-              aria-label={label}
+              title={count ? `${label} (${count} waiting)` : label}
+              aria-label={count ? `${label}, ${count} waiting` : label}
               className={({ isActive }) =>
                 `flex items-center gap-2 rounded-md text-sm transition-colors ${
                   railed ? 'justify-center px-0 py-2' : nested ? 'pl-8 pr-3 py-2' : 'px-3 py-2'
@@ -417,8 +432,22 @@ function Shell() {
                 }`
               }
             >
-              <Icon size={16} className="shrink-0" />
+              <span className="relative shrink-0">
+                <Icon size={16} />
+                {/* Railed there is no room for the number beside the label,
+                    so it rides on the icon. */}
+                {count && !labelled && (
+                  <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-brand-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
+                    {count}
+                  </span>
+                )}
+              </span>
               {labelled && label}
+              {count && labelled && (
+                <span className="ml-auto rounded-full bg-brand-600 px-1.5 text-[11px] font-semibold leading-5 text-white">
+                  {count}
+                </span>
+              )}
             </NavLink>
             </div>
             )
@@ -434,11 +463,23 @@ function Shell() {
             <button
               type="button"
               onClick={toggle}
-              aria-label="Open navigation"
+              aria-label={
+                inbox.count > 0
+                  ? `Open navigation, ${waiting(inbox.count, inbox.capped)} waiting in the inbox`
+                  : 'Open navigation'
+              }
               aria-expanded={drawer}
-              className={iconButtonLarge}
+              className={`relative ${iconButtonLarge}`}
             >
               <Menu size={18} aria-hidden />
+              {/* The drawer hides the count, so the button that opens it
+                  says there is something inside. */}
+              {inbox.count > 0 && (
+                <span
+                  aria-hidden
+                  className="absolute right-1 top-1 h-2 w-2 rounded-full bg-brand-600"
+                />
+              )}
             </button>
             <Logo className="w-5 h-5 shrink-0" />
             <span className="text-sm font-display font-semibold text-surface-900 dark:text-surface-100">
@@ -456,6 +497,8 @@ function Shell() {
               who arrived by a bookmark more than a silent redirect would. The
               nav simply stops offering it. */}
           <Route path="/" element={<Dashboard />} />
+          <Route path={paths.inbox} element={<Inbox />} />
+          <Route path={`${paths.inbox}/:id`} element={<Inbox />} />
           <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/new" element={<Chat draft />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
@@ -645,7 +688,9 @@ function App() {
           <Login />
         ) : (
           <BrowserRouter>
-            <Shell />
+            <InboxProvider>
+              <Shell />
+            </InboxProvider>
           </BrowserRouter>
         )}
       </SessionActionsContext>
