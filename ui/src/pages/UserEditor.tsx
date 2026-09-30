@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { ArrowLeft, Plus, Save, Shield, Trash2 } from 'lucide-react'
 
-import { ApiError, api, type Page } from '../lib/api'
+import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
 
 export type Identity = {
@@ -46,8 +46,8 @@ function useWorkspaceRoles(): WorkspaceRoleOption[] {
   useEffect(() => {
     if (!allowed) return
     let stale = false
-    void api<Page<WorkspaceRoleOption>>('/v1/roles')
-      .then(({ items: found }) => {
+    void allPages<WorkspaceRoleOption>('/v1/roles')
+      .then((found) => {
         if (!stale) setRoles(found)
       })
       .catch(() => {})
@@ -283,7 +283,7 @@ function EditUser({ id }: { id: string }) {
     try {
       const [rows, list] = await Promise.all([
         api<{ user_id: string; agents: string[] }[]>('/v1/scopes'),
-        api<Page<{ id: string; name: string }>>('/v1/agents').then(p => p.items),
+        allPages<{ id: string; name: string }>('/v1/agents'),
       ])
       setAgents(list)
       setScoped(rows.find((r) => r.user_id === id)?.agents ?? [])

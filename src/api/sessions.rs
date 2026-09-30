@@ -51,11 +51,11 @@ pub async fn list_sessions(
             agent_ids.as_deref(),
             claims.subject,
             query.after,
-            limit,
+            limit + 1,
         )
         .await?;
 
-    Ok(Json(super::Page::from_rows(sessions, |s| s.id)))
+    Ok(Json(super::Page::from_rows(sessions, limit, |s| s.id)))
 }
 
 /// Whether having started a conversation is enough on its own.
