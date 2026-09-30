@@ -2105,12 +2105,15 @@ async fn with_skill_file(
     let mut options = options(&gateway, None);
     options.storage = Some(store);
     options.read_scopes = read_scopes;
-    options.skill_files = vec![scope::SkillObject {
-        path: "skill/inn/book.md".into(),
-        workspace_id: operator,
-        sha256: "abc123".into(),
-        bytes: 14,
-    }];
+    options.skill_files = ["book", "refund"]
+        .into_iter()
+        .map(|op| scope::SkillObject {
+            path: format!("skill/inn/{op}.md"),
+            workspace_id: operator,
+            sha256: "abc123".into(),
+            bytes: 14,
+        })
+        .collect();
 
     runner()
         .run(&component(), user("Go."), String::new(), options)
@@ -2213,6 +2216,30 @@ async fn loading_a_skill_operation_points_at_its_file() {
     .await;
     assert!(result.contains("skill/inn/book.md"), "{result}");
     assert!(result.contains("fetch_url"), "{result}");
+}
+
+/// Several at once are named in one sentence rather than one per name: a model
+/// that took a skill's manifest for tools asks for all of it, and four copies
+/// of how to read a file bury which files to read. Nor is every name and every
+/// tool spelt out again after it, when the result's fields already carry them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loading_several_skill_operations_names_them_once() {
+    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "load_tools",
+        r#"{"names":["book","refund"]}"#,
+        vec!["session".into()],
+    )
+    .await;
+    let error = serde_json::from_str::<serde_json::Value>(&result).expect("json")["error"]
+        .as_str()
+        .expect("error")
+        .to_string();
+    assert!(error.contains("book and refund are not tools"), "{error}");
+    assert!(error.contains("skill/inn/<name>.md"), "{error}");
+    assert_eq!(error.matches("fetch_url").count(), 1, "{error}");
+    assert!(!error.contains("Available"), "{error}");
 }
 
 /// The same when the model skips the loader and calls the operation as if it
