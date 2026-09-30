@@ -66,6 +66,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Not exercised here: these suites assert what a guest does with a
         // reply, and thinking never reaches the guest.
         reasoning: None,
+        writing: None,
         on_tool: None,
         on_tool_result: None,
         on_usage: None,
@@ -2255,4 +2256,60 @@ async fn calling_a_skill_operation_points_at_its_file() {
     )
     .await;
     assert!(result.contains("skill/inn/book.md"), "{result}");
+}
+
+/// The model beginning a call is said as soon as the call has a name, once, and
+/// before the guest starts it -- which is what ends a thought's clock where the
+/// model stopped thinking, rather than seconds later when the call was whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_being_written_is_said_before_it_starts() {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Checking today's date"}"#.into(),
+        reply: "It is Tuesday.".into(),
+    })
+    .await;
+
+    // One log for both sinks, so the order between them is what is asserted.
+    let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let writing = {
+        let log = Arc::clone(&log);
+        Arc::new(move |index: u32, name: &str| {
+            log.lock().unwrap().push(format!("writing {index} {name}"));
+        }) as outturn::runtime::component::WritingSink
+    };
+    let on_tool = {
+        let log = Arc::clone(&log);
+        Arc::new(
+            move |activity: &outturn::runtime::component::ToolActivity| {
+                log.lock()
+                    .unwrap()
+                    .push(format!("started {}", activity.name));
+            },
+        )
+    };
+
+    let mut options = options(&gateway, None);
+    options.eager_tools = vec!["get_current_time".into()];
+    options.writing = Some(writing);
+    options.on_tool = Some(on_tool);
+
+    runner()
+        .run(
+            &component(),
+            user("What day is it?"),
+            "You are helpful.".into(),
+            options,
+        )
+        .await
+        .expect("run");
+
+    // Arguments arrive seven bytes at a time; the name is said once, first.
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec![
+            "writing 0 get_current_time".to_string(),
+            "started get_current_time".to_string(),
+        ]
+    );
 }

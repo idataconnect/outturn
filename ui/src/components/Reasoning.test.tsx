@@ -108,6 +108,20 @@ describe('a thought still being written', () => {
     expect(screen.getByText(/2\.0s · 3 words/)).toBeInTheDocument()
   })
 
+  /// What was seen: a thought followed by a tool call being written kept
+  /// counting through seconds of silence, then dropped to its real figure
+  /// when the call appeared.
+  it('stops counting once the stream goes quiet, at what was measured', () => {
+    vi.useFakeTimers()
+    const t0 = new Date('2026-09-30T12:00:00Z').getTime()
+    vi.setSystemTime(t0)
+    live('one two three', 4200, t0)
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(screen.getByText(/4\.2s · 3 words/)).toBeInTheDocument()
+  })
+
   it('counts words as they arrive', () => {
     vi.useFakeTimers()
     const t0 = Date.now()

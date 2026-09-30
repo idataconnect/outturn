@@ -44,6 +44,20 @@ function cost(text: string, ms: number | undefined): string {
 /** How often a running figure moves: a tenth of a second is what it shows. */
 const TICK_MS = 100
 
+/**
+ * How long a thought may go quiet before its figure stops running.
+ *
+ * Thinking arrives as a stream: measured, fragments came a median 1ms apart and
+ * never more than about a tenth of a second. What follows a thought can be
+ * seconds of nothing the browser hears -- a tool call being written, which is
+ * not sent until it is whole -- and a figure that ran through that counted time
+ * the model spent on something else. A second is ten times the widest gap
+ * inside a thought and well under the shortest silence after one. Where a tool
+ * call follows, the runtime now says so when it starts, which ends the thought
+ * exactly; this is for whatever does not.
+ */
+const QUIET_MS = 1_000
+
 export default function Reasoning({ text, status, ...part }: ReasoningMessagePartProps) {
   const [open, setOpen] = useState(false)
   // While it is still arriving there may be nothing else in the reply yet, so
@@ -62,8 +76,9 @@ export default function Reasoning({ text, status, ...part }: ReasoningMessagePar
     const id = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => clearInterval(id)
   }, [thinking])
+  const waited = seenAt === undefined ? 0 : Math.max(0, now - seenAt)
   const running =
-    thinking && ms !== undefined && seenAt !== undefined ? ms + Math.max(0, now - seenAt) : ms
+    thinking && ms !== undefined && seenAt !== undefined && waited < QUIET_MS ? ms + waited : ms
 
   if (text === '') return null
 

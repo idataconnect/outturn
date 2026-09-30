@@ -853,6 +853,26 @@ impl Worker {
                         )
                         .await?;
                     }
+                    Ok(ExecuteEvent::Writing { index, name }) => {
+                        // Told to the reader and nothing else. Not a part: the
+                        // call it announces is recorded when the guest starts
+                        // it, and a transcript holding both would show every
+                        // call twice. Not stored either, for the same reason --
+                        // a reload mid-round simply shows the call when it
+                        // starts, as it always did.
+                        events::append(
+                            &self.pool,
+                            payload.workspace_id,
+                            Some(payload.session_id),
+                            "chat.writing",
+                            serde_json::json!({
+                                "message_id": message_id,
+                                "index": index,
+                                "name": name,
+                            }),
+                        )
+                        .await?;
+                    }
                     Ok(ExecuteEvent::Delta { idx, text }) => {
                         parts.text(&text);
                         events::append(

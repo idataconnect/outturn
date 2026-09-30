@@ -203,6 +203,14 @@ export type ChatEvent =
       kind: 'chat.tool'
       payload: { message_id: string; call: ToolCallRecord }
     }
+  /** The model began writing a call to a tool: its name, before any of its
+   *  arguments. Shown as a call being prepared until the call itself starts;
+   *  never stored. `index` is the call's place among its round's calls. */
+  | {
+      id: string
+      kind: 'chat.writing'
+      payload: { message_id: string; index: number; name: string }
+    }
   /** That tool finished, with what it produced. */
   | {
       id: string
