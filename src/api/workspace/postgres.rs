@@ -32,12 +32,15 @@ impl WorkspaceStore for PostgresWorkspaceStore {
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<Workspace>, WorkspaceError> {
+        // Without the platform's own row, which is not a tenant: see
+        // `router::not_the_platform`.
         sqlx::query_as::<_, Workspace>(
             "select id, name, slug from workspaces \
-             where ($1::uuid is null or id > $1) order by id limit $2",
+             where ($1::uuid is null or id > $1) and id <> $3 order by id limit $2",
         )
         .bind(after)
         .bind(limit)
+        .bind(crate::api::usage::PLATFORM_WORKSPACE)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| WorkspaceError::Internal(e.to_string()))
