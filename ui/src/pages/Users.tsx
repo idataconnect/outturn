@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { Plus, Shield, Trash2 } from 'lucide-react'
 
-import { ApiError, api } from '../lib/api'
+import { ApiError, api, type Page } from '../lib/api'
 import { useSession } from '../lib/session'
 import type { User } from './UserEditor'
 
@@ -27,7 +27,7 @@ export default function Users() {
 
   async function refresh() {
     try {
-      setUsers(await api<User[]>('/v1/users'))
+      setUsers((await api<Page<User>>('/v1/users')).items)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load users')

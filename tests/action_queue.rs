@@ -922,7 +922,7 @@ async fn a_global_read_never_returns_another_tenants_row() {
         .expect("mine");
 
     let rows = store
-        .queue_for_user_everywhere(user, 50)
+        .queue_for_user_everywhere(user, None, 50)
         .await
         .expect("global queue");
     let ids: Vec<Uuid> = rows.iter().map(|i| i.id).collect();
@@ -996,7 +996,7 @@ async fn a_role_you_do_not_hold_does_not_reach_you() {
         .expect("escalation");
 
     let theirs: Vec<Uuid> = store
-        .queue_for_user_everywhere(accountant, 50)
+        .queue_for_user_everywhere(accountant, None, 50)
         .await
         .expect("accountant")
         .iter()
@@ -1005,7 +1005,7 @@ async fn a_role_you_do_not_hold_does_not_reach_you() {
     assert_eq!(theirs, vec![refund], "finance saw support's work");
 
     let ours: Vec<Uuid> = store
-        .queue_for_user_everywhere(agent, 50)
+        .queue_for_user_everywhere(agent, None, 50)
         .await
         .expect("agent")
         .iter()
@@ -1083,7 +1083,7 @@ async fn belonging_to_a_workspace_is_not_enough_to_see_its_items() {
     );
     assert!(
         store
-            .queue_for_user_everywhere(reader, 50)
+            .queue_for_user_everywhere(reader, None, 50)
             .await
             .unwrap()
             .is_empty()
@@ -1116,7 +1116,7 @@ async fn losing_one_role_of_several_keeps_the_others() {
     revoke(&db.pool, both, ws, finance).await;
 
     let left: Vec<Uuid> = store
-        .queue_for_user_everywhere(both, 50)
+        .queue_for_user_everywhere(both, None, 50)
         .await
         .expect("queue")
         .iter()
@@ -1214,7 +1214,7 @@ async fn the_global_listing_is_bounded_and_oldest_first() {
     }
 
     let page: Vec<Uuid> = store
-        .queue_for_user_everywhere(user, 3)
+        .queue_for_user_everywhere(user, None, 3)
         .await
         .expect("page")
         .iter()

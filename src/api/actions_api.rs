@@ -53,6 +53,7 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(25);
 #[derive(Debug, Deserialize)]
 pub struct QueueQuery {
     pub limit: Option<i64>,
+    pub after: Option<uuid::Uuid>,
     /// Park until the queue changes rather than answering at once.
     ///
     /// The queue is a set rather than a log, so there is no cursor to compare
@@ -62,11 +63,6 @@ pub struct QueueQuery {
     /// answer immediately omits this.
     #[serde(default)]
     pub wait: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct QueueResponse {
-    pub items: Vec<ActionItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,24 +79,24 @@ pub async fn queue(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Query(query): Query<QueueQuery>,
-) -> Result<Json<QueueResponse>, ApiError> {
+) -> Result<Json<super::Page<ActionItem>>, ApiError> {
     // Authenticated, not authorised: see the module comment.
     let claims = super::router::authenticate(&state, &headers)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     if query.wait {
-        return wait_for_change(&state, claims.subject, limit)
+        return wait_for_change(&state, claims.subject, query.after, limit)
             .await
             .map(Json);
     }
 
     let items = state
         .actions
-        .queue_for_user_everywhere(claims.subject, limit)
+        .queue_for_user_everywhere(claims.subject, query.after, limit)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(QueueResponse { items }))
+    Ok(Json(super::Page::from_rows(items, |i| i.id)))
 }
 
 /// How many items are waiting on the caller. Read on every page load.
@@ -134,8 +130,9 @@ pub async fn badge(
 async fn wait_for_change(
     state: &ApiState,
     user_id: uuid::Uuid,
+    after: Option<uuid::Uuid>,
     limit: i64,
-) -> Result<QueueResponse, ApiError> {
+) -> Result<super::Page<ActionItem>, ApiError> {
     use tokio::sync::broadcast::error::RecvError;
 
     let mut rx = state.action_bus.subscribe();
@@ -148,12 +145,13 @@ async fn wait_for_change(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let read = |limit: i64| async move {
-        state
+    let read = || async {
+        let items = state
             .actions
-            .queue_for_user_everywhere(user_id, limit)
+            .queue_for_user_everywhere(user_id, after, limit)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        Ok(super::Page::from_rows(items, |i| i.id))
     };
 
     let deadline = tokio::time::sleep(POLL_TIMEOUT);
@@ -163,25 +161,16 @@ async fn wait_for_change(
 
     loop {
         tokio::select! {
-            // Answer with what is there rather than empty: the queue is a set,
-            // and "nothing changed" still has a current value worth returning.
-            _ = &mut deadline => return Ok(QueueResponse { items: read(limit).await? }),
-            // Shutdown, so a drain is not held open for the full timeout.
-            _ = &mut shutdown => return Ok(QueueResponse { items: read(limit).await? }),
+            _ = &mut deadline => return read().await,
+            _ = &mut shutdown => return read().await,
             received = rx.recv() => match received {
                 Ok(hint) => {
                     if hint.concerns(user_id, &roles) {
-                        return Ok(QueueResponse { items: read(limit).await? });
+                        return read().await;
                     }
                 }
-                // Slow consumer: hints were dropped, so re-read rather than
-                // trusting the stream to have told us everything.
-                Err(RecvError::Lagged(_)) => {
-                    return Ok(QueueResponse { items: read(limit).await? });
-                }
-                Err(RecvError::Closed) => {
-                    return Ok(QueueResponse { items: read(limit).await? });
-                }
+                Err(RecvError::Lagged(_)) => return read().await,
+                Err(RecvError::Closed) => return read().await,
             },
         }
     }

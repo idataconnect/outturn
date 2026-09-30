@@ -254,7 +254,7 @@ pub async fn answer(
     // it any other way would make the targeting decorative.
     let mine = state
         .actions
-        .queue_for_user_everywhere(claims.subject, MAX_QUEUE_SCAN)
+        .queue_for_user_everywhere(claims.subject, None, MAX_QUEUE_SCAN)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let item = match mine.into_iter().find(|i| i.id == item_id) {

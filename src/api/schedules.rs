@@ -23,6 +23,8 @@ use crate::auth::rbac::Authority;
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     agent_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: Option<i64>,
 }
 
 /// A schedule plus what it will do next, which is not stored.
@@ -85,12 +87,14 @@ pub async fn list_schedules(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Query(q): Query<ListQuery>,
-) -> Result<Json<Vec<WithUpcoming>>, ApiError> {
+) -> Result<Json<super::Page<WithUpcoming>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    let rows = postgres::list(&state.pool, claims.workspace_id, q.agent_id)
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let rows = postgres::list(&state.pool, claims.workspace_id, q.agent_id, q.after, limit)
         .await
         .map_err(internal)?;
-    Ok(Json(rows.into_iter().map(decorate).collect()))
+    let items: Vec<WithUpcoming> = rows.into_iter().map(decorate).collect();
+    Ok(Json(super::Page::from_rows(items, |w| w.schedule.id)))
 }
 
 pub async fn get_schedule(

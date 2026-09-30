@@ -1,4 +1,4 @@
-import { api, apiText } from './api'
+import { api, apiText, type Page } from './api'
 
 /**
  * A skill is instructions an agent is given beside its system prompt.
@@ -57,7 +57,7 @@ export type Binding = {
 }
 
 export function listSkills(): Promise<Skill[]> {
-  return api<Skill[]>('/v1/skills')
+  return api<Page<Skill>>('/v1/skills').then(p => p.items)
 }
 
 export function getSkill(id: string): Promise<Skill> {
@@ -65,7 +65,7 @@ export function getSkill(id: string): Promise<Skill> {
 }
 
 export function listVersions(id: string): Promise<SkillVersion[]> {
-  return api<SkillVersion[]>(`/v1/skills/${id}/versions`)
+  return api<Page<SkillVersion>>(`/v1/skills/${id}/versions`).then(p => p.items)
 }
 
 export function getVersion(id: string, versionId: string): Promise<SkillVersion> {

@@ -1,4 +1,4 @@
-import { api } from './api'
+import { api, type Page } from './api'
 
 /**
  * A schedule is a turn that starts because the clock said so.
@@ -51,7 +51,7 @@ export type Preview = {
 
 export function listSchedules(agentId?: string): Promise<Schedule[]> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
-  return api<Schedule[]>(`/v1/schedules${q}`)
+  return api<Page<Schedule>>(`/v1/schedules${q}`).then(p => p.items)
 }
 
 export function createSchedule(input: ScheduleInput): Promise<Schedule> {

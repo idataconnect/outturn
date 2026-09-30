@@ -1,4 +1,4 @@
-import { api, ApiError } from './api'
+import { api, ApiError, type Page } from './api'
 
 export type Agent = {
   id: string
@@ -225,8 +225,8 @@ type PollResponse = {
   cursor: string
 }
 
-export const listAgents = () => api<Agent[]>('/v1/agents')
-export const listSessions = () => api<AgentSession[]>('/v1/agent-sessions')
+export const listAgents = () => api<Page<Agent>>('/v1/agents').then(p => p.items)
+export const listSessions = () => api<Page<AgentSession>>('/v1/agent-sessions').then(p => p.items)
 
 export const createSession = (agentId: string, title = '') =>
   api<AgentSession>('/v1/agent-sessions', {

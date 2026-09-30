@@ -221,11 +221,13 @@ impl InhibitorStore for PostgresInhibitorStore {
         read(&row)
     }
 
-    async fn in_workspace(&self, workspace_id: Uuid) -> Result<Vec<Inhibitor>, InhibitorError> {
+    async fn in_workspace(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Inhibitor>, InhibitorError> {
         let rows = sqlx::query(select_inhibitors!(
-            "where workspace_id = $1 order by created_at"
+            "where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3"
         ))
         .bind(workspace_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;

@@ -411,9 +411,12 @@ async fn session_info(
 async fn list_workspaces(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<Workspace>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<Workspace>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     authorize(&state, &headers, Authority::WorkspacesRead).await?;
-    Ok(Json(state.workspaces.list().await?))
+    let items = state.workspaces.list(query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |w| w.id)))
 }
 
 async fn create_workspace(
@@ -480,11 +483,12 @@ struct GrantRole {
 async fn list_egress_rules(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<super::egress::Rule>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<super::egress::Rule>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    Ok(Json(
-        super::egress::list(&state.pool, claims.workspace_id).await?,
-    ))
+    let items = super::egress::list(&state.pool, claims.workspace_id, query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |r| r.id)))
 }
 
 async fn create_egress_rule(
@@ -526,19 +530,23 @@ async fn delete_egress_rule(
 async fn list_users(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<User>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<User>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
     // A workspace's administrator sees the accounts in their workspace. Every
     // account on the platform is a system administrator's view alone: the
     // workspace is the isolation boundary, and a user list that crossed it
     // named every other customer's staff.
-    if claims.is_system_admin() {
-        Ok(Json(state.users.list().await?))
+    let users = if claims.is_system_admin() {
+        state.users.list(query.after, limit).await?
     } else {
-        Ok(Json(
-            state.users.list_for_workspace(claims.workspace_id).await?,
-        ))
-    }
+        state
+            .users
+            .list_for_workspace(claims.workspace_id, query.after, limit)
+            .await?
+    };
+    Ok(Json(super::Page::from_rows(users, |u| u.id)))
 }
 
 /// A user, with where they belong.
@@ -848,7 +856,9 @@ async fn list_authorities(
 async fn list_roles(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<WorkspaceRole>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<WorkspaceRole>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let claims = authenticate(&state, &headers)?;
     let granted = authorities_of(&state, &claims).await?;
     if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
@@ -857,7 +867,8 @@ async fn list_roles(
             auth::AuthError::Forbidden.to_string(),
         ));
     }
-    Ok(Json(state.roles.list(claims.workspace_id).await?))
+    let items = state.roles.list(claims.workspace_id, query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |r| r.id)))
 }
 
 async fn get_role(
@@ -1233,14 +1244,17 @@ async fn clear_operator_setting(
 async fn list_inhibitors(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<super::inhibitor::Inhibitor>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<super::inhibitor::Inhibitor>>, ApiError> {
     // Seeing what is stopped is not the same as being able to stop it.
     // `agents:read` rather than either inhibit authority: a viewer watching a
     // silent agent is owed the reason, and withholding it is how "why is
     // nothing happening" becomes a support ticket.
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
-    Ok(Json(store.in_workspace(claims.workspace_id).await?))
+    let items = store.in_workspace(claims.workspace_id, query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |i| i.id)))
 }
 
 #[derive(serde::Deserialize)]

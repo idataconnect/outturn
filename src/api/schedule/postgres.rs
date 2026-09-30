@@ -31,15 +31,20 @@ pub async fn list(
     pool: &PgPool,
     workspace_id: Uuid,
     agent_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: i64,
 ) -> Result<Vec<Schedule>, sqlx::Error> {
     let rows = sqlx::query(
         "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
          from schedules \
          where workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
-         order by id",
+           and ($3::uuid is null or id > $3) \
+         order by id limit $4",
     )
         .bind(workspace_id)
         .bind(agent_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(pool)
         .await?;
     Ok(rows.iter().map(row).collect())

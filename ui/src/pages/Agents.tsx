@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { MessageSquare, OctagonX, Play, Plus, Settings2, Trash2 } from 'lucide-react'
 
-import { ApiError, api } from '../lib/api'
+import { ApiError, api, type Page } from '../lib/api'
 import { useSession } from '../lib/session'
 import { listSessions, sessionName, type Agent, type AgentSession } from '../lib/chat'
 import { useBreakpoint } from '../lib/useBreakpoint'
@@ -58,7 +58,7 @@ export default function Agents() {
     try {
       // Together, so the list never renders an agent as running while the
       // workspace holding it is still loading.
-      const [list, holds] = await Promise.all([api<Agent[]>('/v1/agents'), listInhibitors()])
+      const [{ items: list }, holds] = await Promise.all([api<Page<Agent>>('/v1/agents'), listInhibitors()])
       setAgents(list)
       setHeld(holds)
       setError(null)

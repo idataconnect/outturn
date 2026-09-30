@@ -40,30 +40,31 @@ pub struct ListedAgent {
 pub async fn list_agents(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<ListedAgent>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<ListedAgent>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     // The workspace comes from the token, never from the request: a caller can
     // only reach agents in a workspace they hold a minted token for.
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     let held = super::router::authorities_of(&state, &claims).await?;
     let reach = super::router::reach_of(&state, &claims).await?;
-    Ok(Json(
-        state
-            .agents
-            .list(claims.workspace_id)
-            .await?
-            .into_iter()
-            .map(|agent| ListedAgent {
-                // The two things `create_session` checks, in its order.
-                can_chat: super::router::may_for_agent(
-                    &held,
-                    &reach,
-                    Authority::SessionsCreate,
-                    agent.id,
-                ) && agent.takes_conversations(),
-                agent,
-            })
-            .collect(),
-    ))
+    let items: Vec<ListedAgent> = state
+        .agents
+        .list(claims.workspace_id, query.after, limit)
+        .await?
+        .into_iter()
+        .map(|agent| ListedAgent {
+            // The two things `create_session` checks, in its order.
+            can_chat: super::router::may_for_agent(
+                &held,
+                &reach,
+                Authority::SessionsCreate,
+                agent.id,
+            ) && agent.takes_conversations(),
+            agent,
+        })
+        .collect();
+    Ok(Json(super::Page::from_rows(items, |a| a.agent.id)))
 }
 
 pub async fn create_agent(

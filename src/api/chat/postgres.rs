@@ -405,12 +405,27 @@ impl ChatStore for PostgresChatStore {
         Ok(read_session(&row))
     }
 
-    async fn list_sessions(&self, workspace_id: Uuid) -> Result<Vec<AgentSession>, ChatError> {
+    async fn list_sessions(
+        &self,
+        workspace_id: Uuid,
+        agent_ids: Option<&[Uuid]>,
+        user_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<AgentSession>, ChatError> {
         let rows = sqlx::query(
             "select id, workspace_id, agent_id, user_id, title, account from agent_sessions \
-             where workspace_id = $1 order by created_at desc",
+             where workspace_id = $1 \
+               and ($2::uuid[] is null or agent_id = any($2) or user_id = $3) \
+               and ($4::uuid is null or id < $4) \
+             order by id desc \
+             limit $5",
         )
         .bind(workspace_id)
+        .bind(agent_ids)
+        .bind(user_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;

@@ -358,7 +358,7 @@ pub enum SkillError {
 /// forking stays the only way to vary one.
 #[async_trait]
 pub trait SkillStore: Send + Sync {
-    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Skill>, SkillError>;
+    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Skill>, SkillError>;
     async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Skill, SkillError>;
     async fn create(
         &self,
@@ -396,7 +396,7 @@ pub trait SkillStore: Send + Sync {
         // declarations with them.
         gates: &[DeclaredGate],
     ) -> Result<(SkillVersion, bool), SkillError>;
-    async fn versions(&self, workspace_id: Uuid, id: Uuid)
+    async fn versions(&self, workspace_id: Uuid, id: Uuid, after: Option<Uuid>, limit: i64)
     -> Result<Vec<SkillVersion>, SkillError>;
     async fn version(
         &self,

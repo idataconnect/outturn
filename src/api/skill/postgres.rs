@@ -330,14 +330,16 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
 
 #[async_trait]
 impl SkillStore for PostgresSkillStore {
-    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Skill>, SkillError> {
+    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Skill>, SkillError> {
         // The operator's skills read as though they were the workspace's own to
         // look at, because deciding whether to override one requires seeing it.
         let rows = sqlx::query(select_skill!(
-            "where s.workspace_id = any($1) order by s.name"
+            "where s.workspace_id = any($1) and ($3::uuid is null or s.id > $3) order by s.id limit $4"
         ))
         .bind(vec![workspace_id, PLATFORM_WORKSPACE])
         .bind(workspace_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -605,22 +607,62 @@ impl SkillStore for PostgresSkillStore {
         &self,
         workspace_id: Uuid,
         id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
     ) -> Result<Vec<SkillVersion>, SkillError> {
         self.get(workspace_id, id).await?;
         let rows = sqlx::query(
-            "select id, skill_id, ordinal, body, note, based_on_version_id, created_by, created_at \
-             from skill_versions where skill_id = $1 order by ordinal desc",
+            "select v.id, v.skill_id, v.ordinal, v.body, v.note, v.based_on_version_id, \
+                    v.created_by, v.created_at, \
+                    h.hosts, f.files, f.file_sizes, f.file_hashes \
+             from skill_versions v \
+             left join lateral ( \
+                 select coalesce(array_agg(host order by host), '{}') as hosts \
+                 from skill_version_hosts where version_id = v.id \
+             ) h on true \
+             left join lateral ( \
+                 select coalesce(array_agg(path order by path), '{}') as files, \
+                        coalesce(array_agg(bytes order by path), '{}') as file_sizes, \
+                        coalesce(array_agg(sha256 order by path), '{}') as file_hashes \
+                 from skill_version_files where version_id = v.id \
+             ) f on true \
+             where v.skill_id = $1 \
+               and ($2::uuid is null or v.id < $2) \
+             order by v.id desc \
+             limit $3",
         )
         .bind(id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        let mut versions: Vec<SkillVersion> = rows.iter().map(read_version).collect();
-        for v in &mut versions {
-            v.hosts = hosts_of(&self.pool, v.id).await?;
-            v.files = files_of(&self.pool, v.id).await?;
-        }
-        Ok(versions)
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let paths: Vec<String> = r.get("files");
+                let hashes: Vec<String> = r.get("file_hashes");
+                let sizes: Vec<i32> = r.get("file_sizes");
+                let files = paths
+                    .into_iter()
+                    .zip(hashes)
+                    .zip(sizes)
+                    .map(|((path, sha256), bytes)| SkillFile { path, sha256, bytes })
+                    .collect();
+                SkillVersion {
+                    id: r.get("id"),
+                    skill_id: r.get("skill_id"),
+                    ordinal: r.get("ordinal"),
+                    body: r.get("body"),
+                    note: r.get("note"),
+                    based_on_version_id: r.get("based_on_version_id"),
+                    hosts: r.get("hosts"),
+                    files,
+                    created_by: r.get("created_by"),
+                    created_at: r.get("created_at"),
+                }
+            })
+            .collect())
     }
 
     async fn version(
@@ -750,7 +792,8 @@ impl SkillStore for PostgresSkillStore {
     ) -> Result<Vec<Binding>, SkillError> {
         let rows = sqlx::query(
             "select skill_id, version_id, position from agent_skills \
-             where workspace_id = $1 and agent_id = $2 order by position",
+             where workspace_id = $1 and agent_id = $2 \
+             order by position",
         )
         .bind(workspace_id)
         .bind(agent_id)
@@ -993,19 +1036,25 @@ impl SkillStore for PostgresSkillStore {
         reply_id: Uuid,
         skills: &[ResolvedSkill],
     ) -> Result<(), SkillError> {
-        for s in skills {
-            sqlx::query(
-                "insert into turn_skills (reply_id, skill_id, version_id, position) \
-                 values ($1, $2, $3, $4) on conflict do nothing",
-            )
-            .bind(reply_id)
-            .bind(s.skill_id)
-            .bind(s.version_id)
-            .bind(s.position)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
+        if skills.is_empty() {
+            return Ok(());
         }
+        let reply_ids: Vec<Uuid> = vec![reply_id; skills.len()];
+        let skill_ids: Vec<Uuid> = skills.iter().map(|s| s.skill_id).collect();
+        let version_ids: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
+        let positions: Vec<i32> = skills.iter().map(|s| s.position).collect();
+        sqlx::query(
+            "insert into turn_skills (reply_id, skill_id, version_id, position) \
+             select * from unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::int[]) \
+             on conflict do nothing",
+        )
+        .bind(&reply_ids)
+        .bind(&skill_ids)
+        .bind(&version_ids)
+        .bind(&positions)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(())
     }
 }

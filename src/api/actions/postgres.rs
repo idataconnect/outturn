@@ -360,6 +360,7 @@ impl ActionStore for PostgresActionStore {
     async fn queue_for_user_everywhere(
         &self,
         user_id: Uuid,
+        after: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<ActionItem>, ActionError> {
         // No `workspace_id` predicate anywhere, by design -- and so the join
@@ -394,9 +395,11 @@ impl ActionStore for PostgresActionStore {
                            where r.user_id = $1 \
                              and r.workspace_id = i.workspace_id \
                              and r.role_id = t.role_id))) \
-             order by i.id limit $2",
+               and ($2::uuid is null or i.id > $2) \
+             order by i.id limit $3",
         )
         .bind(user_id)
+        .bind(after)
         .bind(limit)
         .fetch_all(&self.pool)
         .await

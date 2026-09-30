@@ -1,3 +1,5 @@
+export type Page<T> = { items: T[]; next: string | null }
+
 export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a parameter property,
   // which erasableSyntaxOnly disallows.

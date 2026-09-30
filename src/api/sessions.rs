@@ -31,18 +31,31 @@ impl From<ChatError> for ApiError {
 pub async fn list_sessions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<AgentSession>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<AgentSession>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
-    let all = state.chat.list_sessions(claims.workspace_id).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
 
-    // Filtered rather than refused: a listing that failed because one session
-    // is out of reach would tell the caller nothing and hide what is theirs.
+    // Push the reach filter into SQL so pagination returns a full page.
     let reach = super::router::reach_of(&state, &claims).await?;
-    Ok(Json(
-        all.into_iter()
-            .filter(|s| reach.covers(s.agent_id) || s.user_id == Some(claims.subject))
-            .collect(),
-    ))
+    let agent_ids: Option<Vec<Uuid>> = if reach.is_narrowed() {
+        Some(reach.agents().iter().copied().collect())
+    } else {
+        None
+    };
+
+    let sessions = state
+        .chat
+        .list_sessions(
+            claims.workspace_id,
+            agent_ids.as_deref(),
+            claims.subject,
+            query.after,
+            limit,
+        )
+        .await?;
+
+    Ok(Json(super::Page::from_rows(sessions, |s| s.id)))
 }
 
 /// Whether having started a conversation is enough on its own.
