@@ -345,6 +345,40 @@ async fn get_room(State(state): State<Arc<Fixture>>, Path(id): Path<String>) -> 
     }
 }
 
+/// Where the house is, which decides what "today" means to it.
+///
+/// Its own, and deliberately not the platform's: a booking system keeps the
+/// clock of the place it books, and an agent reaching it from a platform in
+/// another zone -- or on behalf of somebody in a third -- is the ordinary case
+/// a demonstration should show rather than hide.
+const HOUSE_ZONE: chrono_tz::Tz = chrono_tz::Europe::London;
+
+/// Today, at the house.
+fn house_today() -> NaiveDate {
+    Utc::now().with_timezone(&HOUSE_ZONE).date_naive()
+}
+
+/// What is wrong with a stay's dates, if anything.
+///
+/// A stay that has already begun is refused, with the house's date in the
+/// words. An agent asked for "December 1-5" with no year guesses one, and
+/// guessing last year's went straight through: a room booked and a card
+/// charged for a stay that had already happened. The date is said so the
+/// agent can see what it got wrong rather than only that it did, and the zone
+/// so it can see why the house's today may not be its user's.
+fn stay_problem(arrival: NaiveDate, departure: NaiveDate, today: NaiveDate) -> Option<String> {
+    if departure <= arrival {
+        return Some("departure must be after arrival".into());
+    }
+    if arrival < today {
+        return Some(format!(
+            "arrival {arrival} is in the past: today at the house is {today} ({HOUSE_ZONE}). \
+             Check the year"
+        ));
+    }
+    None
+}
+
 /// Which rooms are free for a stay.
 ///
 /// A room is taken when an existing booking overlaps the dates asked about,
@@ -355,13 +389,8 @@ async fn availability(
     State(state): State<Arc<Fixture>>,
     Query(q): Query<AvailabilityQuery>,
 ) -> impl IntoResponse {
-    if q.departure <= q.arrival {
-        return marked_with(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({
-                "error": "departure must be after arrival",
-            }),
-        );
+    if let Some(problem) = stay_problem(q.arrival, q.departure, house_today()) {
+        return refuse(StatusCode::BAD_REQUEST, &problem);
     }
 
     let bookings = state.bookings.lock().expect("bookings");
@@ -430,8 +459,8 @@ async fn create_booking(
     let Some(room) = state.rooms.iter().find(|r| r.id == input.room_id) else {
         return refuse(StatusCode::NOT_FOUND, "no such room");
     };
-    if input.departure <= input.arrival {
-        return refuse(StatusCode::BAD_REQUEST, "departure must be after arrival");
+    if let Some(problem) = stay_problem(input.arrival, input.departure, house_today()) {
+        return refuse(StatusCode::BAD_REQUEST, &problem);
     }
 
     let booking = {
@@ -679,7 +708,9 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
            Money is in pence throughout, so nothing does floating-point arithmetic on it. \
            Dates are YYYY-MM-DD and name nights: `arrival` is the first night and \
            `departure` is the morning the guest leaves, so a stay of one night has a \
-           departure one day after its arrival."
+           departure one day after its arrival.\n\n\
+           The house is in England, and dates are its own: \"today\" is today in \
+           Europe/London, which may not be yours. A stay cannot start before it."
       },
       "servers": [
         { "url": "http://outturn-hollowbrook:8084", "description": "Beside outturn in the cluster." }
@@ -1091,6 +1122,35 @@ mod tests {
             described, served,
             "the specification and the document's own list of what is served disagree"
         );
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        s.parse().expect("date")
+    }
+
+    /// The booking that prompted this: "December 1-5" read as last December.
+    #[test]
+    fn a_stay_in_the_past_is_refused_with_the_date() {
+        let today = day("2026-09-29");
+        let problem = stay_problem(day("2025-12-01"), day("2025-12-05"), today).expect("refused");
+        assert!(problem.contains("today at the house is 2026-09-29 (Europe/London)"), "{problem}");
+        assert_eq!(stay_problem(day("2026-12-01"), day("2026-12-05"), today), None);
+    }
+
+    /// Today at the house may start; yesterday there may not, whatever the
+    /// date is wherever the agent or its user happen to be.
+    #[test]
+    fn a_stay_may_start_today_at_the_house_and_not_before() {
+        let today = day("2026-09-29");
+        assert_eq!(stay_problem(today, day("2026-09-30"), today), None);
+        assert!(stay_problem(day("2026-09-28"), day("2026-09-30"), today).is_some());
+    }
+
+    #[test]
+    fn departure_still_has_to_follow_arrival() {
+        let today = day("2026-09-29");
+        let problem = stay_problem(day("2026-10-02"), day("2026-10-02"), today).expect("refused");
+        assert!(problem.contains("departure must be after arrival"), "{problem}");
     }
 
     /// A fixture with one of everything, for serving requests against.
