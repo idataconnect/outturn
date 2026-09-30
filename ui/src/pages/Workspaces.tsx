@@ -6,12 +6,13 @@ import { FilterBox, PageHeader, RecordList, RecordRow } from '../components/Inde
 import { ApiError, allPages } from '../lib/api'
 import { matchesFilter } from '../lib/filter'
 import type { Workspace } from './WorkspaceEditor'
+import { paths } from '../lib/paths'
 
 /**
  * Every workspace on the platform. System administrators only.
  *
- * Creating and editing live on their own routes (`/workspaces/new`,
- * `/workspaces/:id`), and deleting lives on the edit page beside the name it is
+ * Creating and editing live on each workspace's own page, and deleting lives
+ * on the edit page beside the name it is
  * about to remove, rather than as a bin icon on a row.
  */
 export default function Workspaces() {
@@ -39,7 +40,7 @@ export default function Workspaces() {
       <PageHeader
         title="Workspaces"
         description="Every workspace on the platform. Visible to system administrators only."
-        action={{ to: '/workspaces/new', label: 'New workspace' }}
+        action={{ to: paths.newWorkspace, label: 'New workspace' }}
       />
 
       {error && (
@@ -58,7 +59,7 @@ export default function Workspaces() {
         empty={
           <>
             No workspaces yet.{' '}
-            <Link to="/workspaces/new" className="underline underline-offset-2">
+            <Link to={paths.newWorkspace} className="underline underline-offset-2">
               Create one.
             </Link>
           </>
@@ -67,7 +68,7 @@ export default function Workspaces() {
         {shown.map((workspace) => (
           <RecordRow
             key={workspace.id}
-            to={`/workspaces/${workspace.id}`}
+            to={paths.workspace(workspace.id)}
             icon={Building2}
             title={workspace.name}
           >

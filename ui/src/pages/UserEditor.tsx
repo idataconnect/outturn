@@ -4,6 +4,7 @@ import { ArrowLeft, Plus, Save, Shield, Trash2 } from 'lucide-react'
 
 import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
+import { paths } from '../lib/paths'
 
 export type Identity = {
   id: string
@@ -73,9 +74,9 @@ function message(e: unknown, fallback: string): string {
 /**
  * Creating a user, or looking after one.
  *
- * `/users/new` makes an account with its first sign-in and a role in the
- * current workspace. `/users/:id` shows the account: its name, every way it can
- * sign in, and its roles in the workspace being viewed. Each section saves on
+ * Creating makes an account with its first sign-in and a role in the current
+ * workspace. An existing user's page shows the account: its name, every way it
+ * can sign in, and its roles in the workspace being viewed. Each section saves on
  * its own -- an identity is added or removed the moment you say so, a role
  * likewise -- because they are separate facts about the account and a single
  * "save" button would have to pretend otherwise.
@@ -118,7 +119,7 @@ function CreateUser() {
         method: 'POST',
         body: JSON.stringify({ ...form, role }),
       })
-      void navigate(`/users/${user.id}`)
+      void navigate(paths.user(user.id))
     } catch (e) {
       setError(message(e, 'failed to create user'))
       setSaving(false)
@@ -244,7 +245,7 @@ function EditUser({ id }: { id: string }) {
     }
     try {
       await api<void>(`/v1/users/${id}`, { method: 'DELETE' })
-      void navigate('/users')
+      void navigate(paths.users)
     } catch (e) {
       setError(message(e, 'failed to delete user'))
     }
@@ -604,7 +605,7 @@ function RoleSelect({
 function Back() {
   return (
     <Link
-      to="/users"
+      to={paths.users}
       className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
     >
       <ArrowLeft size={14} aria-hidden />
@@ -616,7 +617,7 @@ function Back() {
 function Cancel() {
   return (
     <Link
-      to="/users"
+      to={paths.users}
       className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
     >
       Cancel

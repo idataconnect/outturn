@@ -5,6 +5,7 @@ import { ArrowLeft, Save, Trash2 } from 'lucide-react'
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
 import type { WorkspaceRole } from './Roles'
+import { paths } from '../lib/paths'
 
 type AuthorityInfo = { name: string; description: string }
 
@@ -88,7 +89,7 @@ export default function RoleEditor() {
       } else {
         await api<WorkspaceRole>(`/v1/roles/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
       }
-      void navigate('/roles')
+      void navigate(paths.roles)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save role')
       setSaving(false)
@@ -100,7 +101,7 @@ export default function RoleEditor() {
     if (!window.confirm(`Delete the ${role.name} role?`)) return
     try {
       await api<void>(`/v1/roles/${id}`, { method: 'DELETE' })
-      void navigate('/roles')
+      void navigate(paths.roles)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to delete role')
     }
@@ -115,7 +116,7 @@ export default function RoleEditor() {
   return (
     <div className="p-6 max-w-3xl">
       <Link
-        to="/roles"
+        to={paths.roles}
         className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
       >
         <ArrowLeft size={14} aria-hidden />
@@ -217,7 +218,7 @@ export default function RoleEditor() {
                 {saving ? 'Saving…' : creating ? 'Create role' : 'Save changes'}
               </button>
               <Link
-                to="/roles"
+                to={paths.roles}
                 className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
               >
                 Cancel

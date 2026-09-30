@@ -5,6 +5,7 @@ import { Badge, FilterBox, PageHeader, RecordList, RecordRow } from '../componen
 import { ApiError, allPages } from '../lib/api'
 import { matchesFilter } from '../lib/filter'
 import { useSession } from '../lib/session'
+import { paths } from '../lib/paths'
 
 export type WorkspaceRole = {
   id: string
@@ -58,7 +59,7 @@ export default function Roles() {
       <PageHeader
         title="Roles"
         description="What each role in this workspace allows. Changes apply to everyone holding the role on their next request."
-        action={canManage ? { to: '/roles/new', label: 'New role' } : undefined}
+        action={canManage ? { to: paths.newRole, label: 'New role' } : undefined}
       />
 
       {error && (
@@ -72,7 +73,7 @@ export default function Roles() {
         {shown.map((role) => (
           <RecordRow
             key={role.id}
-            to={`/roles/${role.id}`}
+            to={paths.role(role.id)}
             icon={KeyRound}
             title={role.name}
             badges={
