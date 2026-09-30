@@ -112,3 +112,34 @@ describe('ApprovalPrompt', () => {
     )
   })
 })
+
+describe('what an approval is for', () => {
+  /// The reason a person used to be asked to approve a charge without seeing
+  /// its amount: the card said which path, never which values.
+  it('shows each value being approved, exactly as the request has it', () => {
+    show({
+      item_id: 'item-1',
+      requires: 'charge',
+      reason: 'a charge',
+      binds: [
+        { field: 'booking_id', value: 'bk_8812' },
+        { field: 'amount_pence', value: 78000 },
+      ],
+    })
+    expect(screen.getByText('booking_id')).toBeTruthy()
+    expect(screen.getByText('bk_8812')).toBeTruthy()
+    expect(screen.getByText('amount_pence')).toBeTruthy()
+    // Not "£780", not "78,000": what the grant is keyed on.
+    expect(screen.getByText('78000')).toBeTruthy()
+  })
+
+  it('says a field the request should carry is missing', () => {
+    show({
+      item_id: 'item-1',
+      requires: 'charge',
+      reason: 'a charge',
+      binds: [{ field: 'payment_account_id', value: null }],
+    })
+    expect(screen.getByText('missing')).toBeTruthy()
+  })
+})

@@ -8751,3 +8751,101 @@ async fn the_platform_workspace_is_not_managed_as_a_workspace() {
 
     h.db.cleanup().await;
 }
+
+/// An approval says what is being approved: each field the grant will be keyed
+/// on, with the value this request carries. A person used to be asked to
+/// approve a charge and shown only the path it was posted to -- never its
+/// amount -- so saying yes was saying yes to a number they had not seen.
+///
+/// Also the first test through `/v1/work/gated` itself, the way a runtime
+/// reports a refusal.
+#[tokio::test]
+async fn an_approval_shows_the_values_it_approves() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let charge_file = "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [booking_id, amount_pence]\n---\n\n# charge\n";
+    let (status, body) = post_with_cookie(
+        &h,
+        "/v1/skills",
+        &admin,
+        &serde_json::json!({
+            "slug": "charging",
+            "name": "Charging",
+            "body": "Read charge.md before charging anybody.",
+            "hosts": ["api.hollowbrook.test"],
+            "files": [{ "path": "charge.md", "content": charge_file }],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) =
+        post_with_cookie(&h, &format!("/v1/skills/{skill}/hosts/approve"), &admin, "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (agent, session) = a_held_conversation(&h, acme, &admin).await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent}/skills"))
+        .header("cookie", format!("outturn_session={admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{skill}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The runtime reports the refusal, as it does when the gateway turns the
+    // charge away.
+    let (job, lease) = a_running_turn(&h, acme, agent, session).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/work/gated")
+        .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+        .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "session_id": session,
+                "job_id": job,
+                "method": "POST",
+                "host": "api.hollowbrook.test",
+                "path": "/charges",
+                "body": r#"{"amount_pence":78000,"booking_id":"bk_1","note":"not bound"}"#,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let expected = serde_json::json!([
+        { "field": "booking_id", "value": "bk_1" },
+        { "field": "amount_pence", "value": 78000 },
+    ]);
+
+    // In the queue, where the inbox reads it.
+    let (_, body) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let queue = items(&body);
+    assert_eq!(queue.len(), 1, "{body}");
+    assert_eq!(queue[0]["payload"]["binds"], expected, "{body}");
+
+    // And with the conversation, where the banner reads it.
+    let (_, body) = get_with_cookie(
+        &h,
+        &format!("/v1/agent-sessions/{session}/messages"),
+        &admin,
+    )
+    .await;
+    let history: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(history["awaiting"]["binds"], expected, "{body}");
+
+    h.db.cleanup().await;
+}

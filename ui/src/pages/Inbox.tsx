@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AlarmClock, ArrowLeft, Clock, Inbox as InboxIcon, MessageSquare } from 'lucide-react'
 
-import ApprovalPrompt from '../components/ApprovalPrompt'
+import ApprovalPrompt, { type Bound } from '../components/ApprovalPrompt'
 import type { ActionItem } from '../lib/actions'
 import { ApiError } from '../lib/api'
 import { wakeSession } from '../lib/chat'
@@ -284,6 +284,7 @@ function ApprovalDetail({ item, onAnswered }: { item: ActionItem; onAnswered: ()
           requires: typeof p.requires === 'string' ? p.requires : null,
           reason: typeof p.reason === 'string' ? p.reason : null,
           covers: covers ?? null,
+          binds: Array.isArray(p.binds) ? (p.binds as Bound[]) : null,
         }}
         onAnswered={onAnswered}
       />

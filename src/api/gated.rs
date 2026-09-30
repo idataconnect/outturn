@@ -227,6 +227,15 @@ pub async fn raise(
         "path": input.path,
         "shape": shape,
     });
+    // What the approver is actually approving: the fields the grant will be
+    // keyed on, with the values this request carries. Without them a person was
+    // asked to approve a charge and never shown its amount -- only the path it
+    // was posted to. Just these fields rather than the body, because these are
+    // what a yes is worth and anything else in it is not being approved; in the
+    // order the skill declared them, and as the body had them, so a number stays
+    // a number.
+    payload_json["binds"] = bound_values(&gate.binds, input.body.as_deref());
+
     // Offered, never granted. The approver ticks it; it is never inferred from
     // what was asked, because a person approves the instance they were shown and
     // not the class it belongs to.
@@ -318,8 +327,66 @@ pub fn answerable(item: &super::actions::ActionItem) -> serde_json::Value {
         "item_id": item.id,
         "requires": item.payload.get("requires"),
         "reason": item.payload.get("reason"),
+        "binds": item.payload.get("binds"),
         // The offer, so the client can show the tickbox. Never a grant: it is
         // the approver's act that widens the extent, not the request's.
         "covers": item.payload.get("covers"),
     })
+}
+
+/// The declared fields of a request body, each with its value, in order.
+///
+/// A field the body lacks is listed with a null value rather than left out, so
+/// an approver sees that the request is missing something the skill said it
+/// must carry. A body that is not JSON has nothing to read and lists nothing.
+fn bound_values(fields: &[String], body: Option<&str>) -> serde_json::Value {
+    let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
+    let Some(parsed) = parsed else {
+        return serde_json::json!([]);
+    };
+    serde_json::Value::Array(
+        fields
+            .iter()
+            .map(|field| {
+                serde_json::json!({
+                    "field": field,
+                    "value": parsed.get(field).cloned().unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::bound_values;
+
+    #[test]
+    fn each_declared_field_is_listed_with_its_value_in_order() {
+        let body = r#"{"amount_pence":78000,"booking_id":"bk_1","note":"not bound"}"#;
+        let fields = vec!["booking_id".to_string(), "amount_pence".to_string()];
+        assert_eq!(
+            bound_values(&fields, Some(body)),
+            serde_json::json!([
+                {"field": "booking_id", "value": "bk_1"},
+                {"field": "amount_pence", "value": 78000},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_missing_field_is_shown_missing() {
+        let fields = vec!["payment_account_id".to_string()];
+        assert_eq!(
+            bound_values(&fields, Some("{}")),
+            serde_json::json!([{"field": "payment_account_id", "value": null}])
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_lists_nothing() {
+        let fields = vec!["x".to_string()];
+        assert_eq!(bound_values(&fields, Some("x=1")), serde_json::json!([]));
+        assert_eq!(bound_values(&fields, None), serde_json::json!([]));
+    }
 }
