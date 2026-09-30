@@ -79,10 +79,7 @@ fn assemble_users(
     let mut by_user: HashMap<Uuid, Vec<Identity>> = HashMap::new();
     for row in &identity_rows {
         let user_id: Uuid = row.get("user_id");
-        by_user
-            .entry(user_id)
-            .or_default()
-            .push(read_identity(row));
+        by_user.entry(user_id).or_default().push(read_identity(row));
     }
 
     rows.iter()
@@ -138,7 +135,12 @@ impl UserStore for PostgresUserStore {
         Ok(assemble_users(&rows, identity_rows))
     }
 
-    async fn list_for_workspace(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<User>, UserError> {
+    async fn list_for_workspace(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<User>, UserError> {
         let rows = sqlx::query(
             "select u.id, u.display_name, \
                     coalesce(array_agg(sr.role) filter (where sr.role is not null), '{}') as roles \

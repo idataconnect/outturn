@@ -267,7 +267,12 @@ pub trait InhibitorStore: Send + Sync {
     /// What a panel shows. Distinct from `covering`, which answers "may this
     /// turn run" and therefore includes platform holds that are none of a
     /// workspace's business.
-    async fn in_workspace(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Inhibitor>, InhibitorError>;
+    async fn in_workspace(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<Inhibitor>, InhibitorError>;
 }
 
 #[cfg(test)]

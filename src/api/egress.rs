@@ -127,7 +127,12 @@ impl std::fmt::Display for RuleError {
     }
 }
 
-pub async fn list(pool: &PgPool, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Rule>, RuleError> {
+pub async fn list(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    after: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Rule>, RuleError> {
     let rows = sqlx::query(
         "select id, host, header, credential_env, enabled from egress_rules \
          where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3",

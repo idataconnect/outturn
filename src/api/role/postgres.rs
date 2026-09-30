@@ -201,7 +201,12 @@ async fn write_authorities(
 
 #[async_trait]
 impl RoleStore for PostgresRoleStore {
-    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<WorkspaceRole>, RoleError> {
+    async fn list(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<WorkspaceRole>, RoleError> {
         let rows = sqlx::query(
             "select r.id, r.workspace_id, r.name, r.description, \
                     coalesce(array_agg(a.authority order by a.authority) \
