@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { Building2, Plus } from 'lucide-react'
+import { Building2 } from 'lucide-react'
 
+import { FilterBox, PageHeader, RecordList, RecordRow } from '../components/IndexPage'
 import { ApiError, allPages } from '../lib/api'
+import { matchesFilter } from '../lib/filter'
 import type { Workspace } from './WorkspaceEditor'
 
 /**
@@ -16,6 +18,7 @@ export default function Workspaces() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     void (async () => {
@@ -29,23 +32,15 @@ export default function Workspaces() {
     })()
   }, [])
 
+  const shown = workspaces.filter((w) => matchesFilter(query, w.name, w.slug))
+
   return (
     <div className="p-6 max-w-3xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Workspaces</h1>
-          <p className="mt-2 text-surface-600 dark:text-surface-400">
-            Visible to system administrators only.
-          </p>
-        </div>
-        <Link
-          to="/workspaces/new"
-          className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
-        >
-          <Plus size={16} aria-hidden />
-          New workspace
-        </Link>
-      </div>
+      <PageHeader
+        title="Workspaces"
+        description="Every workspace on the platform. Visible to system administrators only."
+        action={{ to: '/workspaces/new', label: 'New workspace' }}
+      />
 
       {error && (
         <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
@@ -53,34 +48,35 @@ export default function Workspaces() {
         </p>
       )}
 
-      <div className="mt-6 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
-        {loading ? (
-          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">Loading…</p>
-        ) : workspaces.length === 0 ? (
-          <p className="p-4 text-sm text-surface-600 dark:text-surface-400">
+      {workspaces.length > 0 && (
+        <FilterBox value={query} onChange={setQuery} label="Filter workspaces" />
+      )}
+      <RecordList
+        loading={loading}
+        count={workspaces.length}
+        shown={shown.length}
+        empty={
+          <>
             No workspaces yet.{' '}
             <Link to="/workspaces/new" className="underline underline-offset-2">
               Create one.
             </Link>
-          </p>
-        ) : (
-          <ul className="divide-y divide-surface-200 dark:divide-surface-800">
-            {workspaces.map((workspace) => (
-              <li key={workspace.id} className="flex items-center gap-4 p-4">
-                <Building2 size={16} className="shrink-0 text-surface-400" aria-hidden />
-                <Link to={`/workspaces/${workspace.id}`} className="flex-1 min-w-0 group">
-                  <p className="text-sm font-medium text-surface-900 dark:text-surface-100 truncate group-hover:underline underline-offset-2">
-                    {workspace.name}
-                  </p>
-                  <p className="text-xs font-mono text-surface-600 dark:text-surface-400 truncate">
-                    {workspace.slug}
-                  </p>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+          </>
+        }
+      >
+        {shown.map((workspace) => (
+          <RecordRow
+            key={workspace.id}
+            to={`/workspaces/${workspace.id}`}
+            icon={Building2}
+            title={workspace.name}
+          >
+            <p className="text-xs font-mono text-surface-600 dark:text-surface-400 truncate">
+              {workspace.slug}
+            </p>
+          </RecordRow>
+        ))}
+      </RecordList>
     </div>
   )
 }

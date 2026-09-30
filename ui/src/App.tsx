@@ -110,11 +110,22 @@ function SettingsPage() {
 // told "reading usage needs the usage:read authority" by a page they had been
 // invited to open. A link that cannot work is worse than no link, because it
 // reads as something broken rather than as something not theirs.
-const navItems = [
+//
+// `under` nests an item beneath another: sessions are conversations *with*
+// agents, so they sit under Agents rather than beside Skills. Only when the
+// parent is shown -- somebody who may not see agents still has their sessions,
+// and an indent under nothing reads as a mistake.
+const navItems: {
+  to: string
+  icon: typeof Bot
+  label: string
+  authority?: string
+  under?: string
+}[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', authority: 'usage:read' },
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
+  { to: '/sessions', icon: MessageSquare, label: 'Sessions', under: '/agents' },
   { to: '/skills', icon: BookText, label: 'Skills', authority: 'skills:read' },
-  { to: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
   { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
   { to: '/workspaces', icon: Building2, label: 'Workspaces', authority: 'workspaces:read' },
@@ -357,7 +368,9 @@ function Shell() {
           )}
         </div>
         <div className="flex-1 p-2 space-y-1">
-          {visible.map(({ to, icon: Icon, label }) => (
+          {visible.map(({ to, icon: Icon, label, under }) => {
+            const nested = Boolean(under) && visible.some((item) => item.to === under)
+            return (
             <NavLink
               key={to}
               to={to}
@@ -368,7 +381,7 @@ function Shell() {
               aria-label={label}
               className={({ isActive }) =>
                 `flex items-center gap-2 rounded-md text-sm transition-colors ${
-                  railed ? 'justify-center px-0 py-2' : 'px-3 py-2'
+                  railed ? 'justify-center px-0 py-2' : nested ? 'pl-8 pr-3 py-2' : 'px-3 py-2'
                 } ${
                   isActive
                     ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200 font-medium'
@@ -379,7 +392,8 @@ function Shell() {
               <Icon size={16} className="shrink-0" />
               {labelled && label}
             </NavLink>
-          ))}
+            )
+          })}
         </div>
         <div className="p-2 border-t border-surface-200 dark:border-surface-800">
           <AccountMenu collapsed={railed} />

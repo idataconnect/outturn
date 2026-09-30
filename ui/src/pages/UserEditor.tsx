@@ -199,6 +199,10 @@ function EditUser({ id }: { id: string }) {
   // update authority, so the form follows the same rule.
   const canUpdate = self || authorities.includes('users:update')
   const canAssign = authorities.includes('roles:assign')
+  // Not your own account: deleting it from here would sign you out mid-click
+  // with nothing left to sign back in as.
+  const canDelete = authorities.includes('users:delete') && !self
+  const navigate = useNavigate()
 
   const roles = useWorkspaceRoles()
   const [user, setUser] = useState<UserDetail | null>(null)
@@ -230,6 +234,21 @@ function EditUser({ id }: { id: string }) {
     void loadScope()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, canAssign, workspaceId])
+
+  // Here rather than on the list's row, beside the name and the roles it takes
+  // with it -- the same place roles and workspaces are deleted from.
+  async function onDelete() {
+    if (!user) return
+    if (!window.confirm(`Delete ${user.display_name}? Their sign-ins and roles go with them.`)) {
+      return
+    }
+    try {
+      await api<void>(`/v1/users/${id}`, { method: 'DELETE' })
+      void navigate('/users')
+    } catch (e) {
+      setError(message(e, 'failed to delete user'))
+    }
+  }
 
   async function onRename(event: React.FormEvent) {
     event.preventDefault()
@@ -538,6 +557,18 @@ function EditUser({ id }: { id: string }) {
               </p>
             )}
           </section>
+          {canDelete && (
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => void onDelete()}
+                className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
+              >
+                <Trash2 size={16} aria-hidden />
+                Delete user
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
