@@ -3,9 +3,11 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 're
 import {
   Bot,
   Building2,
+  Globe,
   LayoutDashboard,
   MessageSquare,
   Settings,
+  SlidersHorizontal,
   BookText,
   Users as UsersIcon,
   KeyRound,
@@ -18,7 +20,7 @@ import {
 import AccountMenu from './components/AccountMenu'
 import Logo from './components/Logo'
 import { productName } from './lib/brand'
-import SettingsCascade from './components/SettingsCascade'
+import SectionLayout from './components/SectionLayout'
 import { ApiError, api } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
 import { useBreakpoint } from './lib/useBreakpoint'
@@ -43,65 +45,10 @@ import RoleEditor from './pages/RoleEditor'
 import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
+import WorkspaceSettings from './pages/WorkspaceSettings'
+import PlatformDefaults from './pages/PlatformDefaults'
+import { paths } from './lib/paths'
 import { iconButton, iconButtonLarge } from './lib/buttons'
-
-function SettingsPage() {
-  const state = useSession()
-  const authorities = state.status === 'authenticated' ? state.session.authorities : []
-  const canEdit = authorities.includes('settings:update')
-  const isOperator =
-    state.status === 'authenticated' && state.session.roles.includes('system_admin')
-  const [tab, setTab] = useState<'workspace' | 'platform'>('workspace')
-
-  return (
-    <div className="p-6 max-w-3xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Settings</h1>
-        <p className="mt-2 text-surface-600 dark:text-surface-400">
-          How agents in this workspace behave. Each value comes from the platform unless
-          overridden here, and an agent can override again on its own page.
-        </p>
-      </div>
-
-      {isOperator && (
-        <div className="flex gap-1 border-b border-surface-200 dark:border-surface-800">
-          {(
-            [
-              { key: 'workspace', label: 'This workspace' },
-              { key: 'platform', label: 'Platform defaults' },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
-                tab === t.key
-                  ? 'border-brand-600 text-surface-900 dark:text-surface-100'
-                  : 'border-transparent text-surface-500 dark:text-surface-400 hover:text-surface-800 dark:hover:text-surface-200'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {(!isOperator || tab === 'workspace') && (
-        <SettingsCascade base="/v1/settings" canEdit={canEdit} levelName="this workspace" />
-      )}
-
-      {isOperator && tab === 'platform' && (
-        <section className="space-y-4">
-          <p className="text-sm text-surface-600 dark:text-surface-400">
-            What every workspace gets unless it overrides. Visible to the operator only.
-          </p>
-          <SettingsCascade base="/v1/platform/settings" canEdit levelName="the platform" />
-        </section>
-      )}
-    </div>
-  )
-}
 
 // `authority` gates visibility; the API enforces the same rule on every call.
 //
@@ -110,6 +57,10 @@ function SettingsPage() {
 // told "reading usage needs the usage:read authority" by a page they had been
 // invited to open. A link that cannot work is worse than no link, because it
 // reads as something broken rather than as something not theirs.
+//
+// `anyOf` is for an entry leading to a section: shown to anybody who may open
+// any page in it. `divider` starts the part of the list reached rarely --
+// administration, after the work.
 //
 // `under` nests an item beneath another: sessions are conversations *with*
 // agents, so they sit under Agents rather than beside Skills. Only when the
@@ -120,16 +71,24 @@ const navItems: {
   icon: typeof Bot
   label: string
   authority?: string
+  anyOf?: string[]
   under?: string
+  divider?: boolean
 }[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', authority: 'usage:read' },
   { to: '/agents', icon: Bot, label: 'Agents', authority: 'agents:read' },
   { to: '/sessions', icon: MessageSquare, label: 'Sessions', under: '/agents' },
   { to: '/skills', icon: BookText, label: 'Skills', authority: 'skills:read' },
-  { to: '/users', icon: UsersIcon, label: 'Users', authority: 'users:read' },
-  { to: '/roles', icon: KeyRound, label: 'Roles', authority: 'roles:assign' },
-  { to: '/workspaces', icon: Building2, label: 'Workspaces', authority: 'workspaces:read' },
-  { to: '/settings', icon: Settings, label: 'Settings', authority: 'settings:read' },
+  {
+    to: paths.settings,
+    icon: Settings,
+    label: 'Settings',
+    anyOf: ['settings:read', 'users:read', 'roles:assign'],
+    divider: true,
+  },
+  // Only a system administrator holds `workspaces:read`: no workspace may grant
+  // it, which is what makes it the operator's.
+  { to: paths.platform, icon: Globe, label: 'Platform', authority: 'workspaces:read' },
 ]
 
 function useSessionState(): [SessionState, SessionActions] {
@@ -232,10 +191,75 @@ function RequireAuthority({
   return <>{children}</>
 }
 
+/** The same page at its new address, keeping whatever followed the old one. */
+function Moved({ from, to }: { from: string; to: string }) {
+  const { pathname, search } = useLocation()
+  return <Navigate to={`${to}${pathname.slice(from.length)}${search}`} replace />
+}
+
+function useAuthorities(): string[] {
+  const state = useSession()
+  return state.status === 'authenticated' ? state.session.authorities : []
+}
+
+/** The workspace's own administration. */
+function SettingsSection() {
+  const authorities = useAuthorities()
+  return (
+    <SectionLayout
+      title="Settings"
+      items={[
+        {
+          to: paths.settings,
+          label: 'Workspace',
+          icon: SlidersHorizontal,
+          allowed: authorities.includes('settings:read'),
+          end: true,
+        },
+        { to: paths.users, label: 'Users', icon: UsersIcon, allowed: authorities.includes('users:read') },
+        { to: paths.roles, label: 'Roles', icon: KeyRound, allowed: authorities.includes('roles:assign') },
+      ]}
+    />
+  )
+}
+
+/**
+ * Settings' landing page: the workspace's own settings, for anybody who may
+ * read them, and otherwise the first page in the section they may open -- the
+ * section is offered to somebody who can only manage users, and landing them
+ * on a refusal would say the link was broken.
+ */
+function SettingsHome() {
+  const authorities = useAuthorities()
+  if (authorities.includes('settings:read')) return <WorkspaceSettings />
+  if (authorities.includes('users:read')) return <Navigate to={paths.users} replace />
+  if (authorities.includes('roles:assign')) return <Navigate to={paths.roles} replace />
+  return <Navigate to="/" replace />
+}
+
+/** What crosses every workspace: the operator's alone. */
+function PlatformSection() {
+  const state = useSession()
+  const operator = state.status === 'authenticated' && state.session.roles.includes('system_admin')
+  return (
+    <SectionLayout
+      title="Platform"
+      items={[
+        { to: paths.workspaces, label: 'Workspaces', icon: Building2, allowed: true },
+        { to: paths.platformDefaults, label: 'Defaults', icon: SlidersHorizontal, allowed: operator },
+      ]}
+    />
+  )
+}
+
 function Shell() {
   const state = useSession()
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
-  const visible = navItems.filter((item) => !item.authority || authorities.includes(item.authority))
+  const visible = navItems.filter(
+    (item) =>
+      (!item.authority || authorities.includes(item.authority)) &&
+      (!item.anyOf || item.anyOf.some((a) => authorities.includes(a))),
+  )
 
   const breakpoint = useBreakpoint()
   const phone = breakpoint === 'phone'
@@ -368,9 +392,13 @@ function Shell() {
           )}
         </div>
         <div className="flex-1 p-2 space-y-1">
-          {visible.map(({ to, icon: Icon, label, under }) => {
+          {visible.map(({ to, icon: Icon, label, under, divider }) => {
             const nested = Boolean(under) && visible.some((item) => item.to === under)
             return (
+            <div key={to}>
+            {divider && (
+              <hr className="my-2 border-surface-200 dark:border-surface-800" aria-hidden />
+            )}
             <NavLink
               key={to}
               to={to}
@@ -392,6 +420,7 @@ function Shell() {
               <Icon size={16} className="shrink-0" />
               {labelled && label}
             </NavLink>
+            </div>
             )
           })}
         </div>
@@ -488,78 +517,91 @@ function Shell() {
               </RequireAuthority>
             }
           />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path={paths.settings} element={<SettingsSection />}>
+            <Route index element={<SettingsHome />} />
+            <Route
+              path="users"
+              element={
+                <RequireAuthority authority="users:read">
+                  <Users />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="users/new"
+              element={
+                <RequireAuthority authority="users:create">
+                  <UserEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="users/:id"
+              element={
+                <RequireAuthority authority="users:read">
+                  <UserEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="roles"
+              element={
+                <RequireAuthority authority="roles:assign">
+                  <Roles />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="roles/new"
+              element={
+                <RequireAuthority authority="roles:manage">
+                  <RoleEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="roles/:id"
+              element={
+                <RequireAuthority authority="roles:assign">
+                  <RoleEditor />
+                </RequireAuthority>
+              }
+            />
+          </Route>
           <Route
-            path="/users"
-            element={
-              <RequireAuthority authority="users:read">
-                <Users />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/users/new"
-            element={
-              <RequireAuthority authority="users:create">
-                <UserEditor />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/users/:id"
-            element={
-              <RequireAuthority authority="users:read">
-                <UserEditor />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/roles"
-            element={
-              <RequireAuthority authority="roles:assign">
-                <Roles />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/roles/new"
-            element={
-              <RequireAuthority authority="roles:manage">
-                <RoleEditor />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/roles/:id"
-            element={
-              <RequireAuthority authority="roles:assign">
-                <RoleEditor />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/workspaces"
+            path={paths.platform}
             element={
               <RequireAuthority authority="workspaces:read">
-                <Workspaces />
+                <PlatformSection />
               </RequireAuthority>
             }
-          />
+          >
+            <Route index element={<Navigate to={paths.workspaces} replace />} />
+            <Route path="workspaces" element={<Workspaces />} />
+            <Route
+              path="workspaces/new"
+              element={
+                <RequireAuthority authority="workspaces:create">
+                  <WorkspaceEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="workspaces/:id"
+              element={
+                <RequireAuthority authority="workspaces:update">
+                  <WorkspaceEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route path="defaults" element={<PlatformDefaults />} />
+          </Route>
+          {/* Where these used to be, so a bookmark or an old link still lands. */}
+          <Route path="/users/*" element={<Moved from="/users" to={paths.users} />} />
+          <Route path="/roles/*" element={<Moved from="/roles" to={paths.roles} />} />
           <Route
-            path="/workspaces/new"
-            element={
-              <RequireAuthority authority="workspaces:create">
-                <WorkspaceEditor />
-              </RequireAuthority>
-            }
-          />
-          <Route
-            path="/workspaces/:id"
-            element={
-              <RequireAuthority authority="workspaces:update">
-                <WorkspaceEditor />
-              </RequireAuthority>
-            }
+            path="/workspaces/*"
+            element={<Moved from="/workspaces" to={paths.workspaces} />}
           />
         </Routes>
         </main>

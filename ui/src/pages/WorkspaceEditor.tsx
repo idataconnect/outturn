@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { ArrowLeft, Plus, Save, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
+import { paths } from '../lib/paths'
 
 export type Workspace = {
   id: string
@@ -83,7 +84,7 @@ export default function WorkspaceEditor() {
           body: JSON.stringify({ name }),
         })
       }
-      void navigate('/workspaces')
+      void navigate(paths.workspaces)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save workspace')
       setSaving(false)
@@ -101,7 +102,7 @@ export default function WorkspaceEditor() {
     }
     try {
       await api<void>(`/v1/workspaces/${id}`, { method: 'DELETE' })
-      void navigate('/workspaces')
+      void navigate(paths.workspaces)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to delete workspace')
     }
@@ -112,7 +113,7 @@ export default function WorkspaceEditor() {
   return (
     <div className="p-6 max-w-3xl">
       <Link
-        to="/workspaces"
+        to={paths.workspaces}
         className="inline-flex items-center gap-1 text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
       >
         <ArrowLeft size={14} aria-hidden />
@@ -166,7 +167,7 @@ export default function WorkspaceEditor() {
               {saving ? 'Saving…' : creating ? 'Create workspace' : 'Save changes'}
             </button>
             <Link
-              to="/workspaces"
+              to={paths.workspaces}
               className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100"
             >
               Cancel

@@ -7,12 +7,13 @@ import { ApiError, allPages } from '../lib/api'
 import { matchesFilter } from '../lib/filter'
 import { useSession } from '../lib/session'
 import type { User } from './UserEditor'
+import { paths } from '../lib/paths'
 
 /**
  * The accounts this administrator may see, as a list.
  *
- * Creating, editing and deleting live on their own routes (`/users/new`,
- * `/users/:id`), so this page is only ever the list. The API scopes it: a workspace's
+ * Creating, editing and deleting live on each user's own page, so this page
+ * is only ever the list. The API scopes it: a workspace's
  * administrator sees the accounts holding a role in their workspace, a system
  * administrator sees everyone.
  */
@@ -52,7 +53,7 @@ export default function Users() {
       <PageHeader
         title="Users"
         description="The people who can sign in here, and what each may do."
-        action={canCreate ? { to: '/users/new', label: 'New user' } : undefined}
+        action={canCreate ? { to: paths.newUser, label: 'New user' } : undefined}
       />
 
       {error && (
@@ -72,7 +73,7 @@ export default function Users() {
             {canCreate && (
               <>
                 {' '}
-                <Link to="/users/new" className="underline underline-offset-2">
+                <Link to={paths.newUser} className="underline underline-offset-2">
                   Add one.
                 </Link>
               </>
@@ -83,7 +84,7 @@ export default function Users() {
         {shown.map((user) => (
           <RecordRow
             key={user.id}
-            to={`/users/${user.id}`}
+            to={paths.user(user.id)}
             icon={UserRound}
             title={user.display_name}
             aside={
