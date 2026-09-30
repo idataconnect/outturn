@@ -23,6 +23,17 @@ import { answerApproval } from '../lib/actions'
  * check stays where it is -- this narrows what is offered, never what is
  * allowed.
  */
+/** One field the approval binds, and the value this request gave it. */
+export type Bound = { field: string; value: unknown }
+
+/** A bound value as text: missing said so, anything structured as JSON. */
+function shown(value: unknown): string {
+  if (value === null || value === undefined) return 'missing'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
 export default function ApprovalPrompt({
   approval,
   onAnswered,
@@ -33,6 +44,9 @@ export default function ApprovalPrompt({
     reason?: string | null
     /** The wider extent the request offered, where it offered one. */
     covers?: { field?: string; unit?: string } | null
+    /** What is being approved: each field the grant is keyed on, with this
+     *  request's value. */
+    binds?: Bound[] | null
   }
   onAnswered: () => void
 }) {
@@ -74,6 +88,30 @@ export default function ApprovalPrompt({
             <p className="mt-0.5 text-xs text-surface-700 dark:text-surface-300">
               {approval.reason}
             </p>
+          )}
+
+          {/* The values themselves, exactly as the request carries them. A yes
+              is a yes to these -- the grant is keyed on them -- so they are
+              shown as they are rather than as this page guesses they mean: it
+              cannot know that a field is pence, and a rounded or converted
+              figure would be approving something the request does not say. */}
+          {approval.binds && approval.binds.length > 0 && (
+            <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+              {approval.binds.map(({ field, value }) => (
+                <div key={field} className="contents">
+                  <dt className="font-mono text-surface-600 dark:text-surface-400">{field}</dt>
+                  <dd
+                    className={`font-mono break-all ${
+                      value === null || value === undefined
+                        ? 'text-red-700 dark:text-red-400'
+                        : 'text-surface-900 dark:text-surface-100'
+                    }`}
+                  >
+                    {shown(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           )}
 
           {/* The offer, ticked or not. Never pre-ticked: what is being widened

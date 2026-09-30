@@ -56,6 +56,8 @@ export type PendingApproval = {
   requires?: string | null
   reason?: string | null
   covers?: { field?: string; unit?: string } | null
+  /** Each field the grant is keyed on, with this request's value. */
+  binds?: { field: string; value: unknown }[] | null
 }
 
 export type Annotated = Message & {
