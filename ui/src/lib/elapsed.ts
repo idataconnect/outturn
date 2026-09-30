@@ -81,3 +81,15 @@ export function elapsedSince(id: string, now: number = Date.now()): string | nul
   const minted = mintedAt(id)
   return minted === null ? null : elapsedPhrase(minted, now)
 }
+
+/**
+ * How long something has been waiting, to follow the word "waiting": "5
+ * minutes", or "just now". `elapsedPhrase` is written to stand alone ("5
+ * minutes ago", "Just now"), so it is trimmed and lowered to sit in a sentence.
+ */
+export function waitingFor(id: string, now: number = Date.now()): string | null {
+  const phrase = elapsedSince(id, now)
+  if (!phrase) return null
+  const trimmed = phrase.replace(/ ago$/, '')
+  return trimmed === phrase ? trimmed.toLowerCase() : trimmed
+}

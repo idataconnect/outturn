@@ -6,7 +6,7 @@ import ApprovalPrompt from '../components/ApprovalPrompt'
 import type { ActionItem } from '../lib/actions'
 import { ApiError } from '../lib/api'
 import { wakeSession } from '../lib/chat'
-import { elapsedSince } from '../lib/elapsed'
+import { waitingFor } from '../lib/elapsed'
 import { useInbox } from '../lib/inbox'
 import { describeItem } from '../lib/inboxKinds'
 import { paths } from '../lib/paths'
@@ -94,18 +94,6 @@ export default function Inbox() {
       )}
     </div>
   )
-}
-
-/**
- * How long something has been waiting, to follow the word "waiting": "for 5
- * minutes", or "just now". The phrase is written to stand alone ("5 minutes
- * ago", "Just now"), so it is trimmed and lowered to sit in a sentence.
- */
-function waitingFor(id: string): string | null {
-  const phrase = elapsedSince(id)
-  if (!phrase) return null
-  const trimmed = phrase.replace(/ ago$/, '')
-  return trimmed === phrase ? trimmed.toLowerCase() : `for ${trimmed}`
 }
 
 function Row({ item, active, workspace }: { item: ActionItem; active: boolean; workspace: string | null }) {

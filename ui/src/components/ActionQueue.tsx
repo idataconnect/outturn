@@ -1,7 +1,7 @@
 import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
 import type { ActionItem } from '../lib/actions'
-import { elapsedSince } from '../lib/elapsed'
+import { waitingFor } from '../lib/elapsed'
 
 /**
  * What is waiting on the reader, across every workspace they belong to.
@@ -85,7 +85,7 @@ function ActionRow({
   onOpen?: (item: ActionItem) => void
   now: number
 }) {
-  const age = elapsedSince(item.id, now)
+  const age = waitingFor(item.id, now)
   const Icon = ICONS[iconKey(item.kind)]
   const summary = summarise(item)
 
@@ -124,7 +124,7 @@ function ActionRow({
                 {/* Waiting rather than "ago": the reader is not being told when
                     it happened, they are being told how long it has been
                     nobody's answer. */}
-                waiting {age.replace(/ ago$/, '')}
+                waiting {age}
               </span>
             )}
             {workspace && <span className="truncate">in {workspace}</span>}
