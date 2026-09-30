@@ -27,10 +27,15 @@ export default function InboxProvider({ children }: { children: ReactNode }) {
   const nudge = useRef<AbortController | null>(null)
   /** Set by `refresh`, so a read wanted at once is not parked instead -- the
    *  abort alone misses when nothing is in flight to cut short. */
-  const wanted = useRef(true)
+  const wanted = useRef(false)
 
   useEffect(() => {
     let stopped = false
+    // Every start reads at once. Left to the ref's initial value, a remount --
+    // StrictMode runs this twice in development -- found it already spent by
+    // the first run, parked on its first read, and showed "Loading…" until
+    // the long poll timed out.
+    wanted.current = true
 
     async function read(wait: boolean) {
       const controller = new AbortController()
