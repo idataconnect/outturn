@@ -1494,10 +1494,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         // Ending a sleep early. Also the conversation's rather than the
         // sleep's: a conversation has at most one.
-        .route(
-            "/v1/agent-sessions/{id}/wake",
-            post(super::wake::wake_now),
-        )
+        .route("/v1/agent-sessions/{id}/wake", post(super::wake::wake_now))
         // Running a failed turn again. Under the message rather than the
         // session, unlike cancel: stopping means the turn in flight, of which
         // there is one, and retrying means a particular prompt that failed,

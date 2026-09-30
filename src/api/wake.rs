@@ -219,7 +219,11 @@ pub fn compose(
         out.push_str(&format!(
             " {count} arrived while you slept and {verb} shown above, sent {list} \
              before you woke. Answer {}.",
-            if queued.len() == 1 { "it" } else { "them together" }
+            if queued.len() == 1 {
+                "it"
+            } else {
+                "them together"
+            }
         ));
     }
     out
@@ -447,21 +451,23 @@ fn refuse(why: impl Into<String>) -> ApiError {
 /// the turn is for, which is what "remind me at 3pm" means -- and it spares the
 /// model the offset arithmetic, which is where one set a timer for 21:12-07:00
 /// having converted 14:12 to UTC and then put the local offset back on.
-fn moment(
-    at: &str,
-    timezone: Option<&str>,
-) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
+fn moment(at: &str, timezone: Option<&str>) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
     use chrono::TimeZone as _;
     let at = at.trim();
     if let Ok(exact) = chrono::DateTime::parse_from_rfc3339(at) {
         return Ok(exact.with_timezone(&chrono::Utc));
     }
-    let naive = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]
-        .iter()
-        .find_map(|f| chrono::NaiveDateTime::parse_from_str(at, f).ok())
-        .ok_or_else(|| {
-            refuse("at must be a date and time, e.g. 2026-10-01T09:00:00 in the user's own zone")
-        })?;
+    let naive = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ]
+    .iter()
+    .find_map(|f| chrono::NaiveDateTime::parse_from_str(at, f).ok())
+    .ok_or_else(|| {
+        refuse("at must be a date and time, e.g. 2026-10-01T09:00:00 in the user's own zone")
+    })?;
     let tz = timezone
         .and_then(|z| z.parse::<chrono_tz::Tz>().ok())
         .unwrap_or(chrono_tz::UTC);
@@ -495,7 +501,9 @@ fn due_at(
         }
         (Kind::Timer, None, Some(at)) => moment(at, timezone)?,
         (Kind::Sleep, None, Some(_)) => {
-            return Err(refuse("sleep takes seconds; use set_timer to wake at a time"));
+            return Err(refuse(
+                "sleep takes seconds; use set_timer to wake at a time",
+            ));
         }
         (_, Some(_), Some(_)) => return Err(refuse("give either at or seconds, not both")),
         (_, None, None) => return Err(refuse("give at or seconds")),
@@ -813,8 +821,11 @@ async fn cancel(
     turn: &super::worker::ChatTurnPayload,
     id: Option<&str>,
 ) -> Result<Json<Arranged>, ApiError> {
-    let not_found =
-        || refuse("no timer with that id is pending in this conversation; list_timers shows the ones that are");
+    let not_found = || {
+        refuse(
+            "no timer with that id is pending in this conversation; list_timers shows the ones that are",
+        )
+    };
     let id: Uuid = id
         .and_then(|id| id.trim().parse().ok())
         .ok_or_else(not_found)?;
@@ -892,8 +903,8 @@ pub async fn wake_now(
     let Some(pending) = pending else {
         return Ok(Json(Woken { woke: false }));
     };
-    let due: Due = serde_json::from_value(pending.get("payload"))
-        .map_err(|e| internal(e.to_string()))?;
+    let due: Due =
+        serde_json::from_value(pending.get("payload")).map_err(|e| internal(e.to_string()))?;
 
     let name = state
         .users
@@ -1130,7 +1141,10 @@ mod tests {
         (wait, kind)
     }
 
-    fn due((wait, kind): (Wait, Kind), now: chrono::DateTime<chrono::Utc>) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
+    fn due(
+        (wait, kind): (Wait, Kind),
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
         due_at(&wait, kind, now, None)
     }
 

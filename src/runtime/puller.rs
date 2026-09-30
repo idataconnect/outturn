@@ -289,8 +289,16 @@ impl Puller {
                     let runtime_key = runtime_key.clone();
                     let http = http.clone();
                     Box::pin(async move {
-                        report_wait(&http, &api_url, &runtime_key, lease, session_id, job_id, wait)
-                            .await
+                        report_wait(
+                            &http,
+                            &api_url,
+                            &runtime_key,
+                            lease,
+                            session_id,
+                            job_id,
+                            wait,
+                        )
+                        .await
                     })
                         as std::pin::Pin<
                             Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
@@ -528,7 +536,11 @@ async fn report_wait(
     let status = response.status();
     if !status.is_success() {
         let why = response.text().await.unwrap_or_default();
-        return Err(if why.is_empty() { status.to_string() } else { why });
+        return Err(if why.is_empty() {
+            status.to_string()
+        } else {
+            why
+        });
     }
     #[derive(serde::Deserialize)]
     struct Arranged {

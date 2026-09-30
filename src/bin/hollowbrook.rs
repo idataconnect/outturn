@@ -1133,8 +1133,14 @@ mod tests {
     fn a_stay_in_the_past_is_refused_with_the_date() {
         let today = day("2026-09-29");
         let problem = stay_problem(day("2025-12-01"), day("2025-12-05"), today).expect("refused");
-        assert!(problem.contains("today at the house is 2026-09-29 (Europe/London)"), "{problem}");
-        assert_eq!(stay_problem(day("2026-12-01"), day("2026-12-05"), today), None);
+        assert!(
+            problem.contains("today at the house is 2026-09-29 (Europe/London)"),
+            "{problem}"
+        );
+        assert_eq!(
+            stay_problem(day("2026-12-01"), day("2026-12-05"), today),
+            None
+        );
     }
 
     /// Today at the house may start; yesterday there may not, whatever the
@@ -1150,7 +1156,10 @@ mod tests {
     fn departure_still_has_to_follow_arrival() {
         let today = day("2026-09-29");
         let problem = stay_problem(day("2026-10-02"), day("2026-10-02"), today).expect("refused");
-        assert!(problem.contains("departure must be after arrival"), "{problem}");
+        assert!(
+            problem.contains("departure must be after arrival"),
+            "{problem}"
+        );
     }
 
     /// A fixture with one of everything, for serving requests against.

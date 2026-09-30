@@ -17,16 +17,6 @@ const fail = (m) => {
   failures += 1
 }
 
-const psql = (sql) =>
-  execSync(
-    // Flattened: a newline inside the quoted argument reaches psql as a literal
-    // backslash-n and is a syntax error there.
-    `kubectl exec postgres-0 -- psql -U outturn -d outturn -t -A -c ${JSON.stringify(
-      sql.replace(/\s+/g, ' ').trim(),
-    )}`,
-    { encoding: 'utf8' },
-  ).trim()
-
 async function signIn(page, email, password) {
   await page.goto(UI, { waitUntil: 'domcontentloaded' })
   await page.getByLabel(/email/i).fill(email)

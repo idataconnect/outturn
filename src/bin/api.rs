@@ -216,7 +216,9 @@ async fn main() {
     // whatever else is configured.
     outturn::api::wake::spawn(
         pool.clone(),
-        std::sync::Arc::new(outturn::api::actions::PostgresActionStore::new(pool.clone())),
+        std::sync::Arc::new(outturn::api::actions::PostgresActionStore::new(
+            pool.clone(),
+        )),
         health.shutdown_signal(),
     );
     outturn::api::naming::spawn(
