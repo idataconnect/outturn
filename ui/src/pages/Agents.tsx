@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { MessageSquare, OctagonX, Play, Plus, Settings2, Trash2 } from 'lucide-react'
 
-import { ApiError, api, type Page } from '../lib/api'
+import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
 import { listSessions, sessionName, type Agent, type AgentSession } from '../lib/chat'
 import { useBreakpoint } from '../lib/useBreakpoint'
@@ -58,7 +58,7 @@ export default function Agents() {
     try {
       // Together, so the list never renders an agent as running while the
       // workspace holding it is still loading.
-      const [{ items: list }, holds] = await Promise.all([api<Page<Agent>>('/v1/agents'), listInhibitors()])
+      const [list, holds] = await Promise.all([allPages<Agent>('/v1/agents'), listInhibitors()])
       setAgents(list)
       setHeld(holds)
       setError(null)
@@ -111,7 +111,7 @@ export default function Agents() {
         setSessions(list)
         setRecentError(null)
       },
-      (e) => setRecentError(e instanceof ApiError ? e.message : 'failed to load recent chats'),
+      (e) => setRecentError(e instanceof ApiError ? e.message : 'failed to load recent sessions'),
     )
   }, [workspaceId, canReadSessions])
 
@@ -326,13 +326,13 @@ export default function Agents() {
 
               {recentError && (
                 <p className="mt-8 text-sm text-red-600 dark:text-red-400" role="alert">
-                  Recent chats could not be loaded: {recentError}
+                  Recent sessions could not be loaded: {recentError}
                 </p>
               )}
               {recent.length > 0 && (
                 <div className="mt-8">
                   <h3 className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
-                    Recent chats
+                    Recent sessions
                   </h3>
                   <ul className="mt-2 space-y-1">
                     {recent.map((session) => (
