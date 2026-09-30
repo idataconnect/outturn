@@ -360,23 +360,51 @@ fn skill_operations(names: &[String]) -> Vec<(String, String)> {
 }
 
 /// What to say about those names, or nothing if there are none.
+///
+/// One sentence however many there are. A model that took a skill's whole
+/// manifest for tools asks for all of it at once, and the same instruction
+/// repeated per name buried the one thing it needed -- which files to read --
+/// under four copies of how to read them.
 fn operations_hint(names: &[String]) -> Option<String> {
-    let found = skill_operations(names);
-    if found.is_empty() {
+    hint_for(&skill_operations(names))
+}
+
+/// The hint, for operations already found.
+fn hint_for(found: &[(String, String)]) -> Option<String> {
+    let [first, rest @ ..] = found else {
         return None;
+    };
+    if rest.is_empty() {
+        let (name, path) = first;
+        return Some(format!(
+            "{name} is not a tool: it is an operation of a skill. Read {path} with \
+             read_object, then make the call it describes with fetch_url."
+        ));
     }
-    Some(
-        found
-            .iter()
-            .map(|(name, path)| {
-                format!(
-                    "{name} is not a tool: it is an operation of a skill. Read {path} with \
-                     read_object, then make the call it describes with fetch_url."
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    let named: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+    let listed = match named.as_slice() {
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+        [] => unreachable!(),
+    };
+    // One folder names every file at once; operations from several skills need
+    // their paths spelt out.
+    let folder = |path: &str| path.rsplit_once('/').map(|(dir, _)| dir.to_string());
+    let folders: BTreeSet<Option<String>> = found.iter().map(|(_, p)| folder(p)).collect();
+    let read = match folders.into_iter().collect::<Vec<_>>().as_slice() {
+        [Some(dir)] => format!("For each, read {dir}/<name>.md with read_object"),
+        _ => format!(
+            "For each, read its file with read_object ({})",
+            found
+                .iter()
+                .map(|(_, path)| path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    Some(format!(
+        "{listed} are not tools: they are operations of a skill. {read}, then make \
+         the call it describes with fetch_url."
+    ))
 }
 
 /// The loader is always callable; everything else has to be eager or loaded.
@@ -436,14 +464,25 @@ fn load_tools(
         // Where the names are a skill's operations, that leads: it is the
         // thing to do next, and a list of tools that do not include them only
         // confirms the wrong conclusion.
-        let hint = operations_hint(&missing);
+        //
+        // And only names the hint did not explain are listed as missing. Every
+        // name and every available tool is in the fields below already, so
+        // spelling them out again in the sentence is length and nothing else.
+        let operations = skill_operations(&missing);
+        let hint = hint_for(&operations);
+        let unexplained: Vec<&str> = missing
+            .iter()
+            .filter(|name| !operations.iter().any(|(op, _)| op == *name))
+            .map(String::as_str)
+            .collect();
         let error = format!(
             "no such tool: {}. Available: {}",
-            missing.join(", "),
+            unexplained.join(", "),
             available.join(", ")
         );
         serde_json::json!({
             "error": match &hint {
+                Some(hint) if unexplained.is_empty() => hint.clone(),
                 Some(hint) => format!("{hint} ({error})"),
                 None => error,
             },
