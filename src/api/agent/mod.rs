@@ -75,7 +75,7 @@ pub enum AgentError {
 /// rather than relying on callers to remember to filter.
 #[async_trait]
 pub trait AgentStore: Send + Sync {
-    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Agent>, AgentError>;
+    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Agent>, AgentError>;
     async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Agent, AgentError>;
     async fn create(&self, workspace_id: Uuid, input: CreateAgent) -> Result<Agent, AgentError>;
     async fn update(

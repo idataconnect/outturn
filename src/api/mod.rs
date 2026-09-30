@@ -34,3 +34,25 @@ pub mod worker;
 pub mod workspace;
 
 pub use router::{ApiState, routes};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Serialize)]
+pub struct Page<T: Serialize> {
+    pub items: Vec<T>,
+    pub next: Option<Uuid>,
+}
+
+impl<T: Serialize> Page<T> {
+    pub fn from_rows(items: Vec<T>, id: impl Fn(&T) -> Uuid) -> Self {
+        let next = items.last().map(&id);
+        Self { items, next }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PageQuery {
+    pub after: Option<Uuid>,
+    pub limit: Option<i64>,
+}

@@ -254,7 +254,7 @@ impl Harness {
 
         let workspace_id = match workspace_role {
             Some((id, _)) => id,
-            None => self.workspaces.list().await.expect("list")[0].id,
+            None => self.workspaces.list(None, 1).await.expect("list")[0].id,
         };
 
         let req = Request::builder()
@@ -1080,7 +1080,7 @@ async fn refresh_picks_up_revoked_roles() {
     let refresh = cookie_named(&first, "outturn_refresh").expect("refresh cookie");
 
     // Access is withdrawn while the session is live.
-    let users = h.users.list().await.expect("list");
+    let users = h.users.list(None, 100).await.expect("list");
     let target = users
         .iter()
         .find(|u| {

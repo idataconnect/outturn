@@ -358,6 +358,7 @@ pub trait ActionStore: Send + Sync {
     async fn queue_for_user_everywhere(
         &self,
         user_id: Uuid,
+        after: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<ActionItem>, ActionError>;
 

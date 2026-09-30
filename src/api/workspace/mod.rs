@@ -38,7 +38,7 @@ pub enum WorkspaceError {
 
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
-    async fn list(&self) -> Result<Vec<Workspace>, WorkspaceError>;
+    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<Workspace>, WorkspaceError>;
     async fn get(&self, id: Uuid) -> Result<Workspace, WorkspaceError>;
     async fn create(&self, input: CreateWorkspace) -> Result<Workspace, WorkspaceError>;
     /// The slug stays: it is how the workspace is named in URLs and tokens.

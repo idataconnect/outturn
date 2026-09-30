@@ -82,7 +82,7 @@ pub struct RoleTemplate {
 
 #[async_trait]
 pub trait RoleStore: Send + Sync {
-    async fn list(&self, workspace_id: Uuid) -> Result<Vec<WorkspaceRole>, RoleError>;
+    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<WorkspaceRole>, RoleError>;
     async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<WorkspaceRole, RoleError>;
     async fn create(
         &self,

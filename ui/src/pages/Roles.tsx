@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { KeyRound, Plus } from 'lucide-react'
 
-import { ApiError, api } from '../lib/api'
+import { ApiError, api, type Page } from '../lib/api'
 import { useSession } from '../lib/session'
 
 export type WorkspaceRole = {
@@ -36,7 +36,7 @@ export default function Roles() {
     let stale = false
     void (async () => {
       try {
-        const found = await api<WorkspaceRole[]>('/v1/roles')
+        const { items: found } = await api<Page<WorkspaceRole>>('/v1/roles')
         if (!stale) setRoles(found)
       } catch (e) {
         if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load roles')

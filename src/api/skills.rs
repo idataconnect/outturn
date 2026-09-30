@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -91,9 +91,12 @@ async fn add_version_in(
 pub async fn list_skills(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<Skill>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<Skill>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
-    Ok(Json(state.skills.list(claims.workspace_id).await?))
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let items = state.skills.list(claims.workspace_id, query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |s| s.id)))
 }
 
 pub async fn create_skill(
@@ -175,9 +178,12 @@ pub async fn list_versions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<SkillVersion>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<SkillVersion>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
-    Ok(Json(state.skills.versions(claims.workspace_id, id).await?))
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let items = state.skills.versions(claims.workspace_id, id, query.after, limit).await?;
+    Ok(Json(super::Page::from_rows(items, |v| v.id)))
 }
 
 pub async fn get_version(
@@ -325,9 +331,7 @@ pub async fn list_agent_skills(
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     // Proves the agent is this workspace's before answering for it.
     state.agents.get(claims.workspace_id, agent_id).await?;
-    Ok(Json(
-        state.skills.bindings(claims.workspace_id, agent_id).await?,
-    ))
+    Ok(Json(state.skills.bindings(claims.workspace_id, agent_id).await?))
 }
 
 pub async fn set_agent_skills(

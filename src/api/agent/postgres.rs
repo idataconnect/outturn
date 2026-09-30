@@ -36,11 +36,14 @@ fn read_agent(row: &sqlx::postgres::PgRow) -> Agent {
 
 #[async_trait]
 impl AgentStore for PostgresAgentStore {
-    async fn list(&self, workspace_id: Uuid) -> Result<Vec<Agent>, AgentError> {
+    async fn list(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<Agent>, AgentError> {
         let rows = sqlx::query(
-            "select id, workspace_id, name, slug, description, system_prompt, policy, enabled from agents where workspace_id = $1 order by name",
+            "select id, workspace_id, name, slug, description, system_prompt, policy, enabled \
+             from agents where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3",
         )
         .bind(workspace_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;

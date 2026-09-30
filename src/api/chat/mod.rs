@@ -244,7 +244,14 @@ pub trait ChatStore: Send + Sync {
         input: CreateSession,
     ) -> Result<AgentSession, ChatError>;
 
-    async fn list_sessions(&self, workspace_id: Uuid) -> Result<Vec<AgentSession>, ChatError>;
+    async fn list_sessions(
+        &self,
+        workspace_id: Uuid,
+        agent_ids: Option<&[Uuid]>,
+        user_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<AgentSession>, ChatError>;
 
     async fn get_session(
         &self,

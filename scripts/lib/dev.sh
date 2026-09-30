@@ -271,7 +271,9 @@ dev_machine_defaults() {
     # qwen3.5 at 32k fits an 8GB card with ollama's 8-bit KV cache
     # (OLLAMA_KV_CACHE_TYPE=q8_0). Less than that, half the window.
     local mib
-    mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+    # `|| true`: without nvidia-smi the pipeline fails, and under pipefail
+    # that ends the script silently rather than reaching the else below.
+    mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true)
     if [[ "$mib" =~ ^[0-9]+$ ]]; then
       if (( mib < 8000 )); then
         dev_context_window=16384

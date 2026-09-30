@@ -69,43 +69,76 @@ fn read_identity(row: &sqlx::postgres::PgRow) -> Identity {
     }
 }
 
+/// Builds users from the main query rows plus a batch of identity rows keyed
+/// by user_id. Two queries rather than N+1, without fragile string packing.
+fn assemble_users(
+    rows: &[sqlx::postgres::PgRow],
+    identity_rows: Vec<sqlx::postgres::PgRow>,
+) -> Vec<User> {
+    use std::collections::HashMap;
+    let mut by_user: HashMap<Uuid, Vec<Identity>> = HashMap::new();
+    for row in &identity_rows {
+        let user_id: Uuid = row.get("user_id");
+        by_user
+            .entry(user_id)
+            .or_default()
+            .push(read_identity(row));
+    }
+
+    rows.iter()
+        .map(|row| {
+            let id: Uuid = row.get("id");
+            User {
+                id,
+                display_name: row.get("display_name"),
+                identities: by_user.remove(&id).unwrap_or_default(),
+                system_roles: row
+                    .get::<Vec<String>, _>("roles")
+                    .iter()
+                    .filter_map(|s| s.parse().ok())
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
 #[async_trait]
 impl UserStore for PostgresUserStore {
-    async fn list(&self) -> Result<Vec<User>, UserError> {
+    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<User>, UserError> {
         let rows = sqlx::query(
             "select u.id, u.display_name, \
                     coalesce(array_agg(sr.role) filter (where sr.role is not null), '{}') as roles \
              from users u \
              left join user_system_roles sr on sr.user_id = u.id \
+             where ($1::uuid is null or u.id > $1) \
              group by u.id, u.display_name \
-             order by u.display_name",
+             order by u.id \
+             limit $2",
         )
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
 
-        let mut users = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let id: Uuid = row.get("id");
-            users.push(User {
-                id,
-                display_name: row.get("display_name"),
-                identities: self.identities(id).await?,
-                system_roles: row
-                    .get::<Vec<String>, _>("roles")
-                    .iter()
-                    .filter_map(|s| s.parse().ok())
-                    .collect(),
-            });
-        }
-        Ok(users)
+        let user_ids: Vec<Uuid> = rows.iter().map(|r| r.get("id")).collect();
+        let identity_rows = sqlx::query(
+            "select user_id, id, provider, provider_subject, verified_at \
+             from user_identities where user_id = any($1) order by created_at",
+        )
+        .bind(&user_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        Ok(assemble_users(&rows, identity_rows))
     }
 
-    async fn list_for_workspace(&self, workspace_id: Uuid) -> Result<Vec<User>, UserError> {
+    async fn list_for_workspace(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<User>, UserError> {
         let rows = sqlx::query(
             "select u.id, u.display_name, \
                     coalesce(array_agg(sr.role) filter (where sr.role is not null), '{}') as roles \
@@ -113,29 +146,29 @@ impl UserStore for PostgresUserStore {
              left join user_system_roles sr on sr.user_id = u.id \
              where exists (select 1 from user_workspace_roles tr \
                            where tr.user_id = u.id and tr.workspace_id = $1) \
+               and ($2::uuid is null or u.id > $2) \
              group by u.id, u.display_name \
-             order by u.display_name",
+             order by u.id \
+             limit $3",
         )
         .bind(workspace_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
 
-        let mut users = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let id: Uuid = row.get("id");
-            users.push(User {
-                id,
-                display_name: row.get("display_name"),
-                identities: self.identities(id).await?,
-                system_roles: row
-                    .get::<Vec<String>, _>("roles")
-                    .iter()
-                    .filter_map(|s| s.parse().ok())
-                    .collect(),
-            });
-        }
-        Ok(users)
+        let user_ids: Vec<Uuid> = rows.iter().map(|r| r.get("id")).collect();
+        let identity_rows = sqlx::query(
+            "select user_id, id, provider, provider_subject, verified_at \
+             from user_identities where user_id = any($1) order by created_at",
+        )
+        .bind(&user_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        Ok(assemble_users(&rows, identity_rows))
     }
 
     async fn rename(&self, id: Uuid, display_name: &str) -> Result<User, UserError> {

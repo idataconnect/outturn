@@ -66,10 +66,10 @@ pub enum UserError {
 
 #[async_trait]
 pub trait UserStore: Send + Sync {
-    async fn list(&self) -> Result<Vec<User>, UserError>;
+    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<User>, UserError>;
     /// Accounts holding a role in one workspace. What a workspace's administrator
     /// is shown: the accounts of other workspaces are not theirs to see.
-    async fn list_for_workspace(&self, workspace_id: Uuid) -> Result<Vec<User>, UserError>;
+    async fn list_for_workspace(&self, workspace_id: Uuid, after: Option<Uuid>, limit: i64) -> Result<Vec<User>, UserError>;
     async fn get(&self, id: Uuid) -> Result<User, UserError>;
     async fn rename(&self, id: Uuid, display_name: &str) -> Result<User, UserError>;
     async fn create(&self, input: CreateUser) -> Result<User, UserError>;
