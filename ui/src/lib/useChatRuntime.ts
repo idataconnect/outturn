@@ -358,6 +358,7 @@ export function parts(message: Annotated): ThreadMessageLike['content'] {
           // assistant-ui hands a part's own fields to its component, so the
           // duration rides along with the text it belongs to.
           ...(part.ms === undefined ? {} : { ms: part.ms }),
+          ...(part.seenAt === undefined ? {} : { seenAt: part.seenAt }),
         })
       }
       continue
@@ -822,6 +823,10 @@ export function useChatRuntime(
               // watched the turn never reads: its thoughts showed no time at
               // all until somebody reloaded.
               const at = mintedAt(event.id)
+              // When this tab heard it, for ticking the figure between
+              // fragments. Its own clock only: the duration is the server's,
+              // and this measures nothing but how long since that was right.
+              const seenAt = Date.now()
               setMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== message_id) return m
@@ -842,12 +847,16 @@ export function useChatRuntime(
                     parts[parts.length - 1] = {
                       type: 'reasoning',
                       text: last.text + text,
-                      ...(ms === undefined ? {} : { ms }),
+                      ...(ms === undefined ? {} : { ms, seenAt }),
                     }
                   } else {
                     if (at === null) thinkingSince.current.delete(m.id)
                     else thinkingSince.current.set(m.id, at)
-                    parts.push({ type: 'reasoning', text })
+                    // Zero, measured, where it could be timed: a thought just
+                    // begun has taken no time yet, and ticks from here.
+                    parts.push(
+                      at === null ? { type: 'reasoning', text } : { type: 'reasoning', text, ms: 0, seenAt },
+                    )
                   }
                   return { ...m, metadata: { ...m.metadata, parts } }
                 }),
