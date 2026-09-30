@@ -97,6 +97,15 @@ pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
 /// its own reasoning back would answer it.
 pub type ReasoningSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Reports that the model has begun writing a call to a tool, with the tool's
+/// name and its place among the round's calls.
+///
+/// Before any of its arguments, which stream for seconds and are not whole --
+/// and so not runnable, or worth showing -- until the round ends. Without this,
+/// the reader saw nothing between the model's last thought and the call
+/// starting, and a thought's clock ran on through time spent writing the call.
+pub type WritingSink = Arc<dyn Fn(u32, &str) + Send + Sync>;
+
 /// Reports a tool call as the guest starts it.
 pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
 
@@ -261,6 +270,7 @@ pub struct AgentHost {
     http: reqwest::Client,
     progress: Option<ProgressSink>,
     reasoning: Option<ReasoningSink>,
+    writing: Option<WritingSink>,
     session_id: uuid::Uuid,
     /// IANA zone of the user this turn belongs to. None when the client did
     /// not say, in which case the clock answers in UTC rather than guessing.
@@ -686,6 +696,7 @@ impl outturn::agent::host::Host for AgentHost {
             body,
             progress.as_ref(),
             self.reasoning.as_ref(),
+            self.writing.as_ref(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -1354,6 +1365,7 @@ async fn stream_completion(
     body: serde_json::Value,
     progress: Option<&ProgressSink>,
     reasoning: Option<&ReasoningSink>,
+    writing: Option<&WritingSink>,
 ) -> anyhow::Result<(Completion, Vec<(Arrival, Option<uuid::Uuid>)>, Served)> {
     use futures::StreamExt;
 
@@ -1525,7 +1537,14 @@ async fn stream_completion(
                         entry.id = id.to_string();
                     }
                     if let Some(name) = call["function"]["name"].as_str() {
+                        let began = entry.name.is_empty() && !name.is_empty();
                         entry.name.push_str(name);
+                        // Said once per call, as soon as it has a name: the
+                        // name arrives with its first fragment, and everything
+                        // after that is arguments nobody should see half of.
+                        if began && let Some(sink) = writing {
+                            sink(index, &entry.name);
+                        }
                     }
                     if let Some(args) = call["function"]["arguments"].as_str() {
                         entry.arguments.push_str(args);
@@ -1772,6 +1791,7 @@ pub struct RunOptions {
     pub default_model: String,
     pub progress: Option<ProgressSink>,
     pub reasoning: Option<ReasoningSink>,
+    pub writing: Option<WritingSink>,
     pub on_tool: Option<ToolSink>,
     pub on_tool_result: Option<ToolResultSink>,
     pub on_usage: Option<UsageSink>,
@@ -1910,6 +1930,7 @@ impl AgentRunner {
             http: crate::http_client::streaming_client(options.idle_timeout),
             progress: options.progress,
             reasoning: options.reasoning,
+            writing: options.writing,
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
             on_gated: options.on_gated,

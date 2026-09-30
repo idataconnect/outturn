@@ -476,6 +476,25 @@ type DeltaProgress = Map<string, number>
  * changed -- the namer working after a turn, or somebody else's rename --
  * so the sidebar and header follow without a reload.
  */
+/** Marks a call card shown while its call is still being written. */
+const PREPARING = 'preparing:'
+
+/** A message without the cards of calls that never started. */
+function withoutPreparing(m: Message): Message {
+  const calls = m.metadata.tool_calls ?? []
+  if (!calls.some((c) => c.id.startsWith(PREPARING))) return m
+  return {
+    ...m,
+    metadata: {
+      ...m.metadata,
+      tool_calls: calls.filter((c) => !c.id.startsWith(PREPARING)),
+      parts: (m.metadata.parts ?? []).filter(
+        (p) => !(p.type === 'call' && p.id.startsWith(PREPARING)),
+      ),
+    },
+  }
+}
+
 /**
  * The tools that store or remove a file, whose results mean a files view is out
  * of date. Listed by name rather than inferred, since a tool that only reads a
@@ -715,6 +734,34 @@ export function useChatRuntime(
 
           // lands on the message already on screen rather than appearing
           // after the answer it explains.
+          //
+          // First, a call the model has begun writing: a card where the call
+          // will be, before any of its arguments, which take seconds and are
+          // not sent until whole. Without it that time looked like nothing
+          // happening, and the thought before it kept counting through it.
+          for (const event of result.events) {
+            if (event.kind !== 'chat.writing') continue
+            const { message_id, name } = event.payload
+            // By the event, not by `index`: the index starts again every round,
+            // and one round's card is not the next round's.
+            const id = `${PREPARING}${event.id}`
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== message_id) return m
+                const calls = m.metadata.tool_calls ?? []
+                if (calls.some((c) => c.id === id)) return m
+                return {
+                  ...m,
+                  metadata: {
+                    ...m.metadata,
+                    tool_calls: [...calls, { id, name, action: 'Preparing…' }],
+                    parts: [...(m.metadata.parts ?? []), { type: 'call', id }],
+                  },
+                }
+              }),
+            )
+          }
+
           for (const event of result.events) {
             if (event.kind !== 'chat.tool') continue
             const { message_id, call } = event.payload as {
@@ -730,6 +777,22 @@ export function useChatRuntime(
                 // reload, and a tool run once must not be drawn twice.
                 if (calls.some((c) => c.id === call.id)) return m
                 const parts = [...(m.metadata.parts ?? [])]
+                // Into the card that was being prepared for it, where one was:
+                // calls start in the order they were written, so the first
+                // card still preparing is this call's.
+                const card = calls.find((c) => c.id.startsWith(PREPARING))
+                if (card) {
+                  return {
+                    ...m,
+                    metadata: {
+                      ...m.metadata,
+                      tool_calls: calls.map((c) => (c.id === card.id ? call : c)),
+                      parts: parts.map((p) =>
+                        p.type === 'call' && p.id === card.id ? { type: 'call', id: call.id } : p,
+                      ),
+                    },
+                  }
+                }
                 parts.push({ type: 'call', id: call.id })
                 return {
                   ...m,
@@ -926,9 +989,14 @@ export function useChatRuntime(
             setMessages((prev) => {
               const reply = prev.find((m) => m.id === message_id)
               if (!reply?.replies_to) return prev
-              return prev.map((m) =>
-                m.id === reply.replies_to ? { ...m, job_state: 'succeeded' } : m,
-              )
+              return prev.map((m) => {
+                if (m.id === reply.replies_to) return { ...m, job_state: 'succeeded' }
+                // A card still preparing when the turn ends is a call that
+                // never started -- refused, or cut off with the round -- and a
+                // spinner left on it would say it was still coming.
+                if (m.id === message_id) return withoutPreparing(m)
+                return m
+              })
             })
             setSending(false)
             setStopping(false)

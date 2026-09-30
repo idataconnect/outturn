@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::component::{
     AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ReasoningSink, ToolActivity, ToolOutcome,
-    ToolResultSink, ToolSink, UsageSink, WriteSink,
+    ToolResultSink, ToolSink, UsageSink, WriteSink, WritingSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -154,6 +154,10 @@ pub enum ExecuteEvent {
     /// reassembles it into stored content -- the browser shows it while the turn
     /// runs and the transcript keeps it beside the reply rather than in it.
     Reasoning { text: String },
+    /// The model began writing a call to `name`, the `index`th of its round.
+    /// Only the name: the arguments are not whole until the round ends, and
+    /// the call is reported as `Tool` when the guest starts it.
+    Writing { index: u32, name: String },
     /// The guest wrote an object. Reported so the tier with the database can
     /// treat it exactly as it treats an upload -- a document landing is a
     /// document to extract, whoever put it there. The runtime cannot enqueue
@@ -268,6 +272,7 @@ pub enum ExecuteEvent {
 pub struct Sinks {
     pub progress: ProgressSink,
     pub reasoning: ReasoningSink,
+    pub writing: WritingSink,
     pub on_tool: ToolSink,
     pub on_tool_result: ToolResultSink,
     pub on_usage: UsageSink,
@@ -296,6 +301,16 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
         Arc::new(move |text: &str| {
             let _ = tx.send(ExecuteEvent::Reasoning {
                 text: text.to_string(),
+            });
+        })
+    };
+
+    let writing: WritingSink = {
+        let tx = tx.clone();
+        Arc::new(move |index: u32, name: &str| {
+            let _ = tx.send(ExecuteEvent::Writing {
+                index,
+                name: name.to_string(),
             });
         })
     };
@@ -363,6 +378,7 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
     Sinks {
         progress,
         reasoning,
+        writing,
         on_tool,
         on_tool_result,
         on_usage,

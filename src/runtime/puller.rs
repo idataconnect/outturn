@@ -244,6 +244,7 @@ impl Puller {
             default_model: request.model.clone().unwrap_or_default(),
             progress: Some(sinks.progress),
             reasoning: Some(sinks.reasoning),
+            writing: Some(sinks.writing),
             on_tool: Some(sinks.on_tool),
             on_tool_result: Some(sinks.on_tool_result),
             on_usage: Some(sinks.on_usage),
