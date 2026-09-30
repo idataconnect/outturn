@@ -18,8 +18,8 @@ wasmtime::component::bindgen!({
 });
 
 pub use outturn::agent::host::{
-    Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, TimerDue, Limits,
-    Message, ObjectInfo, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
+    Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
+    Message, ObjectInfo, TimerDue, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
 /// What a byte string is, when it is plainly not text -- or None when it may be.
@@ -189,7 +189,8 @@ pub enum WaitRequest {
 pub type WaitSink = Arc<
     dyn Fn(
             WaitRequest,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;

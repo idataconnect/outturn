@@ -8206,7 +8206,10 @@ async fn a_sleep_holds_the_conversation_and_asks_its_owner() {
     )
     .await;
     let history: Value = serde_json::from_str(&body).expect("json");
-    assert_eq!(history["asleep"]["reason"], "Waiting for the deposit to clear", "{body}");
+    assert_eq!(
+        history["asleep"]["reason"], "Waiting for the deposit to clear",
+        "{body}"
+    );
 
     let (_, body) = get_with_cookie(&h, "/v1/action-items", &admin).await;
     let queue: Value = serde_json::from_str(&body).expect("json");
@@ -8497,13 +8500,15 @@ async fn a_timer_holds_nothing_and_fires_a_turn() {
     let written = notes(&h, session).await;
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].1["wake"]["kind"], "timer");
-    let absorbed: Option<Uuid> = sqlx::query_scalar(
-        "select absorbed_by from agent_messages where content = 'unrelated'",
-    )
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("message");
-    assert_eq!(absorbed, None, "a timer answered a message that has a turn of its own");
+    let absorbed: Option<Uuid> =
+        sqlx::query_scalar("select absorbed_by from agent_messages where content = 'unrelated'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("message");
+    assert_eq!(
+        absorbed, None,
+        "a timer answered a message that has a turn of its own"
+    );
 
     h.db.cleanup().await;
 }
@@ -8542,7 +8547,11 @@ async fn timers_can_be_listed_and_cancelled_and_only_here() {
     .await;
     let second = answer(&body);
     let others = second["other_timers"].as_array().unwrap();
-    assert_eq!(others.len(), 1, "the first timer was not mentioned: {second}");
+    assert_eq!(
+        others.len(),
+        1,
+        "the first timer was not mentioned: {second}"
+    );
     assert_eq!(others[0]["id"], first["id"]);
 
     let (_, body) = ask(serde_json::json!({
@@ -8601,7 +8610,11 @@ async fn timers_can_be_listed_and_cancelled_and_only_here() {
         "job_id": job, "session_id": session, "kind": "cancel", "id": second_id,
     }))
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a firing timer was cancelled");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a firing timer was cancelled"
+    );
 
     // Twice is not found, rather than a second success.
     let (status, _) = ask(serde_json::json!({

@@ -7,7 +7,7 @@ import {
   turnIsRunning,
   withQuote,
 } from './useChatRuntime'
-import type { Message } from './chat'
+import type { Message, MessagePart, ToolCallRecord } from './chat'
 
 /** A stored message, with only what `annotate` reads. */
 function message(over: Partial<Message> & Pick<Message, 'id' | 'role'>): Message {
@@ -296,7 +296,7 @@ describe('a prompt answered across more than one attempt', () => {
         id: 'a1',
         role: 'assistant',
         replies_to: 'p1',
-        metadata: { tool_calls: [{ id: 'c1', name: 'fetch_url' }] },
+        metadata: { tool_calls: [{ id: 'c1', name: 'fetch_url', action: 'Checking' }] },
       }),
       message({ id: 'a2', role: 'assistant', replies_to: 'p1' }),
     ]
@@ -316,7 +316,9 @@ describe('a prompt answered across more than one attempt', () => {
 })
 
 describe('a model that thought while it worked', () => {
-  const drawnFrom = (parts, content = 'done', calls = undefined) =>
+  // Always an array for a reply: `content` is only a string for a message
+  // built from bare text, which `parts` never produces.
+  const drawnFrom = (parts: MessagePart[], content = 'done', calls?: ToolCallRecord[]) =>
     parts_(
       message({
         id: 'a1',
@@ -324,7 +326,7 @@ describe('a model that thought while it worked', () => {
         content,
         metadata: calls ? { parts, tool_calls: calls } : { parts },
       }),
-    )
+    ) as Exclude<ReturnType<typeof parts_>, string>
 
   it('draws the thinking where it happened, not at the top', () => {
     const drawn = drawnFrom([

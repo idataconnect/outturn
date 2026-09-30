@@ -291,10 +291,7 @@ pub async fn answer(
     // same transaction; settled here, the hold would lift with no note, and each
     // message sent meanwhile would get a turn of its own.
     if !item.kind.starts_with("approval.") {
-        return Err((
-            StatusCode::CONFLICT,
-            "this is not an approval".to_string(),
-        ));
+        return Err((StatusCode::CONFLICT, "this is not an approval".to_string()));
     }
 
     // Now that the item is known, and before anything is written.
