@@ -502,6 +502,18 @@ function withoutPreparing(m: Message): Message {
  */
 const FILE_TOOLS = new Set(['write_object', 'delete_object', 'expand_archive', 'create_archive'])
 
+/** Why a conversation is not running, when something is holding it. */
+type Held = {
+  message: string
+  resumable: boolean
+  /** The approval waiting on somebody, where the hold is one. Absent for a
+   *  spend cap or an operator's stop, neither of which is answerable here. */
+  approval?: PendingApproval
+  /** The sleep, where the hold is one: the agent asked for it, and a person
+   *  can end it early. */
+  asleep?: Asleep
+}
+
 export function useChatRuntime(
   sessionId: string | null,
   onRenamed?: (title: string) => void,
@@ -561,17 +573,16 @@ export function useChatRuntime(
    *  Separate from `error` because a hold is not a failure: the turn was not
    *  lost, it was declined, and the reply the reader is waiting for arrives
    *  when the hold lifts or when they say something again. */
-  const [held, setHeld] = useState<{
-    message: string
-    resumable: boolean
-    /** The approval waiting on somebody, where the hold is one. Absent for a
-     *  spend cap or an operator's stop, neither of which is answerable here. */
-    approval?: PendingApproval
-    /** The sleep, where the hold is one: the agent asked for it, and a person
-     *  can end it early. */
-    asleep?: Asleep
-  } | null>(null)
-  const clearHeld = useCallback(() => setHeld(null), [])
+  //
+  // Kept with the conversation it is about, and shown only on that one. It is
+  // set from several places, some of them asynchronous, and was once cleared
+  // only by the next conversation's history arriving -- which a new chat never
+  // loads -- so an approval card followed the reader out of its conversation
+  // and sat over whatever they opened next. Tied to its conversation, it
+  // cannot appear on another whatever order the updates land in.
+  const [heldAt, setHeldAt] = useState<{ session: string; hold: Held } | null>(null)
+  const held = heldAt && heldAt.session === sessionId ? heldAt.hold : null
+  const clearHeld = useCallback(() => setHeldAt(null), [])
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
   /** Which tool each call in flight is, by call id. A result names only the
@@ -618,6 +629,8 @@ export function useChatRuntime(
 
     const controller = new AbortController()
     let stopped = false
+    /** What is holding this conversation, recorded as this conversation's. */
+    const setHeld = (hold: Held | null) => setHeldAt(hold ? { session: sessionId, hold } : null)
 
     /** Replaces everything with a fresh snapshot, cursor included. */
     const reload = async (): Promise<string> => {
@@ -696,7 +709,7 @@ export function useChatRuntime(
               (e) => e.kind === 'chat.message' && (e.payload as Message).metadata?.wake,
             )
           ) {
-            setHeld((prev) => (prev?.asleep ? null : prev))
+            setHeldAt((prev) => (prev?.session === sessionId && prev.hold.asleep ? null : prev))
           }
 
           // A tool announces itself before the reply that used it, so it
@@ -1136,7 +1149,7 @@ export function useChatRuntime(
       const text = references ? `${body}\n\n${references}`.trim() : body
 
       setError(null)
-      setHeld(null)
+      setHeldAt(null)
       setSending(true)
       let made: string | null = null
       try {
