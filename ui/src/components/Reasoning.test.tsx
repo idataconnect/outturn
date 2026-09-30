@@ -1,7 +1,7 @@
 import type { ReasoningMessagePartProps } from '@assistant-ui/react'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import Reasoning from './Reasoning'
 
@@ -78,5 +78,55 @@ describe('Reasoning', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+})
+
+describe('a thought still being written', () => {
+  afterEach(() => vi.useRealTimers())
+
+  function live(text: string, ms: number, seenAt: number) {
+    const props = {
+      text,
+      status: { type: 'running' },
+      ms,
+      seenAt,
+    } as unknown as ReasoningMessagePartProps
+    return render(<Reasoning {...props} />)
+  }
+
+  it('counts its time up between fragments, from what was last measured', () => {
+    vi.useFakeTimers()
+    const t0 = new Date('2026-09-30T12:00:00Z').getTime()
+    vi.setSystemTime(t0)
+    // Measured at 1.2s when the last fragment arrived, this instant.
+    live('one two three', 1200, t0)
+    expect(screen.getByText(/1\.2s · 3 words/)).toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+    expect(screen.getByText(/2\.0s · 3 words/)).toBeInTheDocument()
+  })
+
+  it('counts words as they arrive', () => {
+    vi.useFakeTimers()
+    const t0 = Date.now()
+    const { rerender } = live('one two', 0, t0)
+    expect(screen.getByText(/2 words/)).toBeInTheDocument()
+    rerender(
+      <Reasoning
+        {...({ text: 'one two three four', status: { type: 'running' }, ms: 300, seenAt: t0 } as unknown as ReasoningMessagePartProps)}
+      />,
+    )
+    expect(screen.getByText(/4 words/)).toBeInTheDocument()
+  })
+
+  it('stops at the measured figure once it is done', () => {
+    vi.useFakeTimers()
+    reasoning('one two three', false, 1200)
+    act(() => {
+      vi.advanceTimersByTime(5000)
+    })
+    expect(screen.getByText(/1\.2s/)).toBeInTheDocument()
   })
 })

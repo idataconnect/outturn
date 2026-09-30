@@ -1,5 +1,5 @@
 import type { ReasoningMessagePartProps } from '@assistant-ui/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 
 /**
@@ -41,11 +41,29 @@ function cost(text: string, ms: number | undefined): string {
   return `${shown}s \u00b7 ${counted}`
 }
 
+/** How often a running figure moves: a tenth of a second is what it shows. */
+const TICK_MS = 100
+
 export default function Reasoning({ text, status, ...part }: ReasoningMessagePartProps) {
   const [open, setOpen] = useState(false)
   // While it is still arriving there may be nothing else in the reply yet, so
   // the summary line is the only thing saying the turn is alive.
   const thinking = status?.type === 'running'
+  const { ms, seenAt } = part as { ms?: number; seenAt?: number }
+
+  // While thinking, the figure runs: what the server measured as of the last
+  // fragment, plus how long this tab has waited since. Measured by one clock
+  // each -- the server's for the duration, this tab's for the wait -- so a
+  // browser whose clock disagrees with the server's still counts right, and
+  // the figure lands where the stored one does when the thought ends.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!thinking) return
+    const id = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(id)
+  }, [thinking])
+  const running =
+    thinking && ms !== undefined && seenAt !== undefined ? ms + Math.max(0, now - seenAt) : ms
 
   if (text === '') return null
 
@@ -68,7 +86,12 @@ export default function Reasoning({ text, status, ...part }: ReasoningMessagePar
         />
         <span>
           {thinking ? (
-            'Thinking...'
+            <>
+              Thinking...
+              <span className="ml-1.5 tabular-nums text-surface-500 dark:text-surface-500">
+                {cost(text, running)}
+              </span>
+            </>
           ) : (
             <>
               Thought
@@ -76,7 +99,7 @@ export default function Reasoning({ text, status, ...part }: ReasoningMessagePar
                   wondering where a turn went, not for everybody reading a
                   reply. */}
               <span className="ml-1.5 text-surface-500 dark:text-surface-500">
-                {cost(text, (part as { ms?: number }).ms)}
+                {cost(text, ms)}
               </span>
             </>
           )}

@@ -38,6 +38,11 @@ export type MessagePart =
       /** How long this thought took, first fragment to last. Absent on a
        *  thought recorded before it was measured. */
       ms?: number
+      /** This tab's clock when `ms` was last measured, while the thought is
+       *  streaming. Never from the server and never stored: it is what lets
+       *  the running figure tick between fragments without comparing this
+       *  browser's clock with the server's. */
+      seenAt?: number
     }
   /** The point a message the user sent mid-turn was handed to the agent,
    *  naming that message. The reply is drawn split here, with the message
