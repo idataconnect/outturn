@@ -35,11 +35,19 @@ if [[ "$show" == true ]]; then
   else
     echo "no answers yet; these are the suggestions (${dev_hint:-nothing detected})"
   fi
+  echo "  model server    $dev_server"
   echo "  model           $dev_model"
   echo "  served as       $dev_served_model"
   echo "  context window  $dev_context_window tokens"
   echo "  context budget  $dev_context_budget bytes"
-  echo "  ollama          ${dev_ollama_url:-(not ollama)}"
+  case "$dev_server" in
+    ollama) echo "  ollama          $dev_ollama_url" ;;
+    llama.cpp)
+      echo "  llama-server    $dev_llama_url"
+      echo "  gateway reaches $(dev_gateway_base_url)"
+      echo "  started as      $(dev_llamacpp_command)"
+      ;;
+  esac
   exit 0
 fi
 

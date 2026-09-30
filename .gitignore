@@ -20,6 +20,9 @@ k8s/overlays/local/dev-secrets.env
 # This machine's model, context window and budget, asked once by
 # scripts/dev-setup.sh. Facts about the machine rather than the code.
 k8s/overlays/local/dev-machine.env
+# The llama-server a dev script started: its process id and its log.
+k8s/overlays/local/.llama-server.pid
+k8s/overlays/local/.llama-server.log
 
 # The overlay scripts/lib/dev.sh writes for a run: the base it was asked for
 # plus whichever components. Generated rather than committed because the

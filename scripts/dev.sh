@@ -39,6 +39,6 @@ dev_require_cluster "start one first, e.g.: kind create cluster"
 # kustomize renders before any deploy hook runs.
 scripts/dev-secrets.sh
 
-dev_ollama_prepare
+dev_model_server_prepare
 dev_clear_stale_settings_job
 dev_skaffold

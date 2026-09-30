@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Local development on a Mac: ollama on the host, the rest in the cluster.
+# Local development on a Mac: the model server on the host, the rest in the
+# cluster. ollama or llama.cpp, whichever this machine answered.
 #
-#   scripts/dev-mac.sh                    # checks ollama and the model, then skaffold dev
+#   scripts/dev-mac.sh                    # checks the model server and the model, then skaffold dev
 #   scripts/dev-mac.sh --with tika        # plus document extraction
 #   scripts/dev-mac.sh --with tika,petstore
 #   scripts/dev-mac.sh --reconfigure      # ask the model questions again
@@ -74,6 +75,22 @@ dev_ollama_start() {
   done
 }
 
-dev_ollama_prepare
+# Called by dev_llamacpp_prepare when nothing is serving this machine's
+# answers. In the background, with its process id kept so a later run with
+# different answers can restart the server this started -- and never one it
+# did not. Its log is beside the answers.
+dev_llamacpp_start() {
+  local log pidfile
+  log=$(dev_llamacpp_log)
+  pidfile=$(dev_llamacpp_pidfile)
+  echo "starting: $(dev_llamacpp_command)"
+  # Split into words on purpose: every value in it was checked to hold no
+  # spaces when it was answered.
+  # shellcheck disable=SC2046
+  nohup $(dev_llamacpp_command) >"$log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
+dev_model_server_prepare
 dev_clear_stale_settings_job
 dev_skaffold

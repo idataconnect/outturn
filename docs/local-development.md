@@ -19,10 +19,16 @@ Or edit `k8s/overlays/local/dev-machine.env` by hand; it is plain
 
 | Answer | Drives |
 |---|---|
+| `OUTTURN_DEV_SERVER` | `ollama`, `llama.cpp`, or `other` -- which server the script prepares |
 | `OUTTURN_DEV_MODEL` | What is pulled, and what the served model is made from |
 | `OUTTURN_DEV_CONTEXT_WINDOW` | The window that model is served at |
 | `OUTTURN_DEV_CONTEXT_BUDGET` | The operator's `context_budget`, in bytes |
-| `OUTTURN_DEV_OLLAMA_URL` | Where the script reaches ollama from this machine. Empty if the model server is something else |
+| `OUTTURN_DEV_OLLAMA_URL` | Where the script reaches ollama from this machine, when that is the server |
+| `OUTTURN_DEV_LLAMA_URL` | Where the script reaches llama-server from this machine, when that is the server |
+
+A file from before there was a choice of server has no `OUTTURN_DEV_SERVER`,
+and is read as it always meant: ollama where it names an ollama address, some
+other server where it leaves it empty.
 
 The suggestions come from the committed overlay and from what can be seen of
 the hardware. On Linux, qwen3.5 at 32k, or 16k on a GPU with less than 8GB. On
@@ -61,6 +67,50 @@ locally, and a deployment that bills from the ledger is not running ollama.
 With a model server that is not ollama, the model is used as named and the
 window is that server's business. The budget is still yours to size against
 it.
+
+## llama.cpp instead of ollama
+
+Both speak the OpenAI protocol, so the platform needs nothing different; what
+differs is how each turns a model's raw output into that protocol, and that
+difference is the reason for the choice.
+
+ollama sends a tool call only once the model has finished writing it, whole --
+by design, since it cannot tell a call has begun until it parses
+([ollama#10415](https://github.com/ollama/ollama/pull/10415)). So the reader
+sees nothing while a call is written, and a thought's clock runs on through it
+until a second of quiet stops it. And its gemma 4 parser loses the call
+altogether on any turn after the first that used a tool, with thinking on:
+measured against ollama directly, not one call in ten came back, while
+thinking off or a first turn returned every one.
+
+llama-server with `--jinja` uses the model's own chat template and a parser
+that works on partial output, and streams a call as it is written, name first
+([llama.cpp#12379](https://github.com/ggml-org/llama.cpp/pull/12379)) -- the
+shape OpenAI and Anthropic send, which the "Preparing…" card is built for.
+
+With `OUTTURN_DEV_SERVER=llama.cpp`:
+
+- The model is a Hugging Face GGUF as `organisation/repository:quantization`,
+  for instance `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`. llama-server downloads
+  and caches it on first use. MLX builds are ollama's: llama.cpp runs GGUF on
+  Metal.
+- The window is llama-server's `-c`, and the model is served under an alias in
+  the same shape as ollama's tag, `outturn/gemma-4-26B-A4B-it-GGUF-Q4_0-ctx32768`,
+  which is what the cluster asks for.
+- On a Mac, `scripts/dev-mac.sh` starts llama-server in the background and
+  keeps its process id and log beside the answers
+  (`k8s/overlays/local/.llama-server.pid` and `.llama-server.log`). A later run
+  with different answers restarts a server it started; one somebody else
+  started is named and left alone. On Linux, starting it is yours, as with
+  ollama, and the script prints the command.
+- The generated overlay points the gateway at it. The base overlays name
+  ollama's port, so another server's address has to be said, translated to one
+  a pod reaches: `host.docker.internal` on a Mac, the Docker bridge on Linux.
+
+`scripts/dev-setup.sh --show` prints the command it starts llama-server with
+and the address the gateway uses.
+
+## What the answers cannot set
 
 What the tag cannot set is anything server-wide. On Linux, ollama must listen
 beyond loopback for the cluster to reach it (`OLLAMA_HOST=0.0.0.0`), and
