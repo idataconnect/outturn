@@ -10,7 +10,7 @@ import { waitingFor } from '../lib/elapsed'
 import { useInbox } from '../lib/inbox'
 import { describeItem } from '../lib/inboxKinds'
 import { paths } from '../lib/paths'
-import { useSession } from '../lib/session'
+import { useSession, useSessionActions } from '../lib/session'
 import { remaining } from '../lib/sleep'
 import { useBreakpoint } from '../lib/useBreakpoint'
 
@@ -172,25 +172,94 @@ function Detail({ item, workspace, here }: { item: ActionItem; workspace: string
 
       {kind === 'approval' && <ApprovalDetail item={item} onAnswered={settled} />}
       {kind === 'sleep' && sessionId && (
-        <SleepDetail item={item} sessionId={sessionId} here={here} onWoken={settled} />
+        <SleepDetail
+          item={item}
+          sessionId={sessionId}
+          here={here}
+          workspace={workspace}
+          onWoken={settled}
+        />
       )}
 
-      {sessionId &&
-        (here ? (
-          <Link
-            to={`/sessions/${sessionId}`}
-            className="inline-flex items-center gap-1.5 text-sm text-brand-700 dark:text-brand-400 hover:underline underline-offset-2"
-          >
-            <MessageSquare size={14} aria-hidden />
-            Open the conversation
-          </Link>
-        ) : (
-          // Answering works from here whichever workspace it is in; reading the
-          // conversation means being signed in to that workspace.
-          <p className="text-sm text-surface-600 dark:text-surface-400">
-            The conversation is in {workspace}. Switch to it to read the conversation.
-          </p>
-        ))}
+      {sessionId && (
+        <OpenConversation
+          sessionId={sessionId}
+          workspaceId={item.workspace_id}
+          workspace={workspace}
+          here={here}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Signs in to an item's workspace, then goes where the reader was going.
+ *
+ * Answering an approval works from any workspace, since the API resolves it in
+ * the item's. Reading its conversation or waking an agent does not: those go
+ * through the conversation, which a token for another workspace cannot reach.
+ * So the link does the switch the reader would otherwise have to do by hand in
+ * the account menu, and then carries on.
+ */
+function useSwitchThen() {
+  const { switchWorkspace } = useSessionActions()
+  const navigate = useNavigate()
+  const [switching, setSwitching] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  async function go(workspaceId: string, to: string) {
+    setSwitching(true)
+    setFailed(null)
+    try {
+      await switchWorkspace(workspaceId)
+      void navigate(to)
+    } catch (e) {
+      setFailed(e instanceof ApiError ? e.message : 'Could not switch workspace')
+      setSwitching(false)
+    }
+  }
+  return { go, switching, failed }
+}
+
+const linkish =
+  'inline-flex items-center gap-1.5 text-sm text-brand-700 dark:text-brand-400 hover:underline underline-offset-2 disabled:opacity-60'
+
+function OpenConversation({
+  sessionId,
+  workspaceId,
+  workspace,
+  here,
+}: {
+  sessionId: string
+  workspaceId: string
+  workspace: string
+  here: boolean
+}) {
+  const { go, switching, failed } = useSwitchThen()
+  if (here) {
+    return (
+      <Link to={`/sessions/${sessionId}`} className={linkish}>
+        <MessageSquare size={14} aria-hidden />
+        Open the conversation
+      </Link>
+    )
+  }
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => void go(workspaceId, `/sessions/${sessionId}`)}
+        disabled={switching}
+        className={linkish}
+      >
+        <MessageSquare size={14} aria-hidden />
+        {switching ? `Switching to ${workspace}…` : `Open the conversation in ${workspace}`}
+      </button>
+      {failed && (
+        <p className="mt-1 text-sm text-red-600 dark:text-red-400" role="alert">
+          {failed}
+        </p>
+      )}
     </div>
   )
 }
@@ -227,6 +296,7 @@ function SleepDetail({
   item,
   sessionId,
   here,
+  workspace,
   onWoken,
 }: {
   item: ActionItem
@@ -234,8 +304,10 @@ function SleepDetail({
   /** Whether it is in the workspace the reader is signed in to. Waking goes
    *  through the conversation, which is only reachable from there. */
   here: boolean
+  workspace: string
   onWoken: () => void
 }) {
+  const switcher = useSwitchThen()
   const [waking, setWaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // When the pane opened. A countdown that ticks is the banner's job; here it
@@ -261,6 +333,22 @@ function SleepDetail({
         <p className="text-sm text-surface-700 dark:text-surface-300">
           Asleep {remaining(until, now)}. Anything sent to it meanwhile is kept, and
           answered together when it wakes.
+        </p>
+      )}
+      {!here && (
+        // Back to this same item once switched, where the button to wake it is.
+        <button
+          type="button"
+          onClick={() => void switcher.go(item.workspace_id, paths.inboxItem(item.id))}
+          disabled={switcher.switching}
+          className="inline-flex items-center gap-1.5 rounded-md border border-surface-300 px-3 py-1.5 text-sm text-surface-800 hover:bg-surface-50 disabled:opacity-60 dark:border-surface-600 dark:text-surface-200 dark:hover:bg-surface-800"
+        >
+          {switcher.switching ? `Switching to ${workspace}…` : `Switch to ${workspace} to wake it`}
+        </button>
+      )}
+      {switcher.failed && (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+          {switcher.failed}
         </p>
       )}
       {here && (
