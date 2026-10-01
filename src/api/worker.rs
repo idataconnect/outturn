@@ -69,6 +69,14 @@ pub struct ChatTurnPayload {
 /// are not recovered; a turn that called tools three times replays as one
 /// batch. That is a faithful account of what was asked and answered, and a
 /// lossy one of when.
+/// What heads a note the platform adds to the conversation -- the record of an
+/// approval, the note an agent wakes to -- on its way to the model.
+///
+/// Sent in the user position, where every protocol accepts a message between
+/// turns, and labelled so that position is not read as the person typing it.
+/// One wording for every such note, so the agent learns one thing.
+const PLATFORM_NOTE: &str = "[the platform wrote this; nobody in the conversation sent it]";
+
 /// The projection alone, for callers that do not need to name stored messages.
 #[cfg(test)]
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
@@ -164,31 +172,32 @@ fn projected_with_sources(
             //
             // Stored bare, because what is kept is what the model wrote and
             // the label is how it is presented.
+            let mut role = message.role.as_str();
             let text = if super::chat::summarise::is_summary(&message.metadata) {
                 super::chat::summarise::framed(&message.content)
             } else if message.metadata.get(super::chat::APPROVAL_MARK).is_some() {
-                // Labelled for the same reason a summary is. It is stored as an
-                // assistant message because that is what the transcript serves
-                // and the browser draws, but the agent did not say it -- and an
-                // agent that reads "Ben approved this charge" as its own words
-                // will answer it rather than act on it.
-                format!(
-                    "[the platform recorded this; it is not something you said]\n\n{}",
-                    message.content
-                )
+                // In the user position, labelled as the platform's. Stored as
+                // an assistant message, since that is what the transcript
+                // serves and the browser draws -- but sent that way, the agent
+                // read the record as its own last words and its reply carried
+                // on from them, label and all: "[the platform recorded this…]
+                // System Admin approved this charge. I've booked…". A note from
+                // outside the conversation goes where every protocol puts one:
+                // not `system`, which only OpenAI accepts mid-conversation and
+                // which would give an approver's free-text note the authority
+                // of the platform's instructions.
+                role = "user";
+                format!("{PLATFORM_NOTE}\n\n{}", message.content)
             } else if message.metadata.get(super::wake::WAKE_MARK).is_some() {
                 // In the user position, because it is what the wake turn
                 // answers, but nobody in the conversation typed it -- and read as
                 // theirs, "you slept" becomes the person telling the agent so.
-                format!(
-                    "[the platform wrote this; nobody in the conversation sent it]\n\n{}",
-                    message.content
-                )
+                format!("{PLATFORM_NOTE}\n\n{}", message.content)
             } else {
                 message.content.clone()
             };
             projected.push(serde_json::json!({
-                "role": message.role,
+                "role": role,
                 "parts": [{"type": "text", "text": text}],
             }));
             sources.extend(std::iter::repeat_n(
@@ -3331,6 +3340,28 @@ mod projection_tests {
             !ids.contains(&later.id),
             "a later user message still reaches this turn only as a steer"
         );
+    }
+
+    /// The record of an approval reaches the model as a note from the platform,
+    /// in the user position. Sent as the assistant it is stored as, the agent
+    /// took it for its own last words and its reply repeated it, label and
+    /// all.
+    #[test]
+    fn an_approval_record_reaches_the_model_as_a_note_not_as_its_own_words() {
+        let approved = message(
+            "assistant",
+            "Ada approved this charge.",
+            serde_json::json!({ crate::api::chat::APPROVAL_MARK: { "approved": true } }),
+        );
+        let projected = project(&[
+            message("user", "charge it", serde_json::json!({})),
+            approved,
+        ]);
+        let note = &projected[1];
+        assert_eq!(note["role"], "user", "{note}");
+        let text = note["parts"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(PLATFORM_NOTE), "{text}");
+        assert!(text.ends_with("Ada approved this charge."), "{text}");
     }
 
     /// Another prompt's reply is not this turn's to remember. It arrives on its
