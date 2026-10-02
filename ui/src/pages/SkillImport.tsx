@@ -299,7 +299,9 @@ function StillNeeded({ skill, form }: { skill: Skill; form: Form }) {
           <li>
             <strong>Set <code>{variable}</code> on the gateway</strong> to the value the{' '}
             <code>{header}</code> header should carry, exactly as sent
-            {header.toLowerCase() === 'authorization' && <> — including <code>Bearer </code></>}.
+            {header.toLowerCase() === 'authorization' && (
+              <> — including the scheme, such as <code>Bearer </code>, if the API wants one</>
+            )}.
             The gateway reads it from its own environment; a browser cannot set it.
           </li>
         )}
