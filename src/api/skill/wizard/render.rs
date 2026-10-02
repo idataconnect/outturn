@@ -3,14 +3,10 @@ use std::fmt::Write;
 
 use super::{Category, parse};
 
-pub fn flat_body(
-    slug: &str,
-    operations: &[parse::Operation],
-    common_auth: &Option<parse::AuthInfo>,
-) -> String {
+pub fn flat_body(slug: &str, operations: &[parse::Operation], auth_header: Option<&str>) -> String {
     let mut out = String::new();
 
-    write_auth_preamble(&mut out, common_auth);
+    write_auth_preamble(&mut out, auth_header);
 
     writeln!(
         out,
@@ -39,11 +35,11 @@ pub fn flat_body(
 pub fn category_body(
     slug: &str,
     categories: &BTreeMap<String, Category>,
-    common_auth: &Option<parse::AuthInfo>,
+    auth_header: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
-    write_auth_preamble(&mut out, common_auth);
+    write_auth_preamble(&mut out, auth_header);
 
     writeln!(
         out,
@@ -94,11 +90,7 @@ pub fn category_manifest_with_ops(
     out
 }
 
-pub fn detail(
-    op: &parse::Operation,
-    base_url: &str,
-    common_auth: &Option<parse::AuthInfo>,
-) -> String {
+pub fn detail(op: &parse::Operation, base_url: &str, auth_header: Option<&str>) -> String {
     let mut out = String::new();
 
     writeln!(out, "# {}", op.name).unwrap();
@@ -136,12 +128,11 @@ pub fn detail(
         .unwrap();
     }
 
-    if let Some(auth) = common_auth {
+    if let Some(header) = auth_header {
         writeln!(out).unwrap();
         writeln!(
             out,
-            "The `{}` header is attached by the platform; do not set it.",
-            auth.header_name
+            "The `{header}` header is attached by the platform; do not set it."
         )
         .unwrap();
     }
@@ -268,13 +259,12 @@ pub fn detail(
     out
 }
 
-fn write_auth_preamble(out: &mut String, common_auth: &Option<parse::AuthInfo>) {
-    if let Some(auth) = common_auth {
+fn write_auth_preamble(out: &mut String, auth_header: Option<&str>) {
+    if let Some(header) = auth_header {
         writeln!(
             out,
-            "Authentication is handled by the platform — the `{}` header is attached \
-             to every request automatically. Do not set it yourself.",
-            auth.header_name
+            "Authentication is handled by the platform — the `{header}` header is attached \
+             to every request automatically. Do not set it yourself."
         )
         .unwrap();
         writeln!(out).unwrap();

@@ -304,6 +304,10 @@ export function createFromOpenApi(input: {
   name: string
   description: string
   base_url: string
+  /** The header the egress rule will carry the credential in. The skill
+   *  tells the agent the platform sets it, and drops it from every
+   *  operation's parameters. Empty when the API takes no credential. */
+  auth_header: string
   spec: unknown
 }): Promise<Skill> {
   return api<Skill>('/v1/platform/skills/from-openapi', {

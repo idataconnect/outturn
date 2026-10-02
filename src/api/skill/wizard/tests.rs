@@ -82,6 +82,7 @@ fn flat_manifest_small_spec() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: Some("Authorization".into()),
     };
     let output = generate(&input).unwrap();
 
@@ -126,6 +127,7 @@ fn detail_file_structure() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["create_item.md"];
@@ -157,6 +159,7 @@ fn detail_path_parameters() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["get_item.md"];
@@ -200,6 +203,7 @@ fn categories_for_large_spec() {
         spec_json: serde_json::to_vec(&spec).unwrap(),
         slug: "big".to_string(),
         base_url: "https://big.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
 
@@ -296,6 +300,7 @@ fn ref_resolution() {
         spec_json: serde_json::to_vec(&spec).unwrap(),
         slug: "things".to_string(),
         base_url: "https://things.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["create_thing.md"];
@@ -334,6 +339,7 @@ fn enum_values_rendered() {
         spec_json: serde_json::to_vec(&spec).unwrap(),
         slug: "test".to_string(),
         base_url: "https://test.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["list_items.md"];
@@ -371,6 +377,7 @@ fn too_large_rejected() {
         spec_json: vec![0u8; 17 * 1024 * 1024],
         slug: "x".to_string(),
         base_url: "https://x.com".to_string(),
+        auth_header: None,
     };
     assert!(matches!(generate(&input), Err(ParseError::TooLarge(_))));
 }
@@ -382,6 +389,7 @@ fn empty_paths_rejected() {
         spec_json: serde_json::to_vec(&spec).unwrap(),
         slug: "x".to_string(),
         base_url: "https://x.com".to_string(),
+        auth_header: None,
     };
     assert!(matches!(generate(&input), Err(ParseError::NoOperations)));
 }
@@ -392,6 +400,7 @@ fn files_within_read_budget() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
 
@@ -415,6 +424,7 @@ fn manifest_says_read_object() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
 
@@ -431,6 +441,7 @@ fn manifest_no_urls() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
 
@@ -447,6 +458,7 @@ fn detail_says_fetch_url() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["list_items.md"];
@@ -465,6 +477,7 @@ fn bigcapital_spec() {
         spec_json: spec,
         slug: "bigcapital".to_string(),
         base_url: "https://books.idataconnect.com".to_string(),
+        auth_header: Some("Authorization".into()),
     };
     let output = generate(&input).unwrap();
 
@@ -541,6 +554,7 @@ fn references_name_the_path_a_guest_reads() {
         spec_json: small_spec(),
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
+        auth_header: None,
     };
     let output = generate(&input).unwrap();
     assert!(output.files.contains_key("list_items.md"));
@@ -626,4 +640,97 @@ fn preview_substitutes_server_variable_defaults() {
 fn preview_leaves_a_missing_server_unanswered() {
     let spec = spec_with(serde_json::json!({"servers": []}));
     assert_eq!(preview(&spec, None).unwrap().base_url, None);
+}
+
+/// Two schemes, declared rather than taken as parameters: what the skill says
+/// about auth is the header the operator confirmed, not a second guess.
+fn petstore_spec() -> Vec<u8> {
+    let op = |id: &str, security: Option<serde_json::Value>| {
+        let mut o = serde_json::json!({
+            "operationId": id,
+            "summary": id,
+            "tags": ["pet"],
+            "parameters": [{"name": "api_key", "in": "header", "required": false,
+                            "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "OK"}}
+        });
+        if let Some(s) = security {
+            o["security"] = s;
+        }
+        o
+    };
+    let oauth = || Some(serde_json::json!([{"petstore_auth": ["write:pets"]}]));
+    serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Swagger Petstore", "version": "1"},
+        "servers": [{"url": "https://petstore3.swagger.io/api/v3"}],
+        "components": {"securitySchemes": {
+            "api_key": {"type": "apiKey", "in": "header", "name": "api_key"},
+            "petstore_auth": {"type": "oauth2", "flows": {"implicit": {
+                "authorizationUrl": "https://petstore3.swagger.io/oauth/authorize",
+                "scopes": {}}}},
+        }},
+        "paths": {
+            "/pet": {"put": op("updatePet", oauth()), "post": op("addPet", oauth())},
+            "/pet/findByStatus": {"get": op("findPetsByStatus", oauth())},
+            "/pet/findByTags": {"get": op("findPetsByTags", oauth())},
+            "/pet/{petId}": {
+                "get": op("getPetById", Some(serde_json::json!([{"api_key": []}, {"petstore_auth": []}]))),
+                "post": op("updatePetWithForm", oauth()),
+                "delete": op("deletePet", oauth()),
+            },
+            "/pet/{petId}/uploadImage": {"post": op("uploadFile", oauth())},
+            "/store/inventory": {"get": op("getInventory", Some(serde_json::json!([{"api_key": []}])))},
+            "/store/order": {"post": op("placeOrder", None)},
+            "/store/order/{orderId}": {"get": op("getOrderById", None), "delete": op("deleteOrder", None)},
+            "/user": {"post": op("createUser", None)},
+            "/user/login": {"get": op("loginUser", None)},
+            "/user/logout": {"get": op("logoutUser", None)},
+            "/user/{username}": {
+                "get": op("getUserByName", None),
+                "put": op("updateUser", None),
+                "delete": op("deleteUser", None),
+            },
+            "/user/createWithList": {"post": op("createUsersWithListInput", None)},
+        }
+    }))
+    .unwrap()
+}
+
+#[test]
+fn generate_uses_the_header_it_is_given() {
+    let input = WizardInput {
+        spec_json: petstore_spec(),
+        slug: "petstore".to_string(),
+        base_url: "https://petstore3.swagger.io/api/v3".to_string(),
+        auth_header: Some("API_KEY".into()),
+    };
+    let output = generate(&input).unwrap();
+    assert!(
+        output.body.contains("the `API_KEY` header is attached"),
+        "{}",
+        output.body
+    );
+    let detail = &output.files["get_inventory.md"];
+    assert!(detail.contains("`API_KEY` header is attached by the platform"));
+    // Stripped whatever its case, since the platform sets it.
+    assert!(
+        !detail.contains("`api_key`"),
+        "the credential header is not the model's to set: {detail}"
+    );
+}
+
+#[test]
+fn generate_says_nothing_about_auth_when_given_no_header() {
+    // small_spec takes Authorization on every operation; with no header
+    // confirmed, generate does not guess one.
+    let input = WizardInput {
+        spec_json: small_spec(),
+        slug: "testapi".to_string(),
+        base_url: "https://api.example.com".to_string(),
+        auth_header: Some("  ".into()),
+    };
+    let output = generate(&input).unwrap();
+    assert!(!output.body.contains("Authentication is handled"));
+    assert!(output.files["list_items.md"].contains("Authorization"));
 }

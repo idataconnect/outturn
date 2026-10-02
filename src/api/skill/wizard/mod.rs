@@ -11,6 +11,10 @@ pub struct WizardInput {
     pub spec_json: Vec<u8>,
     pub slug: String,
     pub base_url: String,
+    /// The header the egress rule will attach the credential in -- the one
+    /// the page showed and the operator confirmed, so the skill and the rule
+    /// say the same thing. `None` when the API takes no credential.
+    pub auth_header: Option<String>,
 }
 
 pub struct WizardOutput {
@@ -27,7 +31,20 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
         return Err(ParseError::TooLarge(input.spec_json.len()));
     }
 
-    let api = parse::parse(&input.spec_json)?;
+    let mut api = parse::parse(&input.spec_json)?;
+    let auth_header = input
+        .auth_header
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty());
+    // The platform sets this header, so no operation should offer it to the
+    // model as a parameter. Header names are case-insensitive.
+    if let Some(header) = auth_header {
+        for op in &mut api.operations {
+            op.parameters
+                .retain(|p| !(p.location == "header" && p.name.eq_ignore_ascii_case(header)));
+        }
+    }
     let host = extract_host(&input.base_url);
 
     let categories = categorise(&api.operations);
@@ -36,7 +53,7 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
     let mut files = BTreeMap::new();
 
     for op in &api.operations {
-        let detail = render::detail(op, &input.base_url, &api.common_auth);
+        let detail = render::detail(op, &input.base_url, auth_header);
         files.insert(format!("{}.md", op.name), detail);
     }
 
@@ -45,9 +62,9 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
             let manifest = render::category_manifest_with_ops(cat, &api.operations, &input.slug);
             files.insert(format!("{cat_slug}.md"), manifest);
         }
-        render::category_body(&input.slug, &categories, &api.common_auth)
+        render::category_body(&input.slug, &categories, auth_header)
     } else {
-        render::flat_body(&input.slug, &api.operations, &api.common_auth)
+        render::flat_body(&input.slug, &api.operations, auth_header)
     };
 
     Ok(WizardOutput {
