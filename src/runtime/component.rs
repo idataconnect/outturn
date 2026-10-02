@@ -466,7 +466,18 @@ impl AgentHost {
         Err(if siblings.is_empty() {
             format!("no skill with files is called {slug:?} here")
         } else {
-            format!("there is no {path}; {dir} holds {}", siblings.join(", "))
+            const SHOWN: usize = 10;
+            let listed: Vec<&str> = siblings.iter().copied().take(SHOWN).collect();
+            let tail = if siblings.len() > SHOWN {
+                format!(" (and {} more)", siblings.len() - SHOWN)
+            } else {
+                String::new()
+            };
+            format!(
+                "there is no {path}; {dir} holds {}{}",
+                listed.join(", "),
+                tail,
+            )
         })
     }
 
