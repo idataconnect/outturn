@@ -296,6 +296,10 @@ pub async fn fetch(
     // Attached last, so nothing the caller sent can displace it, and read from
     // this tier's own environment -- the one place the runtime cannot reach.
     if let (Some(header), Some(variable)) = (&rule.header, &rule.credential_env) {
+        // Again here, not only where the rule was written: a row written before
+        // the namespace existed, or by hand, must not reach the operator's own.
+        crate::runtime::egress::check_credential_variable(variable)
+            .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let secret = std::env::var(variable).map_err(|_| {
             (
                 StatusCode::FORBIDDEN,
