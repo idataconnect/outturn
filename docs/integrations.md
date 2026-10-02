@@ -53,6 +53,11 @@ will reach `api.example.com`, the rule permits it, and the agent composes the
 calls from what the skill documents. That is the whole of an integration today,
 and it is why this tier is the one that already works.
 
+An API that issues its own access tokens rather than accepting a static key is
+still this tier: the operator holds a client id and secret, and the gateway
+exchanges them. [client-credentials.md](client-credentials.md) designs that,
+without storing anything the gateway does not already hold.
+
 ### 2. Vetted extensions
 
 A workspace wants their agents posting to Notion, or reading their Google

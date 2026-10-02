@@ -96,6 +96,15 @@ less safe of the two and should not be the recommended one.
 Nothing today needs it, so the first real operator who does is better evidence
 than anything decided now.
 
+### OAuth client credentials on egress rules
+
+[client-credentials.md](client-credentials.md).
+
+A rule naming a token URL, scopes and two variables, with the gateway
+exchanging them for a bearer token cached per replica and refreshed on demand.
+Tier 1 integrations: needs nothing that does not exist. The OpenAPI wizard
+prefills such a rule from a `clientCredentials` scheme once it is built.
+
 ### Idempotency
 
 [idempotency.md](idempotency.md).
