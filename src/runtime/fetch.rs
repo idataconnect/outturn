@@ -122,6 +122,7 @@ mod tests {
                 host: format!("host{i}.example.com"),
                 header: None,
                 credential_env: None,
+                client: None,
             })
             .collect();
         let proof = commit::prove(workspace, &rules, &rules[0]).expect("in the set");

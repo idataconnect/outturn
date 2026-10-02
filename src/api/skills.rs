@@ -480,6 +480,7 @@ async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<
         host,
         header: None,
         credential_env: None,
+        client: None,
     }];
     let gates = crate::egress::gate::Gates::none();
     let token = state

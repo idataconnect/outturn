@@ -33,6 +33,7 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
             host: r.get("host"),
             header: r.get("header"),
             credential_env: r.get("credential_env"),
+            client: None,
         })
         .collect())
 }

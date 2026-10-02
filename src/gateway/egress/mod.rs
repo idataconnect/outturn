@@ -386,6 +386,7 @@ mod tests {
             host: host.into(),
             header: None,
             credential_env: None,
+            client: None,
         }
     }
 
@@ -394,6 +395,7 @@ mod tests {
             host: host.into(),
             header: Some(header.into()),
             credential_env: Some(env.into()),
+            client: None,
         }
     }
 

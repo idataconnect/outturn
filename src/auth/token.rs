@@ -736,6 +736,7 @@ mod tests {
                 host: "api.example.com".into(),
                 header: None,
                 credential_env: None,
+                client: None,
             }],
         );
 
