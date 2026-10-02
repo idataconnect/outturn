@@ -39,6 +39,58 @@ pub struct EgressRule {
     /// or a support query could carry off.
     #[serde(default)]
     pub credential_env: Option<String>,
+
+    /// An OAuth 2 client-credentials exchange whose access token is attached
+    /// as `Authorization: Bearer`, instead of `header` and `credential_env`.
+    ///
+    /// Never beside them: a rule attaching two credentials would say nothing
+    /// about which one the API reads. Left out of the encoding when absent, so
+    /// a rule without one travels exactly as it did before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<ClientCredentials>,
+}
+
+/// Where a rule's access token comes from. See docs/client-credentials.md.
+///
+/// Every field decides where a secret goes or what it is exchanged for, so
+/// every field is in the rule's leaf -- see `egress::commit`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ClientCredentials {
+    /// The token endpoint, path included: multi-tenant providers put the
+    /// tenant in the path, so the host alone would not say whose it is.
+    pub token_url: String,
+    /// Space-separated, sent exactly as written. Absent for a provider that
+    /// wants none.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Names of the environment variables holding the client id and secret.
+    pub client_id_env: String,
+    pub client_secret_env: String,
+    /// Where the id and secret travel in the exchange.
+    #[serde(default)]
+    pub client_auth: ClientAuth,
+}
+
+/// How a client authenticates at the token endpoint.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientAuth {
+    /// HTTP Basic, which RFC 6749 obliges every server to accept.
+    #[default]
+    Basic,
+    /// In the form body, for the providers that read only that.
+    Post,
+}
+
+impl ClientAuth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClientAuth::Basic => "basic",
+            ClientAuth::Post => "post",
+        }
+    }
 }
 
 /// Why a request was refused.
@@ -424,6 +476,7 @@ mod tests {
             host: host.into(),
             header: None,
             credential_env: None,
+            client: None,
         }
     }
 
@@ -432,6 +485,7 @@ mod tests {
             host: host.into(),
             header: Some(header.into()),
             credential_env: Some(env.into()),
+            client: None,
         }
     }
 
@@ -482,6 +536,7 @@ mod tests {
                 host: "api.example.com".into(),
                 header: Some("authorization".into()),
                 credential_env: Some("EXAMPLE_KEY".into()),
+                client: None,
             },
         ];
         let found = rule_for(&rules, "api.example.com").expect("matched");
