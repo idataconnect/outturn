@@ -104,7 +104,7 @@ pub fn detail(op: &parse::Operation, base_url: &str, auth_header: Option<&str>) 
     writeln!(out, "## The call").unwrap();
     writeln!(out).unwrap();
 
-    let url = format!("{}{}", base_url.trim_end_matches('/'), &op.path);
+    let url = format!("{}{}", base_url.trim_end_matches('/'), op.path);
     let query_params: Vec<_> = op
         .parameters
         .iter()
@@ -326,7 +326,10 @@ fn write_parameter(out: &mut String, p: &parse::Parameter, required: bool) {
 
 fn write_body_field(out: &mut String, f: &parse::BodyField) {
     let mut meta = Vec::new();
-    meta.push(f.schema.type_name.clone());
+    match &f.schema.items_type {
+        Some(items) if f.schema.type_name == "array" => meta.push(format!("array of {items}")),
+        _ => meta.push(f.schema.type_name.clone()),
+    }
     if let Some(ref fmt) = f.schema.format {
         meta.push(format!("format: {fmt}"));
     }
@@ -341,6 +344,9 @@ fn write_body_field(out: &mut String, f: &parse::BodyField) {
     }
     if let Some(min) = f.schema.minimum {
         meta.push(format!("min: {min}"));
+    }
+    if let Some(max) = f.schema.maximum {
+        meta.push(format!("max: {max}"));
     }
 
     let type_str = meta.join(", ");

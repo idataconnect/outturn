@@ -89,14 +89,12 @@ pub struct SchemaInfo {
     pub description: Option<String>,
     pub minimum: Option<f64>,
     pub maximum: Option<f64>,
-    pub example: Option<Value>,
     pub items_type: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct AuthInfo {
     pub header_name: String,
-    pub description: String,
 }
 
 const MAX_REF_DEPTH: usize = 20;
@@ -217,7 +215,7 @@ pub fn parse(bytes: &[u8]) -> Result<Api, ParseError> {
         return Err(ParseError::NoOperations);
     }
 
-    let common_auth = detect_common_auth(&auth_params_seen, total_ops, &operations);
+    let common_auth = detect_common_auth(&auth_params_seen, total_ops);
 
     operations.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -380,9 +378,9 @@ fn extract_schema_info(
 
     let enum_values = obj.get("enum").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
-            .filter_map(|v| match v {
-                Value::String(s) => Some(s.clone()),
-                other => Some(other.to_string()),
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
             })
             .collect()
     });
@@ -393,7 +391,6 @@ fn extract_schema_info(
         .map(String::from);
     let minimum = obj.get("minimum").and_then(|v| v.as_f64());
     let maximum = obj.get("maximum").and_then(|v| v.as_f64());
-    let example = obj.get("example").cloned();
 
     let items_type = obj.get("items").and_then(|items| {
         let resolved_items = resolve_ref(items, root, seen).unwrap_or(items);
@@ -410,7 +407,6 @@ fn extract_schema_info(
         description,
         minimum,
         maximum,
-        example,
         items_type,
     }
 }
@@ -423,7 +419,6 @@ fn default_schema() -> SchemaInfo {
         description: None,
         minimum: None,
         maximum: None,
-        example: None,
         items_type: None,
     }
 }
@@ -552,30 +547,20 @@ fn extract_responses(
     responses
 }
 
-fn detect_common_auth(
-    header_counts: &HashMap<String, usize>,
-    total_ops: u32,
-    operations: &[Operation],
-) -> Option<AuthInfo> {
+fn detect_common_auth(header_counts: &HashMap<String, usize>, total_ops: u32) -> Option<AuthInfo> {
     // A header that appears on >80% of operations is considered common auth
     let threshold = (total_ops as f64 * 0.8) as usize;
 
     let auth_header_names = ["Authorization", "authorization", "X-API-Key", "x-api-key"];
 
     for name in &auth_header_names {
-        if let Some(&count) = header_counts.get(*name) {
-            if count >= threshold {
-                let description = operations
-                    .iter()
-                    .flat_map(|op| op.parameters.iter())
-                    .find(|p| p.location == "header" && p.name == *name)
-                    .map(|p| p.description.clone())
-                    .unwrap_or_default();
-                return Some(AuthInfo {
-                    header_name: name.to_string(),
-                    description,
-                });
-            }
+        if header_counts
+            .get(*name)
+            .is_some_and(|&count| count >= threshold)
+        {
+            return Some(AuthInfo {
+                header_name: name.to_string(),
+            });
         }
     }
 
