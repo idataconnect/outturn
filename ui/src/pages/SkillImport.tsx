@@ -6,6 +6,7 @@ import { ApiError } from '../lib/api'
 import {
   createFromOpenApi,
   previewOpenApi,
+  authKindLabel,
   type OpenApiPreview,
   type Skill,
 } from '../lib/skills'
@@ -260,10 +261,25 @@ export default function SkillImport() {
               className={`${input} font-mono`}
             />
             <span className={hint}>
-              {preview.auth_header
-                ? 'Named by the specification.'
-                : 'The specification does not say; leave empty if the API takes no credential.'}
+              {preview.auth_kind
+                ? `Named by the specification, for ${authKindLabel[preview.auth_kind]}.`
+                : preview.auth_header
+                  ? 'Guessed from a header every operation takes.'
+                  : preview.unserved_operations > 0
+                    ? 'None of the schemes the specification declares travels in a header a rule can carry.'
+                    : 'The specification does not say; leave empty if the API takes no credential.'}
+              {preview.auth_kind === 'basic' &&
+                ' The variable holds the whole value, Basic and the encoded credentials.'}
             </span>
+            {preview.unserved_operations > 0 && (
+              <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
+                {preview.unserved_operations} of {preview.operations} operations need{' '}
+                {list(preview.unserved_kinds.map((k) => authKindLabel[k]))}
+                {preview.auth_header ? ' rather than this header' : ''}. An egress rule attaches
+                one static header, so the skill will not authenticate{' '}
+                {preview.unserved_operations === preview.operations ? '' : 'those '}on its own.
+              </span>
+            )}
           </label>
           <label className="block">
             <span className={label}>Credential variable</span>
@@ -301,14 +317,24 @@ export default function SkillImport() {
         </form>
       )}
 
-      {created && <StillNeeded skill={created.skill} form={created.form} />}
+      {created && preview && (
+        <StillNeeded skill={created.skill} form={created.form} preview={preview} />
+      )}
     </div>
   )
 }
 
 /** What the browser cannot do. The skill exists, but nothing it names is
  *  reachable until somebody does these. */
-function StillNeeded({ skill, form }: { skill: Skill; form: Form }) {
+function StillNeeded({
+  skill,
+  form,
+  preview,
+}: {
+  skill: Skill
+  form: Form
+  preview: OpenApiPreview
+}) {
   const header = form.auth_header.trim()
   const variable = form.credential_env.trim()
   const rule = JSON.stringify(
@@ -348,6 +374,21 @@ function StillNeeded({ skill, form }: { skill: Skill; form: Form }) {
           </pre>
         </li>
       </ol>
+      {preview.unserved_operations > 0 && (
+        <p className="text-amber-700 dark:text-amber-500">
+          Even then, {preview.unserved_operations} of {preview.operations} operations need{' '}
+          {list(preview.unserved_kinds.map((k) => authKindLabel[k]))}, which no egress rule can
+          attach. The skill will not authenticate{' '}
+          {preview.unserved_operations === preview.operations ? '' : 'those '}on its own.
+        </p>
+      )}
     </div>
   )
+}
+
+/** `a`, `a or b`, `a, b or c`. */
+function list(items: string[]): string {
+  return items.length < 2
+    ? (items[0] ?? '')
+    : `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`
 }

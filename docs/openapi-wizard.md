@@ -327,7 +327,15 @@ their specification to another origin.
 form. `servers[0].url` is the base URL; a `bearer` scheme names
 `Authorization`, an `apiKey` scheme in a header names that header; `info.title`
 and `info.description` are the name and description, and the slug follows from
-the title. So the request splits in two: a preview that parses and returns
+the title. The scheme is the one the most operations ask for -- read per
+operation, since many specifications declare security there rather than at
+the root -- among those an egress rule can serve: one static header, so an
+API key in a header, a bearer token, or basic credentials precomputed. OAuth,
+OpenID Connect, mutual TLS and a key in a query or cookie cannot be, and the
+page says how many operations need one and that the skill will not
+authenticate those on its own. The header confirmed there goes to the create
+as well as into the rule, so the skill tells the agent about the same header
+the rule attaches. So the request splits in two: a preview that parses and returns
 these, with the operation and category counts, and the create that already
 exists. Everything prefilled stays editable, and anything the specification
 did not say is asked for -- a missing `servers` is common, and a relative one

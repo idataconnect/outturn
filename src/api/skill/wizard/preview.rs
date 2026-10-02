@@ -18,6 +18,15 @@ pub struct Preview {
     pub base_url: Option<String>,
     /// The header the credential travels in, when the specification says.
     pub auth_header: Option<String>,
+    /// What kind of scheme `auth_header` serves, when it came from a declared
+    /// scheme rather than a guess from parameters.
+    pub auth_kind: Option<Kind>,
+    /// Operations that require a credential the chosen header does not carry
+    /// -- OAuth, a key in a query, anything a static header cannot be -- and
+    /// so will not authenticate on their own. Zero is the case to want.
+    pub unserved_operations: usize,
+    /// The kinds those operations ask for instead, without repeats.
+    pub unserved_kinds: Vec<Kind>,
     /// A name for the gateway's environment variable, `BIGCAPITAL_API_KEY`.
     pub credential_env: String,
     pub operations: usize,
@@ -48,13 +57,20 @@ pub fn preview(spec_json: &[u8], fetched_from: Option<&str>) -> Result<Preview, 
     let description = text("description");
     let slug = slugify(&name).replace('_', "-");
 
-    let auth_header =
-        declared_auth_header(&root).or_else(|| api.common_auth.map(|a| a.header_name));
+    let auth = declared_auth(&root);
+    let auth_header = auth
+        .chosen
+        .as_ref()
+        .map(|(_, header, _)| header.clone())
+        .or_else(|| api.common_auth.map(|a| a.header_name));
 
     Ok(Preview {
         credential_env: credential_env(&slug),
         base_url: base_url(&root, fetched_from),
         auth_header,
+        auth_kind: auth.chosen.map(|(_, _, kind)| kind),
+        unserved_operations: auth.unserved_operations,
+        unserved_kinds: auth.unserved_kinds,
         categories: categorise(&api.operations).len(),
         operations: api.operations.len(),
         name,
@@ -101,21 +117,60 @@ fn base_url(root: &Value, fetched_from: Option<&str>) -> Option<String> {
 /// nothing inherits the root's. A scheme defined and applied nowhere counts
 /// for nothing but is still a candidate, since some documents define their
 /// scheme and never get round to applying it.
-fn declared_auth_header(root: &Value) -> Option<String> {
+fn declared_auth(root: &Value) -> DeclaredAuth {
+    let none = Default::default();
     let schemes = root
-        .get("components")?
-        .get("securitySchemes")?
-        .as_object()?;
+        .get("components")
+        .and_then(|c| c.get("securitySchemes"))
+        .and_then(Value::as_object)
+        .unwrap_or(&none);
     let uses = scheme_uses(root);
-    schemes
+    let chosen = schemes
         .iter()
         .filter_map(|(name, scheme)| {
-            let header = Kind::of(scheme).header(scheme)?;
-            Some((uses.get(name.as_str()).copied().unwrap_or(0), name, header))
+            let kind = Kind::of(scheme);
+            let header = kind.header(scheme)?;
+            let n = uses.get(name.as_str()).copied().unwrap_or(0);
+            Some((n, name.as_str(), header, kind))
         })
         // Most used; on a tie, the first by name, so the answer is stable.
         .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(a.1)))
-        .map(|(_, _, header)| header)
+        .map(|(_, name, header, kind)| (name.to_string(), header, kind));
+
+    // An operation is served if it needs nothing, offers an alternative that
+    // needs nothing, or offers one that needs the chosen scheme alone. An
+    // alternative needing it alongside another is not: a rule carries one.
+    let chosen_name = chosen.as_ref().map(|(name, _, _)| name.as_str());
+    let mut unserved_operations = 0;
+    let mut unserved_kinds = std::collections::BTreeSet::new();
+    for alternatives in requirements(root) {
+        let served = alternatives.is_empty()
+            || alternatives
+                .iter()
+                .any(|alt| alt.is_empty() || (alt.len() == 1 && Some(alt[0]) == chosen_name));
+        if served {
+            continue;
+        }
+        unserved_operations += 1;
+        for name in alternatives.iter().flatten() {
+            if Some(*name) != chosen_name {
+                unserved_kinds.insert(schemes.get(*name).map_or(Kind::Other, Kind::of));
+            }
+        }
+    }
+    DeclaredAuth {
+        chosen,
+        unserved_operations,
+        unserved_kinds: unserved_kinds.into_iter().collect(),
+    }
+}
+
+#[derive(Default)]
+struct DeclaredAuth {
+    /// The scheme's name, the header it travels in, and its kind.
+    chosen: Option<(String, String, Kind)>,
+    unserved_operations: usize,
+    unserved_kinds: Vec<Kind>,
 }
 
 const METHODS: [&str; 8] = [
@@ -163,13 +218,15 @@ fn scheme_uses(root: &Value) -> std::collections::HashMap<&str, usize> {
 /// one static header per host, so an API key in a header, a static bearer
 /// token and basic credentials as a precomputed value are servable, and
 /// nothing else is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
     ApiKeyHeader,
     Bearer,
     Basic,
     ApiKeyQuery,
     ApiKeyCookie,
+    #[serde(rename = "oauth2")]
     OAuth2,
     OpenIdConnect,
     MutualTls,
