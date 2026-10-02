@@ -734,3 +734,50 @@ fn generate_says_nothing_about_auth_when_given_no_header() {
     assert!(!output.body.contains("Authentication is handled"));
     assert!(output.files["list_items.md"].contains("Authorization"));
 }
+
+#[test]
+fn preview_chooses_the_scheme_operations_use() {
+    let spec = spec_with(serde_json::json!({
+        "components": {"securitySchemes": {
+            "a_key": {"type": "apiKey", "in": "header", "name": "X-Rarely"},
+            "b_bearer": {"type": "http", "scheme": "bearer"},
+        }},
+        "paths": {
+            "/a": {"get": {"security": [{"a_key": []}], "responses": {}},
+                   "put": {"security": [{"b_bearer": []}], "responses": {}}},
+            "/b": {"get": {"security": [{"b_bearer": []}], "responses": {}},
+                   "post": {"security": [{"b_bearer": []}, {"a_key": []}], "responses": {}}},
+        },
+    }));
+    assert_eq!(
+        preview(&spec, None).unwrap().auth_header.as_deref(),
+        Some("Authorization")
+    );
+}
+
+#[test]
+fn preview_inherits_root_security_for_operations_declaring_none() {
+    let spec = spec_with(serde_json::json!({
+        "components": {"securitySchemes": {
+            "a_key": {"type": "apiKey", "in": "header", "name": "X-Key"},
+            "b_basic": {"type": "http", "scheme": "basic"},
+        }},
+        "security": [{"a_key": []}],
+        "paths": {
+            "/a": {"get": {"responses": {}}, "post": {"responses": {}}},
+            "/b": {"get": {"security": [{"b_basic": []}], "responses": {}}},
+        },
+    }));
+    assert_eq!(
+        preview(&spec, None).unwrap().auth_header.as_deref(),
+        Some("X-Key")
+    );
+}
+
+#[test]
+fn preview_passes_over_the_petstores_oauth_for_its_api_key() {
+    // OAuth on seven operations, but a rule cannot serve it; the key, on two,
+    // it can.
+    let p = preview(&petstore_spec(), None).unwrap();
+    assert_eq!(p.auth_header.as_deref(), Some("api_key"));
+}

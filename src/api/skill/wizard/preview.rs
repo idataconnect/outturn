@@ -91,48 +91,121 @@ fn base_url(root: &Value, fetched_from: Option<&str>) -> Option<String> {
     Some(resolved.as_str().trim_end_matches('/').to_string())
 }
 
-/// From `components.securitySchemes`: a bearer scheme travels in
-/// `Authorization`, an API key in a header travels in the header it names. A
-/// key in a query or a cookie has no header to name, and OAuth flows are a
-/// bearer token by the time anything carries them.
+/// The scheme the egress rule should serve, from `components.securitySchemes`:
+/// the one the most operations ask for, among those a rule can serve at all.
+///
+/// Per operation, because that is where many specifications say it -- the
+/// petstore declares no root `security` and puts OAuth on seven operations
+/// and an API key on two, and reading only the root then falling back to the
+/// first scheme by key order chose by alphabet. An operation that declares
+/// nothing inherits the root's. A scheme defined and applied nowhere counts
+/// for nothing but is still a candidate, since some documents define their
+/// scheme and never get round to applying it.
 fn declared_auth_header(root: &Value) -> Option<String> {
     let schemes = root
         .get("components")?
         .get("securitySchemes")?
         .as_object()?;
-    // The schemes the document actually applies come first; one merely
-    // defined may be there for a single endpoint.
-    let applied: Vec<&str> = root
-        .get("security")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_object)
-        .flat_map(|req| req.keys().map(String::as_str))
-        .collect();
-    let ordered = applied
+    let uses = scheme_uses(root);
+    schemes
         .iter()
-        .filter_map(|k| schemes.get(*k))
-        .chain(schemes.values());
-    for scheme in ordered {
-        let kind = scheme.get("type").and_then(Value::as_str).unwrap_or("");
-        match kind {
-            "http" => {
-                let s = scheme.get("scheme").and_then(Value::as_str).unwrap_or("");
-                if s.eq_ignore_ascii_case("bearer") {
-                    return Some("Authorization".into());
-                }
-            }
-            "oauth2" | "openIdConnect" => return Some("Authorization".into()),
-            "apiKey" if scheme.get("in").and_then(Value::as_str) == Some("header") => {
-                if let Some(n) = scheme.get("name").and_then(Value::as_str) {
-                    return Some(n.to_string());
-                }
-            }
-            _ => {}
+        .filter_map(|(name, scheme)| {
+            let header = Kind::of(scheme).header(scheme)?;
+            Some((uses.get(name.as_str()).copied().unwrap_or(0), name, header))
+        })
+        // Most used; on a tie, the first by name, so the answer is stable.
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(a.1)))
+        .map(|(_, _, header)| header)
+}
+
+const METHODS: [&str; 8] = [
+    "get", "put", "post", "delete", "options", "head", "patch", "trace",
+];
+
+/// The security requirements each operation carries: its own `security` if it
+/// declares one, even empty, and the root's otherwise. Each is a list of
+/// alternatives, and each alternative the schemes it needs together.
+fn requirements(root: &Value) -> Vec<Vec<Vec<&str>>> {
+    let inherited = read_security(root.get("security")).unwrap_or_default();
+    root.get("paths")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|paths| paths.values())
+        .flat_map(|item| METHODS.iter().filter_map(move |m| item.get(*m)))
+        .map(|op| read_security(op.get("security")).unwrap_or_else(|| inherited.clone()))
+        .collect()
+}
+
+fn read_security(v: Option<&Value>) -> Option<Vec<Vec<&str>>> {
+    Some(
+        v?.as_array()?
+            .iter()
+            .filter_map(Value::as_object)
+            .map(|req| req.keys().map(String::as_str).collect())
+            .collect(),
+    )
+}
+
+/// How many operations name each scheme, counting an operation once however
+/// many of its alternatives name it.
+fn scheme_uses(root: &Value) -> std::collections::HashMap<&str, usize> {
+    let mut uses = std::collections::HashMap::new();
+    for alternatives in requirements(root) {
+        let named: std::collections::BTreeSet<&str> = alternatives.into_iter().flatten().collect();
+        for name in named {
+            *uses.entry(name).or_insert(0) += 1;
         }
     }
-    None
+    uses
+}
+
+/// What a scheme is, as far as an egress rule is concerned: a rule attaches
+/// one static header per host, so an API key in a header, a static bearer
+/// token and basic credentials as a precomputed value are servable, and
+/// nothing else is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    ApiKeyHeader,
+    Bearer,
+    Basic,
+    ApiKeyQuery,
+    ApiKeyCookie,
+    OAuth2,
+    OpenIdConnect,
+    MutualTls,
+    Other,
+}
+
+impl Kind {
+    fn of(scheme: &Value) -> Kind {
+        let field = |k: &str| scheme.get(k).and_then(Value::as_str).unwrap_or("");
+        match field("type") {
+            "apiKey" => match field("in") {
+                "header" => Kind::ApiKeyHeader,
+                "query" => Kind::ApiKeyQuery,
+                "cookie" => Kind::ApiKeyCookie,
+                _ => Kind::Other,
+            },
+            "http" => match field("scheme").to_ascii_lowercase().as_str() {
+                "bearer" => Kind::Bearer,
+                "basic" => Kind::Basic,
+                _ => Kind::Other,
+            },
+            "oauth2" => Kind::OAuth2,
+            "openIdConnect" => Kind::OpenIdConnect,
+            "mutualTLS" => Kind::MutualTls,
+            _ => Kind::Other,
+        }
+    }
+
+    /// The header a rule would attach the credential in, if a rule can.
+    fn header(self, scheme: &Value) -> Option<String> {
+        match self {
+            Kind::ApiKeyHeader => scheme.get("name").and_then(Value::as_str).map(Into::into),
+            Kind::Bearer | Kind::Basic => Some("Authorization".into()),
+            _ => None,
+        }
+    }
 }
 
 /// `bigcapital` -> `BIGCAPITAL_API_KEY`, and `acme-api` the same shape rather
