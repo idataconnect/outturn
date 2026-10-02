@@ -43,7 +43,7 @@ pub fn preview(spec_json: &[u8], fetched_from: Option<&str>) -> Result<Preview, 
     // Parsed twice, once for the operations and once for the parts `parse`
     // has no use for. Cheap beside the rest, and it keeps `parse` about
     // operations.
-    let root: Value = serde_json::from_slice(spec_json).map_err(ParseError::InvalidJson)?;
+    let root = parse::document(spec_json)?;
 
     let info = root.get("info");
     let text = |key: &str| {
