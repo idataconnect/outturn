@@ -824,3 +824,123 @@ fn preview_serves_nothing_from_a_query_key() {
         serde_json::json!("oauth2")
     );
 }
+
+fn yaml_input(spec: &str) -> WizardInput {
+    WizardInput {
+        spec_json: spec.as_bytes().to_vec(),
+        slug: "x".to_string(),
+        base_url: "https://x.com".to_string(),
+        auth_header: None,
+    }
+}
+
+const SMALL_YAML: &str = "\
+openapi: 3.0.0
+info:
+  title: Acme Billing
+  description: Invoices and the like.
+paths:
+  /invoices/{id}:
+    get:
+      operationId: getInvoice
+      summary: Fetch an invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+";
+
+#[test]
+fn yaml_reads_as_the_same_document_as_json() {
+    let from_yaml = document(SMALL_YAML.as_bytes()).unwrap();
+    let from_json = document(&serde_json::to_vec(&from_yaml).unwrap()).unwrap();
+    assert_eq!(from_yaml, from_json);
+    assert_eq!(from_yaml["info"]["title"], "Acme Billing");
+    // Unquoted 3.0.0 stays a string rather than becoming a number or failing.
+    assert_eq!(from_yaml["openapi"], "3.0.0");
+}
+
+#[test]
+fn yaml_specification_generates_and_previews() {
+    let out = generate(&yaml_input(SMALL_YAML)).unwrap();
+    assert!(
+        out.files.keys().any(|k| k.contains("invoice")),
+        "{:?}",
+        out.files.keys()
+    );
+    let p = preview(SMALL_YAML.as_bytes(), None).unwrap();
+    assert_eq!(p.name, "Acme Billing");
+    assert_eq!(p.operations, 1);
+}
+
+#[test]
+fn json_still_reads_as_json() {
+    // JSON is also YAML, so the order matters only for the error; a JSON
+    // document must never reach the YAML reader's rules about it.
+    assert!(
+        generate(&WizardInput {
+            spec_json: small_spec(),
+            ..yaml_input("")
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn yaml_alias_bomb_refused() {
+    // Nine levels of tenfold aliases: a few hundred bytes that would expand
+    // to a billion strings.
+    let mut bomb = String::from(
+        "a: &a [\"lol\",\"lol\",\"lol\",\"lol\",\"lol\",\"lol\",\"lol\",\"lol\",\"lol\",\"lol\"]\n",
+    );
+    for (prev, name) in ["a", "b", "c", "d", "e", "f", "g", "h"]
+        .iter()
+        .zip(["b", "c", "d", "e", "f", "g", "h", "i"])
+    {
+        bomb.push_str(&format!(
+            "{name}: &{name} [{}]\n",
+            vec![format!("*{prev}"); 10].join(",")
+        ));
+    }
+    bomb.push_str("paths: *i\n");
+    assert!(bomb.len() < 1024);
+    assert!(matches!(
+        document(bomb.as_bytes()),
+        Err(ParseError::Unreadable { .. })
+    ));
+    assert!(matches!(
+        generate(&yaml_input(&bomb)),
+        Err(ParseError::Unreadable { .. })
+    ));
+    assert!(preview(bomb.as_bytes(), None).is_err());
+}
+
+#[test]
+fn any_yaml_alias_refused() {
+    // Refused outright rather than budgeted, so even a harmless one is.
+    let spec = format!("{SMALL_YAML}x-shared: &s {{type: string}}\nx-again: *s\n");
+    let err = document(spec.as_bytes()).unwrap_err();
+    assert!(matches!(err, ParseError::Unreadable { .. }), "{err}");
+}
+
+#[test]
+fn too_large_yaml_rejected_before_parsing() {
+    let big = "a: b\n".repeat(17 * 1024 * 1024 / 5 + 1);
+    assert!(matches!(
+        generate(&yaml_input(&big)),
+        Err(ParseError::TooLarge(_))
+    ));
+    assert!(matches!(
+        preview(big.as_bytes(), None),
+        Err(ParseError::TooLarge(_))
+    ));
+}
+
+#[test]
+fn neither_json_nor_yaml_says_both() {
+    let err = document(b"{ not: [ closed").unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("JSON") && text.contains("YAML"), "{text}");
+}
