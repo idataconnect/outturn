@@ -1431,6 +1431,103 @@ async fn a_rule_that_would_mislead_its_author_is_refused() {
     }
 }
 
+/// A rule exchanging client credentials names everything and holds nothing,
+/// and it reaches the turn as written -- every field is what the commitment
+/// covers, so one dropped on the way would fail every request it made.
+#[tokio::test]
+async fn a_client_credentials_rule_is_kept_and_reaches_the_turn() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&token),
+            r#"{"host":"api.example.com","client":{
+                "token_url":"https://login.example.com/tenant-a/oauth2/token",
+                "scope":"bookings.read bookings.write",
+                "client_id_env":"OUTTURN_EGRESS_BOOKING_CLIENT_ID",
+                "client_secret_env":"OUTTURN_EGRESS_BOOKING_CLIENT_SECRET",
+                "client_auth":"post"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert!(
+        body.contains(r#""client_secret_env":"OUTTURN_EGRESS_BOOKING_CLIENT_SECRET""#),
+        "{body}"
+    );
+
+    let rules = outturn::api::egress::rules_for(&h.db.pool, acme)
+        .await
+        .expect("rules");
+    let client = rules[0].client.as_ref().expect("the exchange came back");
+    assert_eq!(
+        client.token_url,
+        "https://login.example.com/tenant-a/oauth2/token"
+    );
+    assert_eq!(
+        client.scope.as_deref(),
+        Some("bookings.read bookings.write")
+    );
+    assert_eq!(client.client_id_env, "OUTTURN_EGRESS_BOOKING_CLIENT_ID");
+    assert_eq!(
+        client.client_auth,
+        outturn::runtime::egress::ClientAuth::Post
+    );
+    assert!(rules[0].header.is_none());
+}
+
+/// An exchange that would send its secret somewhere it should not go, or could
+/// never work, is refused while somebody is looking.
+#[tokio::test]
+async fn a_client_credentials_rule_that_would_leak_or_fail_is_refused() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let client = |fields: &str| {
+        format!(
+            r#"{{"host":"api.example.com","client":{{"client_id_env":"OUTTURN_EGRESS_ID","client_secret_env":"OUTTURN_EGRESS_SECRET",{fields}}}}}"#
+        )
+    };
+    for (input, expected) in [
+        (
+            client(r#""token_url":"http://login.example.com/token""#),
+            "has to be https",
+        ),
+        (
+            client(r#""token_url":"https://u:p@login.example.com/token""#),
+            "credentials of its own",
+        ),
+        (client(r#""token_url":"login.example.com""#), "is not a URL"),
+        (
+            r#"{"host":"api.example.com","client":{"token_url":"https://login.example.com/t","client_id_env":"OUTTURN_EGRESS_ID","client_secret_env":"sk_live_abc-123"}}"#.to_string(),
+            "not the name of an environment variable",
+        ),
+        (
+            client(r#""token_url":"https://login.example.com/t","scope":"a  b""#),
+            "single spaces",
+        ),
+        (
+            r#"{"host":"api.example.com","client":{"token_url":"https://login.example.com/t","client_id_env":"OUTTURN_EGRESS_ID","client_secret_env":"DATABASE_URL"}}"#.to_string(),
+            "OUTTURN_EGRESS_",
+        ),
+        (
+            r#"{"host":"api.example.com","header":"authorization","credential_env":"KEY","client":{"token_url":"https://login.example.com/t","client_id_env":"ID","client_secret_env":"SECRET"}}"#.to_string(),
+            "not both",
+        ),
+    ] {
+        let (status, body) = h.post("/v1/egress-rules", Some(&token), &input).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{input} gave: {body}");
+        assert!(body.contains(expected), "{input} gave: {body}");
+    }
+}
+
 /// One rule per host, so which credential travels does not depend on
 /// insertion order.
 #[tokio::test]

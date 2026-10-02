@@ -9,7 +9,16 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use crate::runtime::egress::EgressRule;
+use crate::runtime::egress::{ClientAuth, ClientCredentials, EgressRule};
+
+/// The columns a rule is read from, everywhere one is read. A macro because the
+/// queries are static strings, which is what keeps them out of reach of input.
+macro_rules! rule_columns {
+    () => {
+        "host, header, credential_env, \
+     token_url, scope, client_id_env, client_secret_env, client_auth"
+    };
+}
 
 /// The hosts this workspace's agents may reach.
 ///
@@ -18,11 +27,13 @@ use crate::runtime::egress::EgressRule;
 /// somewhere would be a decision made on a workspace's behalf about who their
 /// agents may talk to.
 pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRule>, sqlx::Error> {
-    let rows = sqlx::query(
-        "select host, header, credential_env from egress_rules \
+    let rows = sqlx::query(concat!(
+        "select ",
+        rule_columns!(),
+        " from egress_rules \
          where workspace_id = $1 and enabled \
-         order by host",
-    )
+         order by host"
+    ))
     .bind(workspace_id)
     .fetch_all(pool)
     .await?;
@@ -33,6 +44,7 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
             host: r.get("host"),
             header: r.get("header"),
             credential_env: r.get("credential_env"),
+            client: read_client(r),
         })
         .collect())
 }
@@ -94,6 +106,8 @@ pub struct Rule {
     pub host: String,
     pub header: Option<String>,
     pub credential_env: Option<String>,
+    /// Names and a URL, never a secret or a token, for the same reason.
+    pub client: Option<ClientCredentials>,
     pub enabled: bool,
 }
 
@@ -106,6 +120,10 @@ pub struct CreateRule {
     pub header: Option<String>,
     #[serde(default)]
     pub credential_env: Option<String>,
+    /// An OAuth 2 client-credentials exchange, instead of `header` and
+    /// `credential_env`.
+    #[serde(default)]
+    pub client: Option<ClientCredentials>,
 }
 
 #[derive(Debug)]
@@ -133,10 +151,12 @@ pub async fn list(
     after: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<Rule>, RuleError> {
-    let rows = sqlx::query(
-        "select id, host, header, credential_env, enabled from egress_rules \
-         where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3",
-    )
+    let rows = sqlx::query(concat!(
+        "select id, ",
+        rule_columns!(),
+        ", enabled from egress_rules \
+         where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3"
+    ))
     .bind(workspace_id)
     .bind(after)
     .bind(limit)
@@ -171,6 +191,17 @@ pub async fn create(
         _ => {}
     }
 
+    if let Some(client) = &input.client {
+        if input.header.is_some() {
+            return Err(RuleError::Invalid(
+                "a rule takes a header and a variable, or a client-credentials exchange, \
+                 not both: the API would read one of them and nobody could say which"
+                    .into(),
+            ));
+        }
+        check_client(client)?;
+    }
+
     if let Some(header) = &input.header {
         // Checked against the same list the guest is checked against, so a
         // rule cannot ask for something a request could never carry.
@@ -183,16 +214,25 @@ pub async fn create(
         crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
     }
 
-    let row = sqlx::query(
-        "insert into egress_rules (id, workspace_id, host, header, credential_env) \
-         values ($1, $2, $3, $4, $5) \
-         returning id, host, header, credential_env, enabled",
-    )
+    let client = input.client.as_ref();
+    let row = sqlx::query(concat!(
+        "insert into egress_rules (id, workspace_id, host, header, credential_env, \
+             token_url, scope, client_id_env, client_secret_env, client_auth) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         returning id, ",
+        rule_columns!(),
+        ", enabled"
+    ))
     .bind(Uuid::now_v7())
     .bind(workspace_id)
     .bind(&host)
     .bind(&input.header)
     .bind(&input.credential_env)
+    .bind(client.map(|c| &c.token_url))
+    .bind(client.and_then(|c| c.scope.as_ref()))
+    .bind(client.map(|c| &c.client_id_env))
+    .bind(client.map(|c| &c.client_secret_env))
+    .bind(client.map(|c| c.client_auth.as_str()))
     .fetch_one(pool)
     .await
     .map_err(|e| match &e {
@@ -223,6 +263,75 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
         host: row.get("host"),
         header: row.get("header"),
         credential_env: row.get("credential_env"),
+        client: read_client(row),
         enabled: row.get("enabled"),
     }
+}
+
+fn read_client(row: &sqlx::postgres::PgRow) -> Option<ClientCredentials> {
+    Some(ClientCredentials {
+        token_url: row.get::<Option<String>, _>("token_url")?,
+        scope: row.get("scope"),
+        client_id_env: row.get("client_id_env"),
+        client_secret_env: row.get("client_secret_env"),
+        // The column's own check admits only these two.
+        client_auth: match row.get::<Option<&str>, _>("client_auth") {
+            Some("post") => ClientAuth::Post,
+            _ => ClientAuth::Basic,
+        },
+    })
+}
+
+/// Refuses an exchange that could not work, or would send its secret somewhere
+/// it should not go.
+///
+/// The gateway vets the token URL again when it exchanges -- resolving it, and
+/// refusing it if the answer is private -- because what a name resolves to
+/// today is not what it resolved to when the rule was written. This is the part
+/// that can be said now, while somebody is looking.
+fn check_client(client: &ClientCredentials) -> Result<(), RuleError> {
+    let url = reqwest::Url::parse(&client.token_url)
+        .map_err(|_| RuleError::Invalid(format!("{} is not a URL", client.token_url)))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| RuleError::Invalid("the token URL names no host".into()))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(RuleError::Invalid(
+            "the token URL carries credentials of its own; name them as variables instead".into(),
+        ));
+    }
+    let port = url.port_or_known_default().unwrap_or(0);
+    let opened = crate::gateway::egress::internal::Internal::shared().allows(host, port);
+    match url.scheme() {
+        "https" => {}
+        "http" if opened => {}
+        _ => {
+            return Err(RuleError::Invalid(
+                "the token URL has to be https: the client secret is sent to it".into(),
+            ));
+        }
+    }
+
+    for variable in [&client.client_id_env, &client.client_secret_env] {
+        crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
+    }
+
+    if let Some(scope) = &client.scope {
+        // RFC 6749 section 3.3: tokens of printable ASCII, minus `"` and `\`,
+        // separated by single spaces.
+        let valid = !scope.is_empty()
+            && scope.split(' ').all(|token| {
+                !token.is_empty()
+                    && token
+                        .chars()
+                        .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\')
+            });
+        if !valid {
+            return Err(RuleError::Invalid(
+                "a scope is one or more tokens separated by single spaces".into(),
+            ));
+        }
+    }
+
+    Ok(())
 }

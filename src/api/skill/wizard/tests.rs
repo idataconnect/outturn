@@ -584,7 +584,7 @@ fn preview_reads_what_the_specification_declares() {
     assert_eq!(p.name, "Acme Billing API");
     assert_eq!(p.description, "Invoices.");
     assert_eq!(p.slug, "acme-billing-api");
-    assert_eq!(p.credential_env, "ACME_BILLING_API_KEY");
+    assert_eq!(p.credential_env, "OUTTURN_EGRESS_ACME_BILLING_API_KEY");
     assert_eq!(p.base_url.as_deref(), Some("https://api.acme.test/v2"));
     assert_eq!(p.auth_header.as_deref(), Some("X-Acme-Key"));
     assert_eq!(p.operations, 3);
@@ -613,7 +613,7 @@ fn preview_falls_back_to_a_header_every_operation_takes() {
     let p = preview(&small_spec(), None).unwrap();
     assert_eq!(p.auth_header.as_deref(), Some("Authorization"));
     assert_eq!(p.slug, "test");
-    assert_eq!(p.credential_env, "TEST_API_KEY");
+    assert_eq!(p.credential_env, "OUTTURN_EGRESS_TEST_API_KEY");
 }
 
 #[test]

@@ -1428,6 +1428,7 @@ async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
         host: "example.com".into(),
         header: None,
         credential_env: None,
+        client: None,
     }];
 
     runner()
@@ -1457,6 +1458,7 @@ async fn the_node_metadata_service_is_not_reachable() {
             host: "169.254.169.254".into(),
             header: None,
             credential_env: None,
+            client: None,
         }],
     )
     .await;
@@ -1476,6 +1478,7 @@ async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
             host: "example.com".into(),
             header: None,
             credential_env: None,
+            client: None,
         }],
     )
     .await;
