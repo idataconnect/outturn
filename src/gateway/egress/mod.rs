@@ -26,6 +26,7 @@
 //! What is *not* decided here is where the request physically leaves from.
 //! See `transport`.
 
+pub mod client;
 pub mod internal;
 pub mod transport;
 
@@ -241,7 +242,7 @@ pub async fn fetch(
     // A credential travels only where it cannot be read on the way. A
     // workspace that configured a key for a host did not consent to it going
     // out in clear because a model typed http.
-    if rule.credential_env.is_some() && url.scheme() != "https" {
+    if (rule.credential_env.is_some() || rule.client.is_some()) && url.scheme() != "https" {
         return Err((
             StatusCode::FORBIDDEN,
             format!("{host} has a credential configured, so it can only be reached over https"),
@@ -318,6 +319,46 @@ pub async fn fetch(
         outgoing.insert(name, value);
     }
 
+    // Exchanged here, after everything about the request itself has been
+    // allowed, so a request that was going to be refused anyway spends nothing
+    // at the token endpoint. Attached last for the reason the static one is.
+    if let Some(client) = &rule.client {
+        if rule.header.is_some() || rule.credential_env.is_some() {
+            // The API refuses to write one, so this is a row edited by hand.
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("{host} has two credentials configured, so neither is sent"),
+            ));
+        }
+        let token = state
+            .client_tokens
+            .bearer(
+                state.egress_transport.as_ref(),
+                &state.internal,
+                claims.workspace_id,
+                rule,
+                client,
+            )
+            .await
+            .map_err(|e| {
+                let status = if e.is_configuration() {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                (status, e.to_string())
+            })?;
+        let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "this host's credential cannot be sent as a header".to_string(),
+                )
+            })?;
+        value.set_sensitive(true);
+        outgoing.insert(reqwest::header::AUTHORIZATION, value);
+    }
+
     let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -341,12 +382,22 @@ pub async fn fetch(
     };
 
     match state.egress_transport.send(vetted).await {
-        Ok(response) => Ok(Json(EgressResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-            truncated: response.truncated,
-        })),
+        Ok(response) => {
+            // A provider may revoke a token early, and nothing else would tell
+            // the cache. Forgotten rather than retried: the 401 goes back as it
+            // is, and the agent's next call exchanges afresh. Whether this
+            // request is safe to send twice is not this tier's to decide -- see
+            // docs/idempotency.md.
+            if response.status == 401 && rule.client.is_some() {
+                state.client_tokens.evict(claims.workspace_id, rule);
+            }
+            Ok(Json(EgressResponse {
+                status: response.status,
+                headers: response.headers,
+                body: response.body,
+                truncated: response.truncated,
+            }))
+        }
         // A failed request is not a refusal: the caller was allowed, and the
         // world did not cooperate. It comes back as text the model can act on
         // rather than as a status it cannot see.
