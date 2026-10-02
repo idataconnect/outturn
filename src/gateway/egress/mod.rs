@@ -301,6 +301,13 @@ pub async fn fetch(
         // the namespace existed, or by hand, must not reach the operator's own.
         crate::runtime::egress::check_credential_variable(variable)
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
+        // And bound to this workspace and this host by the operator, before it
+        // is read: the namespace is shared, so naming a variable says nothing
+        // about whose it is. The workspace is the token's, never the rule's.
+        state
+            .bindings
+            .check_static(claims.workspace_id, variable, &host)
+            .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let secret = std::env::var(variable).map_err(|_| {
             (
                 StatusCode::FORBIDDEN,
@@ -334,6 +341,12 @@ pub async fn fetch(
                 format!("{host} has two credentials configured, so neither is sent"),
             ));
         }
+        // Before the cache as well as the exchange, so a token is handed out
+        // only where the secret that bought it may go.
+        state
+            .bindings
+            .check_client(claims.workspace_id, client, &host)
+            .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let token = state
             .client_tokens
             .bearer(
@@ -789,7 +802,18 @@ mod client_credentials {
         });
         let state = Arc::new(
             super::super::GatewayState::new(Vec::new(), validator)
-                .with_egress_transport(world.clone()),
+                .with_egress_transport(world.clone())
+                .with_bindings(
+                    crate::egress::bindings::Bindings::parse(
+                        r#"{
+                            "OUTTURN_EGRESS_TEST_FETCH_CC_ID": {"workspaces": ["*"],
+                                "hosts": ["93.184.215.14"], "token_url": "https://93.184.215.15/token"},
+                            "OUTTURN_EGRESS_TEST_FETCH_CC_SECRET": {"workspaces": ["*"],
+                                "hosts": ["93.184.215.14"], "token_url": "https://93.184.215.15/token"}
+                        }"#,
+                    )
+                    .expect("readable"),
+                ),
         );
 
         let workspace = uuid::Uuid::now_v7();
@@ -829,5 +853,175 @@ mod client_credentials {
             "held for the second request, exchanged afresh after the 401"
         );
         assert_eq!(*world.exchanges.lock().unwrap(), 2);
+    }
+
+    /// The leak bindings close: a workspace writing a rule that names a
+    /// variable the operator set up for another, on a host it controls. Its
+    /// own rule, honestly committed -- and still refused, before anything is
+    /// read or sent.
+    #[tokio::test]
+    async fn a_workspace_cannot_send_another_workspaces_credential() {
+        use std::sync::Mutex;
+        use transport::{TransportResponse, VettedRequest};
+
+        struct Recorder(Mutex<Vec<String>>);
+
+        #[async_trait::async_trait]
+        impl transport::EgressTransport for Recorder {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+
+            async fn send(
+                &self,
+                request: VettedRequest,
+            ) -> Result<TransportResponse, TransportError> {
+                self.0.lock().unwrap().push(request.url.to_string());
+                Ok(TransportResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: "{}".into(),
+                    truncated: false,
+                })
+            }
+        }
+
+        // SAFETY: names no other test uses.
+        unsafe {
+            std::env::set_var("OUTTURN_EGRESS_TEST_ACME_STRIPE", "sk_live_acme");
+            std::env::set_var("OUTTURN_EGRESS_TEST_ACME_ID", "acme-id");
+            std::env::set_var("OUTTURN_EGRESS_TEST_ACME_SECRET", "acme-secret");
+        }
+        let acme = uuid::Uuid::now_v7();
+        let thief = uuid::Uuid::now_v7();
+        // Literal public addresses, so nothing is asked of a resolver: .14 is
+        // ACME's API, .15 its token endpoint, .66 the thief's.
+        let bindings = crate::egress::bindings::Bindings::parse(&format!(
+            r#"{{
+                "OUTTURN_EGRESS_TEST_ACME_STRIPE": {{"workspaces": ["{acme}"], "hosts": ["93.184.215.14"]}},
+                "OUTTURN_EGRESS_TEST_ACME_ID": {{"workspaces": ["{acme}"], "hosts": ["93.184.215.14"],
+                    "token_url": "https://93.184.215.15/token"}},
+                "OUTTURN_EGRESS_TEST_ACME_SECRET": {{"workspaces": ["{acme}"], "hosts": ["93.184.215.14"],
+                    "token_url": "https://93.184.215.15/token"}}
+            }}"#
+        ))
+        .expect("readable");
+
+        let seed = [11u8; 32];
+        let minter = crate::auth::TokenMinter::new(&seed).expect("minter");
+        let validator = crate::auth::TokenValidator::new(
+            &crate::auth::TokenMinter::public_key_of(&seed),
+            crate::auth::AUDIENCE_GATEWAY,
+        )
+        .expect("validator");
+        let sent = Arc::new(Recorder(Mutex::new(Vec::new())));
+        let state = Arc::new(
+            super::super::GatewayState::new(Vec::new(), validator)
+                .with_egress_transport(sent.clone())
+                .with_bindings(bindings),
+        );
+
+        let ask = |workspace: uuid::Uuid, rule: EgressRule, url: &str| {
+            let state = state.clone();
+            let rules = vec![rule.clone()];
+            let token = minter
+                .mint_turn(
+                    uuid::Uuid::now_v7(),
+                    workspace,
+                    commit::root(workspace, &rules),
+                    crate::egress::gate::Gates::none().root(workspace),
+                )
+                .expect("turn token");
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            let request = EgressRequest {
+                method: "GET".into(),
+                url: url.into(),
+                gates: crate::egress::gate::Gates::none(),
+                headers: Vec::new(),
+                body: None,
+                proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+            };
+            async move {
+                fetch(State(state), headers, Json(request))
+                    .await
+                    .map(|_| ())
+            }
+        };
+        let header = |host: &str| EgressRule {
+            host: host.into(),
+            header: Some("authorization".into()),
+            credential_env: Some("OUTTURN_EGRESS_TEST_ACME_STRIPE".into()),
+            client: None,
+        };
+        let client = |host: &str, token_url: &str| EgressRule {
+            host: host.into(),
+            header: None,
+            credential_env: None,
+            client: Some(crate::runtime::egress::ClientCredentials {
+                token_url: token_url.into(),
+                scope: None,
+                client_id_env: "OUTTURN_EGRESS_TEST_ACME_ID".into(),
+                client_secret_env: "OUTTURN_EGRESS_TEST_ACME_SECRET".into(),
+                client_auth: crate::runtime::egress::ClientAuth::Basic,
+            }),
+        };
+
+        // The thief's own host, ACME's variable.
+        let (status, why) = ask(
+            thief,
+            header("93.184.215.66"),
+            "https://93.184.215.66/collect",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(why.contains("not bound to this workspace"), "{why}");
+
+        // Even at ACME's own host: the variable is ACME's to use.
+        let (_, why) = ask(
+            thief,
+            header("93.184.215.14"),
+            "https://93.184.215.14/charges",
+        )
+        .await
+        .unwrap_err();
+        assert!(why.contains("not bound to this workspace"), "{why}");
+
+        // The client secret, at a token endpoint the thief names.
+        let (status, why) = ask(
+            thief,
+            client("93.184.215.66", "https://93.184.215.66/token"),
+            "https://93.184.215.66/collect",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(why.contains("not bound to this workspace"), "{why}");
+
+        // And ACME itself cannot aim its own secret somewhere else.
+        let (_, why) = ask(
+            acme,
+            client("93.184.215.14", "https://93.184.215.66/token"),
+            "https://93.184.215.14/ledger",
+        )
+        .await
+        .unwrap_err();
+        assert!(why.contains("token endpoint"), "{why}");
+
+        assert!(
+            sent.0.lock().unwrap().is_empty(),
+            "nothing left the gateway: {:?}",
+            sent.0.lock().unwrap()
+        );
+
+        // Where it is bound, it goes.
+        ask(
+            acme,
+            header("93.184.215.14"),
+            "https://93.184.215.14/charges",
+        )
+        .await
+        .expect("bound to ACME at its host");
     }
 }

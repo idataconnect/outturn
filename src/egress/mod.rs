@@ -5,6 +5,7 @@
 //! tier needs to share: the commitment the API makes to a rule set, and the
 //! proof a request carries to show a rule is one the API vouched for.
 
+pub mod bindings;
 pub mod commit;
 pub mod gate;
 pub mod grant;
