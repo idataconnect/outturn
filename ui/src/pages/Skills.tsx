@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { AlertTriangle, BookText, Building2, GitFork, Layers } from 'lucide-react'
+import { AlertTriangle, BookText, Building2, FileUp, GitFork, Layers } from 'lucide-react'
 
 import { Badge, FilterBox, PageHeader, RecordList, RecordRow } from '../components/IndexPage'
 import { ApiError } from '../lib/api'
@@ -26,6 +26,8 @@ export default function Skills() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canWrite = authorities.includes('skills:write')
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
+  const isOperator =
+    state.status === 'authenticated' && state.session.roles.includes('system_admin')
 
   useEffect(() => {
     void (async () => {
@@ -51,6 +53,16 @@ export default function Skills() {
         description="Instructions an agent is given beside its own prompt. The operator's reach every workspace; yours are your own, and can vary theirs without editing it."
         action={canWrite ? { to: '/skills/new', label: 'New skill' } : undefined}
       />
+
+      {canWrite && isOperator && (
+        <Link
+          to="/skills/import"
+          className="mt-3 inline-flex items-center gap-1.5 text-sm text-surface-700 dark:text-surface-300 underline underline-offset-2"
+        >
+          <FileUp size={14} aria-hidden />
+          Import from OpenAPI
+        </Link>
+      )}
 
       {error && (
         <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
