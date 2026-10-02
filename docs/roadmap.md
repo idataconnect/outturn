@@ -234,6 +234,13 @@ nothing implements: a credential store that holds one credential per workspace
 with three possible lifecycles, and per-agent scoping, which is a schema change
 plus a resolution rule that must narrow rather than widen.
 
+The credential store is designed in
+[integrations.md#authorization-code-grants](integrations.md#authorization-code-grants):
+person- or workspace-owned grants, refresh tokens encrypted under a key only
+the gateway holds, the callback with state, PKCE and a browser-bound cookie,
+the grant id committed into the turn token, and revocation that reaches a
+running turn. Unbuilt.
+
 Not the platform egress list. A workspace integrating with Notion or a
 customer's public API never touches the internal path.
 
