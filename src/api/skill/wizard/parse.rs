@@ -5,7 +5,12 @@ use std::fmt;
 #[derive(Debug)]
 pub enum ParseError {
     TooLarge(usize),
-    InvalidJson(serde_json::Error),
+    /// Neither JSON nor YAML. Both errors are kept, since which one the
+    /// author meant is a guess and the wrong one's complaint is useless.
+    Unreadable {
+        json: serde_json::Error,
+        yaml: String,
+    },
     NotAnObject,
     MissingPaths,
     RefCycle(String),
@@ -17,8 +22,10 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLarge(n) => write!(f, "specification is {n} bytes, limit is 16MB"),
-            Self::InvalidJson(e) => write!(f, "invalid JSON: {e}"),
-            Self::NotAnObject => write!(f, "specification must be a JSON object"),
+            Self::Unreadable { json, yaml } => {
+                write!(f, "neither JSON ({json}) nor YAML ({yaml})")
+            }
+            Self::NotAnObject => write!(f, "specification must be an object"),
             Self::MissingPaths => write!(f, "specification has no paths"),
             Self::RefCycle(r) => write!(f, "circular $ref: {r}"),
             Self::RefDepth(r) => write!(f, "$ref too deep: {r}"),
@@ -94,8 +101,33 @@ pub struct AuthInfo {
 
 const MAX_REF_DEPTH: usize = 20;
 
-pub fn parse(json_bytes: &[u8]) -> Result<Api, ParseError> {
-    let root: Value = serde_json::from_slice(json_bytes).map_err(ParseError::InvalidJson)?;
+/// Reads a specification as JSON, then as YAML, into the one shape the rest
+/// of the wizard reads. The caller has already bounded the bytes.
+///
+/// YAML aliases are refused outright rather than budgeted. An alias is a
+/// pointer, and expanding pointers to pointers is the "billion laughs": a
+/// kilobyte that becomes gigabytes in the `Value`, which no bound on the
+/// input catches. serde-saphyr can cap aliases at any count, and zero is the
+/// count that needs no argument about what is safe -- `$ref` is how an
+/// OpenAPI document shares structure, and a specification that uses anchors
+/// instead is rare enough to ask for converting.
+pub fn document(bytes: &[u8]) -> Result<Value, ParseError> {
+    let json = match serde_json::from_slice(bytes) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    let mut budget = serde_saphyr::Budget::default();
+    budget.max_aliases = 0;
+    let mut options = serde_saphyr::Options::default();
+    options.budget = Some(budget);
+    serde_saphyr::from_slice_with_options(bytes, options).map_err(|e| ParseError::Unreadable {
+        json,
+        yaml: e.to_string(),
+    })
+}
+
+pub fn parse(bytes: &[u8]) -> Result<Api, ParseError> {
+    let root = document(bytes)?;
     let obj = root.as_object().ok_or(ParseError::NotAnObject)?;
     let paths = obj
         .get("paths")

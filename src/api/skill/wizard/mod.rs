@@ -4,7 +4,7 @@ mod render;
 
 use std::collections::BTreeMap;
 
-pub use parse::ParseError;
+pub use parse::{ParseError, document};
 pub use preview::{Kind, Preview, preview};
 
 pub struct WizardInput {

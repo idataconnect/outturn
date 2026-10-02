@@ -178,7 +178,8 @@ is separate from `egress_rules`, a rule references a credential by id rather
 than carrying it, and the gateway is the only tier that can dereference one.
 Then the rules table stays safe to read and the secret lives in exactly one
 place that is already the credential-holding tier. Encryption at rest and who
-holds that key is a decision this document does not make.
+holds that key are settled in [Authorization-code grants](#authorization-code-grants)
+below.
 
 Worth being honest that this is the tier with real work in it. Tier 1 is
 configuration. Tier 3 is a flag. This is a token store, a refresh loop, a
@@ -288,6 +289,186 @@ An OpenAPI wizard is worth building either way. Pointed at a specification it
 produces what a workspace needs to integrate: skill text today, tool
 definitions if that turns out not to be enough, with only the consumer
 changing.
+
+## Authorization-code grants
+
+The three-legged flow tier 2 rests on, designed and unbuilt: a person consents
+at a provider, the provider redirects back with a code, and the platform holds
+a refresh token from then on and trades it for access tokens the gateway
+attaches. RFC 6749 section 4.1, with PKCE.
+
+### Whose token it is
+
+A grant is owned by a workspace or by one person within it, and the extension
+declares which, per scope rather than per vendor. A shared Notion tenant is the
+workspace's: whoever connected it was acting for the workspace, and their
+leaving does not disconnect it. `gmail.send` is a person's: it sends over their
+name, so it is theirs to give and theirs to take back, and nobody else's turn
+may send as them.
+
+On a turn with a `user_id`, a person-owned integration resolves to that
+person's grant and nobody else's. If they have none the integration is
+unavailable on that turn -- never another member's grant, and never a fallback
+to a workspace grant of the same vendor, which would be acting as somebody the
+person is not. A workspace-owned integration resolves the same way whoever is
+typing.
+
+A trigger turn has no `user_id`, deliberately -- it is what stops an agent
+clearing its own stopped-session latch ([triggers.md](triggers.md)). It gets
+workspace-owned grants as any turn does. It gets a person's grant only if the
+trigger names it, and only the grant's own owner may name it, when they set
+the trigger up or later: an explicit "this schedule sends as me", recorded on
+the trigger and shown on it. Not inferred from the trigger's owner, because
+owning a schedule for accountability and lending it your mailbox are different
+things to have agreed to. A trigger whose named grant is revoked, or whose owner
+has left the workspace, runs without it and says so, rather than finding some
+other grant to use.
+
+### Where the refresh token lives, and why that breaks a rule
+
+**Credentials are named, never stored** cannot hold here, and this is where it
+stops holding. A refresh token is minted at runtime, one per grant, and may
+rotate on every use; there is no environment variable to name. So this is the
+first secret the platform writes down, and the design is about keeping what the
+rule was *for* -- nothing that reads a table can leak a secret by reading it --
+after the rule itself is gone.
+
+- **A table of its own, `oauth_grants`**, not columns on `egress_rules`. A rule
+  references an integration; the integration resolves to a grant; only the
+  gateway dereferences one. `egress_rules` stays safe to return to a browser.
+- **Only the refresh token is stored.** Access tokens live in the gateway's
+  memory, per replica, keyed by grant, for the reasons
+  [client-credentials.md](client-credentials.md) gives for its own. A provider
+  that issues a durable token and no refresh token (Notion) has that token
+  stored in the same column, under the same treatment.
+- **Encrypted with a key only the gateway holds.** `OUTTURN_GRANT_KEY`, gateway
+  only, as `OUTTURN_TOKEN_SECRET` is API only. AES-256-GCM, a random nonce per
+  write, and the grant's id, workspace and owner as associated data -- so a
+  ciphertext copied onto another person's row fails to decrypt rather than
+  attaching their token to the wrong turns. The ciphertext carries a key id, and
+  the gateway accepts two keys during a rotation and re-encrypts under the newer
+  one on the next refresh, the same shape as two public keys during a token
+  rotation.
+
+What this keeps: the API, a backup, a read replica, a support query and anyone
+holding the database password read ciphertext. What it does not: the gateway's
+environment plus the table is every grant at once. That is the credential-holding
+tier being what it already was -- it holds every provider key today -- and it is
+why nothing else may hold `OUTTURN_GRANT_KEY`, the API included.
+
+The rotation rule above applies with force. A provider that rotates on use has
+invalidated the old refresh token by the time it answers, so the new ciphertext
+is written in the statement that records the refresh, single-flight per grant
+across replicas -- an advisory lock on the grant id, not a replica-local mutex,
+because two replicas refreshing one rotating grant is one of them losing it.
+
+### The redirect, state and PKCE
+
+One callback for the deployment, `GET /v1/integrations/callback`, on the API
+because that is the tier with a public name; one redirect URI to register with
+each provider. Starting a flow is `POST /v1/integrations/{id}/authorize`, by a
+signed-in person with the authority the integration's ownership needs --
+`settings:update` for a workspace grant, membership for one's own. The API
+records a pending authorization and returns the provider's URL:
+
+- **`state`** is 32 random bytes, the key of a row holding workspace, person,
+  integration, owner kind, the PKCE verifier and an expiry ten minutes out. It
+  is consumed by `DELETE ... RETURNING`, so a second callback with the same
+  value finds nothing.
+- **PKCE with S256, always**, including for confidential clients where the RFC
+  calls it optional. The verifier never leaves the server, so a code
+  intercepted on the way back is worth nothing without the row.
+- **The browser is bound too.** The start sets a short cookie holding a hash
+  of the state, `Path=/v1/integrations/callback`, `SameSite=Lax` -- a top-level
+  redirect from the provider carries it -- and the callback requires it. Without
+  that, the attack is not CSRF in the usual direction but consent phishing:
+  somebody starts a flow in their own workspace and sends the provider link to
+  a victim, whose consent then lands as a grant the sender's agents can use.
+  The state row says whose flow it was; the cookie says this browser started
+  it. The refresh cookie cannot do this job, being scoped to its own path.
+- **`iss`** is checked against the integration's issuer where the provider
+  sends it (RFC 9207), so one provider's code cannot be replayed to another's
+  token endpoint through a shared callback.
+
+The exchange is the gateway's, because it carries the client secret and the
+gateway holds credentials. The API forwards the code and verifier on an
+internal call under a token of audience `outturn:gateway` and a role that holds
+only the authority to complete an exchange -- not `Role::Turn`, so no turn token
+can create a grant, and nothing a browser holds can reach it. The token
+endpoint is vetted exactly as a client-credentials one is: resolved, pinned,
+public unless allowlisted, https, no redirects. The gateway records the scopes
+the provider actually granted beside the ciphertext, and the API sees the grant
+id and those scopes, never the token.
+
+Failure at the callback redirects to the UI with one of a fixed set of codes.
+A provider's `error_description` is not shown, for the reason a token
+endpoint's is not passed to a model: it is free text from somebody who has just
+been handed a secret.
+
+### What a turn's token commits to
+
+The commitment already says which rules a turn may use; a grant-backed rule
+gets its own leaf tag, as client credentials did, and the leaf adds the
+integration and **the grant id the API resolved for this turn**. So the
+question "whose token" is answered once, by the API, when the turn is minted,
+and signed -- the gateway does not decide it again from a user id it would have
+to trust the runtime about. A runtime holding a turn's token can use that turn's
+grants and no others: rewriting the grant id fails the proof, and the grant's
+own workspace and hosts are checked against the token's when it is loaded.
+
+The hosts a grant may travel to come from the integration, not the rule, which
+is the binding [above](#a-credential-is-bound-to-its-host) made concrete: a
+rule that names a grant and a host the integration does not list fails before
+anything is decrypted.
+
+A trade-in at `POST /v1/work/{job_id}/token` copies commitments, as for every
+other rule, so the grant a turn started with is the grant it keeps. That is
+fine for which grant; it is not fine for whether the grant is still alive, which
+is the next section.
+
+### Revocation
+
+Removing a host does not reach into a running turn. Revoking a grant must:
+somebody who disconnects their Google expects it to stop sending now, not in
+however many hours a long-horizon turn has left. So the commitment says which
+grant, and the gateway asks whether it is still live on every use -- a cached
+answer, invalidated over LISTEN/NOTIFY the way roles are, which also evicts the
+access tokens held for it.
+
+Who may revoke: the owner of a person's grant, and anyone with
+`settings:update` for any grant in the workspace -- an administrator may cut
+somebody's mailbox off from the workspace's agents without being able to use
+it. Leaving a workspace revokes every grant that person holds in it.
+
+Revoking wipes the ciphertext in the same statement that marks the row, then
+calls the provider's revocation endpoint (RFC 7009) where there is one, best
+effort. The order matters: a provider that is down must not leave the platform
+holding a token it promised to forget. The row stays, without its secret, so
+the ledger's attribution and the action queue still have something to point at.
+
+A grant the provider revoked -- `invalid_grant` on refresh -- is marked dead
+the same way, and the turn's agent reads the refusal table client credentials
+uses: this credential could not be obtained, retrying will not help. The owner
+is told, through the action queue, that it needs connecting again.
+
+### Beside client credentials
+
+[client-credentials.md](client-credentials.md) is a separate effort and stays
+one. It is the operator's API authenticating as the platform, from two named
+variables, storing nothing; it does not move into `oauth_grants`, and a grant is
+not a client-credentials rule with a stored secret.
+
+What they share is everything after the secret is in hand: the token endpoint
+vetting, the in-memory access-token cache and its refresh-before-lapse rule,
+single-flight, a 401 evicting without retrying, and the failure table. That
+should be one module with two sources of the thing it exchanges.
+
+The binding problem that document leaves open -- any workspace can name a
+variable under `OUTTURN_EGRESS_` -- does not arise here, because a grant is
+bound to a workspace and an owner by its key and its associated data, not by a
+shared namespace. If client credentials later want the same binding, an
+operator-written grant row holding an encrypted secret is the shape to borrow;
+nothing in this design needs that to happen first.
 
 ## Open questions
 
