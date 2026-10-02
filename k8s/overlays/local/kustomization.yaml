@@ -47,6 +47,11 @@ patches:
           # can be written for. See docs/egress.md.
           - name: OUTTURN_INTERNAL_HOSTS
             value: ""
+          # The same declaration the gateway enforces, read here only to
+          # refuse a rule whose credential could never attach. Keep the two
+          # identical. See docs/credential-bindings.md.
+          - name: OUTTURN_CREDENTIAL_BINDINGS
+            value: ""
           # The API is the only tier that signs anything. Generated per clone
           # by scripts/dev-secrets.sh, never committed: a key in the repository
           # is one every clone shares. A real deployment uses its own Secret --
@@ -140,6 +145,12 @@ patches:
           # carries the whole list, and scripts/dev-mac.sh builds it from the
           # components asked for.
           - name: OUTTURN_INTERNAL_HOSTS
+            value: ""
+          # Which workspaces may use each OUTTURN_EGRESS_ variable, and the
+          # hosts (and token URL) it may go to, as JSON. Empty binds nothing,
+          # so every credentialed rule is refused until its variable is bound
+          # here -- see docs/credential-bindings.md. The API carries a copy.
+          - name: OUTTURN_CREDENTIAL_BINDINGS
             value: ""
           # ollama speaks the OpenAI chat-completions protocol, so it is
           # reached through the same provider as api.openai.com -- only the
