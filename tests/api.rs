@@ -120,6 +120,19 @@ async fn harness() -> Harness {
         pool.clone(),
         outturn::events::EventBus::spawn(pool.clone()),
         Arc::new(tokio::sync::Notify::new()),
+    )
+    // What the gateway would have bound, so a rule naming these is one the
+    // API accepts. Every workspace, because each test makes its own.
+    .with_bindings(
+        outturn::egress::bindings::Bindings::parse(
+            r#"{
+                "OUTTURN_EGRESS_BOOKING_CLIENT_ID": {"workspaces": ["*"], "hosts": ["api.example.com"],
+                    "token_url": "https://login.example.com/tenant-a/oauth2/token"},
+                "OUTTURN_EGRESS_BOOKING_CLIENT_SECRET": {"workspaces": ["*"], "hosts": ["api.example.com"],
+                    "token_url": "https://login.example.com/tenant-a/oauth2/token"}
+            }"#,
+        )
+        .expect("readable"),
     ));
 
     // The endpoints runtimes use need the worker that prepares and records
@@ -1478,6 +1491,76 @@ async fn a_client_credentials_rule_is_kept_and_reaches_the_turn() {
         outturn::runtime::egress::ClientAuth::Post
     );
     assert!(rules[0].header.is_none());
+}
+
+/// A rule naming a credential the operator did not bind to this workspace and
+/// host is refused while somebody is looking -- and one that got in some other
+/// way says so when listed. The gateway refuses either regardless; this is
+/// only the earlier, clearer answer.
+#[tokio::test]
+async fn a_rule_naming_an_unbound_credential_is_refused_and_marked() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    for (input, expected) in [
+        // Somebody else's variable: bound to nobody this harness knows of.
+        (
+            r#"{"host":"collect.example.net","header":"authorization","credential_env":"OUTTURN_EGRESS_GLOBEX_STRIPE_KEY"}"#,
+            "not bound to any workspace",
+        ),
+        // A bound pair, aimed at a host it is not bound to.
+        (
+            r#"{"host":"collect.example.net","client":{"token_url":"https://login.example.com/tenant-a/oauth2/token","client_id_env":"OUTTURN_EGRESS_BOOKING_CLIENT_ID","client_secret_env":"OUTTURN_EGRESS_BOOKING_CLIENT_SECRET"}}"#,
+            "not bound to collect.example.net",
+        ),
+        // At its host, but exchanged somewhere else.
+        (
+            r#"{"host":"api.example.com","client":{"token_url":"https://collect.example.net/token","client_id_env":"OUTTURN_EGRESS_BOOKING_CLIENT_ID","client_secret_env":"OUTTURN_EGRESS_BOOKING_CLIENT_SECRET"}}"#,
+            "token endpoint",
+        ),
+    ] {
+        let (status, body) = h.post("/v1/egress-rules", Some(&token), input).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{input} gave: {body}");
+        assert!(body.contains(expected), "{input} gave: {body}");
+    }
+
+    // A row from before bindings existed.
+    sqlx::query(
+        "insert into egress_rules (id, workspace_id, host, header, credential_env) \
+         values ($1, $2, 'collect.example.net', 'authorization', 'OUTTURN_EGRESS_GLOBEX_STRIPE_KEY')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(acme)
+    .execute(&h.db.pool)
+    .await
+    .expect("insert");
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&token),
+            r#"{"host":"plain.example.com"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (_, body) = h.get("/v1/egress-rules", Some(&token)).await;
+    let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let unbound: Vec<(&str, bool)> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["host"].as_str().unwrap(),
+                r["unbound"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect();
+    assert!(unbound.contains(&("collect.example.net", true)), "{body}");
+    assert!(unbound.contains(&("plain.example.com", false)), "{body}");
 }
 
 /// An exchange that would send its secret somewhere it should not go, or could

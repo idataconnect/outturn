@@ -109,6 +109,22 @@ pub struct Rule {
     /// Names and a URL, never a secret or a token, for the same reason.
     pub client: Option<ClientCredentials>,
     pub enabled: bool,
+    /// Its credential is not bound to this workspace and host, so the gateway
+    /// will refuse every request it matches. Said here because a rule written
+    /// before bindings existed looks configured and is not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unbound: bool,
+}
+
+impl Rule {
+    fn as_egress_rule(&self) -> crate::runtime::egress::EgressRule {
+        crate::runtime::egress::EgressRule {
+            host: self.host.clone(),
+            header: self.header.clone(),
+            credential_env: self.credential_env.clone(),
+            client: self.client.clone(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -147,6 +163,7 @@ impl std::fmt::Display for RuleError {
 
 pub async fn list(
     pool: &PgPool,
+    bindings: &crate::egress::bindings::Bindings,
     workspace_id: Uuid,
     after: Option<Uuid>,
     limit: i64,
@@ -164,11 +181,18 @@ pub async fn list(
     .await
     .map_err(|e| RuleError::Database(e.to_string()))?;
 
-    Ok(rows.iter().map(read_rule).collect())
+    let mut rules: Vec<Rule> = rows.iter().map(read_rule).collect();
+    for rule in &mut rules {
+        rule.unbound = bindings
+            .check_rule(workspace_id, &rule.as_egress_rule())
+            .is_err();
+    }
+    Ok(rules)
 }
 
 pub async fn create(
     pool: &PgPool,
+    bindings: &crate::egress::bindings::Bindings,
     workspace_id: Uuid,
     input: CreateRule,
 ) -> Result<Rule, RuleError> {
@@ -213,6 +237,20 @@ pub async fn create(
     if let Some(variable) = &input.credential_env {
         crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
     }
+
+    // Said now, while somebody is looking. Not the enforcement -- the gateway
+    // asks again of every request, from bindings this tier cannot write.
+    bindings
+        .check_rule(
+            workspace_id,
+            &crate::runtime::egress::EgressRule {
+                host: host.clone(),
+                header: input.header.clone(),
+                credential_env: input.credential_env.clone(),
+                client: input.client.clone(),
+            },
+        )
+        .map_err(RuleError::Invalid)?;
 
     let client = input.client.as_ref();
     let row = sqlx::query(concat!(
@@ -265,6 +303,7 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
         credential_env: row.get("credential_env"),
         client: read_client(row),
         enabled: row.get("enabled"),
+        unbound: false,
     }
 }
 

@@ -59,6 +59,10 @@ pub struct ApiState {
     /// because the worker holds this state and the two would otherwise have to
     /// be built at once.
     pub(super) worker: std::sync::OnceLock<Arc<super::worker::Worker>>,
+    /// The gateway's credential bindings, read from the same declaration so a
+    /// rule that could never attach its credential is refused when written.
+    /// Not the enforcement; the gateway's copy is.
+    pub(super) bindings: crate::egress::bindings::Bindings,
 }
 
 impl ApiState {
@@ -118,7 +122,15 @@ impl ApiState {
             bus,
             shutdown,
             worker: std::sync::OnceLock::new(),
+            bindings: crate::egress::bindings::Bindings::from_env(),
         }
+    }
+
+    /// The credential bindings to check rules against, for a test that needs
+    /// some.
+    pub fn with_bindings(mut self, bindings: crate::egress::bindings::Bindings) -> Self {
+        self.bindings = bindings;
+        self
     }
 }
 
@@ -508,8 +520,14 @@ async fn list_egress_rules(
 ) -> Result<Json<super::Page<super::egress::Rule>>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
-    let items =
-        super::egress::list(&state.pool, claims.workspace_id, query.after, limit + 1).await?;
+    let items = super::egress::list(
+        &state.pool,
+        &state.bindings,
+        claims.workspace_id,
+        query.after,
+        limit + 1,
+    )
+    .await?;
     Ok(Json(super::Page::from_rows(items, limit, |r| r.id)))
 }
 
@@ -519,7 +537,8 @@ async fn create_egress_rule(
     Json(input): Json<super::egress::CreateRule>,
 ) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
-    let rule = super::egress::create(&state.pool, claims.workspace_id, input).await?;
+    let rule =
+        super::egress::create(&state.pool, &state.bindings, claims.workspace_id, input).await?;
     // Worth a line in the log on its own: this is the moment a workspace's agents
     // gained somewhere new to send things.
     tracing::info!(
