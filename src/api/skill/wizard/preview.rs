@@ -27,7 +27,7 @@ pub struct Preview {
     pub unserved_operations: usize,
     /// The kinds those operations ask for instead, without repeats.
     pub unserved_kinds: Vec<Kind>,
-    /// A name for the gateway's environment variable, `BIGCAPITAL_API_KEY`.
+    /// A name for the gateway's environment variable, `OUTTURN_EGRESS_BIGCAPITAL_API_KEY`.
     pub credential_env: String,
     pub operations: usize,
     pub categories: usize,
@@ -265,14 +265,16 @@ impl Kind {
     }
 }
 
-/// `bigcapital` -> `BIGCAPITAL_API_KEY`, and `acme-api` the same shape rather
-/// than `ACME_API_API_KEY`.
+/// `bigcapital` -> `OUTTURN_EGRESS_BIGCAPITAL_API_KEY`, and `acme-api` the same
+/// shape rather than `..._ACME_API_API_KEY`. Inside the namespace a rule may
+/// name, or the rule the page suggests would be refused.
 fn credential_env(slug: &str) -> String {
     let stem = slug.to_ascii_uppercase().replace('-', "_");
     let stem = stem.strip_suffix("_API").unwrap_or(&stem);
+    let prefix = crate::runtime::egress::CREDENTIAL_PREFIX;
     if stem.is_empty() {
-        "API_KEY".into()
+        format!("{prefix}API_KEY")
     } else {
-        format!("{stem}_API_KEY")
+        format!("{prefix}{stem}_API_KEY")
     }
 }

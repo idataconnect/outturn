@@ -345,7 +345,7 @@ has to be resolved against the URL it was fetched from.
 written with it, but a host is reachable only once an egress rule names it,
 and the credential is an environment variable name the operator sets on the
 gateway. The page asks for that name, prefilled from the service
-(`BIGCAPITAL_API_KEY`), and ends by stating plainly what is still to be done
+(`OUTTURN_EGRESS_BIGCAPITAL_API_KEY`), and ends by stating plainly what is still to be done
 outside it, since the variable itself is not something a browser can set.
 
 Settled when it was built: the API mints a narrow token rather than the

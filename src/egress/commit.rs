@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::runtime::egress::EgressRule;
 
 /// A 32-byte SHA-256 output: a leaf, a node, or the root the token carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Hash(#[serde(with = "hex_bytes")] pub [u8; 32]);
 
@@ -74,6 +74,10 @@ mod hex_bytes {
 /// a node in another -- the attack where a crafted "rule" is fed in as an
 /// interior hash and the tree is rebuilt around it.
 const TAG_LEAF: &[u8] = b"outturn:egress:leaf:v1\0";
+/// A rule whose credential is a client-credentials exchange. Its own tag rather
+/// than more fields on the old leaf, so a rule without one hashes exactly as it
+/// did before, and no rule of one kind can ever hash like one of the other.
+const TAG_LEAF_CLIENT: &[u8] = b"outturn:egress:leaf-client:v1\0";
 const TAG_NODE: &[u8] = b"outturn:egress:node:v1\0";
 const TAG_EMPTY: &[u8] = b"outturn:egress:empty:v1\0";
 
@@ -121,9 +125,18 @@ const MAX_PATH: usize = 32;
 /// Fields are length-prefixed rather than delimited. `host=a\0header=bc` and
 /// `host=ab\0header=c` are different rules and must not hash alike, which is
 /// exactly what a delimiter cannot promise once a field may contain it.
+///
+/// A client-credentials rule covers the token URL, both variables, the scope and
+/// where the secret travels in the exchange: leave any one out and a runtime can
+/// keep the committed host while sending the secret somewhere it chose, or
+/// borrowing another rule's.
 fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
     let mut h = Sha256::new();
-    h.update(TAG_LEAF);
+    h.update(if rule.client.is_some() {
+        TAG_LEAF_CLIENT
+    } else {
+        TAG_LEAF
+    });
     h.update(workspace_id.as_bytes());
     hash_fields(
         &mut h,
@@ -133,7 +146,26 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
             rule.credential_env.as_deref(),
         ],
     );
+    if let Some(client) = &rule.client {
+        hash_fields(
+            &mut h,
+            [
+                Some(client.token_url.as_str()),
+                client.scope.as_deref(),
+                Some(client.client_id_env.as_str()),
+                Some(client.client_secret_env.as_str()),
+                Some(client.client_auth.as_str()),
+            ],
+        );
+    }
     Hash(h.finalize().into())
+}
+
+/// A rule's leaf, as a key for whatever is held per rule -- the gateway's
+/// tokens. It names the workspace and every field that decides what travels,
+/// which is exactly what such a key has to distinguish.
+pub fn leaf_of(workspace_id: Uuid, rule: &EgressRule) -> Hash {
+    leaf(workspace_id, rule)
 }
 
 /// Hashes a field list into `h`, length-prefixed.
@@ -425,6 +457,7 @@ mod tests {
             host: host.into(),
             header: None,
             credential_env: None,
+            client: None,
         }
     }
 
@@ -433,6 +466,7 @@ mod tests {
             host: host.into(),
             header: Some(header.into()),
             credential_env: Some(env.into()),
+            client: None,
         }
     }
 
@@ -505,6 +539,94 @@ mod tests {
         };
         assert_eq!(verify(ws, &committed, &swapped), Err(Invalid::Root));
     }
+
+    fn with_client(host: &str) -> EgressRule {
+        EgressRule {
+            host: host.into(),
+            header: None,
+            credential_env: None,
+            client: Some(crate::runtime::egress::ClientCredentials {
+                token_url: "https://login.example.com/tenant-a/oauth2/token".into(),
+                scope: Some("bookings.read bookings.write".into()),
+                client_id_env: "BOOKING_CLIENT_ID".into(),
+                client_secret_env: "BOOKING_CLIENT_SECRET".into(),
+                client_auth: crate::runtime::egress::ClientAuth::Basic,
+            }),
+        }
+    }
+
+    #[test]
+    fn every_field_of_a_client_credentials_rule_is_committed() {
+        // Each of these decides where a secret goes or what it buys. One left
+        // out of the leaf is one a runtime may rewrite in flight.
+        use crate::runtime::egress::ClientAuth;
+        let ws = Uuid::now_v7();
+        let set = vec![with_client("api.example.com"), rule("docs.example.com")];
+        let committed = root(ws, &set);
+
+        let edits: Vec<(&str, fn(&mut crate::runtime::egress::ClientCredentials))> = vec![
+            ("token url", |c| {
+                c.token_url = "https://login.example.com/tenant-b/oauth2/token".into()
+            }),
+            ("scope", |c| {
+                c.scope = Some("bookings.read bookings.write admin".into())
+            }),
+            ("no scope", |c| c.scope = None),
+            ("client id", |c| c.client_id_env = "OTHER_CLIENT_ID".into()),
+            ("client secret", |c| {
+                c.client_secret_env = "OTHER_CLIENT_SECRET".into()
+            }),
+            ("client auth", |c| c.client_auth = ClientAuth::Post),
+        ];
+        for (what, edit) in edits {
+            let mut forged = set[0].clone();
+            edit(forged.client.as_mut().expect("has a client"));
+            let proof = Proof::Inclusion {
+                rule: forged,
+                path: vec![Step {
+                    hash: leaf(ws, &set[1]),
+                    left: leaf(ws, &set[1]).0 < leaf(ws, &set[0]).0,
+                }],
+            };
+            assert_eq!(verify(ws, &committed, &proof), Err(Invalid::Root), "{what}");
+        }
+
+        let honest = prove(ws, &set, &set[0]).expect("in the set");
+        let vouched = verify(ws, &committed, &honest).expect("the honest rule verifies");
+        assert!(vouched.contains(&set[0]));
+    }
+
+    #[test]
+    fn a_client_credentials_rule_cannot_be_stripped_to_a_bare_one() {
+        // The same host with its exchange removed is a different rule, so a
+        // runtime cannot drop the credential and present the rule as plain.
+        let ws = Uuid::now_v7();
+        assert_ne!(
+            leaf(ws, &with_client("api.example.com")),
+            leaf(ws, &rule("api.example.com"))
+        );
+    }
+
+    #[test]
+    fn a_rule_without_a_client_hashes_as_it_always_has() {
+        // Pinned, so adding client credentials did not move the commitment of
+        // every rule that has none -- which would fail every turn in flight
+        // across the deploy that shipped it.
+        let ws = Uuid::nil();
+        assert_eq!(
+            leaf(
+                ws,
+                &with_credential("api.stripe.com", "authorization", "STRIPE_KEY")
+            )
+            .to_string(),
+            PINNED_STATIC_LEAF,
+        );
+    }
+
+    // Computed independently of this file, from the leaf as it was written before
+    // client credentials existed.
+    const PINNED_STATIC_LEAF: &str =
+        "af2f63a36cb378f332840c61ed828b2430b136ae8ef55648dbe547f054c8f618";
 
     #[test]
     fn an_inclusion_proof_does_not_travel_between_workspaces() {
@@ -587,6 +709,7 @@ mod tests {
             host: hex::encode(committed.0),
             header: None,
             credential_env: None,
+            client: None,
         };
         let forged = Proof::Inclusion {
             rule: interior,
