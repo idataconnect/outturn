@@ -224,7 +224,7 @@ a different workspace and aim it at a host of its own. Closing that is the
 binding integrations.md describes -- a credential bound to its workspace and its
 host -- and when it exists it binds the variables to both destinations at once.
 Until then, a variable under the prefix is readable by every workspace that can
-write rules.
+write rules. The design is [credential-bindings.md](credential-bindings.md).
 
 ## The wizard
 
