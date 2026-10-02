@@ -31,6 +31,9 @@ impl std::error::Error for ParseError {}
 
 pub struct Api {
     pub operations: Vec<Operation>,
+    /// A guess from header parameters, for a specification that declares no
+    /// scheme. A suggestion for the preview only: what is generated uses the
+    /// header the operator confirmed.
     pub common_auth: Option<AuthInfo>,
 }
 
@@ -183,13 +186,6 @@ pub fn parse(json_bytes: &[u8]) -> Result<Api, ParseError> {
     }
 
     let common_auth = detect_common_auth(&auth_params_seen, total_ops, &operations);
-
-    if let Some(ref auth) = common_auth {
-        for op in &mut operations {
-            op.parameters
-                .retain(|p| !(p.location == "header" && p.name == auth.header_name));
-        }
-    }
 
     operations.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -649,12 +645,12 @@ mod tests {
             api.common_auth.as_ref().unwrap().header_name,
             "Authorization"
         );
-        // Auth params should be stripped from operations
-        for op in &api.operations {
-            assert!(
-                !op.parameters.iter().any(|p| p.name == "Authorization"),
-                "Authorization should have been stripped"
-            );
-        }
+        // A guess only: stripping is generate's, against the header the
+        // operator confirmed.
+        assert!(
+            api.operations
+                .iter()
+                .all(|op| op.parameters.iter().any(|p| p.name == "Authorization"))
+        );
     }
 }

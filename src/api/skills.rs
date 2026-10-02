@@ -368,6 +368,10 @@ pub struct WizardRequest {
     #[serde(default)]
     pub description: String,
     pub base_url: String,
+    /// The credential header the egress rule will carry; see
+    /// `WizardInput::auth_header`.
+    #[serde(default)]
+    pub auth_header: Option<String>,
     pub spec: serde_json::Value,
 }
 
@@ -557,6 +561,7 @@ pub async fn create_platform_skill_from_openapi(
         spec_json,
         slug: req.slug.clone(),
         base_url: req.base_url,
+        auth_header: req.auth_header,
     };
     let output = super::skill::wizard::generate(&input)
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;

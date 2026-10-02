@@ -103,6 +103,7 @@ export default function SkillImport() {
         name: form.name.trim(),
         description: form.description.trim(),
         base_url: form.base_url.trim().replace(/\/+$/, ''),
+        auth_header: form.auth_header.trim(),
         spec,
       })
       setCreated({ skill, form })
