@@ -564,7 +564,8 @@ mod tests {
         let set = vec![with_client("api.example.com"), rule("docs.example.com")];
         let committed = root(ws, &set);
 
-        let edits: Vec<(&str, fn(&mut crate::runtime::egress::ClientCredentials))> = vec![
+        type Edit = fn(&mut crate::runtime::egress::ClientCredentials);
+        let edits: Vec<(&str, Edit)> = vec![
             ("token url", |c| {
                 c.token_url = "https://login.example.com/tenant-b/oauth2/token".into()
             }),
