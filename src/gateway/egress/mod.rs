@@ -693,3 +693,137 @@ mod gating {
         );
     }
 }
+
+#[cfg(test)]
+mod client_credentials {
+    use super::*;
+
+    use crate::runtime::egress::EgressRule;
+
+    /// The whole path, as a turn sees it: a token exchanged and attached as a
+    /// bearer, held for the next request, and forgotten when the host says it
+    /// no longer accepts it -- with the 401 passed back rather than retried.
+    #[tokio::test]
+    async fn a_client_credentials_rule_attaches_its_token_and_drops_it_on_a_401() {
+        use std::sync::Mutex;
+        use transport::{TransportResponse, VettedRequest};
+
+        /// The token endpoint at `/token`, and an API answering from a script.
+        struct World {
+            exchanges: Mutex<u32>,
+            api: Mutex<Vec<u16>>,
+            seen: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl transport::EgressTransport for World {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+
+            async fn send(
+                &self,
+                request: VettedRequest,
+            ) -> Result<TransportResponse, TransportError> {
+                let (status, body) = if request.url.path() == "/token" {
+                    let mut n = self.exchanges.lock().unwrap();
+                    *n += 1;
+                    (
+                        200,
+                        format!(
+                            r#"{{"access_token":"tok-{n}","token_type":"Bearer","expires_in":3600}}"#
+                        ),
+                    )
+                } else {
+                    let auth = request
+                        .headers
+                        .get("authorization")
+                        .map(|v| v.to_str().unwrap().to_string())
+                        .unwrap_or_default();
+                    self.seen.lock().unwrap().push(auth);
+                    (self.api.lock().unwrap().remove(0), "{}".to_string())
+                };
+                Ok(TransportResponse {
+                    status,
+                    headers: Vec::new(),
+                    body,
+                    truncated: false,
+                })
+            }
+        }
+
+        // SAFETY: names no other test uses.
+        unsafe {
+            std::env::set_var("OUTTURN_TEST_FETCH_CC_ID", "id");
+            std::env::set_var("OUTTURN_TEST_FETCH_CC_SECRET", "secret");
+        }
+        // Literal public addresses, so nothing is asked of a resolver.
+        let rule = EgressRule {
+            host: "93.184.215.14".into(),
+            header: None,
+            credential_env: None,
+            client: Some(crate::runtime::egress::ClientCredentials {
+                token_url: "https://93.184.215.15/token".into(),
+                scope: None,
+                client_id_env: "OUTTURN_TEST_FETCH_CC_ID".into(),
+                client_secret_env: "OUTTURN_TEST_FETCH_CC_SECRET".into(),
+                client_auth: crate::runtime::egress::ClientAuth::Basic,
+            }),
+        };
+
+        let seed = [9u8; 32];
+        let minter = crate::auth::TokenMinter::new(&seed).expect("minter");
+        let validator = crate::auth::TokenValidator::new(
+            &crate::auth::TokenMinter::public_key_of(&seed),
+            crate::auth::AUDIENCE_GATEWAY,
+        )
+        .expect("validator");
+        let world = Arc::new(World {
+            exchanges: Mutex::new(0),
+            api: Mutex::new(vec![200, 401, 200]),
+            seen: Mutex::new(Vec::new()),
+        });
+        let state = Arc::new(
+            super::super::GatewayState::new(Vec::new(), validator)
+                .with_egress_transport(world.clone()),
+        );
+
+        let workspace = uuid::Uuid::now_v7();
+        let rules = vec![rule.clone()];
+        let token = minter
+            .mint_turn(
+                uuid::Uuid::now_v7(),
+                workspace,
+                commit::root(workspace, &rules),
+                crate::egress::gate::Gates::none().root(workspace),
+            )
+            .expect("turn token");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        let mut statuses = Vec::new();
+        for _ in 0..3 {
+            let request = EgressRequest {
+                method: "GET".into(),
+                url: "https://93.184.215.14/bookings".into(),
+                gates: crate::egress::gate::Gates::none(),
+                headers: Vec::new(),
+                body: None,
+                proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+            };
+            let got = fetch(State(state.clone()), headers.clone(), Json(request))
+                .await
+                .map_err(|(s, m)| format!("{s}: {m}"))
+                .expect("allowed");
+            statuses.push(got.0.status);
+        }
+
+        assert_eq!(statuses, vec![200, 401, 200], "the 401 went back as it was");
+        assert_eq!(
+            *world.seen.lock().unwrap(),
+            vec!["Bearer tok-1", "Bearer tok-1", "Bearer tok-2"],
+            "held for the second request, exchanged afresh after the 401"
+        );
+        assert_eq!(*world.exchanges.lock().unwrap(), 2);
+    }
+}
