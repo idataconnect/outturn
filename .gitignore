@@ -29,3 +29,4 @@ k8s/overlays/local/.llama-server.log
 # alternative is one overlay per combination, and four of them would drift.
 k8s/overlays/.generated/
 ui/.shots/
+/site

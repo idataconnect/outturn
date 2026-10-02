@@ -13,8 +13,8 @@ credentials, and a gateway that does.
 ## What you need
 
 A Mac with enough memory for a 20GB model, a local Kubernetes cluster, and
-ollama. [The README](../README.md) covers the prerequisites and how to get a
-cluster.
+ollama. [Getting started](guide/getting-started.md) covers the prerequisites and how
+to get a cluster.
 
 ## 1. Start it
 
