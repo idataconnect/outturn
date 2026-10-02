@@ -1639,6 +1639,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             post(super::skills::create_platform_skill),
         )
         .route(
+            "/v1/platform/skills/from-openapi",
+            post(super::skills::create_platform_skill_from_openapi),
+        )
+        .route(
             "/v1/platform/skills/{id}",
             axum::routing::patch(super::skills::update_platform_skill),
         )

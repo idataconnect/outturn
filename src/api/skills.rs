@@ -359,6 +359,64 @@ pub async fn set_agent_skills(
     ))
 }
 
+// OpenAPI wizard --------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct WizardRequest {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub base_url: String,
+    pub spec: serde_json::Value,
+}
+
+pub async fn create_platform_skill_from_openapi(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<WizardRequest>,
+) -> Result<(StatusCode, Json<Skill>), ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    let workspace = as_operator(&claims)?;
+
+    let spec_json = serde_json::to_vec(&req.spec)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?;
+
+    let input = super::skill::wizard::WizardInput {
+        spec_json,
+        slug: req.slug.clone(),
+        base_url: req.base_url,
+    };
+    let output = super::skill::wizard::generate(&input)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+
+    let file_count = output.files.len();
+    let files: Vec<NewFile> = output
+        .files
+        .into_iter()
+        .map(|(path, content)| NewFile { path, content })
+        .collect();
+
+    let create = CreateSkill {
+        slug: req.slug,
+        name: req.name,
+        description: req.description,
+        body: output.body,
+        base_skill_id: None,
+        hosts: output.hosts,
+        files,
+    };
+
+    let skill = create_in(&state, workspace, claims.subject, create).await?;
+    tracing::info!(
+        actor = %claims.subject,
+        skill_id = %skill.id,
+        file_count,
+        "platform skill created from openapi"
+    );
+    Ok((StatusCode::CREATED, Json(skill)))
+}
+
 // The operator's own skills ----------------------------------------------------
 //
 // Reads need no platform route: a workspace already sees the operator's skills
