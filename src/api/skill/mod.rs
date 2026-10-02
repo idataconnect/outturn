@@ -4,6 +4,7 @@ pub use stats_postgres::PostgresSkillStatsStore;
 mod files;
 mod frontmatter;
 mod postgres;
+pub mod wizard;
 
 pub use files::{DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, declared_gates, prepare};
 
