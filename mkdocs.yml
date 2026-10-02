@@ -14,6 +14,9 @@ docs_dir: docs
 
 theme:
   name: material
+  # A copy of ui/public/favicon.svg, the mark the app itself shows.
+  logo: assets/images/logo.svg
+  favicon: assets/images/logo.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
