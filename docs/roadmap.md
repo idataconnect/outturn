@@ -102,8 +102,8 @@ than anything decided now.
 
 A rule naming a token URL, scopes and two variables, with the gateway
 exchanging them for a bearer token cached per replica and refreshed on demand.
-Tier 1 integrations: needs nothing that does not exist. The OpenAPI wizard
-prefills such a rule from a `clientCredentials` scheme once it is built.
+Built. The OpenAPI wizard prefilling such a rule from a `clientCredentials`
+scheme is not.
 
 ### Idempotency
 

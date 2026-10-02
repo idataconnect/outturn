@@ -55,8 +55,8 @@ and it is why this tier is the one that already works.
 
 An API that issues its own access tokens rather than accepting a static key is
 still this tier: the operator holds a client id and secret, and the gateway
-exchanges them. [client-credentials.md](client-credentials.md) designs that,
-without storing anything the gateway does not already hold.
+exchanges them. [client-credentials.md](client-credentials.md) describes
+that, which is built and stores nothing the gateway does not already hold.
 
 ### 2. Vetted extensions
 

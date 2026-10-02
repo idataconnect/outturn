@@ -613,6 +613,12 @@ The guest cannot read it and cannot set the headers it travels in. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
 safe to return to a browser.
 
+That includes a token a rule exchanges client credentials for. It is a working
+credential for as long as it lasts, so it lives in the gateway's memory, one
+cache per replica, and not in the database the breaker shares -- where the API
+and anyone holding its password could read it. See
+[docs/client-credentials.md](docs/client-credentials.md).
+
 **Runtimes take work; nothing is pushed to them.** A pod with room polls
 `/v1/work` for one turn and is given one, so a full pod is never offered work it
 would have to refuse. Pushing meant guessing which pod had capacity: measured

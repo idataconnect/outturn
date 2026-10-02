@@ -3,7 +3,7 @@
 How an egress rule reaches an API that wants an OAuth 2 access token rather
 than a static key, without the platform starting to store secrets.
 
-Designed, not built. It rests on [egress.md](egress.md), which is built, and
+Built: the rule, its commitment, the exchange and the cache. It rests on [egress.md](egress.md), which is built, and
 sits in tier 1 of [integrations.md](integrations.md): the operator's own APIs,
 configured by the operator.
 
@@ -63,11 +63,15 @@ none of the APIs in front of us does, and a generic "extra form fields" column
 is a place to smuggle anything. Add the specific parameter when a specific
 provider demands it.
 
-In the schema these are nullable columns on `egress_rules` with a check
-constraint saying exactly one shape, or neither, is present. In
-`runtime::egress::EgressRule` the two shapes are an enum rather than five
-`Option`s, so a rule carrying half of each is unrepresentable rather than
-refused at use. `rules::check_url` is unchanged: the rule still matches on its
+In the schema these are nullable columns on `egress_rules`
+(`migrations/0021_client_credentials.sql`) with check constraints saying
+exactly one shape, or neither, is present. In `runtime::egress::EgressRule`
+the exchange is one optional `client` field holding all of its parts, so half
+an exchange is unrepresentable; a rule carrying both shapes is refused by the
+API when written and by the gateway if a row edited by hand ever says so. An
+optional field rather than an enum over the two shapes, so a static rule
+encodes exactly as it did -- the field is left out when absent -- and every
+place that builds one did not have to change. `rules::check_url` is unchanged: the rule still matches on its
 host, and the shape only decides what is attached once it has.
 
 ## The commitment covers every field
