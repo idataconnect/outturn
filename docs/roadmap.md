@@ -105,6 +105,15 @@ exchanging them for a bearer token cached per replica and refreshed on demand.
 Built. The OpenAPI wizard prefilling such a rule from a `clientCredentials`
 scheme is not.
 
+### Credential bindings
+
+[credential-bindings.md](credential-bindings.md).
+
+A credential variable usable only by the workspaces and toward the hosts the
+operator bound it to, enforced in the gateway. Not built, and the most urgent
+thing here: until it is, any workspace that can write rules can send another
+workspace's credential to a host of its own.
+
 ### Idempotency
 
 [idempotency.md](idempotency.md).

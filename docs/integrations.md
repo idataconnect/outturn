@@ -235,6 +235,11 @@ belongs to the integration rather than to a row a workspace administrator can
 change, and a rule that names a credential without inheriting that binding
 should not be expressible.
 
+For tier 1 the problem is already here: a rule names a variable, and the
+variable namespace is shared by every workspace. How a variable is bound to its
+workspaces and hosts, and why the binding lives on the gateway rather than in a
+table or the turn token, is in [credential-bindings.md](credential-bindings.md).
+
 This is also why the authority to configure an integration is not the authority
 to use one. A member who can enable Notion for a workspace is choosing what the
 workspace's agents may do; the credential that results should not be reachable

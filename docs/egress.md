@@ -29,7 +29,9 @@ workspace writes its own rules, and without that namespace it could name
 `GEMINI_API_KEY` and have its agent carry the operator's key to any host it
 allows. The API refuses such a rule when it is written, and the gateway refuses
 it again when it reads the variable, so a row written some other way is caught
-too.
+too. The prefix is shared by every workspace, though, so one workspace can name
+a variable the operator set up for another; binding each variable to its
+workspaces and hosts is designed in [credential-bindings.md](credential-bindings.md).
 
 And the check a workspace cannot waive: `resolve_and_vet` resolves the name and
 refuses the request if the address is not plainly on the public internet. Every
