@@ -285,6 +285,38 @@ fn is_forbidden_v6(addr: Ipv6Addr) -> bool {
         || (first & 0xffc0) == 0xfe80
 }
 
+/// What every variable a rule names must start with.
+///
+/// A rule is written by a workspace, and the gateway's environment also holds
+/// the operator's own secrets -- provider keys, the database URL. Without a
+/// namespace of their own, a workspace could name one of those and have its
+/// agent carry it to any host the workspace allows.
+pub const CREDENTIAL_PREFIX: &str = "OUTTURN_EGRESS_";
+
+/// Checks that a rule may name this variable: well formed, and inside the
+/// namespace kept for workspace credentials. Enforced where a rule is written
+/// and again where the variable is read.
+pub fn check_credential_variable(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let well_formed = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !well_formed {
+        return Err(format!(
+            "{name:?} is not the name of an environment variable. Name the variable \
+             holding the value, never the value itself"
+        ));
+    }
+    if !name.starts_with(CREDENTIAL_PREFIX) || name.len() == CREDENTIAL_PREFIX.len() {
+        return Err(format!(
+            "{name} cannot hold a workspace credential: those variables start with \
+             {CREDENTIAL_PREFIX}, so that a rule can never name one of the platform's own"
+        ));
+    }
+    Ok(())
+}
+
 /// Checks a header a guest wants to set.
 pub fn check_header(name: &str) -> Result<(), Refused> {
     let lowered = name.trim().to_ascii_lowercase();
@@ -418,6 +450,25 @@ pub async fn resolve(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rule_names_only_a_workspace_credential() {
+        assert!(check_credential_variable("OUTTURN_EGRESS_STRIPE_KEY").is_ok());
+        for name in [
+            "GEMINI_API_KEY",
+            "DATABASE_URL",
+            "OUTTURN_TOKEN_PUBLIC_KEY",
+            "OUTTURN_EGRESS_",
+            "outturn_egress_lower",
+            "OUTTURN_EGRESS_KEY=value",
+            "",
+        ] {
+            assert!(
+                check_credential_variable(name).is_err(),
+                "{name:?} was allowed"
+            );
+        }
+    }
 
     fn rule(host: &str) -> EgressRule {
         EgressRule {

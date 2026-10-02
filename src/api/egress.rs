@@ -179,6 +179,10 @@ pub async fn create(
         }
     }
 
+    if let Some(variable) = &input.credential_env {
+        crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
+    }
+
     let row = sqlx::query(
         "insert into egress_rules (id, workspace_id, host, header, credential_env) \
          values ($1, $2, $3, $4, $5) \

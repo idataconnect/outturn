@@ -611,7 +611,10 @@ second, and the audience is what says which.
 environment variable; the host reads it and attaches the header on the way out.
 The guest cannot read it and cannot set the headers it travels in. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
-safe to return to a browser.
+safe to return to a browser. Writing one is the other half: a workspace writes its own rules,
+so a rule may name only a variable under `OUTTURN_EGRESS_`, never one of the
+gateway's own secrets. The gateway checks this where it reads the variable,
+not only where the API stores the rule.
 
 **Runtimes take work; nothing is pushed to them.** A pod with room polls
 `/v1/work` for one turn and is given one, so a full pod is never offered work it

@@ -1418,6 +1418,12 @@ async fn a_rule_that_would_mislead_its_author_is_refused() {
             r#"{"host":"api.example.com","credential_env":"KEY"}"#,
             "needs a header",
         ),
+        // The gateway's own secrets live in the same environment; a rule
+        // naming one would have an agent carry it anywhere it is allowed.
+        (
+            r#"{"host":"api.example.com","header":"authorization","credential_env":"GEMINI_API_KEY"}"#,
+            "OUTTURN_EGRESS_",
+        ),
     ] {
         let (status, body) = h.post("/v1/egress-rules", Some(&token), input).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{input} gave: {body}");
