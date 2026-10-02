@@ -371,6 +371,28 @@ pub struct WizardRequest {
     pub spec: serde_json::Value,
 }
 
+#[derive(serde::Deserialize)]
+pub struct PreviewRequest {
+    pub spec: serde_json::Value,
+}
+
+/// What the specification answers of the form, before anything is created.
+/// Operator-only like the create beside it, since nobody else can use the
+/// answer.
+pub async fn preview_platform_skill_from_openapi(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<PreviewRequest>,
+) -> Result<Json<super::skill::wizard::Preview>, ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    as_operator(&claims)?;
+    let spec_json = serde_json::to_vec(&req.spec)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?;
+    let preview = super::skill::wizard::preview(&spec_json, None)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    Ok(Json(preview))
+}
+
 pub async fn create_platform_skill_from_openapi(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
