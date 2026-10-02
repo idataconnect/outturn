@@ -51,19 +51,9 @@ export default function SkillImport() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const read = async (raw: string) => {
-    setError(null)
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      setError(
-        'That is not JSON. Only JSON specifications are read; a YAML one needs converting first.',
-      )
-      return
-    }
-    await previewFrom({ spec: parsed })
-  }
+  // Sent as text: the API tells JSON from YAML, so there is one reader of
+  // the format rather than two that might disagree.
+  const read = (raw: string) => previewFrom({ spec: raw })
 
   const previewFrom = async (source: { spec: unknown } | { url: string }) => {
     setError(null)
@@ -154,7 +144,7 @@ export default function SkillImport() {
             Upload a specification
             <input
               type="file"
-              accept=".json,application/json"
+              accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml"
               className="sr-only"
               disabled={busy}
               onChange={(e) => void upload(e.target.files?.[0])}

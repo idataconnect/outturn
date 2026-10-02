@@ -372,7 +372,19 @@ pub struct WizardRequest {
     /// `WizardInput::auth_header`.
     #[serde(default)]
     pub auth_header: Option<String>,
+    /// See `spec_bytes`.
     pub spec: serde_json::Value,
+}
+
+/// A specification as the browser sent it: a string is the document's own
+/// text, JSON or YAML, read as the wizard reads any document; anything else
+/// is a JSON value already parsed.
+fn spec_bytes(spec: serde_json::Value) -> Result<Vec<u8>, ApiError> {
+    match spec {
+        serde_json::Value::String(text) => Ok(text.into_bytes()),
+        other => serde_json::to_vec(&other)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}"))),
+    }
 }
 
 /// A specification inline, or the URL to fetch one from. Exactly one.
@@ -406,11 +418,7 @@ pub async fn preview_platform_skill_from_openapi(
     let claims = super::router::authenticate(&state, &headers)?;
     as_operator(&claims)?;
     let (spec_json, fetched_from) = match (req.spec, req.url) {
-        (Some(spec), None) => (
-            serde_json::to_vec(&spec)
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?,
-            None,
-        ),
+        (Some(spec), None) => (spec_bytes(spec)?, None),
         (None, Some(url)) => (
             fetch_document(&state, claims.subject, &url).await?,
             Some(url),
@@ -424,11 +432,12 @@ pub async fn preview_platform_skill_from_openapi(
     };
     let preview = super::skill::wizard::preview(&spec_json, fetched_from.as_deref())
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    // Sent back as JSON whatever it was fetched as, so the create that
+    // follows reads the same document without asking which. Parsed already
+    // by `preview`, so this cannot fail on a document it accepted.
     let spec = match fetched_from {
-        // Parsed already by `preview`, so this cannot fail on a document it
-        // accepted.
         Some(_) => Some(
-            serde_json::from_slice(&spec_json)
+            super::skill::wizard::document(&spec_json)
                 .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?,
         ),
         None => None,
@@ -504,7 +513,10 @@ async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<
             "method": "GET",
             "url": url,
             "gates": gates,
-            "headers": [["accept", "application/json"]],
+            "headers": [[
+                "accept",
+                "application/json, application/yaml, text/yaml;q=0.9, */*;q=0.1",
+            ]],
             "proof": crate::egress::commit::Proof::WholeSet { rules },
         }))
         .send()
@@ -555,8 +567,7 @@ pub async fn create_platform_skill_from_openapi(
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
 
-    let spec_json = serde_json::to_vec(&req.spec)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?;
+    let spec_json = spec_bytes(req.spec)?;
 
     let input = super::skill::wizard::WizardInput {
         spec_json,
