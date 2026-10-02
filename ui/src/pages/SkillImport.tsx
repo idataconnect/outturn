@@ -42,6 +42,7 @@ export default function SkillImport() {
     state.status === 'authenticated' && state.session.roles.includes('system_admin')
 
   const [text, setText] = useState('')
+  const [url, setUrl] = useState('')
   const [spec, setSpec] = useState<unknown>(null)
   const [preview, setPreview] = useState<OpenApiPreview | null>(null)
   const [form, setForm] = useState<Form | null>(null)
@@ -60,10 +61,15 @@ export default function SkillImport() {
       )
       return
     }
+    await previewFrom({ spec: parsed })
+  }
+
+  const previewFrom = async (source: { spec: unknown } | { url: string }) => {
+    setError(null)
     setBusy(true)
     try {
-      const p = await previewOpenApi(parsed)
-      setSpec(parsed)
+      const p = await previewOpenApi(source)
+      setSpec('spec' in source ? source.spec : p.spec)
       setPreview(p)
       setForm({
         name: p.name,
@@ -152,6 +158,33 @@ export default function SkillImport() {
               onChange={(e) => void upload(e.target.files?.[0])}
             />
           </label>
+          <form
+            className="block"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void previewFrom({ url: url.trim() })
+            }}
+          >
+            <label className="block">
+              <span className={label}>Or fetch it from a URL</span>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://api.example.com/openapi.json"
+                  className={`${input} font-mono`}
+                />
+                <button type="submit" className={`${primary} mt-1 shrink-0`} disabled={busy || !url.trim()}>
+                  {busy ? 'Fetching…' : 'Fetch'}
+                </button>
+              </div>
+              <span className={hint}>
+                Fetched by the gateway, without credentials. A specification behind a login is
+                downloaded and uploaded instead.
+              </span>
+            </label>
+          </form>
           <label className="block">
             <span className={label}>Or paste it</span>
             <textarea

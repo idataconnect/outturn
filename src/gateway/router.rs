@@ -388,16 +388,25 @@ pub(crate) fn authenticate(
     state: &GatewayState,
     headers: &axum::http::HeaderMap,
 ) -> Result<SessionClaims, (StatusCode, String)> {
+    authenticate_for(state, headers, auth::Authority::GatewayInvoke)
+}
+
+/// As `authenticate`, for a route that something other than a turn may call.
+pub(crate) fn authenticate_for(
+    state: &GatewayState,
+    headers: &axum::http::HeaderMap,
+    authority: auth::Authority,
+) -> Result<SessionClaims, (StatusCode, String)> {
     let token =
         auth::extract_bearer(headers).map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
     let claims = state.auth.validate(token).map_err(|e| match e {
         auth::AuthError::Forbidden => (StatusCode::FORBIDDEN, e.to_string()),
         _ => (StatusCode::UNAUTHORIZED, e.to_string()),
     })?;
-    // The gateway has no role store and needs none: the only role a token it
-    // accepts can carry is the platform's `turn`.
+    // The gateway has no role store and needs none: the only roles a token it
+    // accepts can carry are the platform's `turn` and `document_fetch`.
     claims
-        .require_platform(auth::Authority::GatewayInvoke)
+        .require_platform(authority)
         .map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
     Ok(claims)
 }
