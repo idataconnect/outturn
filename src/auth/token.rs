@@ -49,6 +49,10 @@ pub const AUDIENCE_GATEWAY: &str = "outturn:gateway";
 /// next `fetch_url` with "token expired".
 pub const SERVICE_TOKEN_LIFETIME_SECS: u64 = 1800;
 
+/// Long enough for one fetch of one document, which the gateway gives up on
+/// well inside it.
+const DOCUMENT_FETCH_TOKEN_LIFETIME_SECS: u64 = 60;
+
 /// How much life a turn token may have left before the runtime replaces it.
 ///
 /// Half the lifetime, so the gap it covers -- the longest stretch a turn can
@@ -248,6 +252,31 @@ impl TokenMinter {
             Some(egress_commitment),
             Some(gate_commitment),
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
+        )
+    }
+
+    /// Mints the token the API fetches one document with, through the
+    /// gateway's egress path.
+    ///
+    /// The gateway audience, `Role::DocumentFetch` and nothing else, and an
+    /// egress commitment the caller computed over the single host it means to
+    /// reach -- so the token is good for that host, by GET, for a minute, and
+    /// cannot call a model. The subject is the operator who asked.
+    pub fn mint_document_fetch(
+        &self,
+        user_id: Uuid,
+        workspace_id: Uuid,
+        egress_commitment: commit::Hash,
+        gate_commitment: commit::Hash,
+    ) -> Result<String, AuthError> {
+        self.mint_with_lifetime(
+            AUDIENCE_GATEWAY,
+            user_id,
+            workspace_id,
+            &[Role::DocumentFetch.to_string()],
+            Some(egress_commitment),
+            Some(gate_commitment),
+            Duration::from_secs(DOCUMENT_FETCH_TOKEN_LIFETIME_SECS),
         )
     }
 
@@ -630,6 +659,29 @@ mod tests {
         assert!(claims.has_platform_authority(super::super::rbac::Authority::GatewayInvoke));
         assert!(!claims.has_platform_authority(super::super::rbac::Authority::SessionsRead));
         assert!(!claims.has_platform_authority(super::super::rbac::Authority::WorkTake));
+    }
+
+    #[test]
+    fn a_document_fetch_token_fetches_and_cannot_call_a_model() {
+        let (minter, public) = pair();
+        let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
+        let api = TokenValidator::new(&public, AUDIENCE_API).expect("validator");
+        let token = minter
+            .mint_document_fetch(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                commit::empty_root(),
+                crate::egress::gate::Gates::none().root(Uuid::nil()),
+            )
+            .expect("mint");
+        let claims = gateway.validate(&token).expect("valid");
+        assert!(claims.has_platform_authority(super::super::rbac::Authority::GatewayFetch));
+        assert!(!claims.has_platform_authority(super::super::rbac::Authority::GatewayInvoke));
+        assert!(claims.egress_commitment().is_ok());
+        assert!(
+            api.validate(&token).is_err(),
+            "a fetch token opened the API"
+        );
     }
 
     #[test]

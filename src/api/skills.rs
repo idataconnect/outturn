@@ -371,9 +371,24 @@ pub struct WizardRequest {
     pub spec: serde_json::Value,
 }
 
+/// A specification inline, or the URL to fetch one from. Exactly one.
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
-    pub spec: serde_json::Value,
+    #[serde(default)]
+    pub spec: Option<serde_json::Value>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PreviewResponse {
+    #[serde(flatten)]
+    pub preview: super::skill::wizard::Preview,
+    /// The specification as fetched, when it was named by URL, so the create
+    /// that follows sends what was previewed rather than fetching again and
+    /// perhaps getting something else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec: Option<serde_json::Value>,
 }
 
 /// What the specification answers of the form, before anything is created.
@@ -383,14 +398,148 @@ pub async fn preview_platform_skill_from_openapi(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Json(req): Json<PreviewRequest>,
-) -> Result<Json<super::skill::wizard::Preview>, ApiError> {
+) -> Result<Json<PreviewResponse>, ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     as_operator(&claims)?;
-    let spec_json = serde_json::to_vec(&req.spec)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?;
-    let preview = super::skill::wizard::preview(&spec_json, None)
+    let (spec_json, fetched_from) = match (req.spec, req.url) {
+        (Some(spec), None) => (
+            serde_json::to_vec(&spec)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid spec: {e}")))?,
+            None,
+        ),
+        (None, Some(url)) => (
+            fetch_document(&state, claims.subject, &url).await?,
+            Some(url),
+        ),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "send a specification or a URL to fetch one from, not both".into(),
+            ));
+        }
+    };
+    let preview = super::skill::wizard::preview(&spec_json, fetched_from.as_deref())
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
-    Ok(Json(preview))
+    let spec = match fetched_from {
+        // Parsed already by `preview`, so this cannot fail on a document it
+        // accepted.
+        Some(_) => Some(
+            serde_json::from_slice(&spec_json)
+                .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?,
+        ),
+        None => None,
+    };
+    Ok(Json(PreviewResponse { preview, spec }))
+}
+
+#[derive(serde::Deserialize)]
+struct Fetched {
+    status: u16,
+    body: String,
+    truncated: bool,
+}
+
+/// Fetches a specification through the gateway, the way an agent's
+/// `fetch_url` reaches a host -- never with a client of the API's own, which
+/// would be a URL field that reaches `outturn-api` and everything else in the
+/// cluster.
+///
+/// The API has no turn to borrow a token from, so it mints one for this
+/// request: committing to the one host the URL names, with no credential, no
+/// gates, the `document_fetch` role and a minute to live. The gateway then
+/// does what it does for every request -- refuses a private address unless
+/// the operator opened it, pins what it resolved, follows no redirect -- and
+/// the token is dropped here. Unauthenticated by construction: the rule names
+/// no credential, so none is attached.
+async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<u8>, ApiError> {
+    let gateway = std::env::var("OUTTURN_GATEWAY_URL").map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "fetching by URL needs OUTTURN_GATEWAY_URL set on the API; upload the file instead"
+                .to_string(),
+        )
+    })?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "only http and https URLs are fetched".into(),
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "that URL names no host".to_string(),
+        ))?
+        .to_string();
+
+    let workspace = crate::api::usage::PLATFORM_WORKSPACE;
+    let rules = vec![crate::runtime::egress::EgressRule {
+        host,
+        header: None,
+        credential_env: None,
+    }];
+    let gates = crate::egress::gate::Gates::none();
+    let token = state
+        .minter
+        .mint_document_fetch(
+            actor,
+            workspace,
+            crate::egress::commit::root(workspace, &rules),
+            gates.root(workspace),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let response = crate::http_client::reporting_client()
+        .post(format!("{gateway}/v1/egress"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "method": "GET",
+            "url": url,
+            "gates": gates,
+            "headers": [["accept", "application/json"]],
+            "proof": crate::egress::commit::Proof::WholeSet { rules },
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach the gateway: {e}"),
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        // The gateway's refusals are written to be read: a private address,
+        // an unresolvable name, a host that did not answer.
+        let detail = response.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("could not fetch {url}: {detail}"),
+        ));
+    }
+    let fetched: Fetched = response.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("the gateway's answer was unreadable: {e}"),
+        )
+    })?;
+    if !(200..300).contains(&fetched.status) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{url} answered {}", fetched.status),
+        ));
+    }
+    if fetched.truncated {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("{url} is larger than a specification may be"),
+        ));
+    }
+    tracing::info!(actor = %actor, %url, bytes = fetched.body.len(), "specification fetched");
+    Ok(fetched.body.into_bytes())
 }
 
 pub async fn create_platform_skill_from_openapi(

@@ -31,6 +31,12 @@ pub enum Role {
     /// else, so the token a turn travels with cannot be used against the API
     /// even before the audience check refuses it there.
     Turn,
+    /// The API fetching one document through the gateway on an operator's
+    /// behalf -- an OpenAPI specification named by URL. Holds `GatewayFetch`
+    /// alone, so the token cannot call a model, and like `Turn` it is never
+    /// granted to a person: it lives for a minute inside the API and is
+    /// dropped. See `docs/openapi-wizard.md`.
+    DocumentFetch,
 }
 
 /// Something the code can be asked to do.
@@ -87,6 +93,10 @@ pub enum Authority {
     /// Reading the usage ledger: what was spent, by whom, for which customer.
     UsageRead,
     GatewayInvoke,
+    /// Fetching one document through the gateway's egress path, for the API
+    /// itself rather than for a turn: a GET, with a larger response allowed
+    /// than a turn is given, and no model behind it.
+    GatewayFetch,
     /// Answering an approval an agent is waiting on.
     ///
     /// Whether somebody may answer approvals at all, which is a different
@@ -147,6 +157,7 @@ impl Authority {
         Authority::AgentsInhibit,
         Authority::ApprovalsAnswer,
         Authority::GatewayInvoke,
+        Authority::GatewayFetch,
         Authority::WorkTake,
     ];
 
@@ -183,6 +194,7 @@ impl Authority {
             Authority::WorkspacesInhibit => "workspaces:inhibit",
             Authority::AgentsInhibit => "agents:inhibit",
             Authority::GatewayInvoke => "gateway:invoke",
+            Authority::GatewayFetch => "gateway:fetch",
             Authority::WorkTake => "work:take",
         }
     }
@@ -223,6 +235,7 @@ impl Authority {
             Authority::WorkspacesInhibit => "Stop and restart everything this workspace runs",
             Authority::AgentsInhibit => "Stop and restart one agent",
             Authority::GatewayInvoke => "Call a model",
+            Authority::GatewayFetch => "Fetch a document through the gateway (the API tier)",
             Authority::WorkTake => "Take turns off the queue (the runtime tier)",
         }
     }
@@ -246,6 +259,7 @@ impl Authority {
                 | Authority::WorkspacesUpdate
                 | Authority::WorkspacesDelete
                 | Authority::WorkTake
+                | Authority::GatewayFetch
         )
     }
 
@@ -270,6 +284,7 @@ impl Role {
                 .collect(),
             Role::Runtime => HashSet::from([Authority::WorkTake]),
             Role::Turn => HashSet::from([Authority::GatewayInvoke]),
+            Role::DocumentFetch => HashSet::from([Authority::GatewayFetch]),
         }
     }
 }
@@ -294,6 +309,7 @@ impl std::fmt::Display for Role {
             Role::SystemAdmin => write!(f, "system_admin"),
             Role::Runtime => write!(f, "runtime"),
             Role::Turn => write!(f, "turn"),
+            Role::DocumentFetch => write!(f, "document_fetch"),
         }
     }
 }
@@ -311,6 +327,7 @@ impl std::str::FromStr for Role {
             // `user_system_roles` admits only 'system_admin'.
             "runtime" => Ok(Role::Runtime),
             "turn" => Ok(Role::Turn),
+            "document_fetch" => Ok(Role::DocumentFetch),
             other => Err(format!("not a platform role: {other}")),
         }
     }
@@ -336,6 +353,12 @@ mod tests {
     fn a_turn_can_only_call_the_gateway() {
         let got = platform_authorities(&["turn".to_string()]);
         assert_eq!(got, HashSet::from([Authority::GatewayInvoke]));
+    }
+
+    #[test]
+    fn a_document_fetch_cannot_call_a_model() {
+        let got = platform_authorities(&["document_fetch".to_string()]);
+        assert_eq!(got, HashSet::from([Authority::GatewayFetch]));
     }
 
     #[test]

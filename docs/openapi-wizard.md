@@ -308,9 +308,9 @@ a file avoids the question entirely and should be the path that works first.
 
 ## The page
 
-Built so far: the generator and `POST /v1/platform/skills/from-openapi`, which
-takes the specification inline. What is left is the page in front of it, and
-it does three things in order.
+Built: the generator, `POST /v1/platform/skills/from-openapi` and its
+`/preview`, and the page in front of them at `/skills/import`. It does three
+things in order.
 
 **Take a specification.** Pasted, uploaded, or named by URL. Upload comes
 first and is the path that must always work, because it also answers every
@@ -340,12 +340,19 @@ gateway. The page asks for that name, prefilled from the service
 (`BIGCAPITAL_API_KEY`), and ends by stating plainly what is still to be done
 outside it, since the variable itself is not something a browser can set.
 
-Open before building: the gateway's egress path is entered with a turn token
-carrying an egress commitment, and the API fetching a specification has no
-turn. Either the API mints a narrow token committing to the one host, or the
-gateway grows a path for the API tier. The first reuses everything; the
-second is a new kind of caller, and the egress invariants in AGENTS.md say why
-that deserves suspicion.
+Settled when it was built: the API mints a narrow token rather than the
+gateway growing a path for the API tier. It carries the gateway audience, an
+egress commitment over the one host the URL names with no credential, no
+gates, and `Role::DocumentFetch` -- which holds `GatewayFetch` and not
+`GatewayInvoke`, so it cannot call a model -- and it lives for a minute inside
+the API and is dropped. The gateway treats it like any turn's request, private
+addresses refused, the answer pinned, no redirect followed, with two
+differences keyed on the role: only GET, and a response as large as the wizard
+accepts rather than a turn's 256KB, which would cut every real specification
+short. An internal host the operator opened is reachable by it, as it is by a
+turn; only the operator runs this, and it is the operator's list. Fetching
+needs `OUTTURN_GATEWAY_URL` on the API, as the namer does, and refuses with a
+pointer to upload when it is unset.
 
 ## What this does not do
 

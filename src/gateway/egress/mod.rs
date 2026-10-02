@@ -47,6 +47,11 @@ const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// How much of a response comes back.
 const FETCH_BODY_LIMIT: usize = 256 * 1024;
 
+/// How much of a document the API fetches comes back: as much as the OpenAPI
+/// wizard will read, which is the only thing that asks. A turn's limit would
+/// cut every real specification short.
+const DOCUMENT_BODY_LIMIT: usize = crate::api::skill::wizard::MAX_SPEC_BYTES;
+
 /// What the runtime asks for.
 ///
 /// The rule and its proof travel together because the rule is not believed on
@@ -97,7 +102,16 @@ pub async fn fetch(
 ) -> Result<Json<EgressResponse>, (StatusCode, String)> {
     // The token is the whole basis of this. It says which workspace is calling
     // and what its rules hashed to, and the caller cannot write either.
-    let claims = super::router::authenticate(&state, &headers)?;
+    //
+    // Either a turn, or the API fetching one document for an operator. The
+    // second is told apart by its role and held to less: a GET, and nothing
+    // a turn could not already ask for, but a response large enough to be a
+    // real specification.
+    let claims = super::router::authenticate(&state, &headers).or_else(|refused| {
+        super::router::authenticate_for(&state, &headers, crate::auth::Authority::GatewayFetch)
+            .map_err(|_| refused)
+    })?;
+    let document = !claims.has_platform_authority(crate::auth::Authority::GatewayInvoke);
 
     let committed = claims.egress_commitment().map_err(|_| {
         // A turn token with no commitment cannot be given the benefit of the
@@ -122,6 +136,13 @@ pub async fn fetch(
         return Err((
             StatusCode::BAD_REQUEST,
             format!("{method} is not a method this can send"),
+        ));
+    }
+
+    if document && method != "GET" {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "a document is fetched, never sent to".to_string(),
         ));
     }
 
@@ -312,7 +333,11 @@ pub async fn fetch(
         headers: outgoing,
         body: request.body,
         timeout: FETCH_TIMEOUT,
-        body_limit: FETCH_BODY_LIMIT,
+        body_limit: if document {
+            DOCUMENT_BODY_LIMIT
+        } else {
+            FETCH_BODY_LIMIT
+        },
     };
 
     match state.egress_transport.send(vetted).await {

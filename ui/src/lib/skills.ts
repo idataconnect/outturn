@@ -287,11 +287,15 @@ export type OpenApiPreview = {
   categories: number
 }
 
-/** The specification travels parsed, as the object it is, to both routes. */
-export function previewOpenApi(spec: unknown): Promise<OpenApiPreview> {
-  return api<OpenApiPreview>('/v1/platform/skills/from-openapi/preview', {
+/** The specification travels parsed, as the object it is, to both routes --
+ *  or as a URL the server fetches through the gateway, in which case the
+ *  preview hands back what it fetched as `spec`, for the create to send. */
+export function previewOpenApi(
+  source: { spec: unknown } | { url: string },
+): Promise<OpenApiPreview & { spec?: unknown }> {
+  return api<OpenApiPreview & { spec?: unknown }>('/v1/platform/skills/from-openapi/preview', {
     method: 'POST',
-    body: JSON.stringify({ spec }),
+    body: JSON.stringify(source),
   })
 }
 
