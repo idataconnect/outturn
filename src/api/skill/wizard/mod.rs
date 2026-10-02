@@ -1,9 +1,11 @@
 mod parse;
+mod preview;
 mod render;
 
 use std::collections::BTreeMap;
 
 pub use parse::ParseError;
+pub use preview::{Preview, preview};
 
 pub struct WizardInput {
     pub spec_json: Vec<u8>,
@@ -17,7 +19,7 @@ pub struct WizardOutput {
     pub hosts: Vec<String>,
 }
 
-const MAX_SPEC_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_SPEC_BYTES: usize = 16 * 1024 * 1024;
 const MANIFEST_THRESHOLD: usize = 30;
 
 pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {

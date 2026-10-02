@@ -1638,9 +1638,23 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/platform/skills",
             post(super::skills::create_platform_skill),
         )
+        // A specification arrives inline, and a real one is megabytes: the
+        // default two would refuse a document the wizard itself accepts.
         .route(
             "/v1/platform/skills/from-openapi",
-            post(super::skills::create_platform_skill_from_openapi),
+            post(super::skills::create_platform_skill_from_openapi).layer(
+                axum::extract::DefaultBodyLimit::max(
+                    super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+                ),
+            ),
+        )
+        .route(
+            "/v1/platform/skills/from-openapi/preview",
+            post(super::skills::preview_platform_skill_from_openapi).layer(
+                axum::extract::DefaultBodyLimit::max(
+                    super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+                ),
+            ),
         )
         .route(
             "/v1/platform/skills/{id}",

@@ -29,6 +29,9 @@ async-stream = "0.3"
 tracing-opentelemetry = "0.33.0"
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
 reqwest = { version = "0.12", features = ["json"] }
+# A specification's relative `servers` entry, resolved against where it was
+# fetched from.
+url = "2"
 async-trait = "0.1"
 futures = "0.3"
 tokio-stream = "0.1"

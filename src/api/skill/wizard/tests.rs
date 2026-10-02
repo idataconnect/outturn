@@ -550,3 +550,80 @@ fn references_name_the_path_a_guest_reads() {
         output.body
     );
 }
+
+fn spec_with(extra: serde_json::Value) -> Vec<u8> {
+    let mut spec: serde_json::Value = serde_json::from_slice(&small_spec()).unwrap();
+    for (k, v) in extra.as_object().unwrap() {
+        spec[k] = v.clone();
+    }
+    serde_json::to_vec(&spec).unwrap()
+}
+
+#[test]
+fn preview_reads_what_the_specification_declares() {
+    let spec = spec_with(serde_json::json!({
+        "info": {"title": "Acme Billing API", "description": "Invoices.", "version": "1"},
+        "servers": [{"url": "https://api.acme.test/v2/"}],
+        "components": {"securitySchemes": {"key": {"type": "apiKey", "in": "header", "name": "X-Acme-Key"}}},
+    }));
+    let p = preview(&spec, None).unwrap();
+    assert_eq!(p.name, "Acme Billing API");
+    assert_eq!(p.description, "Invoices.");
+    assert_eq!(p.slug, "acme-billing-api");
+    assert_eq!(p.credential_env, "ACME_BILLING_API_KEY");
+    assert_eq!(p.base_url.as_deref(), Some("https://api.acme.test/v2"));
+    assert_eq!(p.auth_header.as_deref(), Some("X-Acme-Key"));
+    assert_eq!(p.operations, 3);
+    assert_eq!(p.categories, 1);
+}
+
+#[test]
+fn preview_names_authorization_for_a_bearer_scheme() {
+    let spec = spec_with(serde_json::json!({
+        "components": {"securitySchemes": {
+            "q": {"type": "apiKey", "in": "query", "name": "key"},
+            "b": {"type": "http", "scheme": "bearer"},
+        }},
+        "security": [{"b": []}],
+    }));
+    assert_eq!(
+        preview(&spec, None).unwrap().auth_header.as_deref(),
+        Some("Authorization")
+    );
+}
+
+#[test]
+fn preview_falls_back_to_a_header_every_operation_takes() {
+    // small_spec declares no scheme, only an Authorization parameter on each
+    // operation, which is what Bigcapital does too.
+    let p = preview(&small_spec(), None).unwrap();
+    assert_eq!(p.auth_header.as_deref(), Some("Authorization"));
+    assert_eq!(p.slug, "test");
+    assert_eq!(p.credential_env, "TEST_API_KEY");
+}
+
+#[test]
+fn preview_resolves_a_relative_server_against_the_fetch_url() {
+    let spec = spec_with(serde_json::json!({"servers": [{"url": "/api/v1"}]}));
+    assert_eq!(preview(&spec, None).unwrap().base_url, None);
+    let p = preview(&spec, Some("https://docs.acme.test/spec/openapi.json")).unwrap();
+    assert_eq!(p.base_url.as_deref(), Some("https://docs.acme.test/api/v1"));
+}
+
+#[test]
+fn preview_substitutes_server_variable_defaults() {
+    let spec = spec_with(serde_json::json!({"servers": [{
+        "url": "https://{region}.acme.test",
+        "variables": {"region": {"default": "eu"}},
+    }]}));
+    assert_eq!(
+        preview(&spec, None).unwrap().base_url.as_deref(),
+        Some("https://eu.acme.test")
+    );
+}
+
+#[test]
+fn preview_leaves_a_missing_server_unanswered() {
+    let spec = spec_with(serde_json::json!({"servers": []}));
+    assert_eq!(preview(&spec, None).unwrap().base_url, None);
+}
