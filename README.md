@@ -16,6 +16,10 @@ and nothing more.
 
 Rust, Axum, Tokio, PostgreSQL, WASM, Kubernetes. Apache-2.0.
 
+Documentation: <https://idataconnect.github.io/outturn/>, built from
+[docs/](docs/) with MkDocs (`mkdocs serve` after
+`pip install -r requirements-docs.txt`).
+
 ## Who this is for
 
 A company whose customers each need agents of their own, and who would

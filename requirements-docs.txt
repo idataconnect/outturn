@@ -1,0 +1,5 @@
+# The documentation site. Resolved unpinned and pinned to what came back, so
+# bump these the same way: install without pins, then copy the versions.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+pymdown-extensions==12.1

@@ -1,0 +1,101 @@
+site_name: outturn
+site_url: https://idataconnect.github.io/outturn/
+site_description: A multitenant agent platform with isolation, attribution and security boundaries built in
+
+repo_name: idataconnect/outturn
+repo_url: https://github.com/idataconnect/outturn
+edit_uri: edit/main/docs/
+
+copyright: Apache-2.0
+
+# The design docs already live here and are linked by path from AGENTS.md and
+# the code, so the site is built around them rather than moving them.
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/idataconnect/outturn
+
+extra_css:
+  - assets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+
+nav:
+  - Home: index.md
+  - Guide:
+      - Getting started: guide/getting-started.md
+      - Concepts: guide/concepts.md
+      - Take it for a spin: take-it-for-a-spin.md
+      - This machine's model: local-development.md
+  - Design:
+      - Roadmap: roadmap.md
+      - Glossary: glossary.md
+      - Tenancy and access:
+          - Tenancy, credentials and attribution: workspaces.md
+          - Authorities and roles: authorities.md
+          - Settings: settings.md
+      - Models and spend:
+          - Routing: routing.md
+          - Usage: usage.md
+          - Prompt caching: caching.md
+      - Reaching the outside:
+          - Egress: egress.md
+          - Integrations: integrations.md
+          - Credential bindings: credential-bindings.md
+          - Client credentials: client-credentials.md
+      - Skills:
+          - Skills as packages: skill-packages.md
+          - Skill bundles: skill-bundles.md
+          - The OpenAPI wizard: openapi-wizard.md
+          - Telling somebody their skill is not working: skill-evaluation.md
+      - Running turns:
+          - Triggers: triggers.md
+          - Inhibitors: inhibitors.md
+          - Approvals: approvals.md
+          - The action queue: action-queue.md
+          - Idempotency: idempotency.md
+      - Storage and search:
+          - Storage: storage.md
+          - Session search: session-search.md
+          - Looking at an image: vision.md
