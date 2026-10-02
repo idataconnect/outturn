@@ -282,9 +282,40 @@ export type OpenApiPreview = {
   slug: string
   base_url: string | null
   auth_header: string | null
+  /** What `auth_header` serves, when a declared scheme chose it. */
+  auth_kind: AuthKind | null
+  /** Operations needing a credential the header does not carry, and what
+   *  they need instead. Those will not authenticate on their own. */
+  unserved_operations: number
+  unserved_kinds: AuthKind[]
   credential_env: string
   operations: number
   categories: number
+}
+
+/** A security scheme as an egress rule sees it. A rule attaches one static
+ *  header, so the first three are servable and the rest are not. */
+export type AuthKind =
+  | 'api_key_header'
+  | 'bearer'
+  | 'basic'
+  | 'api_key_query'
+  | 'api_key_cookie'
+  | 'oauth2'
+  | 'open_id_connect'
+  | 'mutual_tls'
+  | 'other'
+
+export const authKindLabel: Record<AuthKind, string> = {
+  api_key_header: 'an API key in a header',
+  bearer: 'a bearer token',
+  basic: 'basic credentials',
+  api_key_query: 'an API key in the query string',
+  api_key_cookie: 'an API key in a cookie',
+  oauth2: 'OAuth 2.0',
+  open_id_connect: 'OpenID Connect',
+  mutual_tls: 'mutual TLS',
+  other: 'a scheme the platform does not recognise',
 }
 
 /** The specification travels parsed, as the object it is, to both routes --

@@ -781,3 +781,46 @@ fn preview_passes_over_the_petstores_oauth_for_its_api_key() {
     let p = preview(&petstore_spec(), None).unwrap();
     assert_eq!(p.auth_header.as_deref(), Some("api_key"));
 }
+
+#[test]
+fn preview_says_what_the_petstore_cannot_serve() {
+    let p = preview(&petstore_spec(), None).unwrap();
+    assert_eq!(p.auth_kind, Some(Kind::ApiKeyHeader));
+    // getPetById takes either, so only the seven OAuth-only operations.
+    assert_eq!(p.unserved_operations, 7);
+    assert_eq!(p.unserved_kinds, vec![Kind::OAuth2]);
+}
+
+#[test]
+fn preview_serves_nothing_from_a_query_key() {
+    let spec = spec_with(serde_json::json!({
+        "components": {"securitySchemes": {
+            "q": {"type": "apiKey", "in": "query", "name": "key"},
+            "oidc": {"type": "openIdConnect", "openIdConnectUrl": "https://id.test/.well-known"},
+        }},
+        "security": [{"q": []}, {"oidc": []}],
+    }));
+    let p = preview(&spec, None).unwrap();
+    assert_eq!(p.auth_kind, None);
+    assert_eq!(p.unserved_operations, 3);
+    assert_eq!(
+        p.unserved_kinds,
+        vec![Kind::ApiKeyQuery, Kind::OpenIdConnect]
+    );
+    // An alternative needing a key alongside the header is not served by it.
+    let both = spec_with(serde_json::json!({
+        "components": {"securitySchemes": {
+            "h": {"type": "apiKey", "in": "header", "name": "X-Key"},
+            "c": {"type": "apiKey", "in": "cookie", "name": "sid"},
+        }},
+        "security": [{"h": [], "c": []}],
+    }));
+    let p = preview(&both, None).unwrap();
+    assert_eq!(p.auth_header.as_deref(), Some("X-Key"));
+    assert_eq!(p.unserved_operations, 3);
+    assert_eq!(p.unserved_kinds, vec![Kind::ApiKeyCookie]);
+    assert_eq!(
+        serde_json::to_value(Kind::OAuth2).unwrap(),
+        serde_json::json!("oauth2")
+    );
+}
