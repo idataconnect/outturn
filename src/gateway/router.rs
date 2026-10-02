@@ -30,6 +30,9 @@ pub struct GatewayState {
     /// routes alike. Empty unless one said otherwise, which leaves every
     /// private address refused as it was.
     pub(crate) internal: egress::internal::Internal,
+    /// Access tokens for rules that exchange client credentials, held in this
+    /// replica's memory and nowhere else. See `egress::client`.
+    pub(crate) client_tokens: egress::client::Tokens,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -54,6 +57,7 @@ impl GatewayState {
             // are open is changing the deployment, and the list is read on
             // every outbound request.
             internal: egress::internal::Internal::from_env(),
+            client_tokens: egress::client::Tokens::default(),
         }
     }
 
