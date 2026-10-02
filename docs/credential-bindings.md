@@ -1,7 +1,7 @@
 # Credential bindings
 
 Which workspace may use a credential the operator set up, and where it may be
-sent. Designed, not built.
+sent. Built: `src/egress/bindings.rs`, enforced in `src/gateway/egress/mod.rs`.
 
 ## The leak
 
@@ -38,6 +38,16 @@ authenticated going out bare is a surprise nobody wants to debug.
 Unbound means refused. A variable with no binding attaches to nothing, for
 anybody -- the same direction as the commitment, where "could not verify" has
 to mean refused.
+
+So does a declaration that cannot be read. If `OUTTURN_CREDENTIAL_BINDINGS` is
+not valid JSON, or any entry in it is wrong -- an unknown field, a wildcard
+host, a workspace that is not an id -- the whole of it is refused and nothing
+is bound, and the gateway says so at error level when it starts. Not entry by
+entry, as the internal-hosts list is read: dropping a bad internal host leaves
+that host refused, but dropping a misspelt `token_url` from a binding would
+leave the rest of it bound to its hosts with no endpoint said. A parse error
+never falls back to allowing, and refusing to start instead would turn a typo
+into an outage of every model call too.
 
 ## Where a binding lives
 
@@ -134,9 +144,12 @@ It asks three things, from values the gateway holds itself:
   binding's, both for the id variable and the secret variable. Both must bind
   it, so a pair cannot be assembled from halves bound to different places.
 
-The token cache is keyed by the rule today. It gains the workspace, so a token
-one workspace's exchange bought is never handed to another's request even when
-their rules hash alike.
+The check runs before the token cache is consulted as well as before an
+exchange, so a held token is handed out only where the secret that bought it
+may go. The cache itself is already keyed by workspace -- `slot` takes the
+rule's leaf, which carries it, and `tokens_are_not_shared_between_workspaces`
+holds it there -- so a token one workspace's exchange bought is never handed
+to another's request even when their rules are alike.
 
 The API reads the same variable, from the same ConfigMap -- the bindings are
 not secret -- and uses it for two things only: refusing a rule at write time
@@ -171,8 +184,17 @@ at first.
 
 **Tier 1, the operator's APIs.** This is the tier it is for. The operator
 holds the key, names the variable and binds it to the workspaces it serves and
-the hosts it is for. A booking API every workspace uses lists every workspace
--- explicitly, so adding one is a deliberate act rather than a default.
+the hosts it is for. A booking API every workspace uses is bound to `"*"`.
+
+That is less generous than it reads. The hosts are what keep a secret from
+leaving for somewhere the operator did not name, and `"*"` does not touch
+them; the workspace list is a second limit, on who may use the credential at
+its proper host. For a key that genuinely serves every workspace, `"*"` with a
+fixed host list leaks nothing -- it says every workspace may call that API,
+which is true. Listing ids instead would cost a gateway redeploy before each
+new workspace could use a shared integration, and that friction is the kind
+that gets worked around. `"*"` stands alone: beside ids it would be a list
+claiming to be narrower than it is, and is refused.
 
 **Tier 2, extensions.** A per-workspace credential from a consent flow cannot
 be an environment variable, so it lives in the credential store integrations.md
@@ -191,13 +213,20 @@ The per-agent narrowing in integrations.md composes with this rather than
 replacing it: an agent's list narrows which rules it may use, and the binding
 still decides where a rule's credential may go.
 
+## Local development
+
+Both local overlays declare `OUTTURN_CREDENTIAL_BINDINGS` empty, on the API
+and the gateway, so there is somewhere to write it -- the same reason
+`OUTTURN_INTERNAL_HOSTS` is declared. Empty binds nothing, so a rule carrying
+a credential from before this existed is refused until its variable is bound
+there; the API marks it `unbound` when listed.
+
 ## Not settled
 
-- **Many workspaces.** An operator with four hundred workspaces on one
-  booking API lists four hundred ids. A `"*"` would be shorter and would also
-  be the first thing in this design that grants by default. Organizations, once
-  they exist, are the better unit: bind to an organization and its workspaces
-  follow.
+- **Organizations.** Between one workspace and `"*"` there is nothing: a key
+  an organization shares across its forty workspaces lists forty ids.
+  Organizations, once they exist, are the unit for that -- bind to one and its
+  workspaces follow.
 - **Where the JSON lives at scale.** An environment variable is the smallest
   thing that works; a mounted file is what to reach for when it outgrows one.
   The check is the same either way.

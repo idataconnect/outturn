@@ -110,9 +110,8 @@ scheme is not.
 [credential-bindings.md](credential-bindings.md).
 
 A credential variable usable only by the workspaces and toward the hosts the
-operator bound it to, enforced in the gateway. Not built, and the most urgent
-thing here: until it is, any workspace that can write rules can send another
-workspace's credential to a host of its own.
+operator bound it to, enforced in the gateway. Built. Binding to an
+organization rather than a list of workspaces waits on organizations.
 
 ### Idempotency
 
