@@ -238,7 +238,8 @@ should not be expressible.
 For tier 1 the problem is already here: a rule names a variable, and the
 variable namespace is shared by every workspace. How a variable is bound to its
 workspaces and hosts, and why the binding lives on the gateway rather than in a
-table or the turn token, is in [credential-bindings.md](credential-bindings.md).
+table or the turn token, is in [credential-bindings.md](credential-bindings.md),
+which is built.
 
 This is also why the authority to configure an integration is not the authority
 to use one. A member who can enable Notion for a workspace is choosing what the

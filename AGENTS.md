@@ -616,6 +616,13 @@ so a rule may name only a variable under `OUTTURN_EGRESS_`, never one of the
 gateway's own secrets. The gateway checks this where it reads the variable,
 not only where the API stores the rule.
 
+The prefix is shared by every workspace, so it is not the whole answer: a
+variable is used only by the workspaces and toward the hosts (and token URL)
+the operator bound it to in `OUTTURN_CREDENTIAL_BINDINGS` on the gateway. The
+binding lives beside the secret rather than in a table, so not even the API
+chooses where a secret goes; unbound, or a declaration that will not parse,
+means refused. See [docs/credential-bindings.md](docs/credential-bindings.md).
+
 That includes a token a rule exchanges client credentials for. It is a working
 credential for as long as it lasts, so it lives in the gateway's memory, one
 cache per replica, and not in the database the breaker shares -- where the API
