@@ -33,6 +33,10 @@ pub struct GatewayState {
     /// Access tokens for rules that exchange client credentials, held in this
     /// replica's memory and nowhere else. See `egress::client`.
     pub(crate) client_tokens: egress::client::Tokens,
+    /// Which workspaces may use each credential variable, and where it may
+    /// go. The operator's, beside the secrets themselves, so neither a
+    /// workspace's rule nor the API decides where a secret is sent.
+    pub(crate) bindings: crate::egress::bindings::Bindings,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -58,12 +62,20 @@ impl GatewayState {
             // every outbound request.
             internal: egress::internal::Internal::from_env(),
             client_tokens: egress::client::Tokens::default(),
+            // Read once, like the internal hosts, and for the same reason.
+            bindings: crate::egress::bindings::Bindings::from_env(),
         }
     }
 
     /// The internal hosts to treat as open, for a test that needs some.
     pub fn with_internal_hosts(mut self, internal: egress::internal::Internal) -> Self {
         self.internal = internal;
+        self
+    }
+
+    /// The credential bindings to enforce, for a test that needs some.
+    pub fn with_bindings(mut self, bindings: crate::egress::bindings::Bindings) -> Self {
+        self.bindings = bindings;
         self
     }
 
