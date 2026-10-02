@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 90 90"
+   role="img"
+   aria-label="Outturn"
+   version="1.1"
+   id="svg4"
+   width="90"
+   height="90"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmlns:c2pa="http://c2pa.org/manifest">
+  <title
+     id="title1">Outturn</title>
+  <defs
+     id="defs2">
+    <linearGradient
+       id="linearGradient9"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20">
+      <stop
+         offset="0"
+         stop-color="#0E6E6E"
+         id="stop8"
+         style="stop-color:#0e6d6e;stop-opacity:1;" />
+      <stop
+         offset="1"
+         stop-color="#F2762E"
+         id="stop9" />
+    </linearGradient>
+    <linearGradient
+       id="outturn-stroke"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20">
+      <stop
+         offset="0"
+         stop-color="#0E6E6E"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#F2762E"
+         id="stop2" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#linearGradient9"
+       id="linearGradient28"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20"
+       gradientTransform="matrix(0.6179839,0,0,1.026645,7.6368788,-1.451221)" />
+    <linearGradient
+       xlink:href="#outturn-stroke"
+       id="linearGradient29"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20"
+       gradientTransform="matrix(0.6179839,0,0,1.026645,7.6368788,-1.451221)" />
+    <linearGradient
+       xlink:href="#outturn-stroke"
+       id="linearGradient30"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20"
+       gradientTransform="matrix(0.6179839,0,0,1.026645,7.6368788,-1.451221)" />
+    <linearGradient
+       xlink:href="#outturn-stroke"
+       id="linearGradient31"
+       gradientUnits="userSpaceOnUse"
+       x1="8"
+       y1="82"
+       x2="114"
+       y2="20" />
+  </defs>
+  <g
+     transform="translate(-0.94,-6.19)"
+     fill="none"
+     stroke="url(#outturn-stroke)"
+     stroke-width="7"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="g4"
+     style="stroke:url(#linearGradient31)">
+    <path
+       d="M 40.797895,39.850706 A 14.831614,24.639479 0 1 1 28.648331,29.348128 h 49.438712"
+       id="path2"
+       style="stroke:url(#linearGradient30);stroke-width:10;stroke-dasharray:none" />
+    <path
+       d="m 72.902158,23.752913 5.184885,5.595215 -5.184885,5.595215"
+       id="path3"
+       style="stroke:url(#linearGradient29);stroke-width:10;stroke-dasharray:none" />
+    <path
+       d="m 62.019462,29.348128 c 0,0 -11.26381,49.278959 0,49.278959"
+       id="path4"
+       style="stroke:url(#linearGradient28);stroke-width:10;stroke-dasharray:none" />
+  </g>
+</svg>
