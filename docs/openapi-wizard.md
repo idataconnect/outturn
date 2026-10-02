@@ -306,6 +306,47 @@ what the gateway is for and what the egress rules govern. It is not a new path
 -- the API asks the gateway, exactly as an agent's `fetch_url` does. Uploading
 a file avoids the question entirely and should be the path that works first.
 
+## The page
+
+Built so far: the generator and `POST /v1/platform/skills/from-openapi`, which
+takes the specification inline. What is left is the page in front of it, and
+it does three things in order.
+
+**Take a specification.** Pasted, uploaded, or named by URL. Upload comes
+first and is the path that must always work, because it also answers every
+specification behind a login: the person downloads it with their own
+credentials and hands us a file, and no credential of theirs passes through
+the platform. A URL is fetched by the server, unauthenticated, and only through
+the gateway as the section above says -- never by a client in the API, which
+would be a URL field that reaches `outturn-api` and everything else inside the
+cluster. Fetching from the browser instead is deferred and may never happen:
+the obstacle is CORS, not anything of ours, and most API hosts do not serve
+their specification to another origin.
+
+**Read what it already says.** The specification usually answers most of the
+form. `servers[0].url` is the base URL; a `bearer` scheme names
+`Authorization`, an `apiKey` scheme in a header names that header; `info.title`
+and `info.description` are the name and description, and the slug follows from
+the title. So the request splits in two: a preview that parses and returns
+these, with the operation and category counts, and the create that already
+exists. Everything prefilled stays editable, and anything the specification
+did not say is asked for -- a missing `servers` is common, and a relative one
+has to be resolved against the URL it was fetched from.
+
+**Create the skill, and say what it still needs.** The skill's hosts are
+written with it, but a host is reachable only once an egress rule names it,
+and the credential is an environment variable name the operator sets on the
+gateway. The page asks for that name, prefilled from the service
+(`BIGCAPITAL_API_KEY`), and ends by stating plainly what is still to be done
+outside it, since the variable itself is not something a browser can set.
+
+Open before building: the gateway's egress path is entered with a turn token
+carrying an egress commitment, and the API fetching a specification has no
+turn. Either the API mints a narrow token committing to the one host, or the
+gateway grows a path for the API tier. The first reuses everything; the
+second is a new kind of caller, and the egress invariants in AGENTS.md say why
+that deserves suspicion.
+
 ## What this does not do
 
 **It does not generate tool definitions.** The output is prose an agent reads
