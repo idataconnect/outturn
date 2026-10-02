@@ -272,3 +272,38 @@ export function fileChanges(from: Carried[], to: Carried[]): FileChange[] {
   }
   return out.sort((a, b) => a.path.localeCompare(b.path))
 }
+
+/** What a specification answers of the import form, read before anything is
+ *  created. Every field is a suggestion; `base_url` and `auth_header` are null
+ *  when the document did not say. */
+export type OpenApiPreview = {
+  name: string
+  description: string
+  slug: string
+  base_url: string | null
+  auth_header: string | null
+  credential_env: string
+  operations: number
+  categories: number
+}
+
+/** The specification travels parsed, as the object it is, to both routes. */
+export function previewOpenApi(spec: unknown): Promise<OpenApiPreview> {
+  return api<OpenApiPreview>('/v1/platform/skills/from-openapi/preview', {
+    method: 'POST',
+    body: JSON.stringify({ spec }),
+  })
+}
+
+export function createFromOpenApi(input: {
+  slug: string
+  name: string
+  description: string
+  base_url: string
+  spec: unknown
+}): Promise<Skill> {
+  return api<Skill>('/v1/platform/skills/from-openapi', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
