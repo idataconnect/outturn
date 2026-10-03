@@ -3864,3 +3864,128 @@ async fn a_parked_turn_is_not_counted_as_claimable_work() {
 
     finish!(db);
 }
+
+/// A turn reads from the newest summary on, which is all its projection keeps:
+/// the summary itself and the messages after the one it covers. Older messages,
+/// and the summary before it, are left unread.
+///
+/// A summary whose mark does not read is not a summary to the projection
+/// (`summarise::mark_of`), so it must not be one to this read either --
+/// otherwise the two pick different summaries and the turn loses messages.
+#[tokio::test]
+async fn a_turn_reads_from_its_newest_summary_on() {
+    use outturn::api::chat::{ChatStore, CreateSession, PostgresChatStore};
+
+    let (db, ws) = setup_or_skip!();
+    let agent = Uuid::now_v7();
+    sqlx::query(
+        "insert into agents (id, workspace_id, name, slug, system_prompt, enabled) \
+         values ($1, $2, 'T', 'agent-' || replace($1::text, '-', ''), '', true)",
+    )
+    .bind(agent)
+    .bind(ws)
+    .execute(&db.pool)
+    .await
+    .expect("agent");
+    let user = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, 'Ada')")
+        .bind(user)
+        .execute(&db.pool)
+        .await
+        .expect("user");
+
+    let chat = PostgresChatStore::new(db.pool.clone());
+    let session = chat
+        .create_session(
+            ws,
+            user,
+            CreateSession {
+                agent_id: agent,
+                title: String::new(),
+                account: None,
+            },
+        )
+        .await
+        .expect("session");
+
+    // Ten messages, then a summary covering the first six, then an older-style
+    // summary covering the first three, then one whose mark does not parse.
+    let mut ids = Vec::new();
+    let insert = |metadata: serde_json::Value, role: &'static str| {
+        let pool = db.pool.clone();
+        let session = session.id;
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                "insert into agent_messages (id, session_id, role, content, metadata) \
+                 values ($1, $2, $3, 'x', $4)",
+            )
+            .bind(id)
+            .bind(session)
+            .bind(role)
+            .bind(metadata)
+            .execute(&pool)
+            .await
+            .expect("message");
+            id
+        }
+    };
+    for i in 0..10 {
+        ids.push(
+            insert(
+                serde_json::json!({}),
+                if i % 2 == 0 { "user" } else { "assistant" },
+            )
+            .await,
+        );
+    }
+    let older = insert(
+        serde_json::json!({ "summary_through": ids[2].to_string() }),
+        "assistant",
+    )
+    .await;
+    let newest = insert(
+        serde_json::json!({ "summary_through": ids[5].to_string() }),
+        "assistant",
+    )
+    .await;
+    let unreadable = insert(
+        serde_json::json!({ "summary_through": "not an id" }),
+        "assistant",
+    )
+    .await;
+
+    let read: Vec<Uuid> = chat
+        .turn_history(session.id)
+        .await
+        .expect("history")
+        .messages
+        .iter()
+        .map(|m| m.id)
+        .collect();
+
+    // The newest readable summary, everything after what it covers -- which
+    // includes the older summary, since its id sorts above that point, and the
+    // unreadable one, which the projection replays as ordinary speech.
+    let mut expected: Vec<Uuid> = ids[6..].to_vec();
+    expected.extend([older, newest, unreadable]);
+    expected.sort();
+    assert_eq!(read, expected);
+
+    // And with no summary at all it is the whole history.
+    let all = chat.messages(session.id).await.expect("all").messages.len();
+    sqlx::query("delete from agent_messages where metadata ? 'summary_through'")
+        .execute(&db.pool)
+        .await
+        .expect("drop summaries");
+    assert_eq!(
+        chat.turn_history(session.id)
+            .await
+            .expect("history")
+            .messages
+            .len(),
+        all - 3
+    );
+
+    finish!(db);
+}

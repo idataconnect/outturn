@@ -142,16 +142,23 @@ impl UserStore for PostgresUserStore {
         limit: i64,
     ) -> Result<Vec<User>, UserError> {
         let rows = sqlx::query(
-            "select u.id, u.display_name, \
+            // Driven from the workspace's members, in id order through
+            // `user_workspace_roles_member_idx`, and only then out to users.
+            // Driven from users it could walk every user on the platform in id
+            // order, asking each whether they belonged here, until a small
+            // workspace's page filled.
+            "with members as ( \
+                 select distinct user_id from user_workspace_roles \
+                  where workspace_id = $1 and ($2::uuid is null or user_id > $2) \
+                  order by user_id \
+                  limit $3) \
+             select u.id, u.display_name, \
                     coalesce(array_agg(sr.role) filter (where sr.role is not null), '{}') as roles \
-             from users u \
+             from members m \
+             join users u on u.id = m.user_id \
              left join user_system_roles sr on sr.user_id = u.id \
-             where exists (select 1 from user_workspace_roles tr \
-                           where tr.user_id = u.id and tr.workspace_id = $1) \
-               and ($2::uuid is null or u.id > $2) \
              group by u.id, u.display_name \
-             order by u.id \
-             limit $3",
+             order by u.id",
         )
         .bind(workspace_id)
         .bind(after)

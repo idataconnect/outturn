@@ -41,6 +41,13 @@ impl SkillStatsStore for PostgresSkillStatsStore {
         to: chrono::DateTime<chrono::Utc>,
         limit: i64,
     ) -> Result<SkillStats, StatsError> {
+        // Every window over turns is bounded twice: by the reply's id, which
+        // is a UUIDv7 and so a range of `turn_skills`' key (`uuid7_floor`),
+        // and by `created_at`, which decides. The id range is what keeps a
+        // window from reading every turn ever recorded; the minute of slack
+        // either side covers the app minting the id a moment before the
+        // database stamps the row.
+        //
         // The standing shape of the workspace's skills, and what happened to
         // them in the window. One statement because these are all counts over
         // the same two tables, and six round trips to fill one panel is six
@@ -63,6 +70,7 @@ impl SkillStatsStore for PostgresSkillStatsStore {
                     join agent_messages m on m.id = ts.reply_id \
                     join skills s on s.id = ts.skill_id \
                    where s.workspace_id = $1 \
+                     and ts.reply_id >= uuid7_floor($2 - interval '1 minute') and ts.reply_id < uuid7_floor($3 + interval '1 minute') \
                      and m.created_at >= $2 and m.created_at < $3) as turns",
         )
         .bind(workspace_id)
@@ -97,6 +105,7 @@ impl SkillStatsStore for PostgresSkillStatsStore {
                 and m.created_at >= $2 and m.created_at < $3 \
                join skills s on s.id = ts.skill_id \
               where s.workspace_id = $1 \
+                and ts.reply_id >= uuid7_floor($2 - interval '1 minute') and ts.reply_id < uuid7_floor($3 + interval '1 minute') \
               group by s.id, s.name, s.slug \
               order by turns desc, s.name \
               limit $4",
@@ -129,9 +138,10 @@ impl SkillStatsStore for PostgresSkillStatsStore {
         let idle = sqlx::query(
             "select s.id, s.name, s.slug, \
                     count(distinct a.agent_id) as agents, \
-                    (select max(m.created_at) from turn_skills t \
+                    (select m.created_at from turn_skills t \
                        join agent_messages m on m.id = t.reply_id \
-                      where t.skill_id = s.id) as last_used \
+                      where t.skill_id = s.id \
+                      order by t.reply_id desc limit 1) as last_used \
                from skills s \
                join agent_skills a on a.skill_id = s.id \
               where s.workspace_id = $1 \
@@ -140,6 +150,7 @@ impl SkillStatsStore for PostgresSkillStatsStore {
                     select 1 from turn_skills ts \
                       join agent_messages m on m.id = ts.reply_id \
                      where ts.skill_id = s.id \
+                       and ts.reply_id >= uuid7_floor($2 - interval '1 minute') and ts.reply_id < uuid7_floor($3 + interval '1 minute') \
                        and m.created_at >= $2 and m.created_at < $3) \
               group by s.id, s.name, s.slug \
               order by s.name \
@@ -169,10 +180,7 @@ impl SkillStatsStore for PostgresSkillStatsStore {
         // or an edit nobody has picked up. Both are worth seeing and only one
         // is worth acting on.
         let lagging = sqlx::query(
-            "with latest as ( \
-                 select skill_id, max(ordinal) as ordinal \
-                   from skill_versions where workspace_id = $1 group by skill_id) \
-             select s.id, s.name, s.slug, \
+            "select s.id, s.name, s.slug, \
                     l.ordinal as latest, \
                     max(v.ordinal) as serving, \
                     count(*) as turns, \
@@ -182,9 +190,12 @@ impl SkillStatsStore for PostgresSkillStatsStore {
                 and m.created_at >= $2 and m.created_at < $3 \
                join skills s on s.id = ts.skill_id \
                join skill_versions v on v.id = ts.version_id \
-               join latest l on l.skill_id = s.id \
+               cross join lateral ( \
+                   select ordinal from skill_versions \
+                    where skill_id = s.id order by ordinal desc limit 1) l \
                left join agent_skills a on a.skill_id = s.id \
               where s.workspace_id = $1 \
+                and ts.reply_id >= uuid7_floor($2 - interval '1 minute') and ts.reply_id < uuid7_floor($3 + interval '1 minute') \
               group by s.id, s.name, s.slug, l.ordinal \
              having max(v.ordinal) < l.ordinal \
               order by turns desc, s.name \
