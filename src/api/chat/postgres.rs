@@ -907,10 +907,15 @@ impl ChatStore for PostgresChatStore {
         // *expected* to sit that way for hours. Left out, the first message
         // somebody sends while an approval is pending is refused, and the
         // conversation they were trying to unblock is the one that wedges.
+        //
+        // `j.kind` is named although only turns carry a `message_id`: it is
+        // what lets the planner use `jobs_chat_turn_message_idx`, whose
+        // predicate it is. Without it this joined every job ever run.
         let abandoned: Option<Uuid> = sqlx::query_scalar(
             "select m.id from agent_messages m \
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
+                   and j.kind = 'chat.turn' \
                    and j.state in ('pending', 'running', 'succeeded', 'cancelled', 'parked') \
              where m.session_id = $1 and m.role = 'assistant' \
                and not said_something(m.content, m.metadata) \
