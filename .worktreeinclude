@@ -1,0 +1,5 @@
+# Gitignored files copied into a new worktree. These are the running cluster's
+# own keys and this machine's answers. A worktree without them generates fresh
+# keys on its first build, and those no longer match the cluster it deploys to.
+k8s/overlays/local/dev-secrets.env
+k8s/overlays/local/dev-machine.env
