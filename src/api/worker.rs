@@ -77,6 +77,47 @@ pub struct ChatTurnPayload {
 /// One wording for every such note, so the agent learns one thing.
 const PLATFORM_NOTE: &str = "[the platform wrote this; nobody in the conversation sent it]";
 
+/// What follows an attempt that was cut off, so the next one knows it was.
+///
+/// A crash keeps what an attempt said (`chat::attempt_for` seals it), and the
+/// retry is handed it as its own earlier words, which is right: it should not
+/// start blind. But unlabelled, an attempt that had written most of its answer
+/// before the pod died reads as a finished reply -- and the retry, seeing that
+/// it had apparently already answered, said nothing at all. The reader was
+/// then told the agent had "started this reply again below" over a reply with
+/// nothing in it.
+///
+/// "Cut off" is the platform's best guess rather than a fact. A reply whose
+/// model finished, but whose last chunk the API failed to read, never records
+/// finishing either -- which is how this was found: an answer ending on an
+/// emoji split across the final chunk. So the note says both, and asks for a
+/// sentence rather than a second copy when the first was whole.
+///
+/// In the user position and marked as the platform's, the same way the record
+/// of an approval goes: a note from outside the conversation, not the agent's
+/// own last words to carry on from.
+fn note_if_cut_off(message: &super::chat::Message, projected: &mut Vec<serde_json::Value>) {
+    let cut_off = message.role == "assistant"
+        && message
+            .metadata
+            .get("interrupted")
+            .and_then(|v| v.as_bool())
+            == Some(true);
+    if !cut_off {
+        return;
+    }
+    projected.push(serde_json::json!({
+        "role": "user",
+        "parts": [{"type": "text", "text": format!(
+            "{PLATFORM_NOTE}\n\nYour reply above was cut off, or finished without \
+             the platform recording it -- the two look the same from here. If it \
+             reads as complete, say so in one sentence rather than repeating it. \
+             If it stops partway, answer again in full; you may reuse what you \
+             had written."
+        )}],
+    }));
+}
+
 /// The projection alone, for callers that do not need to name stored messages.
 #[cfg(test)]
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
@@ -200,6 +241,7 @@ fn projected_with_sources(
                 "role": role,
                 "parts": [{"type": "text", "text": text}],
             }));
+            note_if_cut_off(message, &mut projected);
             sources.extend(std::iter::repeat_n(
                 message.id,
                 projected.len() - entries_before,
@@ -304,6 +346,7 @@ fn projected_with_sources(
             }
         }
         flush(&mut open, &mut awaiting, &mut projected);
+        note_if_cut_off(message, &mut projected);
         sources.extend(std::iter::repeat_n(
             message.id,
             projected.len() - entries_before,
@@ -2488,6 +2531,53 @@ mod projection_tests {
         assert!(wire.contains("It won't suit them."));
         assert!(wire.contains("sleeps 2"));
         assert_well_formed(&projected);
+    }
+
+    /// An attempt cut off by a crash goes back with a note after it, in the
+    /// user position, so the retry does not read it as a finished reply and
+    /// stop -- which it did, leaving an empty reply under one promising the
+    /// agent had started again. Both shapes are covered: plain text, and a
+    /// reply that called a tool.
+    #[test]
+    fn a_cut_off_attempt_is_said_to_be_cut_off() {
+        let prompt = message("user", "Explain double entry.", serde_json::json!({}));
+        let plain = message(
+            "assistant",
+            "Every debit has a credit",
+            serde_json::json!({ "interrupted": true }),
+        );
+        let called = message(
+            "assistant",
+            "Looking it up",
+            serde_json::json!({
+                "interrupted": true,
+                "tool_calls": [call("c1", Some("ok"))],
+                "parts": [
+                    {"type": "text", "text": "Looking it up"},
+                    {"type": "call", "id": "c1"},
+                ],
+            }),
+        );
+        for attempt in [plain, called] {
+            let (projected, sources) = projected_with_sources(&[prompt.clone(), attempt.clone()]);
+            let last = projected.last().expect("entries");
+            assert_eq!(last["role"], "user", "{projected:?}");
+            let text = last["parts"][0]["text"].as_str().expect("text");
+            assert!(text.starts_with(PLATFORM_NOTE), "{text}");
+            assert!(text.contains("cut off"), "{text}");
+            // The note is accounted to the attempt it describes.
+            assert_eq!(sources.last(), Some(&attempt.id));
+            assert_well_formed(&projected);
+        }
+
+        // A finished reply gets no note.
+        let finished = message(
+            "assistant",
+            "Every debit has a credit.",
+            serde_json::json!({}),
+        );
+        let projected = project(&[prompt, finished]);
+        assert_eq!(projected.last().expect("entries")["role"], "assistant");
     }
 
     /// A refused call as the *projection* holds it: the assistant entry that
