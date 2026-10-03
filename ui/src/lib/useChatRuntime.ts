@@ -68,6 +68,10 @@ export type Annotated = Message & {
   /** The newest assistant reply in the transcript: the only one that wears
    *  the finished mark, and the reason it is still there after a refresh. */
   newest?: boolean
+  /** On an interrupted reply: a later attempt at the same prompt said
+   *  something, or is still being written. What lets the thread promise the
+   *  agent "started again below" only when there is something below. */
+  restarted?: boolean
 }
 
 /**
@@ -179,9 +183,28 @@ export function annotate(
   // would clear the lot.
   const newest = [...messages].reverse().find((m) => m.role === 'assistant')?.id
 
+  // An attempt after an interrupted one, worth pointing the reader at: it
+  // said something, or it has not finished yet and may. An empty finished
+  // retry is not -- one ran to the end having said nothing, and the note
+  // above the interrupted attempt sent the reader looking for a reply that
+  // was not there.
+  const restarted = (m: Message) =>
+    messages.some(
+      (later) =>
+        later.role === 'assistant' &&
+        later.replies_to === m.replies_to &&
+        (later.attempt ?? 1) > (m.attempt ?? 1) &&
+        (hasContent(later) || inProgress.has(later.id) || !later.finished_at),
+    )
+
   return messages.map((m) => {
     if (m.role === 'assistant') {
-      return { ...m, live: inProgress.has(m.id), newest: m.id === newest }
+      return {
+        ...m,
+        live: inProgress.has(m.id),
+        newest: m.id === newest,
+        restarted: m.metadata.interrupted === true && restarted(m),
+      }
     }
     if (m.role !== 'user') return m
 
@@ -280,6 +303,7 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // with nothing to say it stopped, it reads as an answer followed by a
       // second, unrelated one.
       interrupted: message.metadata.interrupted === true,
+      restarted: message.restarted === true,
       // What somebody decided about an approval, drawn as the boundary it is
       // rather than as speech. Stored as a `system` message because the
       // platform recorded it and the agent did not say it -- and without it a

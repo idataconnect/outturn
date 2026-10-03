@@ -469,3 +469,48 @@ describe('whether a turn is running, for whoever is looking', () => {
     expect(turnIsRunning([])).toBe(false)
   })
 })
+
+describe('a reply interrupted and started again', () => {
+  const prompt = message({ id: 'u1', role: 'user', content: 'Explain double entry.' })
+  const first = message({
+    id: 'a1',
+    role: 'assistant',
+    content: 'Every debit has a credit',
+    replies_to: 'u1',
+    attempt: 1,
+    metadata: { interrupted: true },
+    finished_at: '2026-10-03T18:55:00Z',
+  })
+  const restartedOf = (msgs: Message[]) =>
+    annotate(msgs, new Set(), new Map()).find((m) => m.id === 'a1')?.restarted
+
+  it('points below when the next attempt said something', () => {
+    const second = message({
+      id: 'a2',
+      role: 'assistant',
+      content: 'Every debit has a credit, and…',
+      replies_to: 'u1',
+      attempt: 2,
+      finished_at: '2026-10-03T18:56:00Z',
+    })
+    expect(restartedOf([prompt, first, second])).toBe(true)
+  })
+
+  it('points below while the next attempt is still being written', () => {
+    const second = message({ id: 'a2', role: 'assistant', replies_to: 'u1', attempt: 2 })
+    expect(restartedOf([prompt, first, second])).toBe(true)
+  })
+
+  it('does not point at a next attempt that finished having said nothing', () => {
+    // What happened: the retry ran to the end empty, and the note sent the
+    // reader looking for a reply that was not there.
+    const second = message({
+      id: 'a2',
+      role: 'assistant',
+      replies_to: 'u1',
+      attempt: 2,
+      finished_at: '2026-10-03T18:56:00Z',
+    })
+    expect(restartedOf([prompt, first, second])).toBe(false)
+  })
+})

@@ -299,6 +299,7 @@ function AssistantMessage() {
   // A reply whose turn was cut off and started again. Said under it, because
   // what follows is the retry's answer and not a second thought.
   const interrupted = useAuiState((s) => s.message.metadata.custom?.interrupted === true)
+  const restarted = useAuiState((s) => s.message.metadata.custom?.restarted === true)
 
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
@@ -373,7 +374,9 @@ function AssistantMessage() {
       </div>
       {interrupted && (
         <p className="mt-1 text-xs italic text-surface-500 dark:text-surface-400">
-          Interrupted here. The agent started this reply again below.
+          {/* Only promising a reply below when there is one: a retry can run
+              to the end and say nothing, and then there is nothing to find. */}
+          {restarted ? 'Interrupted here. The agent started this reply again below.' : 'Interrupted here.'}
         </p>
       )}
       <div className="flex items-center gap-1">
