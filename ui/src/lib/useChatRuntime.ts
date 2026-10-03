@@ -205,7 +205,7 @@ export function annotate(
       // that is a turn yet to say its first word; once the job has finished it
       // is a turn that ended without saying anything, and calling that
       // "waiting" leaves the reader watching a spinner for a reply that is
-      // never coming. gemma4 does this with thinking off, and any model does
+      // never coming. Small models do this with thinking off, and any model does
       // it by spending its whole turn on tool calls that go nowhere.
       // Named states only. `job_state` is null while no job row exists for
       // the message yet -- the window between storing it and enqueueing its

@@ -1893,8 +1893,8 @@ async fn a_load_that_matched_nothing_is_an_error() {
 
 /// A tool that was never loaded is refused rather than run.
 ///
-/// Models call tools they were not given: gemma4 emitted `list_objects` with
-/// only the loader on offer, carrying the loader's own arguments, and it ran.
+/// Models call tools they were not given: a small model emitted `list_objects`
+/// with only the loader on offer, carrying the loader's own arguments, and it ran.
 /// Without this the deferral is cosmetic -- the prompt shrinks while nothing
 /// is withheld -- and the arguments come from a schema the model never read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

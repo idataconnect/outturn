@@ -360,7 +360,7 @@ interface host {
     ///
     /// Carries the day name and zone abbreviation rather than only a
     /// timestamp. Deriving a weekday from a date is calendar arithmetic, and a
-    /// model asked to do it will sometimes get it wrong -- gemma4 read a
+    /// model asked to do it will sometimes get it wrong -- a small model read a
     /// correct 2026-09-02 and answered Tuesday. Anything the host can compute
     /// exactly is the host's job.
     record clock {

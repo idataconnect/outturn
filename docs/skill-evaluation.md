@@ -15,7 +15,7 @@ GET https://api.duckduckgo.com/?q=<query>&format=json
 The agent has one tool for this, `fetch_url`, and the skill's prose is telling
 the model to use it against that endpoint. A capable model makes that leap. The
 one being run did not: it called a tool named
-`GET https://api.duckduckgo.com/?q=gemma%204&format=json&no_html=1&no_redirect=1`,
+`GET https://api.duckduckgo.com/?q=outturn&format=json&no_html=1&no_redirect=1`,
 with empty arguments, three times in one turn, burning about a thousand
 completion tokens. The host answered each with `no such tool`, which is exactly
 right and did not help. The model then gave up on the tool and answered from

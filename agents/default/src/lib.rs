@@ -1099,7 +1099,7 @@ fn run_tool(
     // A tool that was not offered is not run, however well the call is formed.
     //
     // Models call tools they were never given. Asked to list files with only
-    // the loader on offer, gemma4 emitted `list_objects` carrying the loader's
+    // the loader on offer, a small model emitted `list_objects` carrying the loader's
     // own arguments, and it worked -- that tool needs none, so the stray key
     // was ignored. It then wrote a file with `content_bytes` and `object_name`,
     // names it had never read, and reported success for a write that failed.
