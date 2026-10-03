@@ -53,6 +53,7 @@ fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
             session_id,
             workspace_id,
             outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(workspace_id),
         )
         .expect("mint")
 }
@@ -129,12 +130,15 @@ async fn component_runs_a_turn_and_streams_progress() {
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 egress: Vec::new(),
+                gates: outturn::egress::gate::Gates::none(),
+                on_gated: None,
+                on_wait: None,
                 fuel: 10_000_000_000,
             },
         )
         .await
         .expect("component run")
-        .0;
+        .reply;
 
     assert!(!reply.is_empty(), "the component returned nothing");
 
