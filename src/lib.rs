@@ -8,3 +8,4 @@ pub mod http_client;
 pub mod jobs;
 pub mod lifecycle;
 pub mod runtime;
+pub mod utf8;
