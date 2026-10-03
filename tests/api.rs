@@ -9035,3 +9035,248 @@ async fn an_approval_shows_the_values_it_approves() {
 
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn sessions_list_by_last_activity_and_say_which_are_working() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id").to_string();
+
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let (status, body) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+        ids.push(session["id"].as_str().expect("id").to_string());
+    }
+
+    // The oldest is picked up again, so it belongs at the top however old.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{}/messages", ids[0]),
+            Some(&admin),
+            r#"{"content":"back again"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let list = |limit: usize, after: Option<String>| {
+        let path = match after {
+            Some(a) => format!("/v1/agent-sessions?limit={limit}&after={a}"),
+            None => format!("/v1/agent-sessions?limit={limit}"),
+        };
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let (status, body) = h.get(&path, Some(admin)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            serde_json::from_str::<serde_json::Value>(&body).expect("page")
+        }
+    };
+
+    let page = list(10, None).await;
+    let order: Vec<&str> = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|s| s["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(order, [ids[0].as_str(), ids[2].as_str(), ids[1].as_str()]);
+
+    // Only the one with a queued turn says it is working.
+    let turns: Vec<&serde_json::Value> = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|s| &s["turn"])
+        .collect();
+    assert_eq!(turns[0], "pending");
+    assert!(turns[1].is_null() && turns[2].is_null(), "{turns:?}");
+
+    // The cursor walks the same order a page at a time, skipping nothing.
+    let first = list(2, None).await;
+    let next = first["next"].as_str().expect("next").to_string();
+    let rest = list(2, Some(next.clone())).await;
+    assert_eq!(rest["items"][0]["id"], ids[1].as_str());
+    assert!(rest["next"].is_null());
+
+    // The session the cursor names becomes active between pages. The cursor
+    // holds its old place, so the next page carries on rather than starting
+    // again from the top.
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{}/messages", ids[2]),
+            Some(&admin),
+            r#"{"content":"me again"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let rest = list(2, Some(next.clone())).await;
+    let ids_after: Vec<&str> = rest["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|s| s["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids_after, [ids[1].as_str()]);
+
+    // And deleted: the page after it is still there.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/agent-sessions/{}", ids[2]))
+        .header("authorization", format!("Bearer {admin}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert!(status.is_success(), "{status}: {body}");
+    let rest = list(2, Some(next)).await;
+    assert_eq!(rest["items"][0]["id"], ids[1].as_str());
+
+    // Something that is not a cursor is refused rather than read as none.
+    let (status, _) = h
+        .get("/v1/agent-sessions?after=nonsense", Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    finish!(h);
+}
+
+#[tokio::test]
+async fn agent_activity_counts_live_turns_per_agent() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let mut agents = Vec::new();
+    for slug in ["busy", "quiet"] {
+        let (status, body) = h
+            .post(
+                "/v1/agents",
+                Some(&admin),
+                &format!(
+                    r#"{{"name":"{slug}","slug":"{slug}","policy":{{"model":"test-model"}}}}"#
+                ),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+        agents.push(agent["id"].as_str().expect("id").to_string());
+    }
+
+    // Two conversations with the busy agent, each with a turn queued.
+    let mut busy_sessions = Vec::new();
+    for _ in 0..2 {
+        let (status, body) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &format!(r#"{{"agent_id":"{}","title":""}}"#, agents[0]),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+        let id = session["id"].as_str().expect("id").to_string();
+        let (status, _) = h
+            .post(
+                &format!("/v1/agent-sessions/{id}/messages"),
+                Some(&admin),
+                r#"{"content":"hello"}"#,
+            )
+            .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        busy_sessions.push(id);
+    }
+
+    // A runtime takes one of them.
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let (status, body) = h.get("/v1/agents/activity", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("rows");
+    let of = |id: &str| {
+        rows.iter()
+            .find(|r| r["agent_id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {rows:?}"))
+    };
+
+    let busy = of(&agents[0]);
+    assert_eq!(
+        (busy["running"].as_i64(), busy["queued"].as_i64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(busy["waiting"], 0);
+    assert!(
+        busy_sessions
+            .iter()
+            .any(|s| busy["live_session_id"] == s.as_str())
+    );
+    assert!(busy["last_active_at"].is_string());
+
+    // An agent nobody has spoken to is idle and was never active.
+    let quiet = of(&agents[1]);
+    assert_eq!(
+        (quiet["running"].as_i64(), quiet["queued"].as_i64()),
+        (Some(0), Some(0))
+    );
+    assert!(quiet["live_session_id"].is_null() && quiet["last_active_at"].is_null());
+
+    // A follow-up queued behind a turn still streaming: the session says what
+    // the reader can see, which is the turn running, not the one waiting.
+    let turn_of = |id: String| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let (status, body) = h.get("/v1/agent-sessions", Some(admin)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            let page: serde_json::Value = serde_json::from_str(&body).expect("page");
+            page["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|s| s["id"] == id.as_str())
+                .expect("listed")["turn"]
+                .clone()
+        }
+    };
+    let mut running = None;
+    for id in &busy_sessions {
+        if turn_of(id.clone()).await == "running" {
+            running = Some(id.clone());
+        }
+    }
+    let running = running.expect("one session is running");
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{running}/messages"),
+            Some(&admin),
+            r#"{"content":"and another thing"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(turn_of(running).await, "running");
+
+    finish!(h);
+}

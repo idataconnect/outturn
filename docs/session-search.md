@@ -1,6 +1,7 @@
 # Session search
 
-Finding a conversation again. Designed, not built.
+Finding a conversation again. Designed; the recent list by last activity is
+built (step 1 below), search is not.
 
 ## Why the list stops being enough
 
@@ -139,6 +140,12 @@ weighted sum.
 ## Order of work
 
 1. `last_active_at`, the new index, and the paged envelope on the recent list.
+   Built, with two departures: `last_active_at` is written by a trigger on
+   `agent_messages` rather than by each storing statement, since there are
+   five of them, and on delete as well as insert and update. The cursor is
+   `(last_active_at, id)` as this section says, encoded as a string; a bare id
+   whose position was read back was tried first, and broke when the cursor's
+   session became active or was deleted between pages.
    The UI's sidebar reads pages and says when there are more. This alone
    retires the audit finding.
 2. Title search. Most of what people type, for a trigram index.

@@ -320,9 +320,10 @@ model and gets called as a tool name by a weaker one, and nothing today would
 say so. Most of that is a query rather than an inference; the judged half reads
 untrusted transcripts, which is the part to be careful with.
 
-Finding a conversation again is designed but unbuilt, in
-[docs/session-search.md](docs/session-search.md) -- a recent list by last
-activity rather than every session ever made, lexical search built in, and
+Finding a conversation again is in
+[docs/session-search.md](docs/session-search.md), partly built: the recent list
+by last activity rather than every session ever made exists, and so does
+`/v1/agents/activity` beside it. Still designed only: lexical search built in, and
 embeddings as an optional component like Tika. They go through the gateway
 rather than beside it: an embedding is a model call, and a model call that
 skipped the ledger would be the first.
@@ -379,8 +380,11 @@ warns about: the accounted-for list in `chat::postgres` (left out, the first
 message sent while an approval is pending wedges the session), the stop button's
 lookup and its index, `request_cancel` (cancelled outright, like a pending job --
 no runtime holds it), and the browser's `job_state` union, where it renders as
-`held` so a reload says what the live `chat.held` event said. `job_backlog` is
-deliberately untouched: a parked turn cannot be claimed, so counting it would
+`held` so a reload says what the live `chat.held` event said -- and since, the
+SQL function `live_turn` that says what a session's live turn is doing, and the
+predicate of `jobs_live_turn_workspace_idx`, which `sessions::agent_activity`
+repeats word for word to be served by it. `job_backlog` is deliberately
+untouched: a parked turn cannot be claimed, so counting it would
 ask for pods to run work nobody can take.
 
 What declares that an operation needs approving, and what a yes is worth once
