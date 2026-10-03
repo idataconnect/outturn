@@ -1225,6 +1225,15 @@ impl Worker {
                         let _ =
                             super::webhook::postgres::forget_expired(&self.pool).await;
 
+                        // The breaker keeps a sighting per model call it could
+                        // not classify, and reads only the recent ones. Nothing
+                        // called this before, so the table grew with every such
+                        // call ever made. Here because the API's tick is the one
+                        // thing that already sweeps tables on a schedule; the
+                        // gateway shares the database.
+                        let _ =
+                            crate::gateway::breaker::forget_stale_sightings(&self.pool).await;
+
                         // Deltas exist to assemble a reply that is still
                         // streaming and to let a browser catch up on one. Once
                         // the reply is stored they are copies of text held
@@ -1232,14 +1241,24 @@ impl Worker {
                         // grows with every token ever generated. Kept a day
                         // so a poll cursor from a long-idle tab still finds
                         // them, then gone.
+                        //
+                        // A batch per tick, oldest first: the first sweep of a
+                        // database that has been accumulating deltas would
+                        // otherwise delete all of them in one transaction.
+                        // `events_delta_sweep_idx` is what keeps finding them
+                        // from reading every other event.
                         let _ = sqlx::query(
-                            "delete from events e \
-                             where e.kind = 'chat.delta' \
-                               and e.created_at < now() - interval '1 day' \
-                               and exists ( \
-                                   select 1 from agent_messages m \
-                                   where m.id = (e.payload->>'message_id')::uuid \
-                                     and m.content <> '')",
+                            "delete from events \
+                             where id in ( \
+                                 select e.id from events e \
+                                 where e.kind = 'chat.delta' \
+                                   and e.created_at < now() - interval '1 day' \
+                                   and exists ( \
+                                       select 1 from agent_messages m \
+                                       where m.id = (e.payload->>'message_id')::uuid \
+                                         and m.content <> '') \
+                                 order by e.created_at \
+                                 limit 5000)",
                         )
                         .execute(&self.pool)
                         .await;
