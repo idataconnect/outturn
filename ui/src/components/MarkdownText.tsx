@@ -1,6 +1,7 @@
 import { useAuiState } from '@assistant-ui/react'
 import { MarkdownTextPrimitive, unstable_memoizeMarkdownComponents } from '@assistant-ui/react-markdown'
 import { useMemo, useState } from 'react'
+import Markdown from 'react-markdown'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { newFadeState, rehypeStreamFade } from '../lib/streamFade'
@@ -61,9 +62,12 @@ const components = unstable_memoizeMarkdownComponents({
     <td className="border border-surface-300 dark:border-surface-700 group-[.user]:border-white/30 px-2 py-1" {...props} />
   ),
 
-  pre: (props) => (
+  // The class is merged rather than set before the spread: assistant-ui hands
+  // a fenced block's <pre> a className of its own, which would replace ours
+  // and take `overflow-x-auto` with it -- a long line then widened the thread.
+  pre: ({ className, ...props }) => (
     <pre
-      className="mb-2 overflow-x-auto rounded-md bg-surface-100 dark:bg-surface-800 group-[.user]:bg-black/25 p-3 text-xs"
+      className={`mb-2 overflow-x-auto rounded-md bg-surface-100 dark:bg-surface-800 group-[.user]:bg-black/25 p-3 text-xs ${className ?? ''}`}
       {...props}
     />
   ),
@@ -131,5 +135,20 @@ export default function MarkdownText() {
 export function UserMarkdownText() {
   return (
     <MarkdownTextPrimitive remarkPlugins={[remarkGfm, remarkBreaks]} components={components} />
+  )
+}
+
+/**
+ * A model's thinking, as markdown.
+ *
+ * Takes its text as a prop rather than from the part context, so the thought
+ * renders the same whether or not it sits inside a thread. Not smoothed: it is
+ * collapsed while it streams, and opening it should show what has arrived.
+ */
+export function ThoughtMarkdownText({ text }: { text: string }) {
+  return (
+    <Markdown remarkPlugins={[remarkGfm]} components={components}>
+      {text}
+    </Markdown>
   )
 }

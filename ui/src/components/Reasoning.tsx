@@ -1,6 +1,7 @@
 import type { ReasoningMessagePartProps } from '@assistant-ui/react'
 import { useEffect, useState } from 'react'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
+import { ThoughtMarkdownText } from './MarkdownText'
 
 /**
  * A model's thinking, where it produced any.
@@ -122,12 +123,9 @@ export default function Reasoning({ text, status, ...part }: ReasoningMessagePar
       </button>
 
       {open && (
-        // Pre-wrapped rather than rendered as markdown. Thinking is a model
-        // talking to itself: it is often half-formed, and formatting it as
-        // prose presents a draft as though it were written for the reader.
-        <p className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-surface-600 dark:text-surface-400">
-          {text}
-        </p>
+        <div className="mt-2 break-words leading-relaxed text-surface-600 dark:text-surface-400">
+          <ThoughtMarkdownText text={text} />
+        </div>
       )}
     </div>
   )
