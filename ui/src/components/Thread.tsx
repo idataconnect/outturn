@@ -192,7 +192,7 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
       <div
         {...handlers}
         tabIndex={-1}
-        className="group user max-w-[75%] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
+        className="group user max-w-[75%] min-w-0 [overflow-wrap:anywhere] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
       >
         <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
       </div>
@@ -356,7 +356,7 @@ function AssistantMessage() {
     <MessagePrimitive.Root {...handlers} className="flex flex-col items-start">
       <div
         tabIndex={-1}
-        className="max-w-[75%] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100"
+        className="max-w-[75%] min-w-0 [overflow-wrap:anywhere] px-4 py-2 rounded-lg text-sm bg-white dark:bg-surface-900 border border-surface-200 dark:border-surface-800 text-surface-900 dark:text-surface-100"
       >
         {/* Tools show the verb the model wrote. A tool that shows more has a
             renderer in `toolRenderers` written for it specifically -- the
