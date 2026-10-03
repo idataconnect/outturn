@@ -30,3 +30,6 @@ k8s/overlays/local/.llama-server.log
 k8s/overlays/.generated/
 ui/.shots/
 /site
+
+# Claude Code session state: worktrees, launch configs, scratch.
+.claude/
