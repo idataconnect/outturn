@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Menu, PanelLeftClose, Paperclip, Plus } from 'lucide-react'
+import { Menu, PanelLeftClose, Paperclip, Plus, X } from 'lucide-react'
 
 import { useSkillCommands } from '../lib/useSkillCommands'
 
@@ -95,7 +95,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
    *  shows what happened without anyone reopening it. */
   const [storedChange, setStoredChange] = useState(0)
 
-  const { runtime, error: chatError, held, stopping, retry, clearHeld } = useChatRuntime(
+  const { runtime, error: chatError, held, stopping, retry, clearHeld, dismissError } = useChatRuntime(
     active,
     (title) => {
       if (!active) return
@@ -434,12 +434,28 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
           )}
         </div>
         {shown && (
-          <p
-            className="px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
+          <div
+            className="flex items-start gap-3 px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
             role="alert"
           >
-            {shown}
-          </p>
+            <p className="min-w-0 flex-1">{shown}</p>
+            {/* An error can be put away; a link that went nowhere cannot, since
+                it is about the page itself and leaves with it. */}
+            {(error ?? chatError) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null)
+                  dismissError()
+                }}
+                aria-label="Dismiss"
+                title="Dismiss"
+                className="shrink-0 rounded p-0.5 text-red-500 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+              >
+                <X size={14} aria-hidden />
+              </button>
+            )}
+          </div>
         )}
         {/* A hold reads as a pause, not a fault: nothing was lost and nothing
             is being retried. `status` rather than `alert` for the same reason

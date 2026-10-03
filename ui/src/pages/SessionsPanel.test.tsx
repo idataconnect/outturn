@@ -33,6 +33,9 @@ vi.mock('../lib/chat', () => ({
 }))
 
 const takeSeen: Array<(() => string) | undefined> = []
+// What the runtime reports as having failed, and what dismissing it called.
+let runtimeError: string | null = null
+const dismissError = vi.fn()
 vi.mock('../lib/useChatRuntime', () => ({
   useChatRuntime: (
     _id: string | null,
@@ -40,7 +43,7 @@ vi.mock('../lib/useChatRuntime', () => ({
     take?: () => string,
   ) => {
     takeSeen.push(take)
-    return { runtime: null, error: null, stopping: false }
+    return { runtime: null, error: runtimeError, stopping: false, dismissError }
   },
 }))
 
@@ -254,5 +257,31 @@ describe('a new chat', () => {
 
     await screen.findByText(/who would you like/i)
     expect(screen.queryByText(/not available in this workspace/i)).toBeNull()
+  })
+})
+
+describe('a failed turn', () => {
+  beforeEach(() => {
+    runtimeError = null
+    dismissError.mockClear()
+  })
+
+  it('can be put away', async () => {
+    const user = userEvent.setup()
+    setWidth(1440)
+    runtimeError = 'incomplete utf-8 byte sequence from index 7804'
+    show()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/incomplete utf-8/)
+    await user.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(dismissError).toHaveBeenCalledOnce()
+  })
+
+  it('offers no dismiss for a link that went nowhere', async () => {
+    setWidth(1440)
+    show('/sessions/gone')
+
+    expect(await screen.findByText(/not available in this workspace/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
   })
 })

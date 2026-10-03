@@ -583,6 +583,10 @@ export function useChatRuntime(
   const [heldAt, setHeldAt] = useState<{ session: string; hold: Held } | null>(null)
   const held = heldAt && heldAt.session === sessionId ? heldAt.hold : null
   const clearHeld = useCallback(() => setHeldAt(null), [])
+  // The reader saying they have seen it. Only the notice goes: the failed
+  // reply keeps its own mark and its retry, which are what the notice was
+  // pointing at.
+  const dismissError = useCallback(() => setError(null), [])
 
   const deltaProgress = useRef<DeltaProgress>(new Map())
   /** Which tool each call in flight is, by call id. A result names only the
@@ -1317,7 +1321,7 @@ export function useChatRuntime(
   })
 
   return useMemo(
-    () => ({ runtime, error, held, isRunning, stopping, retry, clearHeld }),
-    [runtime, error, held, isRunning, stopping, retry, clearHeld],
+    () => ({ runtime, error, held, isRunning, stopping, retry, clearHeld, dismissError }),
+    [runtime, error, held, isRunning, stopping, retry, clearHeld, dismissError],
   )
 }
