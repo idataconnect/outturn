@@ -98,6 +98,24 @@ impl Dimension {
 /// still add up to the total a reader can see above them.
 const SLICE_LIMIT: i64 = 6;
 
+/// The ledger rows a statement reads: one workspace's in the window, or every
+/// workspace's for a system administrator.
+///
+/// Two fixed strings rather than one `($1 is null or workspace_id = $1)`. With
+/// the `or` the planner cannot prune to one workspace's partition nor use
+/// `usage_ledger_window_idx` once it settles on a generic plan for the
+/// prepared statement, so the common case paid for the rare one; and the rare
+/// one had no index on time at all. `$1` stays in both so every statement
+/// binds the same three parameters, and the choice is made on whether a
+/// workspace was given, never on its value -- nothing a caller supplies is
+/// ever written into the text.
+fn scope(workspace_id: Option<Uuid>) -> &'static str {
+    match workspace_id {
+        Some(_) => "where workspace_id = $1 and occurred_at >= $2 and occurred_at < $3",
+        None => "where $1::uuid is null and occurred_at >= $2 and occurred_at < $3",
+    }
+}
+
 impl PostgresUsageStore {
     async fn slice(
         &self,
@@ -113,8 +131,8 @@ impl PostgresUsageStore {
         // unit variant, `column` and `label_table` are `match`es returning
         // `&'static str`, and the enum is private with no `From<String>` and no
         // public constructor -- so the only strings that can reach a statement
-        // are the ones written in this file. The scope predicate is a `const`
-        // beside them.
+        // are the ones written in this file. The scope predicate is one of the two
+        // fixed strings `scope` returns.
         //
         // That is the invariant to preserve. Give `Dimension` a variant holding
         // a `String`, or take a column name as an argument, and the waiver
@@ -122,6 +140,7 @@ impl PostgresUsageStore {
         // caller supplies -- the workspace, the window, the id list -- is bound,
         // and must stay bound.
         let column = dimension.column();
+        let scope = scope(workspace_id);
         // Ordered by tokens rather than by calls: a reader cutting a bill by
         // model wants the expensive one at the top, and a cheap model called
         // often is not the answer to that question.
@@ -132,8 +151,7 @@ impl PostgresUsageStore {
                      + coalesce(sum(cache_read_tokens), 0) + coalesce(sum(cache_write_tokens), 0) \
                      + coalesce(sum(reasoning_tokens), 0))::bigint as tokens \
              from usage_ledger \
-             where ($1::uuid is null or workspace_id = $1) \
-               and occurred_at >= $2 and occurred_at < $3 \
+             {scope} \
              group by {column} \
              order by tokens desc, calls desc"
         );
@@ -282,14 +300,13 @@ impl UsageStore for PostgresUsageStore {
         from: chrono::DateTime<chrono::Utc>,
         to: chrono::DateTime<chrono::Utc>,
     ) -> Result<UsageSummary, UsageError> {
-        // One predicate, written once and bound the same way in every statement
+        // One predicate, chosen once and bound the same way in every statement
         // below: a null workspace means every workspace, which the route only
-        // ever passes for a system administrator. Written as a null check on
-        // the bind rather than as string-built SQL so the parameter is always a
-        // parameter -- an account label reaches this code from a workspace's own
-        // input, and none of it is ever concatenated into a statement.
-        const SCOPE: &str = "where ($1::uuid is null or workspace_id = $1) \
-                             and occurred_at >= $2 and occurred_at < $3";
+        // ever passes for a system administrator. Either way the parameter is
+        // always a parameter -- an account label reaches this code from a
+        // workspace's own input, and none of it is ever concatenated into a
+        // statement. See `scope`.
+        let scope = scope(workspace_id);
 
         // `count(distinct agent_id)` ignores nulls, and the ledger has them: the
         // platform's own work -- naming a session, compacting a transcript --
@@ -309,7 +326,7 @@ impl UsageStore for PostgresUsageStore {
                     count(distinct agent_id) \
                         + (count(*) filter (where agent_id is null) > 0)::int as agents, \
                     count(distinct workspace_id) as workspaces \
-             from usage_ledger {SCOPE}"
+             from usage_ledger {scope}"
         )))
         .bind(workspace_id)
         .bind(from)
@@ -363,7 +380,7 @@ impl UsageStore for PostgresUsageStore {
                         sum(cache_read_tokens)::bigint as cache_read_tokens, \
                         sum(cache_write_tokens)::bigint as cache_write_tokens, \
                         sum(reasoning_tokens)::bigint as reasoning_tokens \
-                 from usage_ledger {SCOPE} \
+                 from usage_ledger {scope} \
                  group by 1 \
              ) u on u.day = d.day \
              order by d.day"

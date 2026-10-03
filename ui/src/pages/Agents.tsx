@@ -4,7 +4,7 @@ import { MessageSquare, OctagonX, Play, Plus, Settings2, Trash2 } from 'lucide-r
 
 import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
-import { listSessions, sessionName, type Agent, type AgentSession } from '../lib/chat'
+import { recentSessionsOf, sessionName, type Agent, type AgentSession } from '../lib/chat'
 import { useBreakpoint } from '../lib/useBreakpoint'
 import AgentList from '../components/AgentList'
 import Holds from '../components/Holds'
@@ -99,21 +99,7 @@ export default function Agents() {
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   useEffect(() => {
     void refresh()
-    // A reader who may see agents but not conversations still gets the page,
-    // without the recent list -- not asked for, rather than asked for and
-    // refused, so a failure that does happen is a real one and says so.
-    if (!canReadSessions) {
-      setSessions([])
-      return
-    }
-    listSessions().then(
-      (list) => {
-        setSessions(list)
-        setRecentError(null)
-      },
-      (e) => setRecentError(e instanceof ApiError ? e.message : 'failed to load recent sessions'),
-    )
-  }, [workspaceId, canReadSessions])
+  }, [workspaceId])
 
   async function onDelete(agent: Agent) {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
@@ -137,7 +123,35 @@ export default function Agents() {
   const ownHold = selected
     ? held.find((i) => i.scope.level === 'agent' && i.scope.agent_id === selected.id)
     : undefined
-  const recent = selected ? sessions.filter((s) => s.agent_id === selected.id).slice(0, RECENT) : []
+  const selectedId = selected?.id
+  // The selected agent's few most recent conversations, asked for by agent.
+  // This read the workspace's whole session list and filtered it here, which
+  // grew with every conversation ever had to show five of them.
+  //
+  // A reader who may see agents but not conversations still gets the page,
+  // without the recent list -- not asked for, rather than asked for and
+  // refused, so a failure that does happen is a real one and says so.
+  useEffect(() => {
+    if (!canReadSessions || !selectedId) {
+      setSessions([])
+      return
+    }
+    let current = true
+    recentSessionsOf(selectedId, RECENT).then(
+      (list) => {
+        if (!current) return
+        setSessions(list)
+        setRecentError(null)
+      },
+      (e) => {
+        if (current) setRecentError(e instanceof ApiError ? e.message : 'failed to load recent sessions')
+      },
+    )
+    return () => {
+      current = false
+    }
+  }, [workspaceId, canReadSessions, selectedId])
+  const recent = sessions
   // A phone shows one half at a time: the list, or the agent picked from it.
   const showList = breakpoint !== 'phone' || !id
   const showDetail = breakpoint !== 'phone' || !!id

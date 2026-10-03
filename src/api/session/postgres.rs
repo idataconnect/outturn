@@ -191,10 +191,20 @@ impl SessionStore for PostgresSessionStore {
     async fn sweep_expired(&self) -> Result<u64, SessionError> {
         // Rotated and revoked rows are kept until expiry so a replay is still
         // detectable; only genuinely past-use rows are removed.
-        let result = sqlx::query("delete from refresh_tokens where expires_at < now()")
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
+        //
+        // A batch per call, oldest first, through `refresh_tokens_expiry_idx`.
+        // The worker calls this every tick, so steady state is a handful of
+        // rows; the batch is for the first sweep of a database that went
+        // years without one, which would otherwise delete the whole backlog
+        // in one transaction.
+        let result = sqlx::query(
+            "delete from refresh_tokens where id in ( \
+                 select id from refresh_tokens where expires_at < now() \
+                  order by expires_at limit 5000)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
         Ok(result.rows_affected())
     }
 }

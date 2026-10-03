@@ -35,6 +35,11 @@ impl From<ChatError> for ApiError {
 pub struct RecentQuery {
     pub after: Option<String>,
     pub limit: Option<i64>,
+    /// One agent's conversations only: an agent's page shows its few most
+    /// recent, and asking for those is a probe of
+    /// `agent_sessions_agent_recent_idx` where filtering the workspace's whole
+    /// list in the browser was a read of every session it had.
+    pub agent: Option<Uuid>,
 }
 
 /// A page of the recent list. The same shape as `Page`, with a string cursor.
@@ -73,6 +78,7 @@ pub async fn list_sessions(
             claims.workspace_id,
             agent_ids.as_deref(),
             claims.subject,
+            query.agent,
             after,
             limit + 1,
         )

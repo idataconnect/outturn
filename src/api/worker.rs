@@ -1498,11 +1498,22 @@ impl Worker {
             Err(refusal) => return refusal,
         };
 
-        let history = self
+        // From the newest summary on, which is all the projection keeps. Should
+        // the prompt somehow sort below what that summary covers it would be
+        // missing from the tail, and the whole history is read instead: a
+        // slower turn rather than one answering nothing.
+        let mut history = self
             .chat
-            .messages(payload.session_id)
+            .turn_history(payload.session_id)
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+        if !history.messages.iter().any(|m| m.id == payload.message_id) {
+            history = self
+                .chat
+                .messages(payload.session_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+        }
         let history = up_to(history.messages, payload.message_id);
 
         let egress = super::egress::rules_for(&self.pool, payload.workspace_id)

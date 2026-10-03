@@ -289,6 +289,10 @@ export type AgentActivity = {
 export const agentActivity = () => api<AgentActivity[]>('/v1/agents/activity')
 export const listSessions = () => allPages<AgentSession>('/v1/agent-sessions')
 
+/** One agent's most recently active sessions. */
+export const recentSessionsOf = async (agentId: string, limit: number) =>
+  (await api<{ items: AgentSession[] }>(`/v1/agent-sessions?agent=${agentId}&limit=${limit}`)).items
+
 /** The most recently active sessions: one page, never the whole history. */
 export const recentSessions = async () =>
   (await api<{ items: AgentSession[] }>('/v1/agent-sessions?limit=50')).items

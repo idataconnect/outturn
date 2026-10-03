@@ -55,6 +55,7 @@ impl PostgresChatStore {
         session_id: Uuid,
         before: Option<Uuid>,
         limit: Option<i64>,
+        since: Option<(Uuid, Uuid)>,
     ) -> Result<History, ChatError> {
         let rows = sqlx::query(
             "with bound as ( \
@@ -67,6 +68,7 @@ impl PostgresChatStore {
                  select id from agent_messages \
                  where session_id = $1 \
                    and ($2::uuid is null or id < $2) \
+                   and ($4::uuid is null or id = $4 or id > $5) \
                  order by id desc \
                  limit $3::bigint \
              ), \
@@ -120,6 +122,8 @@ impl PostgresChatStore {
         .bind(session_id)
         .bind(before)
         .bind(limit)
+        .bind(since.map(|(summary, _)| summary))
+        .bind(since.map(|(_, through)| through))
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -422,6 +426,7 @@ impl ChatStore for PostgresChatStore {
         workspace_id: Uuid,
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
+        agent: Option<Uuid>,
         after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError> {
@@ -440,6 +445,7 @@ impl ChatStore for PostgresChatStore {
              where s.workspace_id = $1 \
                and ($2::uuid[] is null or s.agent_id = any($2) or s.user_id = $3) \
                and ($4::timestamptz is null or (s.last_active_at, s.id) < ($4, $5)) \
+               and ($7::uuid is null or s.agent_id = $7) \
              order by s.last_active_at desc, s.id desc \
              limit $6",
         )
@@ -449,6 +455,7 @@ impl ChatStore for PostgresChatStore {
         .bind(after.map(|r| r.at))
         .bind(after.map(|r| r.id))
         .bind(limit)
+        .bind(agent)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -525,7 +532,28 @@ impl ChatStore for PostgresChatStore {
     /// is assembled from the deltas visible in this snapshot. That is what
     /// makes reconnecting mid-turn resume rather than restart.
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError> {
-        self.read_history(session_id, None, None).await
+        self.read_history(session_id, None, None, None).await
+    }
+
+    async fn turn_history(&self, session_id: Uuid) -> Result<History, ChatError> {
+        // The newest summary whose mark reads, by the same reading the
+        // projection uses (`mark_of`), so the two cannot pick different ones.
+        // A session holds a handful of summaries, found through
+        // `agent_messages_summary_idx` rather than by walking its messages.
+        let summaries = sqlx::query(
+            "select id, metadata from agent_messages \
+             where session_id = $1 and metadata ? 'summary_through' \
+             order by id",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let since = summaries.iter().rev().find_map(|row| {
+            let metadata: serde_json::Value = row.get("metadata");
+            super::summarise::mark_of(&metadata).map(|through| (row.get("id"), through))
+        });
+        self.read_history(session_id, None, None, since).await
     }
 
     async fn messages_page(
@@ -547,7 +575,8 @@ impl ChatStore for PostgresChatStore {
         // summary. Filtering here also short-changed the page: the rows come
         // back under a SQL `limit`, so dropping some after the fact returns
         // fewer than asked for while `has_more` still counts them.
-        self.read_history(session_id, before, Some(limit)).await
+        self.read_history(session_id, before, Some(limit), None)
+            .await
     }
 
     async fn set_message_content(

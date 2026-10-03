@@ -290,6 +290,7 @@ pub trait ChatStore: Send + Sync {
         workspace_id: Uuid,
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
+        agent: Option<Uuid>,
         after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError>;
@@ -318,6 +319,13 @@ pub trait ChatStore: Send + Sync {
     /// What a turn is built from: the model needs every message, so this has
     /// no limit and is not what a reader should be served.
     async fn messages(&self, session_id: Uuid) -> Result<History, ChatError>;
+
+    /// What a turn's projection will use, and no more: the newest summary and
+    /// the messages after the one it covers, which is exactly what
+    /// `projected_with_sources` keeps. Everything a summary stands in for is
+    /// left unread, so building a turn costs the tail rather than the whole
+    /// session however long it has run. With no summary it is `messages`.
+    async fn turn_history(&self, session_id: Uuid) -> Result<History, ChatError>;
 
     /// A page of the transcript, oldest first, ending at the newest message.
     ///

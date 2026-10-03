@@ -860,12 +860,17 @@ impl SkillStore for PostgresSkillStore {
         // their declarations count the same.
         let ids: Vec<Uuid> = bindings.iter().map(|b| b.skill_id).collect();
         let unmet: Vec<String> = sqlx::query_scalar(
+            // From the skills to each one's newest version and then its
+            // hosts: one probe of `skill_versions_current_idx` per skill.
+            // Joined the other way it read the hosts of every version ever
+            // written and kept the newest's.
             "select distinct h.host \
-               from skill_version_hosts h \
-               join skill_versions v on v.id = h.version_id \
-               join skills s on s.id = v.skill_id \
-              where v.ordinal = (select max(ordinal) from skill_versions where skill_id = s.id) \
-                and (s.id = any($2) \
+               from skills s \
+               cross join lateral ( \
+                   select id from skill_versions \
+                    where skill_id = s.id order by ordinal desc limit 1) v \
+               join skill_version_hosts h on h.version_id = v.id \
+              where (s.id = any($2) \
                      or (s.workspace_id = $1 and s.kind = 'override' \
                          and s.base_skill_id = any($2))) \
                 and not exists (select 1 from egress_rules e \
@@ -1016,9 +1021,9 @@ impl SkillStore for PostgresSkillStore {
             "insert into egress_rules (id, workspace_id, host, from_skill_id) \
              select uuidv7(), $1, h.host, $2 \
                from skill_version_hosts h \
-               join skill_versions v on v.id = h.version_id \
-              where v.skill_id = $2 \
-                and v.ordinal = (select max(ordinal) from skill_versions where skill_id = $2) \
+              where h.version_id = ( \
+                  select id from skill_versions \
+                   where skill_id = $2 order by ordinal desc limit 1) \
              on conflict (workspace_id, host) do nothing \
              returning host",
         )
