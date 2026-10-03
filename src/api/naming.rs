@@ -48,16 +48,44 @@ const INSTRUCTION: &str = "Give this conversation a title of at most six words: 
     Reply with the title only -- no quotes, no punctuation at the end, \
     no explanation.";
 
-/// Queues a namer for a session, unless it already has a name.
+/// Queues a namer for a session, unless it already has a name or the naming
+/// policy says to wait for more turns.
+///
+/// `session_naming` is the resolved setting: `after_message`,
+/// `after_first_turn`, or `after_second_turn`.
 ///
 /// Called when a turn finishes. The check here is a courtesy that saves a
 /// job; the namer checks again before it writes, because a person may have
 /// named the session while the job waited.
-pub async fn enqueue_if_unnamed(pool: &sqlx::PgPool, session: &AgentSession) {
+pub async fn enqueue_if_unnamed(pool: &sqlx::PgPool, session: &AgentSession, session_naming: &str) {
     if !session.title.is_empty() {
         return;
     }
-    let payload = serde_json::json!({ "session_id": session.id });
+
+    let required_turns: i64 = match session_naming {
+        "after_message" | "after_first_turn" => 1,
+        "after_second_turn" => 2,
+        _ => 1,
+    };
+
+    if required_turns > 1 {
+        let completed = sqlx::query_scalar::<_, i64>(
+            "select count(*) from agent_messages \
+             where session_id = $1 and role = 'assistant' and content <> ''",
+        )
+        .bind(session.id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if completed < required_turns {
+            return;
+        }
+    }
+
+    let payload = serde_json::json!({
+        "session_id": session.id,
+        "naming_mode": session_naming,
+    });
     if let Err(e) = jobs::enqueue(
         pool,
         session.workspace_id,
@@ -167,15 +195,23 @@ async fn run_one(
         return Ok(());
     }
 
+    let naming_mode = job
+        .payload
+        .get("naming_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("after_first_turn");
+
     let history = chat
         .messages(session_id)
         .await
         .map_err(|e| anyhow::anyhow!("messages: {e}"))?;
+    let user_only = naming_mode == "after_message";
     let transcript = transcript(
         history
             .messages
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str())),
+        user_only,
     );
     if transcript.is_empty() {
         return Ok(());
@@ -357,12 +393,20 @@ async fn run_one(
 }
 
 /// The conversation as the namer sees it: who said what, up to a budget,
-/// with an agent's empty placeholders and tool chatter left out.
-fn transcript<'a>(messages: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+/// with an agent's empty placeholders and tool chatter left out. When
+/// `user_only` is set, assistant messages are excluded -- cheaper and fast,
+/// at the cost of a less informed title.
+fn transcript<'a>(messages: impl Iterator<Item = (&'a str, &'a str)>, user_only: bool) -> String {
     let mut out = String::new();
     for (role, content) in messages {
         let content = content.trim();
-        if content.is_empty() || !(role == "user" || role == "assistant") {
+        if content.is_empty() {
+            continue;
+        }
+        if user_only && role != "user" {
+            continue;
+        }
+        if !user_only && !(role == "user" || role == "assistant") {
             continue;
         }
         let line = format!("{role}: {content}\n");
@@ -445,14 +489,32 @@ mod tests {
                 ("assistant", "hi there"),
             ]
             .into_iter(),
+            false,
         );
         assert_eq!(t, "user: hello\nassistant: hi there\n");
     }
 
     #[test]
+    fn transcript_user_only() {
+        let t = transcript(
+            [
+                ("user", "hello"),
+                ("assistant", "hi there"),
+                ("user", "what time is it"),
+            ]
+            .into_iter(),
+            true,
+        );
+        assert_eq!(t, "user: hello\nuser: what time is it\n");
+    }
+
+    #[test]
     fn transcript_is_bounded() {
         let big = "y".repeat(TRANSCRIPT_CHARS * 2);
-        let t = transcript([("user", big.as_str()), ("assistant", "never seen")].into_iter());
+        let t = transcript(
+            [("user", big.as_str()), ("assistant", "never seen")].into_iter(),
+            false,
+        );
         assert!(t.len() <= TRANSCRIPT_CHARS);
         assert!(!t.contains("never seen"));
     }

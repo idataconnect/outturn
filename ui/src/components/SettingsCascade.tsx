@@ -5,7 +5,7 @@ import { ApiError, api } from '../lib/api'
 type Kind =
   | { type: 'number'; min: number; max: number; step: number; nullable: boolean }
   | { type: 'integer'; min: number; max: number }
-  | { type: 'choice'; options: string[] }
+  | { type: 'choice'; options: { value: string; label: string }[] }
 
 export type Effective = {
   key: string
@@ -200,8 +200,8 @@ function Control({
         aria-label={setting.label}
       >
         {k.options.map((o) => (
-          <option key={o} value={o}>
-            {o}
+          <option key={o.value} value={o.value}>
+            {o.label}
           </option>
         ))}
       </select>

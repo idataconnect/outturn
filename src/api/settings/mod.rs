@@ -48,10 +48,16 @@ pub enum Kind {
         min: i64,
         max: i64,
     },
-    /// One of a fixed set of strings.
+    /// One of a fixed set of strings, each with a human-readable label.
     Choice {
-        options: &'static [&'static str],
+        options: &'static [ChoiceOption],
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChoiceOption {
+    pub value: &'static str,
+    pub label: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,23 +93,33 @@ pub fn catalogue() -> Vec<Setting> {
             label: "Thinking before answering",
             description: "How much the model deliberates where the provider supports \
                           it. Better on hard questions and slower to reply. \"none\" is \
-                          cheapest but not safe on every model: gemma4 with thinking \
-                          off answers a tool result with nothing at all, so the turn \
-                          ends on the tool and the reader is told nothing.",
+                          often unsupported, and the models that do support disabling \
+                          thinking will be considerably less able to solve problems.",
             kind: Kind::Choice {
-                options: &["none", "low", "medium", "high"],
+                options: &[
+                    ChoiceOption {
+                        value: "none",
+                        label: "Off",
+                    },
+                    ChoiceOption {
+                        value: "low",
+                        label: "Low",
+                    },
+                    ChoiceOption {
+                        value: "medium",
+                        label: "Medium",
+                    },
+                    ChoiceOption {
+                        value: "high",
+                        label: "High",
+                    },
+                ],
             },
-            // Low rather than none. Measured on gemma4 after a file listing:
-            // none gives an empty reply (1 completion token); low gives the
-            // one-line summary for 60. The silence is what the reader sees.
             default: serde_json::json!("low"),
             owner: Owner::WorkspaceOverridable,
         },
         // One ordered choice per scope rather than a read flag beside a write
-        // flag. "May write but not read" is not a thing anyone means, and a
-        // pair of booleans invites somebody to configure it and believe it:
-        // the extraction a write triggers would read the file back regardless.
-        // Ordering the options is what makes that unsayable.
+        // flag. Prevents strange combinations, such as write but not read.
         Setting {
             key: "agent_file_access",
             label: "Agent files",
@@ -111,7 +127,20 @@ pub fn catalogue() -> Vec<Setting> {
                           conversations. Session files are always read/write; they are \
                           the agent's scratch space.",
             kind: Kind::Choice {
-                options: &["none", "read", "read_write"],
+                options: &[
+                    ChoiceOption {
+                        value: "none",
+                        label: "No access",
+                    },
+                    ChoiceOption {
+                        value: "read",
+                        label: "Read only",
+                    },
+                    ChoiceOption {
+                        value: "read_write",
+                        label: "Read and write",
+                    },
+                ],
             },
             default: serde_json::json!("read_write"),
             owner: Owner::WorkspaceOverridable,
@@ -120,12 +149,22 @@ pub fn catalogue() -> Vec<Setting> {
             key: "workspace_file_access",
             label: "Workspace files",
             description: "What an agent may do under workspace/, the files the whole \
-                          workspace shares. Read by default: a prompt that talks an \
-                          agent into overwriting shared reference material should find \
-                          it cannot, and an agent with no business reading that \
-                          material at all can be given none.",
+                          workspace shares.",
             kind: Kind::Choice {
-                options: &["none", "read", "read_write"],
+                options: &[
+                    ChoiceOption {
+                        value: "none",
+                        label: "No access",
+                    },
+                    ChoiceOption {
+                        value: "read",
+                        label: "Read only",
+                    },
+                    ChoiceOption {
+                        value: "read_write",
+                        label: "Read and write",
+                    },
+                ],
             },
             default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
@@ -142,20 +181,21 @@ pub fn catalogue() -> Vec<Setting> {
             label: "Approve new hosts",
             description: "Whether reaching a host on the public internet needs a \
                           person's approval the first time an agent asks for it in a \
-                          conversation. Hosts a skill already brought with it are \
-                          already consented to and are not asked about again. An \
-                          internal service an operator opened still needs a rule of \
-                          this workspace's own, and one added by hand is asked about \
-                          like any other -- name it in a skill to exempt it. Off by \
-                          default: \
-                          this makes an agent's first call to each new host a \
-                          stop-and-wait, which is the point for some deployments and \
-                          an obstruction in the rest.",
-            // A choice rather than a boolean, which the catalogue has no kind for
+                          conversation. Hosts declared in skills are already allowed.",
+            // A choice rather than a boolean, which the catalog has no kind for
             // anyway -- and the naming is the better reason. "off"/"on" would leave
             // a reader guessing what is on; these say what happens.
             kind: Kind::Choice {
-                options: &["reach_freely", "approve_new_hosts"],
+                options: &[
+                    ChoiceOption {
+                        value: "reach_freely",
+                        label: "Reach freely",
+                    },
+                    ChoiceOption {
+                        value: "approve_new_hosts",
+                        label: "Ask for approval",
+                    },
+                ],
             },
             default: serde_json::json!("reach_freely"),
             owner: Owner::WorkspaceOverridable,
@@ -164,8 +204,7 @@ pub fn catalogue() -> Vec<Setting> {
             key: "max_tool_rounds",
             label: "Model calls per turn",
             description: "How many times one turn may call the model before it is \
-                          stopped. A runaway guard, not a budget: what costs money is \
-                          tokens. Zero means no limit.",
+                          stopped. A runaway guard, not a budget. Zero means no limit.",
             kind: Kind::Integer {
                 min: 0,
                 max: 10_000,
@@ -193,6 +232,35 @@ pub fn catalogue() -> Vec<Setting> {
                 max: 100_000_000,
             },
             default: serde_json::json!(400_000),
+            owner: Owner::WorkspaceOverridable,
+        },
+        Setting {
+            key: "session_naming",
+            label: "When to name a conversation",
+            description: "When the platform asks a model for a title. Naming after \
+                          the first message is cheapest -- the model sees less and \
+                          answers quickly -- but less accurate when the opening message \
+                          is vague. Waiting for the first reply lets the model see a \
+                          full exchange, so the title reflects what actually happened. \
+                          Waiting for two exchanges usually gives the best title but \
+                          delays it longer.",
+            kind: Kind::Choice {
+                options: &[
+                    ChoiceOption {
+                        value: "after_message",
+                        label: "After the first message",
+                    },
+                    ChoiceOption {
+                        value: "after_first_turn",
+                        label: "After the first reply",
+                    },
+                    ChoiceOption {
+                        value: "after_second_turn",
+                        label: "After two exchanges",
+                    },
+                ],
+            },
+            default: serde_json::json!("after_first_turn"),
             owner: Owner::WorkspaceOverridable,
         },
     ]
@@ -264,6 +332,9 @@ pub struct Resolved {
     /// Whether a host on the public internet needs approving the first time a
     /// turn asks for it. See the setting's own description for what is exempt.
     pub approve_new_hosts: bool,
+    /// When the platform names an untitled conversation: after the first user
+    /// message, after the first turn, or after the second.
+    pub session_naming: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -334,18 +405,19 @@ pub fn validate(setting: &Setting, value: &serde_json::Value) -> Result<(), Sett
             Ok(())
         }
         Kind::Choice { options } => {
+            let labels: Vec<&str> = options.iter().map(|o| o.label).collect();
             let s = value.as_str().ok_or_else(|| {
                 SettingsError::Invalid(format!(
                     "{} needs one of {}",
                     setting.label,
-                    options.join(", ")
+                    labels.join(", ")
                 ))
             })?;
-            if !options.contains(&s) {
+            if !options.iter().any(|o| o.value == s) {
                 return Err(SettingsError::Invalid(format!(
                     "{} must be one of {}",
                     setting.label,
-                    options.join(", ")
+                    labels.join(", ")
                 )));
             }
             Ok(())
