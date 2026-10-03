@@ -801,9 +801,12 @@ impl Worker {
         // nothing.
         let mut account: Option<Option<String>> = None;
 
+        // Chunks are cut wherever the network cut them, which can be inside
+        // a character; see `crate::utf8`.
+        let mut decoder = crate::utf8::Decoder::new();
         while let Some(bytes) = stream.next().await {
             let bytes = bytes.map_err(|e| anyhow::anyhow!("{e}"))?;
-            buffer.push_str(std::str::from_utf8(&bytes)?);
+            decoder.push(&bytes, &mut buffer)?;
 
             // An event may span reads, so only whole lines are parsed.
             while let Some(index) = buffer.find('\n') {

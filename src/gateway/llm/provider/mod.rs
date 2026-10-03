@@ -181,8 +181,15 @@ where
     use futures::StreamExt;
 
     futures::stream::unfold(
-        (Box::pin(stream), String::new(), false),
-        |(mut stream, mut buffer, mut done)| async move {
+        // A decoder rides along with the buffer: a chunk can end inside a
+        // character, and decoding each on its own failed the turn for it.
+        (
+            Box::pin(stream),
+            String::new(),
+            crate::utf8::Decoder::new(),
+            false,
+        ),
+        |(mut stream, mut buffer, mut decoder, mut done)| async move {
             loop {
                 if done {
                     return None;
@@ -212,7 +219,7 @@ where
                     }
 
                     match serde_json::from_str::<serde_json::Value>(payload) {
-                        Ok(value) => return Some((Ok(value), (stream, buffer, done))),
+                        Ok(value) => return Some((Ok(value), (stream, buffer, decoder, done))),
                         Err(e) => {
                             tracing::warn!(error = %e, "malformed stream payload");
                             continue;
@@ -221,16 +228,15 @@ where
                 }
 
                 match stream.next().await {
-                    Some(Ok(bytes)) => match std::str::from_utf8(&bytes) {
-                        Ok(text) => buffer.push_str(text),
-                        Err(e) => {
+                    Some(Ok(bytes)) => {
+                        if let Err(e) = decoder.push(&bytes, &mut buffer) {
                             return Some((
                                 Err(ProviderError::transport(e)),
-                                (stream, buffer, true),
+                                (stream, buffer, decoder, true),
                             ));
                         }
-                    },
-                    Some(Err(e)) => return Some((Err(e), (stream, buffer, true))),
+                    }
+                    Some(Err(e)) => return Some((Err(e), (stream, buffer, decoder, true))),
                     // Ended without a sentinel; nothing further to emit.
                     None => done = true,
                 }
