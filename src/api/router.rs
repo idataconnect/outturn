@@ -1648,6 +1648,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/workspace/stop", post(stop_workspace))
         .route("/v1/agents/{id}/stop", post(stop_agent))
+        .route("/v1/agents/activity", get(super::sessions::agent_activity))
         .route("/v1/settings", get(view_workspace_settings))
         .route(
             "/v1/settings/{key}",

@@ -16,6 +16,8 @@ import {
   createSession,
   listAgents,
   listSessions,
+  mergeRecent,
+  recentSessions,
   renameSession,
   sessionName,
   type Agent,
@@ -192,6 +194,31 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     }
   }, [workspaceId])
 
+  // The list says which conversations are working, so it has to keep up with
+  // them. There is no workspace-wide event stream to listen to, so it asks
+  // again every few seconds while the tab is visible. One page, merged over
+  // what is held: re-reading the whole list grew with every session ever made.
+  //
+  // An answer arriving after the workspace changed is dropped: merged, it
+  // would put one workspace's conversations into another's list.
+  useEffect(() => {
+    let current = true
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      recentSessions().then(
+        (fresh) => {
+          if (current) setSessions((held) => mergeRecent(held, fresh))
+        },
+        // A missed refresh keeps the list as it was; the next one retries.
+        () => {},
+      )
+    }, SESSIONS_REFRESH_MS)
+    return () => {
+      current = false
+      clearInterval(id)
+    }
+  }, [workspaceId])
+
   // Stale the instant the workspace changes, so the reconciliation below waits
   // for the new lists rather than judging the URL against the old ones.
   const loaded = loadedFor !== null && loadedFor === workspaceId
@@ -357,7 +384,10 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                 }`
               }
             >
-              <span className="block truncate">{sessionName(session)}</span>
+              <span className="flex items-center gap-1.5">
+                <span className="truncate">{sessionName(session)}</span>
+                <TurnMark turn={session.turn} />
+              </span>
               <span className="block truncate text-xs text-surface-400 dark:text-surface-500">
                 {agentName(session.agent_id)}
               </span>
@@ -507,5 +537,31 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
 
       {active && <SidePane tabs={paneTabs} storageKey="chat.pane" />}
     </div>
+  )
+}
+
+/** How often the session list is read again for order and activity. */
+const SESSIONS_REFRESH_MS = 5_000
+
+/**
+ * Whether a conversation has a turn in flight, beside its name.
+ *
+ * Working (running or queued) pulses in the brand colour; waiting on a person
+ * is amber and still, since nothing will happen until somebody answers. Idle
+ * draws nothing, which is most of the list.
+ */
+function TurnMark({ turn }: { turn: AgentSession['turn'] }) {
+  if (!turn) return null
+  const held = turn === 'parked'
+  const label = held ? 'Waiting on approval' : turn === 'running' ? 'Working' : 'Queued'
+  return (
+    <span
+      role="status"
+      aria-label={label}
+      title={label}
+      className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
+        held ? 'bg-amber-500' : 'animate-pulse bg-brand-500'
+      }`}
+    />
   )
 }

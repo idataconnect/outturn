@@ -6,6 +6,7 @@ pub mod trim;
 pub use postgres::PostgresChatStore;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -32,6 +33,42 @@ pub struct AgentSession {
     /// workspace's own terms. Copied onto every usage row the session produces
     /// so the workspace can split its bill; meaningless to the platform.
     pub account: Option<String>,
+    /// When a message was last stored in it. What the recent list orders by.
+    pub last_active_at: DateTime<Utc>,
+    /// The state of its live turn -- `pending`, `running` or `parked` -- or
+    /// none when nothing is in flight.
+    pub turn: Option<String>,
+}
+
+/// A place in the recent list: the last session seen, by the two values the
+/// list is ordered on. Opaque to a client, which hands back what it was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recent {
+    pub at: DateTime<Utc>,
+    pub id: Uuid,
+}
+
+impl Recent {
+    pub fn of(session: &AgentSession) -> Self {
+        Self {
+            at: session.last_active_at,
+            id: session.id,
+        }
+    }
+
+    /// Microseconds, since that is what Postgres keeps: a coarser cursor
+    /// would land between two sessions active in the same millisecond.
+    pub fn encode(&self) -> String {
+        format!("{}.{}", self.at.timestamp_micros(), self.id)
+    }
+
+    pub fn decode(cursor: &str) -> Option<Self> {
+        let (micros, id) = cursor.split_once('.')?;
+        Some(Self {
+            at: DateTime::from_timestamp_micros(micros.parse().ok()?)?,
+            id: id.parse().ok()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -253,7 +290,7 @@ pub trait ChatStore: Send + Sync {
         workspace_id: Uuid,
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
-        after: Option<Uuid>,
+        after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError>;
 
@@ -434,4 +471,26 @@ pub trait ChatStore: Send + Sync {
         // system produced.
         user_id: Option<Uuid>,
     ) -> Result<Message, ChatError>;
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+
+    #[test]
+    fn a_cursor_survives_the_round_trip_to_the_microsecond() {
+        let at = DateTime::from_timestamp_micros(1_791_050_000_123_456).unwrap();
+        let recent = Recent {
+            at,
+            id: Uuid::now_v7(),
+        };
+        assert_eq!(Recent::decode(&recent.encode()), Some(recent));
+    }
+
+    #[test]
+    fn a_cursor_that_is_not_one_is_refused() {
+        for bad in ["", "123", "abc.def", "12.not-a-uuid", "01a1-uuid-looking"] {
+            assert_eq!(Recent::decode(bad), None, "{bad}");
+        }
+    }
 }

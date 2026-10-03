@@ -9,7 +9,15 @@ export type Agent = {
   /** Whether this reader may start a conversation with it. */
   can_chat: boolean
 }
-export type AgentSession = { id: string; agent_id: string; title: string }
+export type AgentSession = {
+  id: string
+  agent_id: string
+  title: string
+  /** When a message was last stored in it; the list is ordered by this. */
+  last_active_at?: string
+  /** The live turn's job state, absent when nothing is in flight. */
+  turn?: 'pending' | 'running' | 'parked' | null
+}
 
 /** A tool the agent ran, labelled by the agent with what it was doing. */
 export type ToolCallRecord = {
@@ -268,7 +276,38 @@ type PollResponse = {
 }
 
 export const listAgents = () => allPages<Agent>('/v1/agents')
+
+/** One agent's turns in flight and when it was last active. */
+export type AgentActivity = {
+  agent_id: string
+  running: number
+  queued: number
+  waiting: number
+  last_active_at: string | null
+  live_session_id: string | null
+}
+export const agentActivity = () => api<AgentActivity[]>('/v1/agents/activity')
 export const listSessions = () => allPages<AgentSession>('/v1/agent-sessions')
+
+/** The most recently active sessions: one page, never the whole history. */
+export const recentSessions = async () =>
+  (await api<{ items: AgentSession[] }>('/v1/agent-sessions?limit=50')).items
+
+/**
+ * A fresh first page laid over the list already held.
+ *
+ * Anything that became active since the last read is on the first page,
+ * because the list is ordered by last activity -- and that includes a turn
+ * finishing, which stores its reply and so touches the session. So the page
+ * replaces what it covers and everything older is kept as it was, which keeps
+ * the poll the size of a page however long the workspace has existed.
+ */
+export function mergeRecent(held: AgentSession[], fresh: AgentSession[]): AgentSession[] {
+  const seen = new Set(fresh.map((s) => s.id))
+  const merged = [...fresh, ...held.filter((s) => !seen.has(s.id))]
+  // Stable, so sessions with no timestamp keep the order they arrived in.
+  return merged.sort((a, b) => (b.last_active_at ?? '').localeCompare(a.last_active_at ?? ''))
+}
 
 export const createSession = (agentId: string, title = '') =>
   api<AgentSession>('/v1/agent-sessions', {

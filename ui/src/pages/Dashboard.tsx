@@ -9,6 +9,7 @@ import UsageRanked, { type Slice } from '../components/UsageRanked'
 import StatTile from '../components/StatTile'
 import SkillStatsPanel, { type SkillStats } from '../components/SkillStats'
 import WaitingOnYou from '../components/WaitingOnYou'
+import AgentActivity from '../components/AgentActivity'
 
 type Summary = {
   from: string
@@ -179,6 +180,9 @@ export default function Dashboard() {
         </p>
         <div className="mt-6 max-w-3xl">
           <WaitingOnYou />
+          <div className="mt-6">
+            <AgentActivity />
+          </div>
         </div>
       </div>
     )
@@ -253,6 +257,9 @@ export default function Dashboard() {
       {/* First, above the figures: what needs the reader is the day's work, and
           the usage below it is what they read once that is done. */}
       <WaitingOnYou />
+
+      {/* What is happening now, before what happened over the window. */}
+      <AgentActivity />
 
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">

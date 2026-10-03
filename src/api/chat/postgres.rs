@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::{
     AgentSession, ChatError, ChatStore, CreateSession, DECLINED_GUIDANCE, Delivery, History,
-    Message, Placeholder, Usage,
+    Message, Placeholder, Recent, Usage,
 };
 
 pub struct PostgresChatStore {
@@ -345,6 +345,8 @@ fn read_session(row: &sqlx::postgres::PgRow) -> AgentSession {
         user_id: row.get("user_id"),
         title: row.get("title"),
         account: row.try_get("account").ok().flatten(),
+        last_active_at: row.get("last_active_at"),
+        turn: row.get("turn"),
     }
 }
 
@@ -393,7 +395,8 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "insert into agent_sessions (id, workspace_id, agent_id, user_id, title, account) \
              values ($1, $2, $3, $4, $5, $6) \
-             returning id, workspace_id, agent_id, user_id, title, account",
+             returning id, workspace_id, agent_id, user_id, title, account, last_active_at, \
+                       live_turn(id) as turn",
         )
         .bind(Uuid::now_v7())
         .bind(workspace_id)
@@ -419,21 +422,32 @@ impl ChatStore for PostgresChatStore {
         workspace_id: Uuid,
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
-        after: Option<Uuid>,
+        after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError> {
         let rows = sqlx::query(
-            "select id, workspace_id, agent_id, user_id, title, account from agent_sessions \
-             where workspace_id = $1 \
-               and ($2::uuid[] is null or agent_id = any($2) or user_id = $3) \
-               and ($4::uuid is null or id < $4) \
-             order by id desc \
-             limit $5",
+            // Most recently active first, keyed on (last_active_at, id), and
+            // the cursor is that pair rather than an id whose position is
+            // looked up. Looked up, a cursor session that became active
+            // between pages jumped to now and the next page started again
+            // from the top, and a deleted one compared against NULL and ended
+            // the list early. The pair holds whatever happens to the row.
+            //
+            // `turn` is the live turn's state -- see `live_turn`.
+            "select s.id, s.workspace_id, s.agent_id, s.user_id, s.title, s.account, \
+                    s.last_active_at, live_turn(s.id) as turn \
+             from agent_sessions s \
+             where s.workspace_id = $1 \
+               and ($2::uuid[] is null or s.agent_id = any($2) or s.user_id = $3) \
+               and ($4::timestamptz is null or (s.last_active_at, s.id) < ($4, $5)) \
+             order by s.last_active_at desc, s.id desc \
+             limit $6",
         )
         .bind(workspace_id)
         .bind(agent_ids)
         .bind(user_id)
-        .bind(after)
+        .bind(after.map(|r| r.at))
+        .bind(after.map(|r| r.id))
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -448,7 +462,9 @@ impl ChatStore for PostgresChatStore {
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError> {
         let row = sqlx::query(
-            "select id, workspace_id, agent_id, user_id, title, account from agent_sessions \
+            "select id, workspace_id, agent_id, user_id, title, account, last_active_at, \
+                    live_turn(id) as turn \
+             from agent_sessions \
              where workspace_id = $1 and id = $2",
         )
         .bind(workspace_id)
@@ -470,7 +486,8 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "update agent_sessions set title = $3, updated_at = now() \
              where workspace_id = $1 and id = $2 \
-             returning id, workspace_id, agent_id, user_id, title, account",
+             returning id, workspace_id, agent_id, user_id, title, account, last_active_at, \
+                       live_turn(id) as turn",
         )
         .bind(workspace_id)
         .bind(session_id)

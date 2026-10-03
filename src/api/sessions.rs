@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::auth::Authority;
 use crate::{events, jobs};
 
-use super::chat::{AgentSession, ChatError, CreateSession, Delivery, History, Usage};
+use super::chat::{AgentSession, ChatError, CreateSession, Delivery, History, Recent, Usage};
 use super::router::{ApiError, ApiState, authenticate, authorize};
 use super::worker::{CHAT_TURN, ChatTurnPayload};
 
@@ -28,13 +28,36 @@ impl From<ChatError> for ApiError {
     }
 }
 
+/// Where the recent list continues: an opaque cursor rather than an id, since
+/// the list is ordered by last activity and an id alone does not say where
+/// that is.
+#[derive(Debug, Deserialize)]
+pub struct RecentQuery {
+    pub after: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// A page of the recent list. The same shape as `Page`, with a string cursor.
+#[derive(Debug, serde::Serialize)]
+pub struct RecentPage {
+    pub items: Vec<AgentSession>,
+    pub next: Option<String>,
+}
+
 pub async fn list_sessions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-    Query(query): Query<super::PageQuery>,
-) -> Result<Json<super::Page<AgentSession>>, ApiError> {
+    Query(query): Query<RecentQuery>,
+) -> Result<Json<RecentPage>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let after = match query.after.as_deref() {
+        None => None,
+        Some(cursor) => Some(
+            Recent::decode(cursor)
+                .ok_or_else(|| (StatusCode::BAD_REQUEST, "not a cursor".to_string()))?,
+        ),
+    };
 
     // Push the reach filter into SQL so pagination returns a full page.
     let reach = super::router::reach_of(&state, &claims).await?;
@@ -44,18 +67,26 @@ pub async fn list_sessions(
         None
     };
 
-    let sessions = state
+    let mut items = state
         .chat
         .list_sessions(
             claims.workspace_id,
             agent_ids.as_deref(),
             claims.subject,
-            query.after,
+            after,
             limit + 1,
         )
         .await?;
 
-    Ok(Json(super::Page::from_rows(sessions, limit, |s| s.id)))
+    // Read with one extra row, as `Page::from_rows` does, so `next` is set
+    // only when there is another page.
+    let next = if items.len() as i64 > limit {
+        items.truncate(limit as usize);
+        items.last().map(|s| Recent::of(s).encode())
+    } else {
+        None
+    };
+    Ok(Json(RecentPage { items, next }))
 }
 
 /// Whether having started a conversation is enough on its own.
@@ -529,5 +560,83 @@ pub async fn cancel_turn(
 
     Ok(Json(
         serde_json::json!({ "stopped": stopped, "state": described }),
+    ))
+}
+
+/// One agent's activity, for the dashboard's "right now" panel.
+#[derive(Debug, serde::Serialize)]
+pub struct AgentActivity {
+    pub agent_id: Uuid,
+    pub running: i64,
+    pub queued: i64,
+    pub waiting: i64,
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The most recently active session with a live turn, to open from the
+    /// panel. None when nothing is in flight.
+    pub live_session_id: Option<Uuid>,
+}
+
+/// Which of the workspace's agents are working, waiting or idle.
+///
+/// Sized by agents and turns in flight, never by sessions: the live turns come
+/// from `jobs_live_turn_workspace_idx`, which holds only what is in flight, and
+/// each agent's last activity is one probe of `agent_sessions_agent_recent_idx`.
+/// The panel asks every few seconds for as long as it is open, so a query that
+/// grew with history would be a cost that grew with it.
+///
+/// Narrowed readers see the agents they were scoped to and nothing else. The
+/// session list also shows them their own conversations with other agents, but
+/// counting those here would need an index of its own for a corner of a corner.
+pub async fn agent_activity(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<AgentActivity>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
+    let reach = super::router::reach_of(&state, &claims).await?;
+    let agent_ids: Option<Vec<Uuid>> = reach
+        .is_narrowed()
+        .then(|| reach.agents().iter().copied().collect());
+
+    // The state list and the kind are `jobs_live_turn_workspace_idx`'s
+    // predicate word for word, which is the only way the planner will use it;
+    // a state added there has to be added here, and in `live_turn` (0025).
+    let rows = sqlx::query(
+        "with live as ( \
+             select s.agent_id, s.id as session_id, s.last_active_at, j.state \
+               from jobs j \
+               join agent_sessions s on s.id = (j.payload->>'session_id')::uuid \
+              where j.workspace_id = $1 \
+                and j.kind = 'chat.turn' and j.state in ('pending', 'running', 'parked') \
+         ) \
+         select a.id as agent_id, \
+                (select count(*) from live where live.agent_id = a.id and state = 'running') as running, \
+                (select count(*) from live where live.agent_id = a.id and state = 'pending') as queued, \
+                (select count(*) from live where live.agent_id = a.id and state = 'parked') as waiting, \
+                (select s.last_active_at from agent_sessions s where s.agent_id = a.id \
+                  order by s.last_active_at desc limit 1) as last_active_at, \
+                (select session_id from live where live.agent_id = a.id \
+                  order by last_active_at desc limit 1) as live_session_id \
+           from agents a \
+          where a.workspace_id = $1 and a.enabled \
+            and ($2::uuid[] is null or a.id = any($2))",
+    )
+    .bind(claims.workspace_id)
+    .bind(agent_ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+
+    use sqlx::Row;
+    Ok(Json(
+        rows.iter()
+            .map(|r| AgentActivity {
+                agent_id: r.get("agent_id"),
+                running: r.get("running"),
+                queued: r.get("queued"),
+                waiting: r.get("waiting"),
+                last_active_at: r.get("last_active_at"),
+                live_session_id: r.get("live_session_id"),
+            })
+            .collect(),
     ))
 }
