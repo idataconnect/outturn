@@ -242,9 +242,18 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     // A session in the URL this workspace cannot see -- a stale link, or one left
     // behind by a workspace switch -- would otherwise leave a blank pane with no
     // explanation.
+    //
+    // Straight to where it lands, rather than by way of /sessions: that hop
+    // was decided a render later, and somebody who clicked something in
+    // between had their choice replaced by the landing.
     if (!sessions.some((session) => session.id === sessionId)) {
       setMissing('That session is not available in this workspace.')
-      void navigate('/sessions', { replace: true })
+      if (sessions.length > 0) {
+        landed.current = sessions[0].id
+        void navigate(`/sessions/${sessions[0].id}`, { replace: true })
+      } else {
+        void navigate('/sessions', { replace: true })
+      }
       return
     }
     // The notice explains the landing it caused; it should not still be
