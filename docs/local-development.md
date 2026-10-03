@@ -78,10 +78,11 @@ ollama sends a tool call only once the model has finished writing it, whole --
 by design, since it cannot tell a call has begun until it parses
 ([ollama#10415](https://github.com/ollama/ollama/pull/10415)). So the reader
 sees nothing while a call is written, and a thought's clock runs on through it
-until a second of quiet stops it. And its gemma 4 parser loses the call
-altogether on any turn after the first that used a tool, with thinking on:
-measured against ollama directly, not one call in ten came back, while
-thinking off or a first turn returned every one.
+until a second of quiet stops it. And a model's tool calls are only as good as
+ollama's parser for that model: one we tried lost the call altogether on any
+turn after the first that used a tool, with thinking on -- measured against
+ollama directly, not one call in ten came back, while thinking off or a first
+turn returned every one.
 
 llama-server with `--jinja` uses the model's own chat template and a parser
 that works on partial output, and streams a call as it is written, name first
@@ -91,11 +92,12 @@ shape OpenAI and Anthropic send, which the "Preparing…" card is built for.
 With `OUTTURN_DEV_SERVER=llama.cpp`:
 
 - The model is a Hugging Face GGUF as `organisation/repository:quantization`,
-  for instance `ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0`. llama-server downloads
+  for instance `unsloth/Qwen3.5-9B-GGUF:Q4_K_M`, the same model and
+  quantization as ollama's `qwen3.5`. llama-server downloads
   and caches it on first use. MLX builds are ollama's: llama.cpp runs GGUF on
   Metal.
 - The window is llama-server's `-c`, and the model is served under an alias in
-  the same shape as ollama's tag, `outturn/gemma-4-26B-A4B-it-GGUF-Q4_0-ctx32768`,
+  the same shape as ollama's tag, `outturn/Qwen3.5-9B-GGUF-Q4_K_M-ctx32768`,
   which is what the cluster asks for.
 - On a Mac, `scripts/dev-mac.sh` starts llama-server in the background and
   keeps its process id and log beside the answers

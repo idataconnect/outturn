@@ -36,7 +36,7 @@ describe('a prompt whose reply never arrives', () => {
   })
 
   it('says the turn ended silently once the job is done', () => {
-    // What gemma4 did: spent the turn on tool calls that went nowhere and
+    // What a small model did: spent the turn on tool calls that went nowhere and
     // wrote nothing. The job succeeded, so no event is coming -- and calling
     // this "waiting" left a spinner running for a reply that never arrives.
     const msgs = [

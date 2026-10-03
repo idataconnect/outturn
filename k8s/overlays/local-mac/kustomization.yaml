@@ -12,12 +12,9 @@ kind: Kustomization
 #   forward it to the Mac's loopback, so a stock `ollama serve` needs no
 #   OLLAMA_HOST.
 #
-# - The model is qwen3.8:27b-mlx rather than gemma4. The MLX build runs on
-#   Apple silicon's unified memory, and it holds up where gemma4 was chosen
-#   for: with tools offered it still streams (39 content chunks for the
-#   count-to-twenty prompt), and with reasoning_effort "none" it still answers
-#   a tool result, which gemma4 does not. 18-23GB loaded at its full
-#   context, so it wants a 64GB machine rather than a 16GB one.
+# - The model chosen here is a highly capable local model, but it requires
+#   at least 64GB of RAM to fit comfortably. Take a look at the small variant
+#   if you have a MAC with less RAM, or choose a different model here.
 #
 # Strategic merge rather than JSON patches, so env is matched by name and not
 # by its index in ../local, which moves whenever a variable is added there.

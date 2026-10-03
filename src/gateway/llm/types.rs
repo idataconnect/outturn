@@ -11,8 +11,7 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     /// OpenAI's knob for how much the model deliberates before answering.
-    /// "none" turns thinking off where a provider honours it -- ollama does,
-    /// and it cuts a gemma4 tool turn from 113 completion tokens to 24.
+    /// "none" turns thinking off where a provider honors it -- ollama does.
     /// Passed through rather than interpreted: providers that do not know it
     /// ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]

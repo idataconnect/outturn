@@ -659,7 +659,7 @@ mod tests {
     /// something present rather than filling a vacuum.
     #[test]
     fn the_platform_speaks_before_the_workspace_does() {
-        let composed = compose_as("outturn", "You are a pirate.", &[], "gemma4");
+        let composed = compose_as("outturn", "You are a pirate.", &[], "test-model");
         let preamble_at = composed
             .find("You are an agent running on")
             .expect("preamble");
@@ -670,8 +670,8 @@ mod tests {
     /// An agent with no prompt of its own still gets the facts.
     #[test]
     fn an_empty_prompt_is_still_told_what_it_is() {
-        let composed = compose_as("outturn", "", &[], "gemma4");
-        assert!(composed.contains("gemma4"), "{composed}");
+        let composed = compose_as("outturn", "", &[], "test-model");
+        assert!(composed.contains("test-model"), "{composed}");
         assert!(
             !composed.starts_with('\n'),
             "no leading blank: {composed:?}"
@@ -686,7 +686,7 @@ mod tests {
             "Use the search API.",
             SkillKind::Standalone,
         )];
-        let composed = compose_as("outturn", "You are terse.", &skills, "gemma4");
+        let composed = compose_as("outturn", "You are terse.", &skills, "test-model");
         let prompt_at = composed.find("You are terse.").expect("prompt");
         let skills_at = composed.find("# Skills").expect("skills");
         assert!(prompt_at < skills_at, "{composed}");
@@ -700,7 +700,7 @@ mod tests {
     /// deployer's customers they are talking to outturn.
     #[test]
     fn a_deployment_can_say_what_it_is_called() {
-        let composed = compose_as("Hollowbrook", "", &[], "gemma4");
+        let composed = compose_as("Hollowbrook", "", &[], "test-model");
         assert!(composed.contains("Hollowbrook"), "{composed}");
         assert!(!composed.contains("outturn"), "{composed}");
     }

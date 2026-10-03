@@ -104,17 +104,8 @@ patches:
           # runtime.
           - name: OUTTURN_GATEWAY_URL
             value: "http://outturn-gateway:8081"
-          # qwen3.5 rather than llama3.1: the agent offers tools on every
-          # turn, and llama3.1's template stops streaming when tools are
-          # present -- a reply collapses from ~26 chunks to 3. Both qwen3.5
-          # and gemma4 stream either way. Per-model behavior, not an ollama or
-          # gateway one.
-          #
-          # Over gemma4 because gemma4 writes its whole reply before it acts:
-          # asked to check the time and then report it, it produced the prose
-          # first -- quoting a time from earlier in the session -- and only
-          # then called the clock. Handed the correct result on the next round
-          # it answered with a single token rather than correcting itself.
+          # Qwen 3.5 is a good default choice since its small version is
+          # capable for its size.
           - name: OUTTURN_DEFAULT_MODEL
             value: "qwen3.5"
   - target:

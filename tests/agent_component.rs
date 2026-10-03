@@ -7,8 +7,7 @@
 //!
 //! What it adds over `agent_component_fake`, which asserts the same three
 //! things in under a second, is that the gateway is a real process and the
-//! model is a real one -- which is how the gemma4-against-llama3.1 streaming
-//! difference was found. Worth running before a release; not worth running on
+//! model is a real one. Worth running before a release; not worth running on
 //! every push.
 //!
 //!   kubectl port-forward svc/outturn-gateway 18091:8081

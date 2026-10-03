@@ -374,7 +374,7 @@ dev_served_model_for() {
 
 # What each server wants as a model name, suggested when the server changes
 # and the model answered was the other kind of name.
-dev_llama_default_model=ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_0
+dev_llama_default_model=unsloth/Qwen3.5-9B-GGUF:Q4_K_M
 
 # Asks, with the current values as the suggestions, and writes the file.
 dev_machine_ask() {
