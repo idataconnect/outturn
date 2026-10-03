@@ -2389,7 +2389,13 @@ impl Worker {
             .get_session(payload.workspace_id, payload.session_id)
             .await
         {
-            super::naming::enqueue_if_unnamed(&self.pool, &session).await;
+            let naming = self
+                .settings
+                .resolve(payload.workspace_id, payload.agent_id)
+                .await
+                .map(|s| s.session_naming)
+                .unwrap_or_else(|_| "after_first_turn".to_string());
+            super::naming::enqueue_if_unnamed(&self.pool, &session, &naming).await;
         }
         Ok(())
     }

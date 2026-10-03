@@ -206,6 +206,10 @@ impl SettingsStore for PostgresSettingsStore {
                 .as_u64()
                 .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
                 .unwrap_or(400_000),
+            session_naming: get("session_naming")
+                .as_str()
+                .unwrap_or("after_first_turn")
+                .to_string(),
             // Session is in both lists whatever the cascade says: it is the
             // agent's own scratch space, and an agent that could not write it
             // could not hold a thought for the length of a turn.
