@@ -54,7 +54,11 @@ user_agent_voices (workspace_id, user_id, agent_id, personality_id)
 A person keeps a few -- "Bleargh", "Pathetic", "Plain" -- and picks one per
 agent, or one for every agent (`agent_id` null), the more specific winning. The
 choice follows the person, not the session: the same voice in every
-conversation they have with that agent until they change it.
+conversation they have with that agent until they change it. A change reaches a
+new conversation at once and a running one at its next compaction, since the
+system prompt is composed only then -- see
+[prompt-contributors.md](prompt-contributors.md), of which a personality is the
+first designed: a `person` placement, lowest priority, replies only.
 
 **Bounded.** A personality is part of the prompt on every round of every turn,
 so it is held to a small size -- a paragraph, 1 KB -- and counted against
