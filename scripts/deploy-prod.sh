@@ -172,6 +172,8 @@ default_model=$(ask "OUTTURN_DEFAULT_MODEL")
 secret=$(outturn_token_secret)
 public=$(outturn_public_key_of "$secret")
 runtime=$(outturn_runtime_key)
+seal=$(outturn_seal_key)
+seal_public=$(outturn_seal_public_key_of "$seal")
 
 mkdir -p "$dir"
 umask 077
@@ -195,6 +197,11 @@ stringData:
   OUTTURN_TOKEN_SECRET: "$secret"
   OUTTURN_TOKEN_PUBLIC_KEY: "$public"
   OUTTURN_RUNTIME_KEY: "$runtime"
+  # The gateway opens sealed credentials with the first; the API hands the
+  # second to whoever seals one. Rotating the first without resealing makes
+  # every stored credential unopenable -- see docs/sealed-credentials.md.
+  OUTTURN_SEAL_KEY: "$seal"
+  OUTTURN_SEAL_PUBLIC_KEY: "$seal_public"
   DATABASE_URL: "$database_url"
   OUTTURN_S3_ENDPOINT: "$s3_endpoint"
   OUTTURN_S3_BUCKET: "$s3_bucket"

@@ -52,6 +52,15 @@ patches:
           # identical. See docs/credential-bindings.md.
           - name: OUTTURN_CREDENTIAL_BINDINGS
             value: ""
+          # The public half of the gateway's seal key, handed to whoever seals
+          # a credential. The API holds no way to open one. Optional, so a clone
+          # whose secrets predate it still starts; scripts/dev-secrets.sh adds it.
+          - name: OUTTURN_SEAL_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-dev-secrets
+                key: OUTTURN_SEAL_PUBLIC_KEY
+                optional: true
           # The API is the only tier that signs anything. Generated per clone
           # by scripts/dev-secrets.sh, never committed: a key in the repository
           # is one every clone shares. A real deployment uses its own Secret --
@@ -143,6 +152,15 @@ patches:
           # here -- see docs/credential-bindings.md. The API carries a copy.
           - name: OUTTURN_CREDENTIAL_BINDINGS
             value: ""
+          # What sealed credentials are opened with. Gateway only, as the token
+          # secret is API only: nothing else may hold it. Optional for the
+          # reason the API's public half is. See docs/sealed-credentials.md.
+          - name: OUTTURN_SEAL_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-dev-secrets
+                key: OUTTURN_SEAL_KEY
+                optional: true
           # ollama speaks the OpenAI chat-completions protocol, so it is
           # reached through the same provider as api.openai.com -- only the
           # base URL differs, and no key is wanted.

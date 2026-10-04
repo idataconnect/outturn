@@ -305,6 +305,17 @@ mod tests {
         (keys, public, id)
     }
 
+    /// `scripts/lib/keys.sh` derives the public key with openssl; the gateway
+    /// derives it here. If they disagreed, every seal made to the published key
+    /// would fail to open, so the scripts' answer for a fixed key is pinned.
+    #[test]
+    fn a_seal_key_derives_the_public_key_the_scripts_do() {
+        assert_eq!(
+            hex::encode(public_of(&private()).unwrap()),
+            "13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d"
+        );
+    }
+
     #[test]
     fn a_seal_opens_under_its_own_binding() {
         let (keys, public, id) = keys();

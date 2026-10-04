@@ -95,3 +95,28 @@ outturn_is_published_key() {
     *) return 1 ;;
   esac
 }
+
+# The X25519 private key the gateway opens sealed credentials with, as 64 hex
+# characters. See docs/sealed-credentials.md.
+outturn_seal_key() {
+  openssl rand -hex 32
+}
+
+# Its public half, which the API hands to whoever seals a credential. Derived
+# the same way as the token key above, with the PKCS#8 header for X25519 (OID
+# 1.3.101.110) rather than Ed25519, and checked against the Rust side by
+# `a_seal_key_derives_the_public_key_the_scripts_do` in src/egress/seal.rs.
+outturn_seal_public_key_of() {
+  local key="$1" der ssl pub
+  ssl=$(outturn_openssl) || return 1
+  der=$(mktemp)
+  printf '302e020100300506032b656e04220420%s' "$key" | xxd -r -p >"$der"
+  pub=$("$ssl" pkey -inform DER -in "$der" -pubout -outform DER 2>/dev/null |
+    tail -c 32 | xxd -p -c 64)
+  rm -f "$der"
+  if [ "${#pub}" -ne 64 ]; then
+    echo "could not derive the seal public key" >&2
+    return 1
+  fi
+  printf '%s' "$pub"
+}
