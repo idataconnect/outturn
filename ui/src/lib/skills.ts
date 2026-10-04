@@ -546,6 +546,9 @@ export type Regenerated = {
   body_changed: boolean
   changed: FileChange[]
   unmatched: Annotation[]
+  /** Gates the live version has that this would not, as `METHOD path`.
+   *  Publishing refuses unless `remove_gates` says to. */
+  lost_gates: string[]
   version: VersionSummary | null
 }
 
@@ -559,10 +562,7 @@ export async function getSource(id: string): Promise<SkillSource | null> {
   }
 }
 
-export const annotate = (
-  id: string,
-  a: Pick<Annotation, 'level' | 'target' | 'kind' | 'value'>,
-) =>
+export const annotate = (id: string, a: Pick<Annotation, 'level' | 'target' | 'kind' | 'value'>) =>
   api<Annotation>(`/v1/platform/skills/${id}/annotations`, {
     method: 'POST',
     body: JSON.stringify(a),
@@ -573,7 +573,10 @@ export const retireAnnotation = (id: string, annotation: string) =>
 
 /** Generates the skill again: a proposal, unless `publish`. `spec` keeps a new
  *  specification as the next revision. */
-export const regenerate = (id: string, input: { publish?: boolean; spec?: string; note?: string }) =>
+export const regenerate = (
+  id: string,
+  input: { publish?: boolean; remove_gates?: boolean; spec?: string; note?: string },
+) =>
   api<Regenerated>(`/v1/platform/skills/${id}/regenerate`, {
     method: 'POST',
     body: JSON.stringify(input),

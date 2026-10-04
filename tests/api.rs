@@ -9915,4 +9915,52 @@ async fn a_derived_skill_keeps_its_annotations_across_a_new_specification() {
         file.starts_with("---\napproval:"),
         "the gate survived: {file}"
     );
+
+    // Hiding the gated operation is refused rather than half-done.
+    let (status, body) = annotate(serde_json::json!({"level": "operation",
+        "target": "create_invoice", "kind": "hidden"}))
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Publishing what is already live publishes nothing, and leaves the live
+    // version's record of what it was made from alone.
+    let again = regenerate(serde_json::json!({"publish": true})).await;
+    assert!(again["version"].is_null(), "{again}");
+    let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&operator)).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["ordinal"], 3);
+
+    // Retiring the gate's annotation does not quietly remove the gate.
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/source"), Some(&operator))
+        .await;
+    let source = serde_json::from_str::<Value>(&body).unwrap();
+    let gate = source["annotations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "approval")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/platform/skills/{id}/annotations/{gate}"))
+        .header("authorization", format!("Bearer {operator}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, _) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let proposed = regenerate(serde_json::json!({})).await;
+    assert_eq!(proposed["lost_gates"][0], "POST /invoices", "{proposed}");
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/skills/{id}/regenerate"),
+            Some(&operator),
+            &serde_json::json!({"publish": true}).to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let removed = regenerate(serde_json::json!({"publish": true, "remove_gates": true})).await;
+    assert_eq!(removed["version"]["ordinal"], 4, "{removed}");
 }
