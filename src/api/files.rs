@@ -159,14 +159,21 @@ pub async fn list(
         // A document stored before extraction was configured has no text and
         // nothing scheduled to give it any, so a reader is told to come back
         // shortly for work that will never run. Noticed here because this is
-        // what walks every object anyway, and asking is cheap beside the
-        // listing that just happened.
+        // what walks every object anyway -- and done after answering, since
+        // checking costs storage round trips per file the reader is not
+        // waiting on.
         let keys: Vec<String> = found
             .iter()
             .filter(|f| !f.is_dir)
             .map(|f| f.path.clone())
             .collect();
-        super::extract::backfill(&state.pool, store.as_ref(), claims.workspace_id, keys).await;
+        super::extract::backfill_later(
+            state.pool.clone(),
+            store.clone(),
+            claims.workspace_id,
+            scope::root_for(&space, s),
+            keys,
+        );
 
         out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
             Some(StoredFile {
