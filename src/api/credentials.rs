@@ -315,3 +315,112 @@ pub async fn binding_of(
     .await?;
     Ok(row.and_then(|r| Binding::parse(&r.get::<Vec<u8>, _>("binding")).ok()))
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TestCall {
+    /// What to ask for, under the host: `/api/items`. A GET, and only a GET --
+    /// this is a question about the key, and a test that wrote something would
+    /// be an answer nobody asked for.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// What the host said to one GET made with the credential.
+#[derive(Debug, serde::Serialize)]
+pub struct Tested {
+    pub url: String,
+    /// The host's own status: 200 means the key worked, 401 that it did not.
+    pub status: u16,
+    pub ok: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct Fetched {
+    status: u16,
+}
+
+/// Makes one GET through the gateway with the credential attached, exactly as
+/// a turn would -- the same rule, the same commitment, the same checks -- and
+/// says what the host answered.
+///
+/// So a wrong key is a red 401 here, while somebody is setting it up, rather
+/// than an agent apologising for it later. Only the status comes back: the
+/// body is the account's data, and the question asked was whether the key
+/// works.
+pub async fn test(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<TestCall>,
+) -> Result<Json<Tested>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    let path = input.path.unwrap_or_else(|| "/".into());
+    if !path.starts_with('/') || path.starts_with("//") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a test path starts with one /".into(),
+        ));
+    }
+    let gateway = std::env::var("OUTTURN_GATEWAY_URL").map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "testing a credential needs OUTTURN_GATEWAY_URL set on the API".to_string(),
+        )
+    })?;
+    // The workspace's own rule naming this credential: the test goes the way
+    // a turn would, so a rule that is wrong fails here too.
+    let rule = super::egress::rules_for(&state.pool, claims.workspace_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .find(|r| r.credential == Some(id))
+        .ok_or((
+            StatusCode::CONFLICT,
+            "no egress rule sends this credential yet, so there is nothing to test".to_string(),
+        ))?;
+    let url = format!("https://{}{path}", rule.host);
+    let rules = vec![rule];
+    let gates = crate::egress::gate::Gates::none();
+    let token = state
+        .minter
+        .mint_document_fetch(
+            claims.subject,
+            claims.workspace_id,
+            crate::egress::commit::root(claims.workspace_id, &rules),
+            gates.root(claims.workspace_id),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let response = crate::http_client::reporting_client()
+        .post(format!("{gateway}/v1/egress"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "method": "GET",
+            "url": url,
+            "gates": gates,
+            "proof": crate::egress::commit::Proof::WholeSet { rules },
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach the gateway: {e}"),
+            )
+        })?;
+    if !response.status().is_success() {
+        // The gateway's refusals are written to be read.
+        let detail = response.text().await.unwrap_or_default();
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, detail));
+    }
+    let fetched: Fetched = response.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("the gateway's answer was unreadable: {e}"),
+        )
+    })?;
+    Ok(Json(Tested {
+        url,
+        status: fetched.status,
+        ok: (200..300).contains(&fetched.status),
+    }))
+}

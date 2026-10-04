@@ -9610,6 +9610,39 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
+    // Taking it off the rule and putting it back, as connecting a key to a
+    // host somebody already allowed does.
+    let rule_id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let patch = |body: serde_json::Value| {
+        Request::patch(format!("/v1/egress-rules/{rule_id}"))
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (status, body) = h.send(patch(serde_json::json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#""credential":null"#), "{body}");
+    let (status, _) = h
+        .send(patch(
+            serde_json::json!({"header": "x-api-key", "credential": id}),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a header the seal does not name"
+    );
+    let (status, body) = h
+        .send(patch(
+            serde_json::json!({"header": "authorization", "credential": id}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
     // The gateway, with its own key and this database.
     let seed = [13u8; 32];
     let minter = TokenMinter::new(&seed).unwrap();
