@@ -25,6 +25,7 @@ Or edit `k8s/overlays/local/dev-machine.env` by hand; it is plain
 | `OUTTURN_DEV_CONTEXT_BUDGET` | The operator's `context_budget`, in bytes |
 | `OUTTURN_DEV_OLLAMA_URL` | Where the script reaches ollama from this machine, when that is the server |
 | `OUTTURN_DEV_LLAMA_URL` | Where the script reaches llama-server from this machine, when that is the server |
+| `OUTTURN_DEV_OTHER_URL` | Where another OpenAI-compatible server is, when that is the server; empty means the overlay's own address. Written into the generated overlay, so a server on another machine is not an edit to a committed file |
 
 A file from before there was a choice of server has no `OUTTURN_DEV_SERVER`,
 and is read as it always meant: ollama where it names an ollama address, some

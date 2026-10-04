@@ -277,6 +277,7 @@ dev_machine_defaults() {
   dev_server=ollama
   dev_ollama_url=http://localhost:11434
   dev_llama_url=http://localhost:8080
+  dev_other_url=""
   dev_hint=""
 
   if [[ "$base" == local-mac ]]; then
@@ -332,6 +333,7 @@ dev_machine_load() {
         OUTTURN_DEV_SERVER) server=$value ;;
         OUTTURN_DEV_OLLAMA_URL) dev_ollama_url=$value ;;
         OUTTURN_DEV_LLAMA_URL) dev_llama_url=$value ;;
+        OUTTURN_DEV_OTHER_URL) dev_other_url=$value ;;
       esac
     done <"$file"
     if [[ -n "$server" ]]; then
@@ -344,15 +346,26 @@ dev_machine_load() {
 }
 
 # Where the gateway, in the cluster, reaches the model server. Empty for
-# ollama and for another server, whose address the base overlay already
-# names. For llama.cpp, this machine's address as a pod sees it: a Mac's
-# loopback is host.docker.internal from inside Docker Desktop or colima, and
-# a Linux host is the Docker bridge the ../local overlay already uses.
+# ollama, whose address the base overlay already names, and for another server
+# given no address of its own. Otherwise this machine's address as a pod sees
+# it: a Mac's loopback is host.docker.internal from inside Docker Desktop or
+# colima, and a Linux host is the Docker bridge the ../local overlay already
+# uses. An address on another machine passes through unchanged.
+#
+# Another server's address lives here, in this machine's answers, because it is
+# this machine's: written into the committed overlay instead, it is a change
+# every clone either carries or keeps reverting.
 dev_gateway_base_url() {
-  [[ "${dev_server:-}" == llama.cpp ]] || return 0
+  local url
+  case "${dev_server:-}" in
+    llama.cpp) url=$dev_llama_url ;;
+    other) url=$dev_other_url ;;
+    *) return 0 ;;
+  esac
+  [[ -n "$url" ]] || return 0
   local host
   if [[ "$(dev_machine_base)" == local-mac ]]; then host=host.docker.internal; else host=172.18.0.1; fi
-  echo "$dev_llama_url" | sed -E "s#//(localhost|127\.0\.0\.1)([:/]|\$)#//$host\2#"
+  echo "$url" | sed -E "s#//(localhost|127\.0\.0\.1)([:/]|\$)#//$host\2#"
 }
 
 # The model the cluster asks for. With ollama, a tag of our own derived from
@@ -448,7 +461,12 @@ dev_machine_ask() {
       dev_llama_url=${answer%/}
       dev_ollama_url=""
       ;;
-    *) dev_ollama_url="" ;;
+    *)
+      read -r -p "The server, from this machine; '-' for the overlay's own address [${dev_other_url:--}]: " answer
+      answer=${answer:-${dev_other_url:--}}
+      if [[ "$answer" == - ]]; then dev_other_url=""; else dev_other_url=${answer%/}; fi
+      dev_ollama_url=""
+      ;;
   esac
 
   cat >"$file" <<EOF
@@ -458,8 +476,9 @@ dev_machine_ask() {
 #
 # See docs/local-development.md for what each one drives.
 
-# ollama, llama.cpp, or other: some OpenAI-compatible server at the address
-# the base overlay names, which nothing here starts or checks.
+# ollama, llama.cpp, or other: some OpenAI-compatible server, at
+# OUTTURN_DEV_OTHER_URL or else the address the base overlay names, which
+# nothing here starts or checks.
 OUTTURN_DEV_SERVER=$dev_server
 
 # Pulled if missing. With ollama, served as a tag of its own carrying the
@@ -481,6 +500,10 @@ OUTTURN_DEV_OLLAMA_URL=$dev_ollama_url
 
 # Where this machine reaches llama-server, when that is the server.
 OUTTURN_DEV_LLAMA_URL=$dev_llama_url
+
+# Where this machine reaches another server, when that is the server. Empty
+# means the address the base overlay names.
+OUTTURN_DEV_OTHER_URL=$dev_other_url
 EOF
   echo
   echo "wrote $file"
