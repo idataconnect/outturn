@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, GitCompare, Globe } from 'lucide-react'
 
 import { collapse, hasChanges, lineDiff, MAX_LINES, type Change } from '../lib/lineDiff'
@@ -26,7 +26,8 @@ export type ReadFile = (versionId: string, path: string) => Promise<string>
  * not what they would be leaving.
  */
 export default function VersionContents({
-  version,
+  version: listed,
+  load,
   live,
   isLive,
   previousFiles,
@@ -34,7 +35,19 @@ export default function VersionContents({
   liveVersionId,
   readFile,
 }: {
-  version: { id?: string; body: string; hosts: string[]; files?: CarriedFile[] }
+  /** The version, or the history's summary of it: hosts, and what it changed in
+   *  its files, without its prose or file list until `load` fetches them. */
+  version: {
+    id?: string
+    body?: string
+    hosts: string[]
+    files?: CarriedFile[]
+    changed?: FileChange[]
+  }
+  /** Fetches the whole version, the first time it is opened. A history of a
+   *  generated skill is dozens of versions of hundreds of files each, and
+   *  sending all of it to list them made the page slow to open. */
+  load?: () => Promise<{ body: string; files?: CarriedFile[] }>
   /** The live version's body, for the diff. Absent when this *is* the live one. */
   live?: string
   isLive: boolean
@@ -47,11 +60,30 @@ export default function VersionContents({
   readFile?: ReadFile
 }) {
   const [shown, setShown] = useState<'closed' | 'body' | 'diff'>('closed')
+  const [loaded, setLoaded] = useState<{ body: string; files?: CarriedFile[] } | null>(null)
+  const [failed, setFailed] = useState(false)
+  const version = {
+    ...listed,
+    body: listed.body ?? loaded?.body,
+    files: listed.files ?? loaded?.files,
+  }
+
+  useEffect(() => {
+    if (shown === 'closed' || listed.body !== undefined || loaded || !load) return
+    let stale = false
+    load().then(
+      (v) => !stale && setLoaded(v),
+      () => !stale && setFailed(true),
+    )
+    return () => {
+      stale = true
+    }
+  }, [shown, listed.body, loaded, load])
 
   // Computed only when a diff is on screen. A page listing twenty versions must
   // not diff twenty bodies to render the list.
   const sections = useMemo(() => {
-    if (shown !== 'diff' || live === undefined) return null
+    if (shown !== 'diff' || live === undefined || version.body === undefined) return null
     const changes = lineDiff(live, version.body)
     if (changes === null) return 'too-long' as const
     return hasChanges(changes) ? collapse(changes) : 'identical' as const
@@ -60,9 +92,14 @@ export default function VersionContents({
   // Against the version before, from the hashes alone: an edit to one file and
   // nothing else used to list under the same names as the version it replaced,
   // leaving no way to see from the history which file had changed.
+  //
+  // The history's summary carries this already, worked out by the API from the
+  // same hashes, so a version need not be fetched to say what it changed.
   const changedHere = useMemo(
-    () => (previousFiles ? fileChanges(hashed(previousFiles), hashed(version.files)) : []),
-    [previousFiles, version.files],
+    () =>
+      listed.changed ??
+      (previousFiles ? fileChanges(hashed(previousFiles), hashed(listed.files)) : []),
+    [listed.changed, previousFiles, listed.files],
   )
 
   return (
@@ -87,14 +124,20 @@ export default function VersionContents({
         )}
       </div>
 
-      {shown === 'body' && (
+      {shown !== 'closed' && version.body === undefined && (
+        <p className="mt-3 text-xs text-surface-600 dark:text-surface-400">
+          {failed ? 'That version could not be read.' : 'Reading that version…'}
+        </p>
+      )}
+
+      {shown === 'body' && version.body !== undefined && (
         <div className="mt-3 space-y-3">
           <Pre>{version.body}</Pre>
           <Carried hosts={version.hosts} files={version.files} />
         </div>
       )}
 
-      {shown === 'diff' && (
+      {shown === 'diff' && version.body !== undefined && (
         <div className="mt-3 space-y-3">
           {sections === 'identical' && (
             <p className="text-xs text-surface-600 dark:text-surface-400">

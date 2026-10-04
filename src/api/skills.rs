@@ -14,7 +14,7 @@ use super::files::{storage, storage_failed};
 use super::router::{ApiError, ApiState, authorize};
 use super::skill::{
     Binding, CreateSkill, ForkSkill, NewFile, NewVersion, Skill, SkillFile, SkillVersion,
-    UpdateSkill, blob_key, link, prepare,
+    UpdateSkill, VersionSummary, blob_key, link, prepare,
 };
 
 /// Uploads a version's files under the workspace that will own it, before the
@@ -210,27 +210,21 @@ pub async fn list_versions(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
     Query(query): Query<super::PageQuery>,
-) -> Result<Json<super::Page<SkillVersion>>, ApiError> {
+) -> Result<Json<super::Page<VersionSummary>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let owner = state
-        .skills
-        .get(claims.workspace_id, id)
-        .await?
-        .workspace_id;
-    let mut items = state
+    let items = state
         .skills
         .versions(claims.workspace_id, id, query.after, limit + 1)
         .await?;
-    // Only the newest: it is the one a page opens on, and filling every older
-    // version on a history read would fetch all their content at once.
-    if let Some(first) = items.first_mut()
-        && first.unreached.is_none()
-    {
-        let v = first.clone();
-        *first = with_links(&state, owner, v).await?;
-    }
-    Ok(Json(super::Page::from_rows(items, limit, |v| v.id)))
+    // Newest first, so the version each one followed is the next; the row read
+    // past the page is what the last one on it is compared with.
+    let summaries = items
+        .iter()
+        .enumerate()
+        .map(|(at, v)| VersionSummary::of(v, items.get(at + 1)))
+        .collect();
+    Ok(Json(super::Page::from_rows(summaries, limit, |v| v.id)))
 }
 
 pub async fn get_version(

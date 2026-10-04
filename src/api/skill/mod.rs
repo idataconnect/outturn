@@ -107,6 +107,55 @@ pub struct SkillVersion {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A version as the history lists it: what a person needs to choose one, and
+/// none of its prose or file list, which are what made a long history slow to
+/// open -- a version of a generated skill carries hundreds of files. Read the
+/// version itself for those.
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionSummary {
+    pub id: Uuid,
+    pub skill_id: Uuid,
+    pub ordinal: i32,
+    pub note: String,
+    pub based_on_version_id: Option<Uuid>,
+    pub hosts: Vec<String>,
+    pub file_count: usize,
+    /// What this version did to the files of the one before it, compared by
+    /// hash. Empty for a first version, which had nothing to change.
+    pub changed: Vec<FileChange>,
+    pub unreached: Option<Vec<String>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    /// `added`, `removed` or `changed`.
+    pub change: &'static str,
+}
+
+impl VersionSummary {
+    /// `previous` is the version this one followed, when there is one.
+    pub fn of(version: &SkillVersion, previous: Option<&SkillVersion>) -> Self {
+        Self {
+            id: version.id,
+            skill_id: version.skill_id,
+            ordinal: version.ordinal,
+            note: version.note.clone(),
+            based_on_version_id: version.based_on_version_id,
+            hosts: version.hosts.clone(),
+            file_count: version.files.len(),
+            changed: previous
+                .map(|p| files::changes(&p.files, &version.files))
+                .unwrap_or_default(),
+            unreached: version.unreached.clone(),
+            created_by: version.created_by,
+            created_at: version.created_at,
+        }
+    }
+}
+
 impl SkillVersion {
     /// Fills in `unreached` from the body and the files' links.
     pub fn with_unreached(mut self) -> Self {
