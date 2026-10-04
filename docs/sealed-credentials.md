@@ -2,7 +2,11 @@
 
 A secret somebody types into the platform, stored where anyone can read it and
 nobody but the gateway can use it -- and bound, inside the seal, to where it may
-go. Designed, unbuilt; see *Order of work*.
+go. Built for static header credentials: `src/egress/seal.rs`, the
+`credentials` table, the gateway's read in `src/gateway/egress/sealed.rs`, the
+API in `src/api/credentials.rs`, sealing in the browser (`ui/src/lib/seal.ts`)
+and with `outturn-seal`. Client-credentials pairs are not yet; see *Order of
+work*.
 
 It replaces the environment as the place an egress credential lives. Today a
 credential is an `OUTTURN_EGRESS_` variable on the gateway, bound by
@@ -297,7 +301,7 @@ in the page, and writing the rule. See *Hosts and credentials* in
 Three phases, the first of which makes an integration with a key work end to
 end without touching a deployment.
 
-**Phase 1 -- the gateway uses a sealed credential.**
+**Phase 1 -- the gateway uses a sealed credential.** Built.
 
 1. `src/egress/seal.rs`: the binding type, its exact bytes, and opening under
    the fixed label, with HPKE from the `hpke` crate (X25519, HKDF-SHA256,
@@ -327,11 +331,14 @@ A rule gains a field that travels from the API through the runtime to the
 gateway, so the three tiers deploy together, as they did for client
 credentials: an older runtime drops the field and the request is refused.
 
-**Phase 2 -- the page.** The sealing form in the browser (`@hpke/core`), the
-credentials list with rotate and revoke, the fingerprint (computed by the
-gateway behind one internal endpoint), the OpenAPI wizard's last step as a key
-field, and client-credentials pairs as sealed credentials of kind `client_id`
-and `client_secret`.
+**Phase 2 -- the page.** Built, but for the last item: sealing in the browser
+(`@hpke/core`, with a seal it made pinned and opened in the Rust tests);
+Connections on a skill's page and in Settings, each host's key connected,
+tested with one GET, replaced and revoked; the fingerprint, which the gateway
+returns with a test call rather than behind an endpoint of its own; and the
+OpenAPI wizard ending on connecting a key rather than a gateway variable. Not
+yet: client-credentials pairs as sealed credentials of kind `client_id` and
+`client_secret`, which still name environment variables.
 
 **Phase 3 -- retire the environment path.** Once no rule names an
 `OUTTURN_EGRESS_` variable, the prefix rule and `OUTTURN_CREDENTIAL_BINDINGS`

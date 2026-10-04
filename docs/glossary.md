@@ -174,8 +174,8 @@ environment variable holding its credential. Never the value.
 **Sealed credential** — a secret encrypted in the browser to the gateway's
 public key, with its binding (workspace, hosts, header) as associated data, so
 the database holds it, the API can read where it goes, and nobody but the
-gateway can use it or change that. Designed, unbuilt.
-[sealed-credentials.md](sealed-credentials.md).
+gateway can use it or change that. Built for static headers; client-credentials
+pairs still name variables. [sealed-credentials.md](sealed-credentials.md).
 
 **Commitment** — the API's signed hash over a turn's egress rules, carried in
 the turn token. A request offers a rule and a proof; the gateway checks it

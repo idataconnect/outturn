@@ -123,8 +123,9 @@ stored in a table anyone may read and only the gateway can use. Replaces
 `OUTTURN_EGRESS_` variables and their bindings, so adding a credential stops
 being a manifest edit and a pod roll, and keeps the property credential
 bindings were built for: nobody who can write the database can change where a
-secret goes. Needs nothing above it; the environment path stays until no rule
-uses it.
+secret goes. Built for static header credentials, with a page to connect,
+test, replace and revoke them; client-credentials pairs still name variables.
+The environment path stays until no rule uses it.
 
 ### Derived skills
 
@@ -329,8 +330,11 @@ is now a *package* -- see [skill-packages.md](skill-packages.md).
 No spec of its own; the rules are [egress.md](egress.md) and
 [integrations.md](integrations.md).
 
-`/v1/egress-rules` exists and has no UI, so allowing a host means an API call
-today. That is the gap worth closing, and it is the workspace level: the table
+Partly built: Settings > Connections lists the workspace's hosts, allows and
+removes them, and connects each one's key. What follows was the case before it,
+and still is for the agent and platform levels.
+
+`/v1/egress-rules` exists and had no UI, so allowing a host meant an API call. That is the gap worth closing, and it is the workspace level: the table
 exists, the endpoint exists, and nothing but a page is missing.
 
 The agent level does not exist at all -- `egress_rules` has `workspace_id` and
