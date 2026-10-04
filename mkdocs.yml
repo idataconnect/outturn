@@ -99,6 +99,7 @@ nav:
           - Approvals: approvals.md
           - Auto-approval: auto-approval.md
           - The admin agent: admin-agent.md
+          - Personalities: personalities.md
           - The action queue: action-queue.md
           - Idempotency: idempotency.md
       - Storage and search:
