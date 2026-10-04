@@ -23,7 +23,7 @@ use outturn::egress::seal;
 fn usage() -> ! {
     eprintln!(
         "usage: outturn-seal --public-key <hex> --workspace <id> --host <name> [--host <name>...] \
-         --header <name> --name <label>   (the secret on stdin)"
+         --header <name> --name <label> [--id <credential id, to rotate one>]   (the secret on stdin)"
     );
     std::process::exit(2)
 }
@@ -34,6 +34,9 @@ fn main() {
     let mut hosts = Vec::new();
     let mut header = None;
     let mut name = None;
+    // Given when rotating: the binding names the credential, so a new seal for
+    // an existing one has to carry its id.
+    let mut id = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_else(|| usage());
@@ -43,6 +46,12 @@ fn main() {
             "--host" => hosts.push(value.to_ascii_lowercase()),
             "--header" => header = Some(value.to_ascii_lowercase()),
             "--name" => name = Some(value),
+            "--id" => {
+                id = Some(uuid::Uuid::parse_str(&value).unwrap_or_else(|_| {
+                    eprintln!("--id is not a credential id");
+                    std::process::exit(2)
+                }))
+            }
             _ => usage(),
         }
     }
@@ -70,7 +79,7 @@ fn main() {
         std::process::exit(2)
     }
 
-    let id = uuid::Uuid::now_v7();
+    let id = id.unwrap_or_else(uuid::Uuid::now_v7);
     let binding = serde_json::to_vec(&serde_json::json!({
         "credential": id,
         "kind": "static",
