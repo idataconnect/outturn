@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
-import { deleteFile, fileUrl, listFiles, uploadFile, type StoredFile } from '../lib/chat'
+import {
+  deleteFile,
+  fileUrl,
+  listFiles,
+  uploadFile,
+  type FilePage,
+  type StoredFile,
+} from '../lib/chat'
 import FilePreview from './FilePreview'
 import { useSession } from '../lib/session'
 import { iconButton, iconButtonDanger } from '../lib/buttons'
@@ -72,6 +79,8 @@ export default function FilesPanel({
   const writable = SCOPES.filter((s) => authorities.includes(s.write))
   const [scope, setScope] = useState<Scope>('session')
   const [files, setFiles] = useState<StoredFile[]>([])
+  // Where each scope with more files than the first page held goes on.
+  const [more, setMore] = useState<FilePage['more']>({})
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -87,7 +96,9 @@ export default function FilesPanel({
 
   const load = useCallback(async () => {
     try {
-      setFiles(await listFiles(sessionId))
+      const page = await listFiles(sessionId)
+      setFiles(page.items)
+      setMore(page.more)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load files')
@@ -148,6 +159,18 @@ export default function FilesPanel({
     depth.current = 0
     setDropping(false)
     void onPick(e.dataTransfer.files)
+  }
+
+  async function loadMore(s: Scope) {
+    const after = more[s]
+    if (!after) return
+    try {
+      const page = await listFiles(sessionId, s, after)
+      setFiles((fs) => [...fs, ...page.items])
+      setMore((m) => ({ ...m, [s]: page.more[s] }))
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to load files')
+    }
   }
 
   async function onDelete(file: StoredFile) {
@@ -331,6 +354,17 @@ export default function FilesPanel({
                 <Trash2 size={14} aria-hidden />
               </button>
             )}
+          </li>
+        ))}
+        {SCOPES.filter((s) => more[s.scope]).map((s) => (
+          <li key={`more-${s.scope}`}>
+            <button
+              type="button"
+              onClick={() => void loadMore(s.scope)}
+              className="w-full px-2 py-1.5 rounded-md text-left text-xs text-brand-700 dark:text-brand-400 hover:bg-surface-50 dark:hover:bg-surface-800/50"
+            >
+              More files in {s.scope === 'workspace' ? 'the workspace' : s.label.toLowerCase()}
+            </button>
           </li>
         ))}
         </ul>

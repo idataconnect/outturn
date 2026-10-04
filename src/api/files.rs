@@ -126,16 +126,59 @@ pub(super) fn storage_failed(e: crate::runtime::storage::StorageError) -> ApiErr
     }
 }
 
-/// Every file the caller may see across the three scopes of this session.
+/// What `list` takes: a scope and a cursor to read one scope's next page, or
+/// neither for the first page of every scope the caller may read.
+#[derive(Debug, serde::Deserialize)]
+pub struct ListQuery {
+    pub scope: Option<String>,
+    /// The last path a previous page ended on, within the scope: `report.pdf`
+    /// for `workspace/report.pdf`.
+    pub after: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// A page of a conversation's files, and where each scope that has more goes on.
+#[derive(Debug, Serialize)]
+pub struct Listed {
+    pub items: Vec<StoredFile>,
+    /// For each scope with more files than this page held, the cursor to pass
+    /// back as `after` with that `scope`. A scope with nothing more is absent.
+    pub more: std::collections::BTreeMap<&'static str, String>,
+}
+
+/// The files the caller may see in this session's scopes, a page at a time.
+///
+/// Paged per scope rather than across all three, because they are three
+/// separate listings in the store and a single cursor across them would have
+/// to say where it was in each. The workspace scope is the one that grows --
+/// every conversation in the workspace adds to it -- and it was read whole on
+/// every open of the Files tab.
 pub async fn list(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(session_id): Path<Uuid>,
-) -> Result<Json<Vec<StoredFile>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<ListQuery>,
+) -> Result<Json<Listed>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
     let space = space_for(&state, &claims, session_id, Authority::SessionsRead).await?;
     let store = storage(&state)?;
     let granted = authorities_of(&state, &claims).await?;
+    let limit = query.limit.unwrap_or(200).clamp(1, 1000);
+    // One scope when continuing, all of them on a first read. A cursor
+    // without a scope is a cursor into nothing in particular.
+    let scopes: Vec<Scope> = match query.scope.as_deref() {
+        Some(name) => vec![Scope::parse(name).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("no scope {name}; it is session, agent or workspace"),
+        ))?],
+        None if query.after.is_some() => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "`after` continues one scope, so it needs `scope` too".to_string(),
+            ));
+        }
+        None => Scope::ALL.to_vec(),
+    };
     // No narrowing check here. `space_for` was given `SessionsRead`, which is
     // narrowed, so a caller reaching this line on somebody else's session has
     // already been proved to cover its agent -- and every scope below hangs
@@ -143,23 +186,30 @@ pub async fn list(
     // question and cost a round trip to do it, and could never answer
     // differently. Move it back if `space_for` is ever given an authority that
     // `scope::is_narrowed` does not name.
-    let mut out = Vec::new();
-    for s in Scope::ALL {
+    let mut out = Listed {
+        items: Vec::new(),
+        more: Default::default(),
+    };
+    for s in scopes {
         // Scopes the caller may not read are left out rather than refused, so
         // a viewer sees their conversation's files and nothing about what
         // else exists.
         if !granted.contains(&read_authority(s)) {
             continue;
         }
-        let found = store
-            .list(&scope::root_for(&space, s))
+        let root = scope::root_for(&space, s);
+        // The cursor is joined under this scope's own root, so whatever it
+        // says, the page cannot start anywhere but inside it.
+        let after = query.after.as_deref().map(|a| format!("{root}{a}"));
+        let (found, more) = store
+            .list_page(&root, after.as_deref(), limit)
             .await
             .map_err(storage_failed)?;
 
         // A document stored before extraction was configured has no text and
         // nothing scheduled to give it any, so a reader is told to come back
         // shortly for work that will never run. Noticed here because this is
-        // what walks every object anyway -- and done after answering, since
+        // what walks the objects anyway -- and done after answering, since
         // checking costs storage round trips per file the reader is not
         // waiting on.
         let keys: Vec<String> = found
@@ -171,17 +221,21 @@ pub async fn list(
             state.pool.clone(),
             store.clone(),
             claims.workspace_id,
-            scope::root_for(&space, s),
+            root.clone(),
             keys,
         );
 
-        out.extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
-            Some(StoredFile {
-                path: scope::strip_root(&space, &f.path)?,
-                scope: s.as_str(),
-                size: f.size,
-            })
-        }));
+        if more && let Some(last) = found.last().and_then(|f| f.path.strip_prefix(&root)) {
+            out.more.insert(s.as_str(), last.to_string());
+        }
+        out.items
+            .extend(found.iter().filter(|f| !f.is_dir).filter_map(|f| {
+                Some(StoredFile {
+                    path: scope::strip_root(&space, &f.path)?,
+                    scope: s.as_str(),
+                    size: f.size,
+                })
+            }));
     }
     Ok(Json(out))
 }

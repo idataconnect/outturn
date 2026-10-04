@@ -435,8 +435,24 @@ export type StoredFile = {
   size: number
 }
 
-export function listFiles(sessionId: string): Promise<StoredFile[]> {
-  return api<StoredFile[]>(`/v1/agent-sessions/${sessionId}/files`)
+/** A page of a conversation's files, and where each scope with more goes on. */
+export type FilePage = {
+  items: StoredFile[]
+  /** The cursor to continue each scope that has more, by scope. */
+  more: Partial<Record<StoredFile['scope'], string>>
+}
+
+/** The first page of every scope, or with `scope` and `after`, the next page
+ *  of one. Paged per scope, because they are three listings in the store. */
+export function listFiles(
+  sessionId: string,
+  scope?: StoredFile['scope'],
+  after?: string,
+): Promise<FilePage> {
+  const query = scope
+    ? `?scope=${scope}${after ? `&after=${encodeURIComponent(after)}` : ''}`
+    : ''
+  return api<FilePage>(`/v1/agent-sessions/${sessionId}/files${query}`)
 }
 
 /** Where a file is fetched from; the session cookie travels with the link. */
