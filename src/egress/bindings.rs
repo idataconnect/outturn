@@ -124,9 +124,21 @@ impl Bindings {
         }
     }
 
-    /// Whether `workspace` may send `variable` to `host`.
+    /// Whether `workspace` may send `variable` to `host`, as a header.
+    ///
+    /// Never a variable bound to a token endpoint. That binding says the value
+    /// is half of a client-credentials pair, whose secret goes to the token URL
+    /// and nowhere else; without this, a rule naming the client secret as its
+    /// static credential sent it raw, in a header, to the resource host.
     pub fn check_static(&self, workspace: Uuid, variable: &str, host: &str) -> Result<(), String> {
-        self.binding_for(workspace, variable, host).map(|_| ())
+        let binding = self.binding_for(workspace, variable, host)?;
+        if binding.token_url.is_some() {
+            return Err(format!(
+                "{variable} is bound for a client-credentials exchange, so it is only ever sent \
+                 to its token endpoint, never as a header"
+            ));
+        }
+        Ok(())
     }
 
     /// Whether `workspace` may exchange this pair at its token URL and send
@@ -311,6 +323,19 @@ mod tests {
             .check_static(other(), "OUTTURN_EGRESS_ACME_STRIPE", "api.stripe.com")
             .unwrap_err();
         assert!(why.contains("not bound to this workspace"), "{why}");
+    }
+
+    /// A client secret is bound to its token endpoint, and a rule naming it as
+    /// a plain header credential must not send it raw to the resource host.
+    #[test]
+    fn a_client_secret_is_never_sent_as_a_header() {
+        let why = bindings()
+            .check_static(acme(), "OUTTURN_EGRESS_LEDGER_SECRET", "ledger.example.com")
+            .unwrap_err();
+        assert!(
+            why.contains("only ever sent to its token endpoint"),
+            "{why}"
+        );
     }
 
     #[test]
