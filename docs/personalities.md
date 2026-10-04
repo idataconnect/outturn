@@ -123,6 +123,33 @@ plainly. That is a cost to measure, not a reason to forbid the feature.
   knowing its voice, so a reply that says "you pathetic creature" is not scored
   as rude when the person asked for exactly that.
 
+### The oracle that reads the transcripts
+
+The case to design against: a workspace samples its transcripts to find out why
+a skill is going wrong, and the judged half of evaluation -- an agent reading
+them -- finds "Bleargh!" all through some of them and concludes the employee
+spoiled the data. Recording the voice stops the judge being confused by it; it
+does not by itself stop the wrong conclusion, or the wrong person being named.
+Three rules do:
+
+- **The judge is told the voice, and judges the work.** Every sampled turn
+  arrives with the voice its reader chose, quoted. What the judge assesses is
+  what a skill controls: whether the right operation was read, called with the
+  right arguments, the figures right, the gate respected. Tone that the voice
+  explains is the reader's preference and is not a finding. A voice appears in
+  findings only as a cost -- *turns with this voice called tools wrongly more
+  often* -- which points at the voice and the model, never at whoever chose it.
+- **Sampling for a skill leans plain.** A sample meant to improve a skill draws
+  from turns with no voice by default, and takes voiced turns only in
+  proportion and labelled as such. A failure that appears only under one voice
+  is a finding about that voice's cost, not about the skill.
+- **Findings are about skills, not people.** What a judge reports is aggregated
+  by skill and by voice, never by person. Which voice somebody talks to their
+  agents in is their own business; an evaluation that could answer "who uses the
+  one that calls them pathetic" would have turned a tool for improving skills
+  into one for watching employees, and the platform should not be able to ask
+  it.
+
 ## Not settled
 
 - **Shared conversations.** A session is one person's today. If two people ever
