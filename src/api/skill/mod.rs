@@ -6,7 +6,9 @@ mod frontmatter;
 mod postgres;
 pub mod wizard;
 
-pub use files::{DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, declared_gates, link, prepare};
+pub use files::{
+    DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, changes, declared_gates, link, prepare,
+};
 
 // The declaration at the top of an operation's file. Named rather than the
 // module made public, as `files` and `postgres` beside it are: a caller wants

@@ -1742,6 +1742,18 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             post(super::skills::add_platform_version),
         )
         .route(
+            "/v1/platform/skills/{id}/annotations",
+            post(super::skill_sources::annotate),
+        )
+        .route(
+            "/v1/platform/skills/{id}/annotations/{annotation}",
+            axum::routing::delete(super::skill_sources::retire),
+        )
+        .route(
+            "/v1/platform/skills/{id}/regenerate",
+            post(super::skill_sources::regenerate),
+        )
+        .route(
             "/v1/platform/skills/{id}/retired",
             axum::routing::put(super::skills::retire_platform_skill),
         )
@@ -1764,6 +1776,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/skills/{id}/retired",
             axum::routing::put(super::skills::retire_skill),
         )
+        .route("/v1/skills/{id}/source", get(super::skill_sources::get))
         .route(
             "/v1/skills/{id}/versions",
             get(super::skills::list_versions).post(super::skills::add_version),

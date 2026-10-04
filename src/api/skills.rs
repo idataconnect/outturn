@@ -72,7 +72,7 @@ async fn with_links(
 }
 
 /// `create` for either owner.
-async fn create_in(
+pub(super) async fn create_in(
     state: &ApiState,
     workspace: Uuid,
     author: Uuid,
@@ -87,7 +87,7 @@ async fn create_in(
 
 /// `add_version` for either owner, answering 200 rather than 201 when nothing
 /// changed and no version was appended.
-async fn add_version_in(
+pub(super) async fn add_version_in(
     state: &ApiState,
     workspace: Uuid,
     id: Uuid,
@@ -418,7 +418,7 @@ pub struct WizardRequest {
 /// A specification as the browser sent it: a string is the document's own
 /// text, JSON or YAML, read as the wizard reads any document; anything else
 /// is a JSON value already parsed.
-fn spec_bytes(spec: serde_json::Value) -> Result<Vec<u8>, ApiError> {
+pub(super) fn spec_bytes(spec: serde_json::Value) -> Result<Vec<u8>, ApiError> {
     match spec {
         serde_json::Value::String(text) => Ok(text.into_bytes()),
         other => serde_json::to_vec(&other)
@@ -608,6 +608,8 @@ pub async fn create_platform_skill_from_openapi(
     let workspace = as_operator(&claims)?;
 
     let spec_json = spec_bytes(req.spec)?;
+    let base_url = req.base_url.clone();
+    let auth_header = req.auth_header.clone();
 
     let input = super::skill::wizard::WizardInput {
         spec_json,
@@ -637,6 +639,26 @@ pub async fn create_platform_skill_from_openapi(
     };
 
     let skill = create_in(&state, workspace, claims.subject, create).await?;
+    // Kept, so the skill can be made again with what people add to it.
+    let revision = super::skill_sources::record(
+        &state,
+        workspace,
+        skill.id,
+        claims.subject,
+        base_url.trim().trim_end_matches('/'),
+        auth_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty()),
+        &input.spec_json,
+    )
+    .await?;
+    sqlx::query("update skill_versions set source_revision_id = $2, annotation_ids = '{}' where skill_id = $1")
+        .bind(skill.id)
+        .bind(revision)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(
         actor = %claims.subject,
         skill_id = %skill.id,
@@ -656,7 +678,7 @@ pub async fn create_platform_skill_from_openapi(
 /// The operator writes at the platform level, and nobody else does. Gated the
 /// way platform settings are: a system administrator by role, not an authority
 /// a workspace could be granted.
-fn as_operator(claims: &crate::auth::SessionClaims) -> Result<Uuid, ApiError> {
+pub(super) fn as_operator(claims: &crate::auth::SessionClaims) -> Result<Uuid, ApiError> {
     if !claims.is_system_admin() {
         return Err((
             StatusCode::FORBIDDEN,

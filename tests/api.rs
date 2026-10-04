@@ -9745,3 +9745,174 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
     assert_eq!(fetch(acme, rule).await, StatusCode::FORBIDDEN);
     assert_eq!(sent.0.lock().unwrap().len(), after, "and stays refused");
 }
+
+/// A generated skill keeps what people added to it when its specification
+/// changes: a note at the skill level reaches the body, an operation's gate
+/// becomes its frontmatter, regenerating is a proposal until published, and an
+/// annotation whose operation disappeared is reported rather than dropped.
+#[tokio::test]
+async fn a_derived_skill_keeps_its_annotations_across_a_new_specification() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+
+    let spec = |extra_op: bool| {
+        let mut paths = serde_json::json!({
+            "/invoices": {"post": {"operationId": "createInvoice", "summary": "Create a sale invoice",
+                "tags": ["Sale Invoices"], "responses": {"201": {"description": "ok"}}}},
+            "/items": {"get": {"operationId": "listItems", "summary": "List items",
+                "tags": ["Items"], "responses": {"200": {"description": "ok"}}}},
+        });
+        if extra_op {
+            paths["/bills"] = serde_json::json!({"get": {"operationId": "listBills",
+                "summary": "List bills", "tags": ["Bills"], "responses": {"200": {"description": "ok"}}}});
+        }
+        serde_json::json!({"openapi": "3.0.0", "info": {"title": "Books", "version": "1"}, "paths": paths})
+    };
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills/from-openapi",
+            Some(&operator),
+            &serde_json::json!({"slug": "books", "name": "Books", "base_url": "https://books.example.com",
+                "auth_header": "Authorization", "spec": spec(false)})
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = h
+        .get(&format!("/v1/skills/{id}/source"), Some(&operator))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["base_url"],
+        "https://books.example.com"
+    );
+
+    let annotate = |a: serde_json::Value| {
+        let h = &h;
+        let operator = &operator;
+        let id = id.clone();
+        async move {
+            h.post(
+                &format!("/v1/platform/skills/{id}/annotations"),
+                Some(operator),
+                &a.to_string(),
+            )
+            .await
+        }
+    };
+    let (status, body) = annotate(serde_json::json!({"level": "skill", "kind": "note",
+        "value": "Invoices are called sale invoices here."}))
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = annotate(serde_json::json!({"level": "operation", "target": "create_invoice",
+        "kind": "approval", "value": "approval:\n  requires: invoice\n  matches: POST /invoices\n  binds: [customer_id]"}))
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = annotate(serde_json::json!({"level": "category", "target": "Items",
+        "kind": "hidden"}))
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "hiding is about one operation"
+    );
+    let (status, _) = annotate(
+        serde_json::json!({"level": "operation", "target": "create_invoice",
+        "kind": "approval", "value": "approval:\n  requires: invoice"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a rule the parser refuses is refused now"
+    );
+    let (status, body) = annotate(
+        serde_json::json!({"level": "operation", "target": "list_items",
+        "kind": "note", "value": "Page through them."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let regenerate = |r: serde_json::Value| {
+        let h = &h;
+        let operator = &operator;
+        let id = id.clone();
+        async move {
+            let (status, body) = h
+                .post(
+                    &format!("/v1/platform/skills/{id}/regenerate"),
+                    Some(operator),
+                    &r.to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()
+        }
+    };
+
+    // A proposal: says what would change, publishes nothing.
+    let proposed = regenerate(serde_json::json!({})).await;
+    assert_eq!(proposed["body_changed"], true, "{proposed}");
+    assert!(proposed["version"].is_null());
+    let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&operator)).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["ordinal"], 1);
+
+    // Published: the note is in the body, the gate is the file's frontmatter.
+    let published = regenerate(serde_json::json!({"publish": true})).await;
+    assert_eq!(published["version"]["ordinal"], 2, "{published}");
+    let v2 = published["version"]["id"].as_str().unwrap();
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions/{v2}"), Some(&operator))
+        .await;
+    assert!(
+        body.contains("Invoices are called sale invoices here."),
+        "{body}"
+    );
+    let (_, file) = h
+        .get(
+            &format!("/v1/skills/{id}/versions/{v2}/files/create_invoice.md"),
+            Some(&operator),
+        )
+        .await;
+    assert!(file.starts_with("---\napproval:"), "{file}");
+
+    // A new specification without listItems: the note on it is reported, and
+    // everything else survives into the next version.
+    let mut next = spec(true);
+    next["paths"].as_object_mut().unwrap().remove("/items");
+    let renewed = regenerate(serde_json::json!({"spec": next, "publish": true})).await;
+    assert_eq!(
+        renewed["unmatched"].as_array().unwrap().len(),
+        1,
+        "{renewed}"
+    );
+    assert_eq!(renewed["unmatched"][0]["target"], "list_items");
+    let v3 = renewed["version"]["id"].as_str().unwrap();
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions/{v3}"), Some(&operator))
+        .await;
+    assert!(body.contains("Invoices are called sale invoices here."));
+    let (_, file) = h
+        .get(
+            &format!("/v1/skills/{id}/versions/{v3}/files/create_invoice.md"),
+            Some(&operator),
+        )
+        .await;
+    assert!(
+        file.starts_with("---\napproval:"),
+        "the gate survived: {file}"
+    );
+}
