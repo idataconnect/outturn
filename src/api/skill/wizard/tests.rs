@@ -83,6 +83,7 @@ fn flat_manifest_small_spec() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: Some("Authorization".into()),
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -128,6 +129,7 @@ fn detail_file_structure() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["create_item.md"];
@@ -160,6 +162,7 @@ fn detail_path_parameters() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["get_item.md"];
@@ -204,6 +207,7 @@ fn categories_for_large_spec() {
         slug: "big".to_string(),
         base_url: "https://big.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -301,6 +305,7 @@ fn ref_resolution() {
         slug: "things".to_string(),
         base_url: "https://things.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["create_thing.md"];
@@ -340,6 +345,7 @@ fn enum_values_rendered() {
         slug: "test".to_string(),
         base_url: "https://test.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["list_items.md"];
@@ -378,6 +384,7 @@ fn too_large_rejected() {
         slug: "x".to_string(),
         base_url: "https://x.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     assert!(matches!(generate(&input), Err(ParseError::TooLarge(_))));
 }
@@ -390,6 +397,7 @@ fn empty_paths_rejected() {
         slug: "x".to_string(),
         base_url: "https://x.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     assert!(matches!(generate(&input), Err(ParseError::NoOperations)));
 }
@@ -401,6 +409,7 @@ fn files_within_read_budget() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -425,6 +434,7 @@ fn manifest_says_read_object() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -442,6 +452,7 @@ fn manifest_no_urls() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -459,6 +470,7 @@ fn detail_says_fetch_url() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     let detail = &output.files["list_items.md"];
@@ -478,6 +490,7 @@ fn bigcapital_spec() {
         slug: "bigcapital".to_string(),
         base_url: "https://books.idataconnect.com".to_string(),
         auth_header: Some("Authorization".into()),
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
 
@@ -555,6 +568,7 @@ fn references_name_the_path_a_guest_reads() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     assert!(output.files.contains_key("list_items.md"));
@@ -704,6 +718,7 @@ fn generate_uses_the_header_it_is_given() {
         slug: "petstore".to_string(),
         base_url: "https://petstore3.swagger.io/api/v3".to_string(),
         auth_header: Some("API_KEY".into()),
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     assert!(
@@ -729,6 +744,7 @@ fn generate_says_nothing_about_auth_when_given_no_header() {
         slug: "testapi".to_string(),
         base_url: "https://api.example.com".to_string(),
         auth_header: Some("  ".into()),
+        annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
     assert!(!output.body.contains("Authentication is handled"));
@@ -831,6 +847,7 @@ fn yaml_input(spec: &str) -> WizardInput {
         slug: "x".to_string(),
         base_url: "https://x.com".to_string(),
         auth_header: None,
+        annotations: Vec::new(),
     }
 }
 
@@ -943,4 +960,156 @@ fn neither_json_nor_yaml_says_both() {
     let err = document(b"{ not: [ closed").unwrap_err();
     let text = err.to_string();
     assert!(text.contains("JSON") && text.contains("YAML"), "{text}");
+}
+
+mod annotations {
+    use super::super::{Annotation, AnnotationKind, Target, WizardInput, generate};
+    use super::small_spec;
+
+    fn with(spec: Vec<u8>, annotations: Vec<Annotation>) -> super::super::WizardOutput {
+        generate(&WizardInput {
+            spec_json: spec,
+            slug: "shop".into(),
+            base_url: "https://api.shop.example".into(),
+            auth_header: Some("Authorization".into()),
+            annotations,
+        })
+        .unwrap()
+    }
+
+    fn note(target: Target, text: &str) -> Annotation {
+        Annotation {
+            target,
+            kind: AnnotationKind::Note(text.into()),
+        }
+    }
+
+    /// Thirty-one operations under two tags, so the skill has category files.
+    fn big_spec() -> Vec<u8> {
+        let mut paths = serde_json::Map::new();
+        for i in 0..31 {
+            let tag = if i < 16 { "Sale Invoices" } else { "Bills" };
+            paths.insert(
+                format!("/things/{i}"),
+                serde_json::json!({"get": {"operationId": format!("op{i}"), "summary": "Do it", "tags": [tag],
+                    "responses": {"200": {"description": "ok"}}}}),
+            );
+        }
+        serde_json::to_vec(&serde_json::json!({
+            "openapi": "3.0.0", "info": {"title": "Big", "version": "1"}, "paths": paths,
+        }))
+        .unwrap()
+    }
+
+    /// The skill level is the body, which every turn carries: a vocabulary
+    /// note there is seen before the agent knows which category to open.
+    #[test]
+    fn a_skill_note_is_in_the_body() {
+        let out = with(
+            big_spec(),
+            vec![note(
+                Target::Skill,
+                "Invoices are called sale invoices here.",
+            )],
+        );
+        assert!(
+            out.body
+                .contains("- Invoices are called sale invoices here."),
+            "{}",
+            out.body
+        );
+        assert!(out.unmatched.is_empty());
+    }
+
+    #[test]
+    fn a_category_note_is_in_its_file_and_not_the_body() {
+        let out = with(
+            big_spec(),
+            vec![note(
+                Target::Category("Sale Invoices".into()),
+                "These are service invoices.",
+            )],
+        );
+        assert!(out.files["sale_invoices.md"].contains("- These are service invoices."));
+        assert!(!out.body.contains("service invoices"));
+        assert!(!out.files["bills.md"].contains("service invoices"));
+    }
+
+    #[test]
+    fn an_operation_note_preference_and_gate_are_in_its_file() {
+        let base = with(small_spec(), Vec::new());
+        let mut names: Vec<_> = base
+            .files
+            .keys()
+            .map(|k| k.trim_end_matches(".md").to_string())
+            .collect();
+        names.sort();
+        let (first, second) = (names[0].clone(), names[1].clone());
+        let out = with(
+            small_spec(),
+            vec![
+                note(Target::Operation(first.clone()), "Always pass a page."),
+                Annotation {
+                    target: Target::Operation(first.clone()),
+                    kind: AnnotationKind::Prefer(second.clone()),
+                },
+                Annotation {
+                    target: Target::Operation(first.clone()),
+                    kind: AnnotationKind::Approval(
+                        "approval:\n  requires: list\n  matches: GET /items\n  binds: [page]"
+                            .into(),
+                    ),
+                },
+            ],
+        );
+        let file = &out.files[&format!("{first}.md")];
+        assert!(file.starts_with("---\napproval:"), "{file}");
+        assert!(file.contains("- Always pass a page."));
+        assert!(file.contains(&format!("**Prefer `{second}`**")));
+        assert!(
+            out.body.contains(&format!("Prefer `{second}`.")),
+            "the choice is made in the list"
+        );
+        assert!(
+            crate::api::skill::parse(file).unwrap().approval.is_some(),
+            "the gate parses"
+        );
+    }
+
+    #[test]
+    fn a_hidden_operation_is_left_out_everywhere() {
+        let base = with(small_spec(), Vec::new());
+        let name = base
+            .files
+            .keys()
+            .next()
+            .unwrap()
+            .trim_end_matches(".md")
+            .to_string();
+        let out = with(
+            small_spec(),
+            vec![Annotation {
+                target: Target::Operation(name.clone()),
+                kind: AnnotationKind::Hidden,
+            }],
+        );
+        assert!(!out.files.contains_key(&format!("{name}.md")));
+        assert!(!out.body.contains(&format!("`{name}`")));
+    }
+
+    /// The specification changed under an annotation: it is reported, not
+    /// dropped and not rendered somewhere it no longer means anything.
+    #[test]
+    fn an_annotation_whose_target_is_gone_is_reported() {
+        let out = with(
+            small_spec(),
+            vec![
+                note(Target::Operation("renamed_away".into()), "x"),
+                note(Target::Category("Nope".into()), "y"),
+                note(Target::Skill, "z"),
+            ],
+        );
+        assert_eq!(out.unmatched, vec![0, 1]);
+        assert!(!out.body.contains("- x") && !out.body.contains("- y"));
+    }
 }
