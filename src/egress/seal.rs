@@ -316,6 +316,27 @@ mod tests {
         );
     }
 
+    /// A seal made in a browser by `ui/src/lib/seal.ts` (`@hpke/core`), to the
+    /// test key above, opens here. The two implementations must agree on the
+    /// suite, the label and the layout, or every credential stored from the
+    /// page is one the gateway cannot open.
+    #[test]
+    fn a_seal_made_in_the_browser_opens_here() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let binding = b64.decode("eyJjcmVkZW50aWFsIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwia2luZCI6InN0YXRpYyIsIndvcmtzcGFjZXMiOlsiMDE5MjAwMDAtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDBhIl0sImhvc3RzIjpbImJvb2tzLmV4YW1wbGUuY29tIl0sImhlYWRlciI6ImF1dGhvcml6YXRpb24ifQ==").unwrap();
+        let sealed = b64.decode("oCVSksXbRTxwtKsrp4OQ5gWTFGBggfHmNrTgPWSwCmAXP8tDQ8CqHWLEHwQCtI07UR6WG3G3SDMheuZSV+ds5OxVokSi3EUR2tI=").unwrap();
+        let (keys, _, id) = keys();
+        assert_eq!(
+            &*keys.open(&id, &sealed, &binding).unwrap(),
+            b"Bearer bc_from_the_browser"
+        );
+        assert!(
+            Binding::parse(&binding).is_ok(),
+            "the page writes a binding this reads"
+        );
+    }
+
     #[test]
     fn a_seal_opens_under_its_own_binding() {
         let (keys, public, id) = keys();
