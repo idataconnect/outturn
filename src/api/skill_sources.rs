@@ -192,6 +192,9 @@ pub struct Source {
     /// The newest specification kept, if any.
     pub revision: Option<Revision>,
     pub annotations: Vec<AnnotationRow>,
+    /// What the newest specification offers to annotate. Absent when none is
+    /// kept or it no longer parses.
+    pub outline: Option<super::skill::wizard::Outline>,
 }
 
 #[derive(serde::Serialize)]
@@ -239,11 +242,28 @@ pub async fn get(
             StatusCode::NOT_FOUND,
             "this skill is not generated from a specification".to_string(),
         ))?;
+    let skill = state.skills.get(claims.workspace_id, id).await?;
+    let revision = latest_revision(&state.pool, id).await?;
+    let outline = match &revision {
+        Some(r) => {
+            let bytes = storage(&state)?
+                .read(
+                    &blob_key(skill.workspace_id, &r.spec_sha256),
+                    0,
+                    r.spec_bytes as u32,
+                )
+                .await
+                .map_err(storage_failed)?;
+            super::skill::wizard::outline(&bytes).ok()
+        }
+        None => None,
+    };
     Ok(Json(Source {
         base_url: row.get("base_url"),
         auth_header: row.get("auth_header"),
-        revision: latest_revision(&state.pool, id).await?,
+        revision,
         annotations: live_annotations(&state.pool, id).await?,
+        outline,
     }))
 }
 

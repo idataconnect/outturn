@@ -29,6 +29,7 @@ import {
 import { useSession } from '../lib/session'
 import SkillConnections from '../components/SkillConnections'
 import SkillFiles from '../components/SkillFiles'
+import SkillSource from '../components/SkillSource'
 import VersionContents from '../components/VersionContents'
 
 /**
@@ -93,6 +94,12 @@ export default function SkillEditor() {
   // so the same page serves both and the difference is who is looking.
   const operators = skill !== null && skill.workspace_id !== workspaceId
   const editable = canWrite && (creating || !operators || isOperator)
+  // A skill generated from a specification is made, not written: its
+  // instructions, files and hosts come from the specification and the notes
+  // on it, and an edit here would be overwritten the next time it is made.
+  const [derived, setDerived] = useState(false)
+  const [reloads, setReloads] = useState(0)
+  const writable = editable && !derived
   // An override speaks about its base's instructions and carries no files of
   // its own; the API refuses them.
   const carriesFiles = !overriding && skill?.kind !== 'override'
@@ -174,7 +181,7 @@ export default function SkillEditor() {
         setLoading(false)
       }
     })()
-  }, [id, creating, overriding])
+  }, [id, creating, overriding, reloads])
 
   async function onCreate(event: React.FormEvent) {
     event.preventDefault()
@@ -355,6 +362,15 @@ export default function SkillEditor() {
         </p>
       )}
 
+      {skill && !creating && (
+        <SkillSource
+          skillId={skill.id}
+          editable={isOperator && canWrite}
+          onDerived={setDerived}
+          onPublished={() => setReloads((n) => n + 1)}
+        />
+      )}
+
       {skill && workspaceId && skill.hosts.length > 0 && (
         <SkillConnections hosts={skill.hosts} skillName={skill.name} workspaceId={workspaceId} />
       )}
@@ -461,7 +477,7 @@ export default function SkillEditor() {
             )}
             <textarea
               value={form.body}
-              disabled={!editable}
+              disabled={!writable}
               onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
               rows={16}
               className="mt-1 w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-sm font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
@@ -477,7 +493,7 @@ export default function SkillEditor() {
               }}
               body={form.body}
               slug={form.slug}
-              editable={editable}
+              editable={writable}
               onOpen={openFile}
             />
           )}
@@ -488,7 +504,7 @@ export default function SkillEditor() {
             </span>
             <textarea
               value={form.hosts}
-              disabled={!editable}
+              disabled={!writable}
               onChange={(e) => setForm((f) => ({ ...f, hosts: e.target.value }))}
               rows={3}
               placeholder="api.example.com"

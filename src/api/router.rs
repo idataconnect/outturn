@@ -1749,9 +1749,12 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/platform/skills/{id}/annotations/{annotation}",
             axum::routing::delete(super::skill_sources::retire),
         )
+        // A new specification may come with it, and a real one is megabytes.
         .route(
             "/v1/platform/skills/{id}/regenerate",
-            post(super::skill_sources::regenerate),
+            post(super::skill_sources::regenerate).layer(axum::extract::DefaultBodyLimit::max(
+                super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+            )),
         )
         .route(
             "/v1/platform/skills/{id}/retired",
