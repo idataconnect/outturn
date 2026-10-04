@@ -187,6 +187,41 @@ pub fn unreached(body: &str, files: &[SkillFile]) -> Option<Vec<String>> {
     )
 }
 
+/// Which files differ between two sets, going from `from` to `to`, by path.
+/// The same comparison the browser made before the history stopped carrying
+/// file lists (`fileChanges` in `ui/src/lib/skills.ts`), made here instead.
+pub fn changes(from: &[SkillFile], to: &[SkillFile]) -> Vec<super::FileChange> {
+    let before: std::collections::HashMap<&str, &str> = from
+        .iter()
+        .map(|f| (f.path.as_str(), f.sha256.as_str()))
+        .collect();
+    let after: std::collections::HashSet<&str> = to.iter().map(|f| f.path.as_str()).collect();
+    let mut out: Vec<super::FileChange> = to
+        .iter()
+        .filter_map(|f| {
+            match before.get(f.path.as_str()) {
+                None => Some("added"),
+                Some(hash) if *hash != f.sha256 => Some("changed"),
+                Some(_) => None,
+            }
+            .map(|change| super::FileChange {
+                path: f.path.clone(),
+                change,
+            })
+        })
+        .chain(
+            from.iter()
+                .filter(|f| !after.contains(f.path.as_str()))
+                .map(|f| super::FileChange {
+                    path: f.path.clone(),
+                    change: "removed",
+                }),
+        )
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
 /// A relative path of plain segments. Refused rather than cleaned up: a path
 /// quietly rewritten is one the manifest names differently from the file.
 fn check_path(path: &str) -> Result<(), SkillError> {
@@ -253,6 +288,40 @@ mod tests {
             .collect();
         files[0].links = None;
         assert_eq!(unreached("a.md", &files), None);
+    }
+
+    /// What the history says a version did to its files, by hash alone.
+    #[test]
+    fn changes_are_added_changed_and_removed() {
+        let set = |files: Vec<NewFile>| -> Vec<SkillFile> {
+            prepare(files)
+                .unwrap()
+                .into_iter()
+                .map(|(f, _)| f)
+                .collect()
+        };
+        let before = set(vec![
+            file("a.md", "one"),
+            file("b.md", "two"),
+            file("gone.md", "x"),
+        ]);
+        let after = set(vec![
+            file("a.md", "one"),
+            file("b.md", "TWO"),
+            file("new.md", "y"),
+        ]);
+        let got: Vec<(String, &str)> = changes(&before, &after)
+            .into_iter()
+            .map(|c| (c.path, c.change))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("b.md".to_string(), "changed"),
+                ("gone.md".to_string(), "removed"),
+                ("new.md".to_string(), "added"),
+            ]
+        );
     }
 
     #[test]

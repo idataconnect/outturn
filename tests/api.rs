@@ -2938,6 +2938,11 @@ async fn a_version_says_which_files_nothing_names() {
         page["items"][1]["unreached"],
         serde_json::json!(["stray.md"])
     );
+    // A summary, not the version: no prose, no file list, but what it changed.
+    assert!(page["items"][0].get("body").is_none());
+    assert!(page["items"][0].get("files").is_none());
+    assert_eq!(page["items"][0]["file_count"], 3);
+    assert_eq!(page["items"][0]["changed"], serde_json::json!([]));
 }
 
 /// An operator's skill reaches a workspace with its files, including through a
@@ -3273,10 +3278,14 @@ async fn a_rollback_appends_rather_than_moving_backwards() {
     let versions = items(&body);
     assert_eq!(versions.len(), 3, "a rollback lost history: {body}");
     assert_eq!(versions[0]["ordinal"], 3, "newest first");
-    assert_eq!(
-        versions[0]["body"], "one",
-        "the rollback did not carry the old body"
-    );
+    // The history lists versions without their prose; the version itself has it.
+    assert!(versions[0].get("body").is_none(), "{body}");
+    let v3 = versions[0]["id"].as_str().unwrap();
+    let (_, body) = h
+        .get(&format!("/v1/skills/{id}/versions/{v3}"), Some(&admin))
+        .await;
+    let v3: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v3["body"], "one", "the rollback did not carry the old body");
 
     let (_, body) = h.get(&format!("/v1/skills/{id}"), Some(&admin)).await;
     let skill: serde_json::Value = serde_json::from_str(&body).unwrap();

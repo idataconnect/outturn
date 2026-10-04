@@ -76,8 +76,25 @@ export function getSkill(id: string): Promise<Skill> {
   return api<Skill>(`/v1/skills/${id}`)
 }
 
-export function listVersions(id: string): Promise<SkillVersion[]> {
-  return allPages<SkillVersion>(`/v1/skills/${id}/versions`)
+/** A version as the history lists it: enough to choose one, without its prose
+ *  or file list. `getVersion` reads the rest. */
+export type VersionSummary = {
+  id: string
+  skill_id: string
+  ordinal: number
+  note: string
+  based_on_version_id: string | null
+  hosts: string[]
+  file_count: number
+  /** What it did to the files of the version before it, by hash. */
+  changed: FileChange[]
+  unreached: string[] | null
+  created_by: string | null
+  created_at: string
+}
+
+export function listVersions(id: string): Promise<VersionSummary[]> {
+  return allPages<VersionSummary>(`/v1/skills/${id}/versions`)
 }
 
 export function getVersion(id: string, versionId: string): Promise<SkillVersion> {

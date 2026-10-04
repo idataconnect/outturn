@@ -8,6 +8,7 @@ import {
   createSkill,
   forkSkill,
   getSkill,
+  getVersion,
   listSkills,
   listVersions,
   parseHosts,
@@ -23,6 +24,7 @@ import {
   type NewFile,
   type Skill,
   type SkillVersion,
+  type VersionSummary,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
 import SkillFiles from '../components/SkillFiles'
@@ -57,7 +59,11 @@ export default function SkillEditor() {
 
   const [skill, setSkill] = useState<Skill | null>(null)
   const [base, setBase] = useState<Skill | null>(null)
-  const [versions, setVersions] = useState<SkillVersion[]>([])
+  const [versions, setVersions] = useState<VersionSummary[]>([])
+  // The newest version whole: its prose is the draft's starting point and what
+  // every older version is compared with. The history lists the rest as
+  // summaries and fetches one only when it is opened.
+  const [latest, setLatest] = useState<SkillVersion | null>(null)
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -145,16 +151,18 @@ export default function SkillEditor() {
     void (async () => {
       try {
         const [s, v, all] = await Promise.all([getSkill(id), listVersions(id), listSkills()])
+        const newest = v[0] ? await getVersion(id, v[0].id) : null
         setSkill(s)
         setVersions(v)
-        startFiles(v[0])
+        setLatest(newest)
+        startFiles(newest ?? undefined)
         setFilesChanged(false)
         setBase(all.find((x) => x.id === s.base_skill_id) ?? null)
         setForm({
           name: s.name,
           slug: s.slug,
           description: s.description,
-          body: v[0]?.body ?? '',
+          body: newest?.body ?? '',
           note: '',
           hosts: s.hosts.join('\n'),
         })
@@ -208,7 +216,7 @@ export default function SkillEditor() {
       }
       // A version carries its hosts and files, so a change to any of them
       // publishes one.
-      const live = versions[0]
+      const live = latest
       const hosts = parseHosts(form.hosts)
       const hostsChanged = hosts.join('\n') !== skill.hosts.join('\n')
       if (!live || live.body !== form.body || hostsChanged || filesChanged) {
@@ -224,6 +232,7 @@ export default function SkillEditor() {
       const [s, v] = await Promise.all([getSkill(skill.id), listVersions(skill.id)])
       setSkill(s)
       setVersions(v)
+      setLatest(v[0] ? await getVersion(skill.id, v[0].id) : null)
       setFilesChanged(false)
       setForm((f) => ({ ...f, note: '' }))
       setError(null)
@@ -281,7 +290,15 @@ export default function SkillEditor() {
   /** Loads an old body into the draft rather than publishing behind the
    *  reader's back: a rollback is a version like any other, and this is the
    *  moment where that is worth showing rather than explaining. */
-  async function onRestore(v: SkillVersion) {
+  async function onRestore(listed: VersionSummary) {
+    if (!skill) return
+    let v: SkillVersion
+    try {
+      v = await getVersion(skill.id, listed.id)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to read that version')
+      return
+    }
     setForm((f) => ({ ...f, body: v.body, note: `rolled back to v${v.ordinal}` }))
     // The files too. A version is its instructions and its files together, and
     // restoring only the words would put back a table of contents pointing at
@@ -566,7 +583,7 @@ export default function SkillEditor() {
             restoring it would change.
           </p>
           <ul className="mt-4 divide-y divide-surface-200 dark:divide-surface-800 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 overflow-hidden">
-            {versions.map((v, at) => (
+            {versions.map((v) => (
               <li key={v.id} className="flex items-start gap-4 p-4">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-surface-900 dark:text-surface-100">
@@ -588,13 +605,15 @@ export default function SkillEditor() {
                       different afterwards, and the previous version is not what
                       they would be leaving. */}
                   <VersionContents
-                    version={v}
-                    live={versions.find((other) => other.ordinal === skill?.ordinal)?.body}
+                    // The newest is already here whole; only older ones are read.
+                    version={
+                      latest?.id === v.id ? { ...v, body: latest.body, files: latest.files } : v
+                    }
+                    load={() => getVersion(skill?.id ?? v.skill_id, v.id)}
+                    live={latest?.ordinal === skill?.ordinal ? latest?.body : undefined}
                     isLive={v.ordinal === skill?.ordinal}
-                    // Newest first, so the version this one replaced is the next.
-                    previousFiles={versions[at + 1]?.files}
-                    liveFiles={versions.find((other) => other.ordinal === skill?.ordinal)?.files}
-                    liveVersionId={versions.find((other) => other.ordinal === skill?.ordinal)?.id}
+                    liveFiles={latest?.ordinal === skill?.ordinal ? latest?.files : undefined}
+                    liveVersionId={latest?.ordinal === skill?.ordinal ? latest?.id : undefined}
                     readFile={(versionId, path) =>
                       readVersionFile(skill?.id ?? v.skill_id, versionId, path)
                     }

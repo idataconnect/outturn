@@ -41,6 +41,28 @@ describe('what a version said', () => {
   })
 })
 
+describe('a version the history only summarised', () => {
+  /// The history lists versions without their prose; a version is read when
+  /// somebody opens it, and not before.
+  it('is read when opened, and not before', async () => {
+    const load = vi.fn().mockResolvedValue({ body: 'What v3 said.', files: [] })
+    render(
+      <VersionContents
+        version={{ id: 'v3', hosts: [], changed: [{ path: 'a.md', change: 'changed' }] }}
+        load={load}
+        live="x"
+        isLive={false}
+      />,
+    )
+    expect(load).not.toHaveBeenCalled()
+    // What it changed comes from the summary, with nothing read.
+    expect(screen.getByText('a.md')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /What it said/ }))
+    expect(await screen.findByText('What v3 said.')).toBeInTheDocument()
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('comparing with the live version', () => {
   it('offers no comparison on the live version itself', () => {
     // An empty diff of the live version against itself explains nothing.
