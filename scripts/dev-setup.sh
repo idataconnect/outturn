@@ -47,6 +47,10 @@ if [[ "$show" == true ]]; then
       echo "  gateway reaches $(dev_gateway_base_url)"
       echo "  started as      $(dev_llamacpp_command)"
       ;;
+    other)
+      echo "  server          ${dev_other_url:-the address the overlay names}"
+      [[ -n "$dev_other_url" ]] && echo "  gateway reaches $(dev_gateway_base_url)"
+      ;;
   esac
   exit 0
 fi
