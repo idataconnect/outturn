@@ -416,18 +416,21 @@ fn grant_covers(
     let Some(shape) = crate::egress::grant::Shape::of_fetch_arguments(arguments) else {
         return false;
     };
-    let Some(gate) = gates.covering(&shape.host, &shape.method, &shape.path) else {
-        return false;
-    };
-    granted.iter().any(|g| {
-        g.permits(
-            gate,
-            &shape.method,
-            &shape.host,
-            &shape.path,
-            shape.body.as_deref(),
-        )
-    })
+    // Every gate covering the call has to be approved for the refusal to be
+    // retracted, as every one has to be for the gateway to let it out.
+    let covering = gates.covering_all(&shape.host, &shape.method, &shape.path);
+    !covering.is_empty()
+        && covering.iter().all(|gate| {
+            granted.iter().any(|g| {
+                g.permits(
+                    gate,
+                    &shape.method,
+                    &shape.host,
+                    &shape.path,
+                    shape.body.as_deref(),
+                )
+            })
+        })
 }
 
 /// Retracts the standing refusal a turn was parked on, once it is approved.

@@ -178,7 +178,9 @@ pub async fn fetch(
             "the approval rules offered are not the ones this turn was given".to_string(),
         ));
     }
-    if let Some(gate) = request.gates.covering(&host, &method, url.path()) {
+    // Every gate covering the request, not the first: each is an obligation, and
+    // one satisfied says nothing about another. See `Gates::covering_all`.
+    for gate in request.gates.covering_all(&host, &method, url.path()) {
         // Before anything is decided about approving it: a request missing a
         // field the declaration says its approval is keyed on cannot be
         // meaningfully approved, and must not become a differently-keyed request
@@ -198,8 +200,10 @@ pub async fn fetch(
                 ),
             ));
         }
-
-        // Unless somebody has already approved this particular request. The
+    }
+    if request.gates.covering(&host, &method, url.path()).is_some() {
+        // Unless somebody has already approved this particular request, through
+        // every gate that covers it. The
         // grant travels in the same commitment the gate does, so this is still
         // the API's word rather than the caller's, and still no database read in
         // this tier.
@@ -209,18 +213,11 @@ pub async fn fetch(
         // to is not enforced at all, so anything the omission was too broad about
         // became an ungated request. And a `unit` grant can only be checked where
         // the body is, which is here.
-        if let Some(granted) =
+        if let Some(gate) =
             request
                 .gates
-                .permitted(gate, &method, &host, url.path(), request.body.as_deref())
+                .unpermitted(&host, &method, url.path(), request.body.as_deref())
         {
-            tracing::info!(
-                workspace_id = %claims.workspace_id,
-                requires = %gate.requires,
-                extent = %granted.extent.as_str(),
-                "a gated request was approved, so it goes out"
-            );
-        } else {
             // Refused rather than held here. Parking the turn is the API's to do --
             // it owns the job and the queue -- and this tier has a method, a URL and a
             // token. What it can do is not make the call, and say why in words the
@@ -237,6 +234,10 @@ pub async fn fetch(
                 ),
             ));
         }
+        tracing::info!(
+            workspace_id = %claims.workspace_id,
+            "a gated request was approved through every gate covering it, so it goes out"
+        );
     }
 
     // A credential travels only where it cannot be read on the way. A
@@ -570,6 +571,59 @@ mod gating {
             identified_by: Some("booking_id".into()),
             binds: vec!["amount_pence".into()],
         }
+    }
+
+    /// A request covered by two gates goes out only once both are approved.
+    ///
+    /// The bypass this replaces: the gateway asked only the first covering
+    /// gate, and `/*` sorts before `/refunds`. So with `approve_new_hosts` on, a
+    /// person approving "reach this host" for a `POST /refunds` minted a grant
+    /// for the host's gate, and the refund went out with its own gate never
+    /// consulted.
+    #[test]
+    fn every_gate_covering_a_request_must_be_approved() {
+        use crate::egress::grant::{Extent, Granted, digest};
+
+        let reach = Gate {
+            requires: "reach".into(),
+            host: "pay.example.com".into(),
+            method: "POST".into(),
+            path: "/*".into(),
+            identified_by: None,
+            binds: vec![],
+        };
+        let refund = Gate {
+            requires: "refund".into(),
+            host: "pay.example.com".into(),
+            method: "POST".into(),
+            path: "/refunds".into(),
+            identified_by: None,
+            binds: vec!["amount_pence".into()],
+        };
+        let body = Some(r#"{"amount_pence":90000}"#);
+        let grant = |gate: &Gate| Granted {
+            requires: gate.requires.clone(),
+            extent: Extent::Call,
+            keyed_on: digest(gate, "POST", "pay.example.com", "/refunds", body),
+        };
+
+        let reach_only =
+            Gates::of(vec![reach.clone(), refund.clone()]).with_grants(vec![grant(&reach)]);
+        assert_eq!(
+            reach_only
+                .unpermitted("pay.example.com", "POST", "/refunds", body)
+                .map(|g| g.requires.as_str()),
+            Some("refund"),
+            "approving the host must not approve the refund"
+        );
+
+        let both = Gates::of(vec![reach.clone(), refund.clone()])
+            .with_grants(vec![grant(&reach), grant(&refund)]);
+        assert!(
+            both.unpermitted("pay.example.com", "POST", "/refunds", body)
+                .is_none(),
+            "with both approved it goes out"
+        );
     }
 
     /// The gate set offered has to be the one the API committed to.
