@@ -614,6 +614,7 @@ pub async fn create_platform_skill_from_openapi(
         slug: req.slug.clone(),
         base_url: req.base_url,
         auth_header: req.auth_header,
+        annotations: Vec::new(),
     };
     let output = super::skill::wizard::generate(&input)
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;

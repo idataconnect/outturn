@@ -1,12 +1,89 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{Category, parse};
+use super::{Annotation, AnnotationKind, Category, Target, parse};
 
-pub fn flat_body(slug: &str, operations: &[parse::Operation], auth_header: Option<&str>) -> String {
+/// The annotations that matched, arranged for rendering.
+#[derive(Default)]
+pub struct Notes<'a> {
+    skill: Vec<&'a str>,
+    category: BTreeMap<&'a str, Vec<&'a str>>,
+    operation: BTreeMap<&'a str, Vec<&'a str>>,
+    prefer: BTreeMap<&'a str, &'a str>,
+    hidden: std::collections::HashSet<&'a str>,
+    approval: BTreeMap<&'a str, &'a str>,
+}
+
+impl<'a> Notes<'a> {
+    pub fn from(annotations: &'a [Annotation], unmatched: &[usize]) -> Self {
+        let mut notes = Notes::default();
+        for (i, a) in annotations.iter().enumerate() {
+            if unmatched.contains(&i) {
+                continue;
+            }
+            match (&a.target, &a.kind) {
+                (Target::Skill, AnnotationKind::Note(text)) => notes.skill.push(text),
+                (Target::Category(tag), AnnotationKind::Note(text)) => {
+                    notes.category.entry(tag).or_default().push(text)
+                }
+                (Target::Operation(op), AnnotationKind::Note(text)) => {
+                    notes.operation.entry(op).or_default().push(text)
+                }
+                (Target::Operation(op), AnnotationKind::Prefer(other)) => {
+                    notes.prefer.insert(op, other);
+                }
+                (Target::Operation(op), AnnotationKind::Hidden) => {
+                    notes.hidden.insert(op);
+                }
+                (Target::Operation(op), AnnotationKind::Approval(yaml)) => {
+                    notes.approval.insert(op, yaml);
+                }
+                // Prefer, hidden and approval are about one operation; anywhere
+                // else they mean nothing, and the API refuses to store them.
+                _ => {}
+            }
+        }
+        notes
+    }
+
+    pub fn hidden(&self, op: &str) -> bool {
+        self.hidden.contains(op)
+    }
+}
+
+/// Notes as a list under their own heading, so a reader can tell what a
+/// person added from what the specification said.
+fn write_notes(out: &mut String, notes: &[&str]) {
+    if notes.is_empty() {
+        return;
+    }
+    writeln!(out, "## Notes from your workspace").unwrap();
+    writeln!(out).unwrap();
+    for note in notes {
+        writeln!(out, "- {}", note.trim()).unwrap();
+    }
+    writeln!(out).unwrap();
+}
+
+pub fn flat_body(
+    slug: &str,
+    operations: &[parse::Operation],
+    auth_header: Option<&str>,
+    notes: &Notes,
+) -> String {
     let mut out = String::new();
 
     write_auth_preamble(&mut out, auth_header);
+    // A category's notes have no file of their own to go in when there are no
+    // categories, so they come up to the body, labelled.
+    let mut first = notes.skill.clone();
+    let labelled: Vec<String> = notes
+        .category
+        .iter()
+        .flat_map(|(tag, ns)| ns.iter().map(move |n| format!("{tag}: {}", n.trim())))
+        .collect();
+    first.extend(labelled.iter().map(String::as_str));
+    write_notes(&mut out, &first);
 
     writeln!(
         out,
@@ -26,7 +103,7 @@ pub fn flat_body(slug: &str, operations: &[parse::Operation], auth_header: Optio
     writeln!(out).unwrap();
 
     for op in operations {
-        write_manifest_line(&mut out, slug, op);
+        write_manifest_line(&mut out, slug, op, notes);
     }
 
     out
@@ -36,10 +113,12 @@ pub fn category_body(
     slug: &str,
     categories: &BTreeMap<String, Category>,
     auth_header: Option<&str>,
+    notes: &Notes,
 ) -> String {
     let mut out = String::new();
 
     write_auth_preamble(&mut out, auth_header);
+    write_notes(&mut out, &notes.skill);
 
     writeln!(
         out,
@@ -76,29 +155,66 @@ pub fn category_manifest_with_ops(
     cat: &Category,
     operations: &[parse::Operation],
     slug: &str,
+    notes: &Notes,
 ) -> String {
     let mut out = String::new();
 
     writeln!(out, "# {}", cat.label).unwrap();
     writeln!(out).unwrap();
+    write_notes(
+        &mut out,
+        notes
+            .category
+            .get(cat.label.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default(),
+    );
 
     for &i in &cat.operations {
         let op = &operations[i];
-        write_manifest_line(&mut out, slug, op);
+        write_manifest_line(&mut out, slug, op, notes);
     }
 
     out
 }
 
-pub fn detail(op: &parse::Operation, base_url: &str, auth_header: Option<&str>) -> String {
+pub fn detail(
+    op: &parse::Operation,
+    base_url: &str,
+    auth_header: Option<&str>,
+    notes: &Notes,
+) -> String {
     let mut out = String::new();
 
+    // The approval rule first, as frontmatter: what the platform reads, before
+    // anything the model does.
+    if let Some(yaml) = notes.approval.get(op.name.as_str()) {
+        writeln!(out, "---\n{}\n---\n", yaml.trim()).unwrap();
+    }
     writeln!(out, "# {}", op.name).unwrap();
     writeln!(out).unwrap();
     if !op.summary.is_empty() {
         writeln!(out, "{}", op.summary).unwrap();
         writeln!(out).unwrap();
     }
+    // Before the call, because a business rule is worth reading before the URL
+    // rather than after the error table.
+    if let Some(other) = notes.prefer.get(op.name.as_str()) {
+        writeln!(
+            out,
+            "**Prefer `{other}`** over this operation; read `{other}`'s file instead."
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+    }
+    write_notes(
+        &mut out,
+        notes
+            .operation
+            .get(op.name.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default(),
+    );
 
     // The call
     writeln!(out, "## The call").unwrap();
@@ -271,7 +387,7 @@ fn write_auth_preamble(out: &mut String, auth_header: Option<&str>) {
     }
 }
 
-fn write_manifest_line(out: &mut String, slug: &str, op: &parse::Operation) {
+fn write_manifest_line(out: &mut String, slug: &str, op: &parse::Operation, notes: &Notes) {
     let summary = if op.summary.is_empty() {
         format!("{} {}", op.method, op.path)
     } else {
@@ -285,9 +401,16 @@ fn write_manifest_line(out: &mut String, slug: &str, op: &parse::Operation) {
             None => s.to_string(),
         }
     };
+    // Where the choice between operations is made, so a preference is seen
+    // before the wrong file is read.
+    let prefer = notes
+        .prefer
+        .get(op.name.as_str())
+        .map(|other| format!(" Prefer `{other}`."))
+        .unwrap_or_default();
     writeln!(
         out,
-        "- `{}` — {}.\n  Detail: `skill/{slug}/{}.md`",
+        "- `{}` — {}.{prefer}\n  Detail: `skill/{slug}/{}.md`",
         op.name, summary, op.name,
     )
     .unwrap();
