@@ -86,7 +86,7 @@ export default function SkillConnections({
             key={rule.id}
             rule={rule}
             credential={credentials.find((c) => c.id === rule.credential) ?? null}
-            skillName={skillName}
+            name={`${skillName} -- ${rule.host}`}
             workspaceId={workspaceId}
             onChanged={load}
           />
@@ -96,21 +96,25 @@ export default function SkillConnections({
   )
 }
 
-function Connection({
+/** One host's key: connect it, test it, replace it, take it off. */
+export function Connection({
   rule,
   credential,
-  skillName,
+  name,
   workspaceId,
   onChanged,
 }: {
   rule: EgressRule
   credential: Credential | null
-  skillName: string
+  /** What the credential is called if one is connected here. */
+  name: string
   workspaceId: string
   onChanged: () => Promise<void>
 }) {
   const connected = rule.credential !== null
-  const [editing, setEditing] = useState(!connected)
+  // Closed until asked for: plenty of hosts take no key at all, and a form
+  // open on each of them reads as something left undone.
+  const [editing, setEditing] = useState(false)
   const [header, setHeader] = useState(rule.header ?? 'authorization')
   const [secret, setSecret] = useState('')
   const [path, setPath] = useState('/')
@@ -137,7 +141,7 @@ function Connection({
       if (rule.credential) {
         await replaceKey(rule.credential, workspaceId, rule.host, header, value)
       } else {
-        await connect(rule, workspaceId, `${skillName} -- ${rule.host}`, header, value)
+        await connect(rule, workspaceId, name, header, value)
       }
       setEditing(false)
       setTested(null)
@@ -215,7 +219,7 @@ function Connection({
             >
               {connected ? 'Replace key' : 'Connect'}
             </button>
-            {connected && (
+            {
               <button
                 type="button"
                 onClick={() => setEditing(false)}
@@ -223,9 +227,17 @@ function Connection({
               >
                 Cancel
               </button>
-            )}
+            }
           </div>
         </form>
+      ) : !connected ? (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="mt-2 rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
+        >
+          Connect a key
+        </button>
       ) : (
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-2">

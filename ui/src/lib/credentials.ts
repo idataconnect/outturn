@@ -112,6 +112,17 @@ export async function disconnect(rule: EgressRule): Promise<void> {
   }
 }
 
+/** Allows a host for this workspace's agents, with no key. */
+export const allowHost = (host: string) =>
+  api<EgressRule>('/v1/egress-rules', { method: 'POST', body: JSON.stringify({ host }) })
+
+/** Removes a host. Its key, if any, stays stored until revoked. */
+export const removeRule = (id: string) => api<void>(`/v1/egress-rules/${id}`, { method: 'DELETE' })
+
+/** Revokes a credential no rule is using. */
+export const revokeCredential = (id: string) =>
+  api<Credential>(`/v1/credentials/${id}`, { method: 'DELETE' })
+
 export const testCredential = (credential: string, path: string) =>
   api<Tested>(`/v1/credentials/${credential}/test`, {
     method: 'POST',
