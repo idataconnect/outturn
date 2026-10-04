@@ -9,3 +9,4 @@ pub mod bindings;
 pub mod commit;
 pub mod gate;
 pub mod grant;
+pub mod seal;
