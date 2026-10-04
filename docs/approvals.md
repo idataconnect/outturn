@@ -262,7 +262,10 @@ Every grant states how far it reaches, because one that does not is standing.
 
 Wider extents -- this session, until revoked -- are left undesigned. They are
 authorities rather than approvals, and the place to add one is the roles model,
-where a list of who holds what already exists.
+where a list of who holds what already exists. The standing case a workspace
+actually asks for -- stop asking about this once we trust the agent with it --
+is designed in [auto-approval.md](auto-approval.md) as policies a workspace can
+list, each naming who set it, decided at the gateway and recorded there.
 
 ## A ceiling, rather than a rule per operation
 
@@ -475,4 +478,6 @@ depending on it.
   the transcript. Both leave the turn unable to proceed; only one of them was a
   decision. - Tagging operations by risk, which [inhibitors.md](inhibitors.md)
   already places: the right shape applied too early, worth revisiting once there
-  are enough declared operations to see whether they sort into groups.
+  are enough declared operations to see whether they sort into groups. The
+  OpenAPI wizard now produces hundreds, and [auto-approval.md](auto-approval.md)
+  designs `risk` as a selector for workspace policies -- and nothing else.

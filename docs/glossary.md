@@ -81,6 +81,15 @@ the *platform* rather than the model. Today one key: `approval`
 ([approvals.md](approvals.md)). Anything the model needs to know belongs in the
 body where it can see it.
 
+**Derived skill** — a skill generated from a stored specification and its
+**annotations**, regenerated rather than edited. Designed, unbuilt.
+[openapi-wizard.md](openapi-wizard.md#a-derivation-not-an-output).
+
+**Annotation** — something a person added to one operation of a derived skill
+-- a note, a preference, a hidden flag, an approval rule, an observed example --
+keyed by `operationId` or method and path, so it survives the specification
+changing. Never read by a turn; rendered into the version a turn reads.
+
 ## Work
 
 **Turn** — one pass of the agent loop answering one prompt, run by a runtime,
@@ -132,11 +141,22 @@ tests agreed with each other rather than with the code.
 frontmatter, answered from the queue, and worth a capability the retry carries.
 [approvals.md](approvals.md).
 
-**Capability** — reserved, unbuilt. What an approval *would* mint: a record of
-what was approved and how far it reaches, so a resumed turn does not ask again.
-Designed in [approvals.md](approvals.md) and not built, which is why answering an
-approval today releases the hold and nothing more -- a turn that resumes into the
-same gate is refused again. Do not read the design as a description of the code.
+**Capability** — what an approval mints: a grant, `approval_grants`, recording
+what was approved and how far it reaches -- this call and its retries by default,
+or one unit for the rest of the turn when the approver ticked `covers` -- so a
+resumed turn does not ask again. Keyed on the gate's bound fields, so a
+different charge is a fresh question. Travels in the turn token, and the gateway
+reads it there. [approvals.md](approvals.md#what-a-yes-is-worth).
+
+**Auto-approval policy** — a workspace's standing answer to a gate: for an
+agent, a selector (risk, act or operation) and conditions on the gate's bound
+fields. Decided at the gateway from the turn token, recorded there before the
+request goes out, and set only by somebody who could have answered it.
+Designed, unbuilt. [auto-approval.md](auto-approval.md).
+
+**Proposal** — what the admin agent writes instead of a change. Confirmed by a
+person through an endpoint the agent's token cannot reach. Designed, unbuilt.
+[admin-agent.md](admin-agent.md).
 
 **Gate** — a request shape a turn may not send without somebody's word: a host,
 a method and a path, declared in an operation's frontmatter. The opposite of an
@@ -150,6 +170,12 @@ outright.
 
 **Egress rule** — a host a workspace's agents may reach, with the *name* of the
 environment variable holding its credential. Never the value.
+
+**Sealed credential** — a secret encrypted in the browser to the gateway's
+public key, with its binding (workspace, hosts, header) as associated data, so
+the database holds it, the API can read where it goes, and nobody but the
+gateway can use it or change that. Designed, unbuilt.
+[sealed-credentials.md](sealed-credentials.md).
 
 **Commitment** — the API's signed hash over a turn's egress rules, carried in
 the turn token. A request offers a rule and a proof; the gateway checks it

@@ -3,6 +3,13 @@
 Which workspace may use a credential the operator set up, and where it may be
 sent. Built: `src/egress/bindings.rs`, enforced in `src/gateway/egress/mod.rs`.
 
+Designed to be replaced: [sealed-credentials.md](sealed-credentials.md) keeps
+the property this document argues for -- nobody who can write the database can
+change where a secret goes -- while moving credentials out of the environment,
+so adding one stops being a pod roll. The rule and the checks below carry over
+unchanged; what moves is where the binding is held, from a variable beside the
+secret to associated data sealed with it.
+
 ## The leak
 
 A rule names the variable its credential comes from -- `credential_env`, or
