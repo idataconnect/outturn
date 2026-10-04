@@ -579,6 +579,26 @@ to that person, never to work done for anybody else; none on turns nobody is
 waiting on. Recorded per turn, so evaluation can measure what a voice costs in
 accuracy rather than averaging it away. Needs nothing above it.
 
+### A time zone for `get_current_time`
+
+No design of its own; the reasoning is here.
+
+The tool answers in the person's zone, from their browser, and deliberately
+takes no zone argument: a model allowed to name one would invent a plausible
+wrong one. Places keep their own zones -- a guesthouse's, each resort property's
+-- and those belong to the business system's data or the skill's own notes,
+which is where a skill's curator says them ("each property's `timezone` field
+is authoritative"). Outturn keeps no clocks of its own beyond the person's.
+
+What a note cannot give an agent is the time *there now*: it has to work it out
+from the person's time and an offset, and models get that wrong across a
+daylight-saving change. The fix is an optional `timezone` argument taking IANA
+names only (`America/Cancun`, never "Mexico time"), refused when it is not a
+real zone, described as "only one you read from data or were told". Without
+it, the tool answers as today. Waits for a skill that needs it; it changes the
+agent component, so the committed `agent_default.wasm` and its bindings are
+rebuilt with it.
+
 ## Known costs, left until they matter
 
 Found by a read-only audit of what each list query loads, and narrowed since;
