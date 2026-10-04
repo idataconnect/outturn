@@ -173,3 +173,12 @@ too_many_arguments = "allow"
 # this is commitment code where a reader should be able to see the odd leaf
 # being handled. Clarity wins over the idiom here.
 chunks_exact_to_as_chunks = "allow"
+
+# Dependencies optimised even in a debug build; this crate's own code is not.
+# Wasmtime compiling a component, Postgres decoding and the hashing behind
+# every commitment run noticeably faster at opt-level 1, which is felt in every
+# test run, and the cost is paid once: dependencies are rebuilt when they
+# change, not when this crate does. Incremental builds of our own code are
+# unaffected.
+[profile.dev.package."*"]
+opt-level = 1
