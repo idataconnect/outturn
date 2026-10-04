@@ -113,6 +113,29 @@ A credential variable usable only by the workspaces and toward the hosts the
 operator bound it to, enforced in the gateway. Built. Binding to an
 organization rather than a list of workspaces waits on organizations.
 
+### Sealed credentials
+
+[sealed-credentials.md](sealed-credentials.md).
+
+A credential pasted into a page, sealed there to the gateway's public key with
+its binding -- workspace, hosts, header, token URL -- as associated data, and
+stored in a table anyone may read and only the gateway can use. Replaces
+`OUTTURN_EGRESS_` variables and their bindings, so adding a credential stops
+being a manifest edit and a pod roll, and keeps the property credential
+bindings were built for: nobody who can write the database can change where a
+secret goes. Needs nothing above it; the environment path stays until no rule
+uses it.
+
+### Derived skills
+
+[openapi-wizard.md#a-derivation-not-an-output](openapi-wizard.md#a-derivation-not-an-output).
+
+A generated skill as a function of a stored specification and annotations keyed
+by operation -- notes, preferences, hidden operations, approval rules, observed
+examples -- so updating the specification proposes a new version that keeps
+everything people added, and reports what no longer applies. Agents still read
+only published versions. Needs only the wizard, which is built.
+
 ### Idempotency
 
 [idempotency.md](idempotency.md).
@@ -231,6 +254,18 @@ wants the inbox under [Undesigned, and wanted](#undesigned-and-wanted) --
 not as a prerequisite, since a workspace watching one session would manage,
 but as the thing that makes it usable by anybody else.
 
+### Auto-approval
+
+[auto-approval.md](auto-approval.md).
+
+A workspace deciding that some gated requests no longer need a person: policies
+by risk, act or operation, conditions on the gate's bound fields, a trial mode
+that only annotates the queue, evidence from the approval history, and a record
+the gateway writes before the request goes out. Rests on approvals, which are
+built. The decision first is the operator's half -- `risk`, `auto` and `numbers`
+in frontmatter, and a cap that only narrows -- since a policy can only be as safe
+as what it is allowed to cover.
+
 ## Tier 3 — needs tiers 1 and 2
 
 ### Integrations
@@ -254,6 +289,17 @@ customer's public API never touches the internal path.
 
 Not tool registration. An integration is a permitted host, a bound credential,
 and a skill saying what to call -- all of which `fetch_url` already serves.
+
+### The admin agent
+
+[admin-agent.md](admin-agent.md).
+
+An agent a workspace administrator configures the workspace through: it
+proposes, a person confirms, and the confirm endpoint is one its token cannot
+reach. Its API credential is sealed to the gateway, forwarded only to
+`/v1/manage/*`, and its turn carries no other egress. Needs sealed credentials
+for that token, and is worth building once auto-approval and derived skills give
+it something precise to write.
 
 ### Skill bundles
 

@@ -179,7 +179,8 @@ than carrying it, and the gateway is the only tier that can dereference one.
 Then the rules table stays safe to read and the secret lives in exactly one
 place that is already the credential-holding tier. Encryption at rest and who
 holds that key are settled in [Authorization-code grants](#authorization-code-grants)
-below.
+below, and a static key a workspace pastes in -- the common case, which needs
+no consent flow at all -- in [sealed-credentials.md](sealed-credentials.md).
 
 Worth being honest that this is the tier with real work in it. Tier 1 is
 configuration. Tier 3 is a flag. This is a token store, a refresh loop, a
@@ -348,7 +349,10 @@ after the rule itself is gone.
   attaching their token to the wrong turns. The ciphertext carries a key id, and
   the gateway accepts two keys during a rotation and re-encrypts under the newer
   one on the next refresh, the same shape as two public keys during a token
-  rotation.
+  rotation. [sealed-credentials.md](sealed-credentials.md) proposes one
+  asymmetric scheme for both: the gateway seals a refresh token to its own
+  public key with the grant's binding as associated data, as a person's browser
+  seals a pasted key.
 
 What this keeps: the API, a backup, a read replica, a support query and anyone
 holding the database password read ciphertext. What it does not: the gateway's

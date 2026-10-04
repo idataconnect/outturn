@@ -3,8 +3,11 @@
 Turning a specification into something an agent can use, without paying for the
 specification on every turn.
 
-Designed, unbuilt -- but the shape it rests on has been tried by hand and
-held. See *The shape, tried once* below.
+Built: the generator, its endpoints and the page (*The page* below). The shape
+it rests on was tried by hand first and held; see *The shape, tried once*.
+Designed and unbuilt: the generated skill as a derivation that can be
+regenerated without losing what people added to it, in *A derivation, not an
+output*.
 
 ## Why this first
 
@@ -184,9 +187,9 @@ example.
 
 Examples come from evaluation ([skill-evaluation.md](skill-evaluation.md)).
 When a real turn calls an operation, that call is evidence rather than
-conjecture -- and it attaches to the detail file, which is the same unit the
-agent already fetches. So the mechanism needs nothing added: an example is
-appended to a file that is already lazily loaded.
+conjecture -- and it attaches to the operation as an annotation (see *A
+derivation, not an output*), rendered into the detail file, which is the same
+unit the agent already fetches.
 
 What the example may claim is bounded, and that document sets the bound. A call
 that returned 2xx proves its *form* was right and says nothing about whether it
@@ -271,6 +274,12 @@ workspace to supply only the environment variable holding the secret. The
 credential itself never touches the wizard, the skill or the specification, as
 [integrations.md](integrations.md) requires.
 
+Designed to change: with [sealed credentials](sealed-credentials.md) the
+workspace supplies the key itself rather than a variable name, sealed in the
+page to the gateway's public key and bound to the skill's hosts and this
+header. The skill still never names a credential -- an operator publishes one
+skill, and each workspace that binds it seals its own key against it.
+
 ## Where it runs
 
 An API endpoint, with the existing skills UI around it. **The operator is who
@@ -347,6 +356,8 @@ and the credential is an environment variable name the operator sets on the
 gateway. The page asks for that name, prefilled from the service
 (`OUTTURN_EGRESS_BIGCAPITAL_API_KEY`), and ends by stating plainly what is still to be done
 outside it, since the variable itself is not something a browser can set.
+With sealed credentials that last step becomes a field: the key is pasted,
+sealed in the page, and the rule written, and nothing is left to do outside.
 
 Settled when it was built: the API mints a narrow token rather than the
 gateway growing a path for the API tier. It carries the gateway audience, an
@@ -361,6 +372,110 @@ short. An internal host the operator opened is reachable by it, as it is by a
 turn; only the operator runs this, and it is the operator's list. Fetching
 needs `OUTTURN_GATEWAY_URL` on the API, as the namer does, and refuses with a
 pointer to upload when it is unset.
+
+## A derivation, not an output
+
+Designed, unbuilt. What the wizard produces today is final: a skill version,
+whose body and files are the end of the line. Anything somebody adds afterwards
+-- an approval rule in an operation's frontmatter, a sentence saying "never use
+this one, use the batch endpoint", an example -- is an edit to that output, and
+the next import of an updated specification writes over it. So nobody adds
+anything, and the generated skill stays exactly as good as the specification,
+which for many APIs is not very.
+
+The fix is to stop treating the skill as the thing being edited. **A generated
+skill is a derivation**: a pure function of a specification and a set of
+annotations, published as an ordinary version. People edit the inputs; the
+platform derives the output; agents read only the output.
+
+```
+skill_sources (skill_id, kind, fetched_from, base_url, auth_header)
+skill_source_revisions (id, source_id, spec_sha256, fetched_at, created_by)
+operation_annotations (id, skill_id, operation_key, kind, body jsonb,
+                       created_by, created_at, retired_at)
+skill_versions.derived_from (source_revision_id, annotations_as_of)
+```
+
+The specification is stored by hash in the object store, as a skill's files
+are. A revision is one fetch or upload of it.
+
+### What an annotation is keyed on
+
+**The operation, not a location in the document.** `operationId` where the
+specification has one, and the method and path where it does not -- the same
+rule the manifest already uses to name an operation, so an annotation and the
+file it renders into are found by one key.
+
+That rules out the OpenAPI Overlay specification as the storage format, though
+it is the published standard for amending a document. An overlay targets a
+JSONPath into the specification, and a JSONPath is a location: a revision that
+reorders or restructures the document moves the target and the action lands
+somewhere else, or nowhere, without saying so. Keyed on the operation, a note
+follows the operation wherever the document puts it. Exporting annotations as
+an overlay, for somebody else's tooling, is a different matter and costs
+nothing.
+
+### Kinds
+
+Each one changes exactly one thing in the output, and says which:
+
+- **`note`** -- prose for the agent, rendered into the operation's file under a
+  heading of its own, after what the operation does and before how to call it:
+  a business rule is worth reading before the URL, not after the error table.
+  The examples a specification lacks, the constraint it never states, the
+  field that is really required.
+- **`prefer`** -- "use `batch_create_invoices` instead", naming another
+  operation. Rendered into both the manifest line and the file, because the
+  manifest is where the choice is made.
+- **`hidden`** -- left out of the manifest and the files. Advice, not
+  enforcement: an agent can still compose a call to the path. An operation that
+  must not be called is a gate, not a hidden one.
+- **`approval`** -- the frontmatter rule from [approvals.md](approvals.md),
+  including `risk`, `auto` and `numbers` from [auto-approval.md](auto-approval.md).
+  Rendered as the file's frontmatter and parsed by the same parser at publish,
+  so a rule is refused for the same reasons whether it was typed into a file or
+  into an annotation.
+- **`example`** -- an observed call, from evaluation, carrying the turn it came
+  from, so a session later flagged takes its examples down with it.
+- **`skill_note`** -- prose for the body rather than one operation: a
+  convention stated once ("money is in pence"), which is what made the
+  hand-written Hollowbrook skill work.
+
+### Regenerating
+
+A new revision, or a changed annotation, proposes a new version. It does not
+publish one. What an operator sees is the difference that matters: operations
+added and removed, operations whose call changed, and **annotations whose
+operation is gone**. Those are kept and shown, never dropped: a business rule
+that silently stopped applying because somebody renamed an `operationId` is a
+fact leaving without anyone seeing it go. Where the method and path still match a
+new `operationId`, re-keying is offered rather than done.
+
+Publishing is a person's act, as it is for every version: a regenerated skill
+changes what every bound agent is told, and the gates it declares change what
+the gateway refuses. A scheduled refresh may fetch the specification and
+propose; it raises an action item, and stops there.
+
+### What stays the same
+
+**Agents read published versions, and only those.** Annotations are never read
+on the turn path. A turn's gates are computed from the version it bound, an
+approval is recorded against the file it declared, and the transcript can say
+which text a turn ran against -- all of which approvals.md rests on, and all of
+which would be lost if a turn could see a note edited after it started.
+
+**The files of a derived skill are not edited directly.** An edit to output
+that the next derivation will overwrite is the problem this exists to remove.
+The editor shows a derived skill's files read-only, with each annotation
+beside the operation it applies to and a way to add one. A skill that somebody
+wants to edit freehand can be detached from its source -- it becomes an ordinary
+package from that version on, and stops regenerating.
+
+**A workspace's overrides** of an operator's derived skill stay what overrides
+are: prose about the base, composed after it. Whether a workspace should be able
+to annotate an operator's operations -- its own business rules on a shared
+integration -- is the case overrides were invented for, at a finer grain, and is
+not settled here.
 
 ## What this does not do
 

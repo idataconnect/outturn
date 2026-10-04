@@ -87,6 +87,7 @@ nav:
           - Integrations: integrations.md
           - Credential bindings: credential-bindings.md
           - Client credentials: client-credentials.md
+          - Sealed credentials: sealed-credentials.md
       - Skills:
           - Skills as packages: skill-packages.md
           - Skill bundles: skill-bundles.md
@@ -96,6 +97,8 @@ nav:
           - Triggers: triggers.md
           - Inhibitors: inhibitors.md
           - Approvals: approvals.md
+          - Auto-approval: auto-approval.md
+          - The admin agent: admin-agent.md
           - The action queue: action-queue.md
           - Idempotency: idempotency.md
       - Storage and search:

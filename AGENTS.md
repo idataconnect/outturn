@@ -302,6 +302,15 @@ every round of every turn and a real specification is megabytes. The agent
 reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
+The wizard and its page are built now; what it makes is still final, which is
+the next thing to change. A generated skill is designed to become a
+*derivation* -- a stored specification plus annotations keyed by operation
+(notes, preferences, hidden operations, approval rules, observed examples) --
+so an updated specification proposes a new version that keeps everything people
+added and reports what no longer applies. Agents still read only published
+versions; annotations never reach a turn. In the same document, under "A
+derivation, not an output".
+
 A skill as a body plus files versioned together -- a *package* -- is in
 [docs/skill-packages.md](docs/skill-packages.md), built. A
 version carries its files, a fork copies them, and an agent reads them as
@@ -416,6 +425,15 @@ arguments truncated mid-JSON, and running one is precisely the outcome that
 document is about. They are refused the same way a reply cut off at the token
 limit has always been refused — see the truncation guard in
 `agents/default/src/lib.rs`.
+
+Letting a workspace stop being asked about a gate it trusts the agent with is
+designed and unbuilt in [docs/auto-approval.md](docs/auto-approval.md):
+policies over the operator's declared `risk` and `auto` ceiling, conditions
+only on the gate's bound fields -- never the agent's own judgement -- decided at
+the gateway and recorded there before the request goes out. Configuring that,
+and the rest of a workspace, through an agent is in
+[docs/admin-agent.md](docs/admin-agent.md), and its one rule is that the agent
+proposes and a person confirms through an endpoint its token cannot reach.
 
 Words this codebase uses in a particular way are in
 [docs/glossary.md](docs/glossary.md) -- worth a look before a design
@@ -611,7 +629,11 @@ not. Turn tokens also carry `Role::Turn`, which holds `GatewayInvoke` alone.
 The subject claim is a user id in the first kind and a chat session id in the
 second, and the audience is what says which.
 
-**Credentials are named, never stored.** A rule carries the name of an
+**Credentials are named, never stored** -- for now.
+[docs/sealed-credentials.md](docs/sealed-credentials.md) designs the
+replacement: a secret sealed in the browser to the gateway's public key, its
+binding as associated data, so the database stores it and only the gateway can
+use it or change where it goes. Until that is built, this holds. A rule carries the name of an
 environment variable; the host reads it and attaches the header on the way out.
 The guest cannot read it and cannot set the headers it travels in. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
