@@ -14,7 +14,7 @@ use super::files::{storage, storage_failed};
 use super::router::{ApiError, ApiState, authorize};
 use super::skill::{
     Binding, CreateSkill, ForkSkill, NewFile, NewVersion, Skill, SkillFile, SkillVersion,
-    UpdateSkill, blob_key, prepare,
+    UpdateSkill, blob_key, link, prepare,
 };
 
 /// Uploads a version's files under the workspace that will own it, before the
@@ -41,6 +41,34 @@ async fn store_files(
             .map_err(storage_failed)?;
     }
     Ok((prepared.into_iter().map(|(f, _)| f).collect(), gates))
+}
+
+/// Works out the links of a version published before they were recorded, from
+/// the content in the object store, and records them so this happens once.
+///
+/// A version left as it was says `unreached: null`, which a caller must read as
+/// "not known"; this is what turns that into an answer.
+async fn with_links(
+    state: &ApiState,
+    owner: Uuid,
+    version: SkillVersion,
+) -> Result<SkillVersion, ApiError> {
+    if version.unreached.is_some() {
+        return Ok(version);
+    }
+    let store = storage(state)?;
+    let mut read = Vec::with_capacity(version.files.len());
+    for f in &version.files {
+        let bytes = store
+            .read(&blob_key(owner, &f.sha256), 0, f.bytes as u32)
+            .await
+            .map_err(storage_failed)?;
+        read.push((f.clone(), bytes));
+    }
+    link(&mut read);
+    let files: Vec<SkillFile> = read.into_iter().map(|(f, _)| f).collect();
+    state.skills.record_links(version.id, &files).await?;
+    Ok(SkillVersion { files, ..version }.with_unreached())
 }
 
 /// `create` for either owner.
@@ -185,10 +213,23 @@ pub async fn list_versions(
 ) -> Result<Json<super::Page<SkillVersion>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let items = state
+    let owner = state
+        .skills
+        .get(claims.workspace_id, id)
+        .await?
+        .workspace_id;
+    let mut items = state
         .skills
         .versions(claims.workspace_id, id, query.after, limit + 1)
         .await?;
+    // Only the newest: it is the one a page opens on, and filling every older
+    // version on a history read would fetch all their content at once.
+    if let Some(first) = items.first_mut()
+        && first.unreached.is_none()
+    {
+        let v = first.clone();
+        *first = with_links(&state, owner, v).await?;
+    }
     Ok(Json(super::Page::from_rows(items, limit, |v| v.id)))
 }
 
@@ -198,12 +239,16 @@ pub async fn get_version(
     Path((id, version_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<SkillVersion>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
-    Ok(Json(
-        state
-            .skills
-            .version(claims.workspace_id, id, version_id)
-            .await?,
-    ))
+    let owner = state
+        .skills
+        .get(claims.workspace_id, id)
+        .await?
+        .workspace_id;
+    let version = state
+        .skills
+        .version(claims.workspace_id, id, version_id)
+        .await?;
+    Ok(Json(with_links(&state, owner, version).await?))
 }
 
 /// One file of a version, as it was published.

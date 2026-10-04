@@ -6,7 +6,7 @@ mod frontmatter;
 mod postgres;
 pub mod wizard;
 
-pub use files::{DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, declared_gates, prepare};
+pub use files::{DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, declared_gates, link, prepare};
 
 // The declaration at the top of an operation's file. Named rather than the
 // module made public, as `files` and `postgres` beside it are: a caller wants
@@ -99,8 +99,20 @@ pub struct SkillVersion {
     pub based_on_version_id: Option<Uuid>,
     pub hosts: Vec<String>,
     pub files: Vec<SkillFile>,
+    /// Files nothing leads an agent to: neither the body nor any file it leads
+    /// to names them, so a turn will never know to read them. `None` when a
+    /// file's links are not yet known, which is not the same as none missing.
+    pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl SkillVersion {
+    /// Fills in `unreached` from the body and the files' links.
+    pub fn with_unreached(mut self) -> Self {
+        self.unreached = files::unreached(&self.body, &self.files);
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,12 +168,27 @@ pub struct NewFile {
 
 /// A file a version carries. The content is in the object store under
 /// `blob_key` of the owning workspace and this hash.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SkillFile {
     pub path: String,
     pub sha256: String,
     pub bytes: i32,
+    /// The other files of the version this one names, worked out at publish
+    /// while the content is in hand. `None` for a file published before they
+    /// were recorded, until `files::link` is run over it again.
+    pub links: Option<Vec<String>>,
 }
+
+/// Two files are the same file when their path and content are: `links`
+/// follows from the content and the version's paths, so comparing it as well
+/// would make a file published before links were recorded differ from itself.
+impl PartialEq for SkillFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.sha256 == other.sha256 && self.bytes == other.bytes
+    }
+}
+
+impl Eq for SkillFile {}
 
 #[derive(Debug, Deserialize)]
 pub struct ForkSkill {
@@ -409,6 +436,10 @@ pub trait SkillStore: Send + Sync {
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<SkillVersion>, SkillError>;
+    /// Records the links of files published before links were, worked out
+    /// from their content by the caller. Only ever fills a gap: a file whose
+    /// links are already known keeps them.
+    async fn record_links(&self, version_id: Uuid, files: &[SkillFile]) -> Result<(), SkillError>;
     async fn version(
         &self,
         workspace_id: Uuid,
@@ -712,6 +743,7 @@ mod tests {
             path: "book.md".into(),
             sha256: "x".into(),
             bytes: 1,
+            links: None,
         }];
         let plain = skill("Plain", "Be kind.", SkillKind::Standalone);
         let composed = compose("", &[inn, plain]);
@@ -725,6 +757,7 @@ mod tests {
             path: "call.md".into(),
             sha256: content.into(),
             bytes: 1,
+            links: None,
         };
         let mut ours = skill("CRM", "", SkillKind::Standalone);
         ours.owner = Uuid::from_u128(1);

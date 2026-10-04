@@ -175,12 +175,14 @@ async fn write_files(
 ) -> Result<(), SkillError> {
     for f in files {
         sqlx::query(
-            "insert into skill_version_files (version_id, path, sha256, bytes) values ($1, $2, $3, $4)",
+            "insert into skill_version_files (version_id, path, sha256, bytes, links) \
+             values ($1, $2, $3, $4, $5)",
         )
         .bind(version_id)
         .bind(&f.path)
         .bind(&f.sha256)
         .bind(f.bytes)
+        .bind(&f.links)
         .execute(&mut **tx)
         .await
         .map_err(internal)?;
@@ -193,7 +195,7 @@ where
     E: sqlx::PgExecutor<'e>,
 {
     let rows = sqlx::query(
-        "select path, sha256, bytes from skill_version_files where version_id = $1 order by path",
+        "select path, sha256, bytes, links from skill_version_files where version_id = $1 order by path",
     )
     .bind(version_id)
     .fetch_all(executor)
@@ -205,6 +207,7 @@ where
             path: r.get("path"),
             sha256: r.get("sha256"),
             bytes: r.get("bytes"),
+            links: r.get("links"),
         })
         .collect())
 }
@@ -323,6 +326,7 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
         based_on_version_id: row.get("based_on_version_id"),
         hosts: Vec::new(),
         files: Vec::new(),
+        unreached: None,
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
     }
@@ -552,7 +556,7 @@ impl SkillStore for PostgresSkillStore {
                 let mut version = read_version(live);
                 version.hosts = live_hosts;
                 version.files = live_files;
-                return Ok((version, false));
+                return Ok((version.with_unreached(), false));
             }
         }
 
@@ -605,7 +609,7 @@ impl SkillStore for PostgresSkillStore {
         let mut version = read_version(&row);
         version.hosts = hosts;
         version.files = files;
-        Ok((version, true))
+        Ok((version.with_unreached(), true))
     }
 
     async fn versions(
@@ -619,7 +623,7 @@ impl SkillStore for PostgresSkillStore {
         let rows = sqlx::query(
             "select v.id, v.skill_id, v.ordinal, v.body, v.note, v.based_on_version_id, \
                     v.created_by, v.created_at, \
-                    h.hosts, f.files, f.file_sizes, f.file_hashes \
+                    h.hosts, f.files, f.file_sizes, f.file_hashes, f.file_links \
              from skill_versions v \
              left join lateral ( \
                  select coalesce(array_agg(host order by host), '{}') as hosts \
@@ -628,7 +632,8 @@ impl SkillStore for PostgresSkillStore {
              left join lateral ( \
                  select coalesce(array_agg(path order by path), '{}') as files, \
                         coalesce(array_agg(bytes order by path), '{}') as file_sizes, \
-                        coalesce(array_agg(sha256 order by path), '{}') as file_hashes \
+                        coalesce(array_agg(sha256 order by path), '{}') as file_hashes, \
+                        coalesce(jsonb_agg(links order by path), '[]') as file_links \
                  from skill_version_files where version_id = v.id \
              ) f on true \
              where v.skill_id = $1 \
@@ -648,14 +653,19 @@ impl SkillStore for PostgresSkillStore {
                 let paths: Vec<String> = r.get("files");
                 let hashes: Vec<String> = r.get("file_hashes");
                 let sizes: Vec<i32> = r.get("file_sizes");
+                // Through JSON because Postgres arrays cannot nest ragged ones.
+                let links: Vec<Option<Vec<String>>> =
+                    serde_json::from_value(r.get("file_links")).unwrap_or_default();
                 let files = paths
                     .into_iter()
                     .zip(hashes)
                     .zip(sizes)
-                    .map(|((path, sha256), bytes)| SkillFile {
+                    .zip(links.into_iter().chain(std::iter::repeat(None)))
+                    .map(|(((path, sha256), bytes), links)| SkillFile {
                         path,
                         sha256,
                         bytes,
+                        links,
                     })
                     .collect();
                 SkillVersion {
@@ -667,9 +677,11 @@ impl SkillStore for PostgresSkillStore {
                     based_on_version_id: r.get("based_on_version_id"),
                     hosts: r.get("hosts"),
                     files,
+                    unreached: None,
                     created_by: r.get("created_by"),
                     created_at: r.get("created_at"),
                 }
+                .with_unreached()
             })
             .collect())
     }
@@ -693,7 +705,7 @@ impl SkillStore for PostgresSkillStore {
         let mut version = row.as_ref().map(read_version).ok_or(SkillError::NotFound)?;
         version.hosts = hosts_of(&self.pool, version.id).await?;
         version.files = files_of(&self.pool, version.id).await?;
-        Ok(version)
+        Ok(version.with_unreached())
     }
 
     async fn fork(
@@ -757,6 +769,23 @@ impl SkillStore for PostgresSkillStore {
 
         tx.commit().await.map_err(internal)?;
         self.get(workspace_id, id).await
+    }
+
+    async fn record_links(&self, version_id: Uuid, files: &[SkillFile]) -> Result<(), SkillError> {
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        for f in files {
+            sqlx::query(
+                "update skill_version_files set links = $3 \
+                 where version_id = $1 and path = $2 and links is null",
+            )
+            .bind(version_id)
+            .bind(&f.path)
+            .bind(&f.links)
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        }
+        tx.commit().await.map_err(internal)
     }
 
     async fn retire(
@@ -981,6 +1010,7 @@ impl SkillStore for PostgresSkillStore {
                     path: f.get("path"),
                     sha256: f.get("sha256"),
                     bytes: f.get("bytes"),
+                    links: None,
                 });
         }
 
