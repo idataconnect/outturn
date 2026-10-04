@@ -148,6 +148,11 @@ resumed turn does not ask again. Keyed on the gate's bound fields, so a
 different charge is a fresh question. Travels in the turn token, and the gateway
 reads it there. [approvals.md](approvals.md#what-a-yes-is-worth).
 
+**Personality** — a voice a person layers over an agent for themselves: how
+replies to them sound, never what the agent does or what it writes for anybody
+else. Composed last, recorded per turn for evaluation. Designed, unbuilt.
+[personalities.md](personalities.md).
+
 **Auto-approval policy** — a workspace's standing answer to a gate: for an
 agent, a selector (risk, act or operation) and conditions on the gate's bound
 fields. Decided at the gateway from the turn token, recorded there before the

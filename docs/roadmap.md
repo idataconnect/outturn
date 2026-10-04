@@ -556,6 +556,17 @@ AGENTS.md is explicit that those must not share a store. It is also partly an
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
 
+### Personalities
+
+[personalities.md](personalities.md).
+
+A person's own voice for an agent -- terse, Bleargh, UwU, or being called
+pathetic -- layered over the agent's prompt for them alone. Composed last, so
+it is lowest priority and the shared prefix stays cacheable; confined to replies
+to that person, never to work done for anybody else; none on turns nobody is
+waiting on. Recorded per turn, so evaluation can measure what a voice costs in
+accuracy rather than averaging it away. Needs nothing above it.
+
 ## Known costs, left until they matter
 
 Found by a read-only audit of what each list query loads, and narrowed since;
