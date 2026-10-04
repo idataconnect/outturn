@@ -27,6 +27,7 @@ import {
   type VersionSummary,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
+import SkillConnections from '../components/SkillConnections'
 import SkillFiles from '../components/SkillFiles'
 import VersionContents from '../components/VersionContents'
 
@@ -352,6 +353,10 @@ export default function SkillEditor() {
             current version.
           </span>
         </p>
+      )}
+
+      {skill && workspaceId && skill.hosts.length > 0 && (
+        <SkillConnections hosts={skill.hosts} skillName={skill.name} workspaceId={workspaceId} />
       )}
 
       {skill && skill.unmet_hosts.length > 0 && (
