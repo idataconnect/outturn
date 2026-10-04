@@ -1,5 +1,6 @@
 import type { ToolCallMessagePartComponent } from '@assistant-ui/react'
 import ToolCall from './ToolCall'
+import { httpFailure } from '../lib/httpFailure'
 
 /**
  * What a tool acted on, as it reported it once it answered.
@@ -36,8 +37,9 @@ function reportedTarget(details: unknown): string {
  */
 const ToolTarget: ToolCallMessagePartComponent = (props) => {
   const target = reportedTarget(props.args?.details)
+  const failure = props.toolName === 'fetch_url' ? httpFailure(props.args?.details) : undefined
   return (
-    <ToolCall {...props}>
+    <ToolCall {...props} failure={failure}>
       {target && (
         <p className="mt-1 break-all font-mono text-[11px] text-surface-700 dark:text-surface-300">
           {target}

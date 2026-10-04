@@ -54,9 +54,15 @@ export default function ToolCall({
   toolName,
   args,
   children,
-}: ToolCallMessagePartProps & { children?: ReactNode }) {
+  failure,
+}: ToolCallMessagePartProps & {
+  children?: ReactNode
+  /** Why a tool that ran without error still did not do what it set out to:
+   *  a fetch the server answered with 401. Shown as a failure, in these words. */
+  failure?: string
+}) {
   const action = typeof args?.action === 'string' ? args.action : ''
-  const isError = args?.isError === true
+  const isError = args?.isError === true || failure !== undefined
   const pending = args?.pending === true && !isError
   const details = typeof args?.details === 'string' ? args.details : ''
 
@@ -110,8 +116,10 @@ export default function ToolCall({
 
           {children}
 
-          {isError && details && (
-            <p className="mt-1 text-red-700 dark:text-red-300">{errorMessage(details)}</p>
+          {isError && (failure ?? details) && (
+            <p className="mt-1 text-red-700 dark:text-red-300">
+              {failure ?? errorMessage(details)}
+            </p>
           )}
         </div>
       </div>
