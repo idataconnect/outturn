@@ -150,10 +150,16 @@ reads it there. [approvals.md](approvals.md#what-a-yes-is-worth).
 
 **Prompt contributor** — anything that shapes what a model is given besides the
 conversation: text in the system prompt, tools loaded or files read up front,
-read-only tools run when a conversation starts. Each has an owner, a placement,
+read-only tools run when a conversation starts, and system messages put in
+before a turn when a condition holds. Each has an owner, a placement,
 a priority, a budget and a reach, and is recorded per turn. Contributions are
 made once per conversation and again only at compaction, so the system prompt
 never changes between. Designed, unbuilt. [prompt-contributors.md](prompt-contributors.md).
+
+**Plugin** — what a catalogue would offer: a versioned, installable package of
+contributors, skills and later integrations. Not *extension*, which
+[integrations.md](integrations.md) uses for OAuth integrations. Designed only
+as a name. [prompt-contributors.md](prompt-contributors.md#naming).
 
 **Personality** — a voice a person layers over an agent for themselves: how
 replies to them sound, never what the agent does or what it writes for anybody

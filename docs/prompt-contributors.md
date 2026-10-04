@@ -2,7 +2,7 @@
 
 Everything that shapes what a model is given on a turn, other than the
 conversation itself, as one kind of thing with one set of rules -- so that a
-voice, an eagerly loaded tool, the current time and a skill's chosen operations
+voice, an eagerly loaded tool, the time a conversation began and a skill's chosen operations
 can each be added, owned, measured and eventually published without each
 inventing its own way in. Designed, unbuilt.
 
@@ -50,9 +50,15 @@ Three kinds of contribution:
   content the agent would have fetched, without the round trip it costs to
   fetch it.
 - **Eager runs.** A read-only tool run when the conversation starts, its call
-  and result put into the conversation as if the agent had made them: the
-  current time is `get_current_time` run eagerly, not a sentence in the system
-  prompt.
+  and result put into the conversation as if the agent had made them: the time
+  the conversation began is `get_current_time` run eagerly, not a sentence in
+  the system prompt.
+- **System messages.** A short note from the platform put into the
+  conversation before a turn, when a condition the contributor declares holds:
+  *it has been four hours since your last turn*, *it is now Tuesday*, *a skill
+  you were given was updated since this conversation began*. The other half of
+  the time question -- the time a conversation began is a snapshot; that time
+  has moved on is news -- and the half that never touches the system prompt.
 
 ## When a contribution is made
 
@@ -76,17 +82,27 @@ and its skills on every turn. What follows from it, deliberately:
   skill withdrawn for being wrong -- is not a prompt edit; gates are enforced at
   the gateway from the version a turn committed to, and withdrawing is a hold.
 - **Eager runs are snapshots.** The time a conversation started is the time it
-  was told; an agent wanting the time later asks, as it does today. Said in the
-  contribution itself -- *the time when this conversation began* -- so it is not
-  read as the time now.
+  was told, said as *the time when this conversation began* so it is not read as
+  the time now. That time has since moved on is a system message's job, not a
+  recomposition's.
+- **System messages are the one thing that happens between.** Before a turn,
+  a contributor's condition is checked -- time elapsed, a date crossed, a
+  version changed -- and when it holds, a short note goes into the
+  conversation, after the cached prefix, recorded and budgeted like the rest.
+  The platform already writes such notes, each invented on its own: a retried
+  turn is told its last attempt was cut off, a resumed turn is told what its
+  approval came to, a prompt is repeated. Those are system messages in all but
+  name, and move onto this hook as each is next touched. The conditions are
+  designed when the first is built; the hook is recorded here so that they are
+  not each invented again.
 - **Compaction recomposes all of it**, from the contributors as they stand
   then, and the summary is written knowing the new system prompt, so nothing
   the old one said is lost silently between them.
 
 ## Where a contribution goes
 
-The other decision that matters, and the reason "insert the current time" is
-better as an eager run than as text. A provider's prompt cache keys on the
+The other decision that matters, and the reason the time a conversation began
+is better as an eager run than as text. A provider's prompt cache keys on the
 prefix of a request ([caching.md](caching.md)); anything that differs moves the
 point where the cache stops hitting to wherever it differs, and everything
 after is paid in full. Composed once per conversation, a time in the system
@@ -103,7 +119,8 @@ widely they are shared:
 | `platform` | every agent | system prompt, first | the preamble |
 | `agent` | every conversation with this agent | system prompt | the agent's prompt, skills, a stance |
 | `person` | one person's conversations with it | system prompt, last | a voice |
-| `conversation` | one conversation | the conversation's opening, before the first prompt | the current time, eager loads |
+| `conversation` | one conversation | the conversation's opening, before the first prompt | the start time, eager loads |
+| `message` | one turn | the conversation, before the turn's prompt | system messages |
 
 Earlier placements are more stable and more widely shared, so they are cached
 for more people and for longer. A contributor may not choose a placement wider
@@ -144,6 +161,17 @@ has said anything in this conversation, and a contributor that wrote something
 whenever one started would be acting on nobody's instruction. The result is recorded in
 the transcript as a tool exchange, marked as the contributor's rather than the
 model's, so a reader can see the agent did not choose to make it.
+
+## Naming
+
+*Contributor* is the mechanism -- something that contributes to what a turn
+sees -- and it is the word for it here and in the code. It is not a product
+name. What a catalogue offers is a **plugin**: a versioned, installable package
+that may hold contributors, skills, and later integrations, which is also the
+natural home for what [skill-bundles.md](skill-bundles.md) calls a bundle.
+*Extension* is avoided on purpose: [integrations.md](integrations.md) already
+uses it for the OAuth integrations a workspace turns on, and one word meaning
+two things is the ambiguity [glossary.md](glossary.md) exists to prevent.
 
 ## A catalogue, later
 
