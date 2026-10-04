@@ -519,3 +519,62 @@ export function createFromOpenApi(input: {
     body: JSON.stringify(input),
   })
 }
+
+/** Something a person added to a generated skill, at the level it is seen. */
+export type Annotation = {
+  id: string
+  level: 'skill' | 'category' | 'operation'
+  target: string | null
+  kind: 'note' | 'prefer' | 'hidden' | 'approval'
+  value: string
+  created_at: string
+}
+
+export type SkillSource = {
+  base_url: string
+  auth_header: string | null
+  revision: { id: string; spec_sha256: string; spec_bytes: number; created_at: string } | null
+  annotations: Annotation[]
+  outline: {
+    categories: string[]
+    operations: { name: string; category: string; method: string; path: string }[]
+  } | null
+}
+
+export type Regenerated = {
+  revision: string
+  body_changed: boolean
+  changed: FileChange[]
+  unmatched: Annotation[]
+  version: VersionSummary | null
+}
+
+/** What a generated skill is made from; null for one written by hand. */
+export async function getSource(id: string): Promise<SkillSource | null> {
+  try {
+    return await api<SkillSource>(`/v1/skills/${id}/source`)
+  } catch (e) {
+    if (e instanceof Error && 'status' in e && (e as { status: number }).status === 404) return null
+    throw e
+  }
+}
+
+export const annotate = (
+  id: string,
+  a: Pick<Annotation, 'level' | 'target' | 'kind' | 'value'>,
+) =>
+  api<Annotation>(`/v1/platform/skills/${id}/annotations`, {
+    method: 'POST',
+    body: JSON.stringify(a),
+  })
+
+export const retireAnnotation = (id: string, annotation: string) =>
+  api<void>(`/v1/platform/skills/${id}/annotations/${annotation}`, { method: 'DELETE' })
+
+/** Generates the skill again: a proposal, unless `publish`. `spec` keeps a new
+ *  specification as the next revision. */
+export const regenerate = (id: string, input: { publish?: boolean; spec?: string; note?: string }) =>
+  api<Regenerated>(`/v1/platform/skills/${id}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })

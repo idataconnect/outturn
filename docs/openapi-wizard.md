@@ -5,9 +5,8 @@ specification on every turn.
 
 Built: the generator, its endpoints and the page (*The page* below). The shape
 it rests on was tried by hand first and held; see *The shape, tried once*.
-Designed and unbuilt: the generated skill as a derivation that can be
-regenerated without losing what people added to it, in *A derivation, not an
-output*.
+Also built: the generated skill as a derivation, regenerated without losing
+what people added to it -- *A derivation, not an output*.
 
 ## Why this first
 
@@ -375,7 +374,14 @@ pointer to upload when it is unset.
 
 ## A derivation, not an output
 
-Designed, unbuilt. What the wizard produces today is final: a skill version,
+Built: the kept specification (`skill_sources`, `skill_source_revisions`),
+annotations (`skill_annotations`), regenerating as a proposal or a published
+version (`api::skill_sources`), and the section of a skill's page that adds
+notes and regenerates. Not yet: detaching a skill from its source, refreshing a
+specification from the URL it was fetched from, observed examples, and the
+auto-approval keys. What follows is the design, and what it was built to.
+
+What the wizard produced was final: a skill version,
 whose body and files are the end of the line. Anything somebody adds afterwards
 -- an approval rule in an operation's frontmatter, a sentence saying "never use
 this one, use the batch endpoint", an example -- is an edit to that output, and
@@ -400,6 +406,17 @@ The specification is stored by hash in the object store, as a skill's files
 are. A revision is one fetch or upload of it.
 
 ### What an annotation is keyed on
+
+**What the specification names, at the level it has to be seen.** Three levels:
+the whole skill, whose notes go in the body every turn carries; a category, by
+its tag, whose notes go in its file; and an operation, by the name the skill
+shows it under, whose notes go in its file. Which level is the curator's
+choice, and it decides who sees a note when. A vocabulary note -- "invoices
+are called sale invoices here" -- belongs at the skill level even though it is
+about one category, because an agent that does not know it cannot tell which
+category to open: a note inside the category file is read only by an agent that
+already found it. Detail that matters once an agent is there goes lower, and
+keeps the body small.
 
 **The operation, not a location in the document.** `operationId` where the
 specification has one, and the method and path where it does not -- the same

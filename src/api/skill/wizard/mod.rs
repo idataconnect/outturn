@@ -154,6 +154,52 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
     })
 }
 
+/// What a specification offers to annotate: its categories by tag, and its
+/// operations by the name the skill shows them under, each with its category.
+#[derive(Debug, serde::Serialize)]
+pub struct Outline {
+    pub categories: Vec<String>,
+    pub operations: Vec<OutlineOperation>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct OutlineOperation {
+    pub name: String,
+    pub category: String,
+    pub method: String,
+    pub path: String,
+}
+
+pub fn outline(spec_json: &[u8]) -> Result<Outline, ParseError> {
+    let api = parse::parse(spec_json)?;
+    let mut categories: Vec<String> = Vec::new();
+    let operations = api
+        .operations
+        .iter()
+        .map(|op| {
+            let category = op
+                .tags
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "general".to_string());
+            if !categories.contains(&category) {
+                categories.push(category.clone());
+            }
+            OutlineOperation {
+                name: op.name.clone(),
+                category,
+                method: op.method.clone(),
+                path: op.path.clone(),
+            }
+        })
+        .collect();
+    categories.sort();
+    Ok(Outline {
+        categories,
+        operations,
+    })
+}
+
 fn extract_host(base_url: &str) -> String {
     if let Some(rest) = base_url.strip_prefix("https://") {
         rest.split('/').next().unwrap_or(rest).to_string()
