@@ -51,6 +51,7 @@ approval:
   risk: high
   auto: allowed
   numbers: [amount_pence]
+  free: [description]
 ```
 
 - **`risk`** -- `low`, `medium` or `high`. A summary for people choosing in
@@ -64,11 +65,29 @@ approval:
   reads as `allowed`, because an operator who wants the opposite says so once per
   operation, and the default the other way would make every new skill's gates
   unwaivable until somebody revisited them.
+
+  It holds for agents that bind the skill declaring it, and only those. Gates
+  come from a turn's bound skills, so an agent given a workspace's own skill
+  documenting the same endpoint, with a gate saying `auto: allowed` -- or no gate
+  at all -- is governed by that one. A workspace that may write skills can already
+  leave an operation ungated, so this is not a new hole, but it means `never` is
+  a statement about the operator's skill, not about the operator's API. Making it
+  hold for the API is attaching the operator's gates to the integration -- the
+  host and the credential the operator bound -- so any turn reaching that host
+  with that credential carries them; see *Not settled*.
 - **`numbers`** -- which of `binds` are numbers a policy may bound. Everything
   in `binds` may be tested for equality; only what is listed here may be
   compared. The unit is the operation's prose, which the admin agent reads
   anyway, rather than a type system in frontmatter -- the precise part is only
   "this field is a number and may be bounded".
+- **`free`** -- the top-level body fields that carry nothing worth approving: a
+  note, a client reference. Required with `auto: allowed`, because a policy
+  tests only `binds` and `binds` was chosen for another job -- what a person's
+  yes is keyed on. A field in neither list is one nobody has said is harmless:
+  an email operation whose `binds` names the recipient but not `bcc` would
+  otherwise let a policy wave through a copy to anyone. So with `auto: allowed`,
+  a request carrying any top-level field outside `binds` and `free` is not
+  covered by any policy, and asks a person.
 
 [inhibitors.md](inhibitors.md) called tagging by risk "the right shape applied
 too early ... a taxonomy fitted to nothing". It is arriving because there is now
@@ -111,11 +130,18 @@ A selector is one of:
 - **an act** -- every gate whose `requires` is `move_to_spam`, across skills;
 - **one operation** -- a gate by its skill and `matches`.
 
-Most specific wins when two apply: an operation over an act over a risk, and a
-policy naming an agent over one that does not. A policy may also *exclude*,
-which is how "everything medium or lower, except refunds" is two rows rather
-than a negation inside one. An exclusion beats an inclusion at the same
-specificity.
+A policy may also *exclude*, which is how "everything medium or lower, except
+refunds" is two rows rather than a negation inside one. **Any exclusion that
+applies wins, however broad** -- deny overrides -- so no ordering question can
+let a narrower inclusion slip past a wider exclusion. Specificity only chooses
+among inclusions, for their conditions and caps: an operation over an act over a
+risk first, and then a policy naming an agent over one that does not.
+
+A risk or act selector reaches gates that did not exist when it was set -- a
+skill published later, declaring `risk: low`. Those are covered in `trial` for
+that policy until somebody holding `approvals:delegate` accepts them, and the
+action queue says they are waiting. Otherwise whoever publishes skills decides
+what an existing policy waves through, which is a delegation nobody made.
 
 Conditions are a conjunction of tests on fields in the gate's `binds`:
 
@@ -127,12 +153,31 @@ Conditions are a conjunction of tests on fields in the gate's `binds`:
 Nothing else. No disjunction, no expressions, no fields outside `binds`. A
 policy is the thing deciding whether money moves without a person, and the
 language it is written in should be small enough that what it permits can be
-read off the row. Disjunction is two policies. A field outside `binds` is one
-the operator did not consider significant, and keying a permission on it is
-the whole-body digest approvals.md rejected, from the other side.
+read off the row. Disjunction is two policies.
 
-A policy that names a field absent from the request does not match. Absent is
-not zero, and not the empty string.
+What each test means is fixed here, because every obvious reading fails open:
+
+- **A comparison matches only a JSON number**, never a string that looks like
+  one, compared exactly as an integer when the bound is an integer, and only
+  within the 64-bit range. A string, a float against an integer bound, `1e400`,
+  anything else: the test fails, and the request asks a person.
+- **A bounded field has a lower bound too.** `≤ 5000` alone admits `-500000`,
+  which is a refund dressed as a small charge. A field in `numbers` is bounded
+  below at zero unless the policy says otherwise.
+- **`≠` and "not one of" only beside a positive test** on the same field. On
+  their own they cover every value nobody thought of.
+- **Absent does not match.** Not zero, not the empty string, not null.
+
+**A policy covers a gate only if the gate binds every field the policy tests**,
+and lists in `numbers` every field it compares. A risk or act selector spans
+gates that bind different fields; one that does not bind `amount_pence` is not
+covered by a policy that tests it, rather than covered with the test skipped.
+
+**And a policy carries caps.** A condition is per request, so `amount_pence ≤
+5000` reads as a limit and bounds nothing: four hundred charges of £49.99 each
+satisfy it. So every policy has a count per turn and a count per day, required,
+and may have a sum over one `numbers` field per day. Over a cap, the request is
+not covered and asks a person.
 
 ## Where it is decided
 
@@ -144,18 +189,37 @@ cap, and signs what survives into the turn token beside the gates and grants it
 already carries. A gate the policy covers becomes, in the token, a gate with a
 conditional grant attached.
 
-When a request matches a gate, the gateway asks in order: is there a grant from
-a person (the `call` and `unit` extents approvals.md built); failing that, does a
-committed policy match this request's bound fields. Only then does it refuse.
+A request goes out only when **every** gate covering it is satisfied, each by a
+person's grant (the `call` and `unit` extents approvals.md built) or by a policy
+committed against that gate -- against the gate's own leaf, not its `requires`
+word, so a policy for one skill's `charge` says nothing about another's. One
+gate satisfied says nothing about another: the gateway asked only the first
+covering gate until this design's review found that a grant for a host's `/*`
+gate let a `/refunds` request past its own.
 
-What the token commits to is the policy as it stood when the turn started -- the
-same rule as egress, where removing a host does not reach a running turn. That
-is the wrong way round for a policy being *withdrawn*, which should reach a turn
-already running, so revoking one is also a hold: the API takes a suspended hold
-on every session of the agents it covered, which parks each at its next round
-boundary and re-prepares it against the policies as they now stand. A turn that
-was relying on the policy asks a person on its next gated call. The hold is
-lifted by the re-preparation itself, so nobody has to answer it.
+**What the gateway tests is what it sends.** It parses the body to read the bound
+fields, and forwards the original bytes -- so a body with `amount_pence` twice
+can satisfy the policy with the first and charge the second, if the remote API
+reads JSON differently. For a request a policy admits, the gateway forwards the
+body as it parsed it, re-serialised, with `Content-Type: application/json`, and
+refuses: a query string on a gated path, which the policy never saw; and a
+top-level key that differs from a bound field only by case.
+
+What the token commits to is the policy as it stood when the turn started --
+the same rule as egress, where removing a host does not reach a running turn.
+That is the wrong way round for a policy being *withdrawn*, and a hold is not the
+answer: a hold reaches a runtime only if the runtime listens, and a compromised
+one does not. So the token is not the last word. **The record below is the
+check**: the gateway writes it with an insert that only succeeds if the policy
+is still `on`, unrevoked and unexpired, and within its caps, all in one
+statement. No row, or no database, means the request is refused and asks a
+person. That is a deliberate exception to this tier deciding from the token
+alone, and it is what makes revoking a policy take effect on the next request,
+whoever is running the turn.
+
+A token trade-in (`POST /v1/work/{job_id}/token`) copies a turn's commitments
+forward today. It must not carry a revoked or expired policy into the new token:
+the API drops those when it re-signs.
 
 ## The record
 
@@ -238,6 +302,11 @@ waved through, which is the one outcome this whole design must not permit.
 
 ## Not settled
 
+- **Operator gates that follow the credential.** `auto: never` binds agents
+  binding the operator's skill. Attaching an operator's gates to its integration
+  instead -- carried by any turn whose rule uses the operator's credential for
+  that host -- would make it bind the API. It wants
+  [integrations.md](integrations.md)'s notion of an integration to exist first.
 - **When the person who set a policy leaves.** Their policies could lapse, be
   kept and flagged, or move to whoever holds `approvals:delegate`. Lapsing is
   the safe direction and the disruptive one.

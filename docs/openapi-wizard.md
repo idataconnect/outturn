@@ -431,7 +431,7 @@ Each one changes exactly one thing in the output, and says which:
   enforcement: an agent can still compose a call to the path. An operation that
   must not be called is a gate, not a hidden one.
 - **`approval`** -- the frontmatter rule from [approvals.md](approvals.md),
-  including `risk`, `auto` and `numbers` from [auto-approval.md](auto-approval.md).
+  including `risk`, `auto`, `numbers` and `free` from [auto-approval.md](auto-approval.md).
   Rendered as the file's frontmatter and parsed by the same parser at publish,
   so a rule is refused for the same reasons whether it was typed into a file or
   into an annotation.
