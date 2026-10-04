@@ -2,7 +2,7 @@
 
 A secret somebody types into the platform, stored where anyone can read it and
 nobody but the gateway can use it -- and bound, inside the seal, to where it may
-go. Designed, unbuilt.
+go. Designed, unbuilt; see *Order of work*.
 
 It replaces the environment as the place an egress credential lives. Today a
 credential is an `OUTTURN_EGRESS_` variable on the gateway, bound by
@@ -289,6 +289,51 @@ it ends by telling the operator to set an environment variable on the gateway,
 which a browser cannot do; with this, it ends by asking for the key, sealing it
 in the page, and writing the rule. See *Hosts and credentials* in
 [openapi-wizard.md](openapi-wizard.md).
+
+## Order of work
+
+Three phases, the first of which makes an integration with a key work end to
+end without touching a deployment.
+
+**Phase 1 -- the gateway uses a sealed credential.**
+
+1. `src/egress/seal.rs`: the binding type, its exact bytes, and opening under
+   the fixed label, with HPKE from the `hpke` crate (X25519, HKDF-SHA256,
+   AES-256-GCM). Tests for a tampered binding, a seal moved onto another id, a
+   wrong kind and a wrong key.
+2. Keys: `scripts/dev-secrets.sh` generates `OUTTURN_SEAL_KEY` for the gateway
+   and `OUTTURN_SEAL_PUBLIC_KEY` for the API, as it does the token keys. One
+   environment change per deployment, once, rather than one per credential.
+3. A migration: the `credentials` table, with a generation per row, and
+   `egress_rules.credential_id`. A rule names a variable or a credential,
+   never both.
+4. The commitment: a leaf tag of its own for a rule naming a credential,
+   covering the id and the header, so a runtime cannot swap one credential for
+   another. Absent, a rule hashes exactly as it did.
+5. The gateway: the row read by id, opened, checked against the token's
+   workspace, the request's host, the rule's header and the use's kind, and
+   cached by the rules above. No database, no sealed credentials.
+6. The API: create, list without the ciphertext, rotate and revoke, under a new
+   pair of authorities, `credentials:write` and `credentials:read`; and a rule
+   naming a credential refused at write time when the binding does not cover
+   its host and header.
+7. `outturn-seal`, a small binary that reads a secret from stdin and seals it
+   to a pinned public key: the CLI path above, and how a key is sealed until
+   the page exists.
+
+A rule gains a field that travels from the API through the runtime to the
+gateway, so the three tiers deploy together, as they did for client
+credentials: an older runtime drops the field and the request is refused.
+
+**Phase 2 -- the page.** The sealing form in the browser (`@hpke/core`), the
+credentials list with rotate and revoke, the fingerprint (computed by the
+gateway behind one internal endpoint), the OpenAPI wizard's last step as a key
+field, and client-credentials pairs as sealed credentials of kind `client_id`
+and `client_secret`.
+
+**Phase 3 -- retire the environment path.** Once no rule names an
+`OUTTURN_EGRESS_` variable, the prefix rule and `OUTTURN_CREDENTIAL_BINDINGS`
+go.
 
 ## Not settled
 
