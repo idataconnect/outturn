@@ -38,9 +38,10 @@ struct RoleCache {
     entries: HashMap<Uuid, (Instant, Arc<WorkspaceMap>)>,
     generations: HashMap<Uuid, u64>,
     epoch: u64,
-    /// False while a listener exists but cannot hear invalidations. Nothing is
-    /// served or stored then: a pod deaf to role changes must not go on
-    /// trusting what it holds.
+    /// True only while a listener is hearing invalidations. Nothing is served
+    /// or stored otherwise: a pod deaf to role changes must not go on trusting
+    /// what it holds. Starts false, so a store nobody started a listener for
+    /// reads Postgres every time rather than caching what other pods change.
     trusted: bool,
 }
 
@@ -58,7 +59,7 @@ impl RoleCache {
             entries: HashMap::new(),
             generations: HashMap::new(),
             epoch: 0,
-            trusted: true,
+            trusted: false,
         }
     }
 
@@ -135,9 +136,10 @@ impl PostgresRoleStore {
     }
 
     /// Listens for role changes made by any pod and forgets what it knew
-    /// about that workspace. Until the first LISTEN is in place, and from the
-    /// moment the connection is seen to drop until it is back, the cache is
-    /// empty and bypassed: every lookup reads Postgres. A notification missed
+    /// about that workspace. Nothing is cached until this is called and the
+    /// first LISTEN is in place, and from the moment the connection is seen to
+    /// drop until it is back, the cache is empty and bypassed: every lookup
+    /// reads Postgres. A notification missed
     /// while disconnected would otherwise cost a stale entry until the next
     /// write, which for a revoked authority is a grant that never ends.
     ///
@@ -146,9 +148,6 @@ impl PostgresRoleStore {
     pub fn spawn_invalidation(&self) {
         let pool = self.pool.clone();
         let cache = Arc::clone(&self.cache);
-        if let Ok(mut c) = cache.lock() {
-            c.distrust();
-        }
         tokio::spawn(async move {
             loop {
                 match listen(&pool, &cache).await {
@@ -557,9 +556,25 @@ mod tests {
         Arc::new(HashMap::from([(role.to_string(), HashSet::new())]))
     }
 
+    fn listening() -> RoleCache {
+        let mut cache = RoleCache::new();
+        cache.trust();
+        cache
+    }
+
+    #[test]
+    fn nothing_is_cached_without_a_listener() {
+        let mut cache = RoleCache::new();
+        let ws = Uuid::now_v7();
+        let now = Instant::now();
+        let ticket = cache.ticket(ws);
+        cache.insert(ws, ticket, map("r"), now);
+        assert!(cache.get(ws, now).is_none());
+    }
+
     #[test]
     fn an_invalidation_between_read_and_insert_keeps_the_stale_read_out() {
-        let mut cache = RoleCache::new();
+        let mut cache = listening();
         let ws = Uuid::now_v7();
         let now = Instant::now();
 
@@ -576,7 +591,7 @@ mod tests {
 
     #[test]
     fn another_workspace_changing_does_not_block_an_insert() {
-        let mut cache = RoleCache::new();
+        let mut cache = listening();
         let ws = Uuid::now_v7();
         let now = Instant::now();
         let ticket = cache.ticket(ws);
@@ -587,7 +602,7 @@ mod tests {
 
     #[test]
     fn a_lost_listener_clears_and_serves_nothing_until_it_is_back() {
-        let mut cache = RoleCache::new();
+        let mut cache = listening();
         let ws = Uuid::now_v7();
         let now = Instant::now();
         let ticket = cache.ticket(ws);
@@ -612,7 +627,7 @@ mod tests {
 
     #[test]
     fn an_entry_expires() {
-        let mut cache = RoleCache::new();
+        let mut cache = listening();
         let ws = Uuid::now_v7();
         let now = Instant::now();
         let ticket = cache.ticket(ws);
