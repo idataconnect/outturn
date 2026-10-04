@@ -68,6 +68,15 @@ impl S3Storage {
         secret_key: &str,
         prefix: String,
     ) -> Result<Self, StorageError> {
+        // rust-s3 retries every failed request once, a second later, and to it
+        // a 404 is a failure. So every look for an object that is not there --
+        // the stale extraction an upload clears, a read of a file that does
+        // not exist, a delete's check, the backfill's two per file -- cost a
+        // whole second: a one-byte upload took two. A missing object is an
+        // answer, not a fault, and the library cannot tell them apart, so its
+        // retry is off. Process-wide, which is the only way it is offered.
+        s3::set_retries(0);
+
         let region = Region::Custom {
             region: "us-east-1".to_string(),
             endpoint: endpoint.to_string(),
