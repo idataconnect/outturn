@@ -157,7 +157,7 @@ export function Connection({
     if (!window.confirm(`Disconnect the key for ${rule.host}? The host stays allowed.`)) return
     void run(async () => {
       await disconnect(rule)
-      setEditing(true)
+      setEditing(false)
       setTested(null)
       await onChanged()
     })
