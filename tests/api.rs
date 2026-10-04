@@ -2534,6 +2534,32 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("session/report.txt"), "body: {body}");
 
+    // A page at a time, per scope, with a cursor to go on from.
+    for name in ["a.txt", "b.txt"] {
+        let (status, body) = h.send(put(&admin, &format!("session/{name}"), "x")).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    }
+    let page = |q: String| {
+        let admin = &admin;
+        let h = &h;
+        async move {
+            let (status, body) = h
+                .get(
+                    &format!("/v1/agent-sessions/{session_id}/files?{q}"),
+                    Some(admin),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        }
+    };
+    let first = page("scope=session&limit=2".into()).await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 2, "{first}");
+    assert_eq!(first["more"]["session"], "b.txt", "{first}");
+    let rest = page("scope=session&limit=2&after=b.txt".into()).await;
+    assert_eq!(rest["items"][0]["path"], "session/report.txt", "{rest}");
+    assert!(rest["more"].get("session").is_none(), "{rest}");
+
     // It comes back out as bytes.
     let (status, body) = h
         .get(

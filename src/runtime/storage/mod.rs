@@ -22,6 +22,31 @@ pub trait StorageBackend: Send + Sync {
 
     async fn list(&self, prefix: &str) -> Result<Vec<FileMetadata>, StorageError>;
 
+    /// At most `limit` entries under `prefix`, in key order, starting after the
+    /// key `after` when one is given -- and whether there are more.
+    ///
+    /// For a listing somebody is waiting on. `list` reads everything under a
+    /// prefix, which is right for a guest walking its own files and wrong for a
+    /// page showing a workspace scope that only ever grows. The default reads
+    /// everything and cuts it; a backend that can ask for one page does.
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<FileMetadata>, bool), StorageError> {
+        let mut all = self.list(prefix).await?;
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut page: Vec<FileMetadata> = all
+            .into_iter()
+            .filter(|f| after.is_none_or(|a| f.path.as_str() > a))
+            .take(limit + 1)
+            .collect();
+        let more = page.len() > limit;
+        page.truncate(limit);
+        Ok((page, more))
+    }
+
     async fn delete(&self, path: &str) -> Result<(), StorageError>;
 }
 

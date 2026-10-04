@@ -263,6 +263,47 @@ impl StorageBackend for S3Storage {
         Ok(entries)
     }
 
+    async fn list_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<FileMetadata>, bool), StorageError> {
+        // `start_after` rather than a continuation token: the caller holds a
+        // key, which it can carry in a URL and which means the same thing to
+        // the next request whichever replica serves it.
+        let (result, _code) = self
+            .bucket
+            .list_page(
+                self.key(prefix),
+                None,
+                None,
+                after.map(|a| self.key(a)),
+                Some(limit),
+            )
+            .await
+            .map_err(classify)?;
+        let prefix_strip = if self.prefix.is_empty() {
+            "".to_string()
+        } else {
+            format!("{}/", self.prefix)
+        };
+        let entries = result
+            .contents
+            .into_iter()
+            .map(|obj| FileMetadata {
+                path: obj
+                    .key
+                    .strip_prefix(&prefix_strip)
+                    .unwrap_or(&obj.key)
+                    .to_string(),
+                size: obj.size,
+                is_dir: false,
+            })
+            .collect();
+        Ok((entries, result.is_truncated))
+    }
+
     async fn delete(&self, path: &str) -> Result<(), StorageError> {
         // S3 answers a delete of a missing key with success, so without this
         // a mistyped path is reported as a file removed. Racy against a

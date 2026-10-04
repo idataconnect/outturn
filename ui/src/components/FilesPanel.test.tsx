@@ -8,7 +8,7 @@ import { SessionContext, type SessionState } from '../lib/session'
 // The panel talks to the API for everything it shows; the tests are about
 // what a drop does, not about how a file is transferred.
 vi.mock('../lib/chat', () => ({
-  listFiles: vi.fn(async () => []),
+  listFiles: vi.fn(async () => ({ items: [], more: {} })),
   uploadFile: vi.fn(async () => ({ path: 'session/notes.txt', size: 4, scope: 'session' })),
   deleteFile: vi.fn(async () => undefined),
   fileUrl: (sessionId: string, path: string) => `/v1/sessions/${sessionId}/files/${path}`,
@@ -67,7 +67,7 @@ function fireLeave(el: Element) {
 describe('FilesPanel drop target', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(listFiles).mockResolvedValue([])
+    vi.mocked(listFiles).mockResolvedValue({ items: [], more: {} })
   })
 
   it('uploads a dropped file to the selected scope', async () => {
@@ -117,5 +117,29 @@ describe('FilesPanel drop target', () => {
 
     fireEnter(panel(), dragWith(new File(['hi'], 'notes.txt')))
     expect(screen.queryByText(/drop to upload/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('FilesPanel paging', () => {
+  /// The workspace scope grows with every conversation in it, so it is read a
+  /// page at a time and the rest is asked for.
+  it('reads the rest of a scope when asked', async () => {
+    vi.clearAllMocks()
+    vi.mocked(listFiles)
+      .mockResolvedValueOnce({
+        items: [{ path: 'workspace/a.csv', scope: 'workspace', size: 1 }],
+        more: { workspace: 'a.csv' },
+      })
+      .mockResolvedValueOnce({
+        items: [{ path: 'workspace/b.csv', scope: 'workspace', size: 1 }],
+        more: {},
+      })
+    const user = userEvent.setup()
+    show()
+    await user.click(await screen.findByRole('button', { name: /More files in the workspace/ }))
+    expect(listFiles).toHaveBeenLastCalledWith('abc', 'workspace', 'a.csv')
+    expect(await screen.findByText('workspace/b.csv')).toBeInTheDocument()
+    expect(screen.getByText('workspace/a.csv')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /More files/ })).not.toBeInTheDocument()
   })
 })
