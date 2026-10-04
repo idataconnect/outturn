@@ -148,6 +148,13 @@ resumed turn does not ask again. Keyed on the gate's bound fields, so a
 different charge is a fresh question. Travels in the turn token, and the gateway
 reads it there. [approvals.md](approvals.md#what-a-yes-is-worth).
 
+**Prompt contributor** — anything that shapes what a model is given besides the
+conversation: text in the system prompt, tools loaded or files read up front,
+read-only tools run when a conversation starts. Each has an owner, a placement,
+a priority, a budget and a reach, and is recorded per turn. Contributions are
+made once per conversation and again only at compaction, so the system prompt
+never changes between. Designed, unbuilt. [prompt-contributors.md](prompt-contributors.md).
+
 **Personality** — a voice a person layers over an agent for themselves: how
 replies to them sound, never what the agent does or what it writes for anybody
 else. Composed last, recorded per turn for evaluation. Designed, unbuilt.
