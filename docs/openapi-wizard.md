@@ -446,12 +446,18 @@ Each one changes exactly one thing in the output, and says which:
   manifest is where the choice is made.
 - **`hidden`** -- left out of the manifest and the files. Advice, not
   enforcement: an agent can still compose a call to the path. An operation that
-  must not be called is a gate, not a hidden one.
+  must not be called is a gate, not a hidden one. A gated operation is never
+  hidden, and the pair is refused: the gate lives only in the operation's file,
+  so leaving the file out would remove the gate while its host stays allowed.
 - **`approval`** -- the frontmatter rule from [approvals.md](approvals.md),
   including `risk`, `auto`, `numbers` and `free` from [auto-approval.md](auto-approval.md).
   Rendered as the file's frontmatter and parsed by the same parser at publish,
   so a rule is refused for the same reasons whether it was typed into a file or
-  into an annotation.
+  into an annotation. Regenerating refuses to publish a version that would drop
+  a gate the live version has unless told `remove_gates`, so retiring an
+  approval annotation is a decision made twice rather than once by accident;
+  and a skill adopted from before sources were kept has the rules written into
+  its files by hand turned into annotations as it is adopted.
 - **`example`** -- an observed call, from evaluation, carrying the turn it came
   from, so a session later flagged takes its examples down with it.
 - **`skill_note`** -- prose for the body rather than one operation: a

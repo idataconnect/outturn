@@ -46,8 +46,11 @@ impl<'a> Notes<'a> {
         notes
     }
 
+    /// Whether to leave an operation out. Never one with an approval rule: the
+    /// rule lives only in the operation's file, so hiding it would remove the
+    /// gate while the host stays allowed, and hiding is advice, not a fence.
     pub fn hidden(&self, op: &str) -> bool {
-        self.hidden.contains(op)
+        self.hidden.contains(op) && !self.approval.contains_key(op)
     }
 }
 

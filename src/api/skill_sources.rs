@@ -20,7 +20,9 @@ use crate::auth::Authority;
 use super::files::{storage, storage_failed};
 use super::router::{ApiError, ApiState, authorize};
 use super::skill::wizard::{Annotation, AnnotationKind, Target};
-use super::skill::{FileChange, NewFile, NewVersion, SkillFile, VersionSummary, blob_key};
+use super::skill::{
+    FileChange, NewFile, NewVersion, SkillFile, VersionSummary, blob_key, declared_gates,
+};
 
 fn internal(e: sqlx::Error) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -294,6 +296,32 @@ pub async fn annotate(
 ) -> Result<(StatusCode, Json<AnnotationRow>), ApiError> {
     let (actor, _) = operators(&state, &headers, id).await?;
     input.validate().map_err(|m| (StatusCode::BAD_REQUEST, m))?;
+    // A gated operation stays visible: the generator would keep it anyway, and
+    // a "hidden" beside a gate would say something that is not done.
+    if matches!(input.kind.as_str(), "hidden" | "approval") {
+        let other = if input.kind == "hidden" {
+            "approval"
+        } else {
+            "hidden"
+        };
+        let clash: bool = sqlx::query_scalar(
+            "select exists (select 1 from skill_annotations where skill_id = $1 \
+             and level = 'operation' and target = $2 and kind = $3 and retired_at is null)",
+        )
+        .bind(id)
+        .bind(input.target.as_deref().map(str::trim))
+        .bind(other)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal)?;
+        if clash {
+            return Err((
+                StatusCode::CONFLICT,
+                "an operation that needs approval cannot be hidden: its gate lives in its file"
+                    .into(),
+            ));
+        }
+    }
     let row = sqlx::query(
         "insert into skill_annotations (id, skill_id, level, target, kind, value, created_by) \
          values ($1, $2, $3, $4, $5, $6, $7) \
@@ -349,8 +377,96 @@ pub struct Regenerate {
     /// would change, and nothing is written but a new specification.
     #[serde(default)]
     pub publish: bool,
+    /// Publish even though gates the live version has would go: how a gate
+    /// whose approval annotation was retired is actually removed. Said
+    /// explicitly, because nothing else may remove one.
+    #[serde(default)]
+    pub remove_gates: bool,
     #[serde(default)]
     pub note: String,
+}
+
+/// The gates a version declares, by the file that declares each.
+async fn gates_of(pool: &sqlx::PgPool, version: Uuid) -> Result<Vec<(String, String)>, ApiError> {
+    let rows = sqlx::query(
+        "select distinct path, method || ' ' || path_pattern as shape \
+         from skill_version_gates where version_id = $1 order by 1, 2",
+    )
+    .bind(version)
+    .fetch_all(pool)
+    .await
+    .map_err(internal)?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("path"), r.get("shape")))
+        .collect())
+}
+
+/// A file's frontmatter, between its fences, as written.
+fn frontmatter_of(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    Some(rest[..end].trim())
+}
+
+/// Turns the approval rules a skill's files were given by hand into
+/// annotations, the first time a source is kept for it -- so adopting a skill
+/// generated before sources were kept carries its gates rather than dropping
+/// them. A rule in a file that is not one operation's is left alone, and
+/// regenerating reports it as lost.
+async fn adopt_gates(
+    state: &ApiState,
+    owner: Uuid,
+    id: Uuid,
+    actor: Uuid,
+    live: &super::skill::SkillVersion,
+) -> Result<(), ApiError> {
+    let paths: std::collections::BTreeSet<String> = gates_of(&state.pool, live.id)
+        .await?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    for path in paths {
+        let Some(op) = path.strip_suffix(".md").filter(|op| !op.contains('/')) else {
+            continue;
+        };
+        let Some(file) = live.files.iter().find(|f| f.path == path) else {
+            continue;
+        };
+        let bytes = storage(state)?
+            .read(&blob_key(owner, &file.sha256), 0, file.bytes as u32)
+            .await
+            .map_err(storage_failed)?;
+        let Some(rule) = std::str::from_utf8(&bytes).ok().and_then(frontmatter_of) else {
+            continue;
+        };
+        let row = AnnotationRow {
+            id: Uuid::nil(),
+            level: "operation".into(),
+            target: Some(op.to_string()),
+            kind: "approval".into(),
+            value: rule.to_string(),
+            created_at: None,
+        };
+        if row.validate().is_err() {
+            continue;
+        }
+        sqlx::query(
+            "insert into skill_annotations (id, skill_id, level, target, kind, value, created_by) \
+             select $1, $2, 'operation', $3, 'approval', $4, $5 \
+             where not exists (select 1 from skill_annotations where skill_id = $2 \
+                 and target = $3 and kind = 'approval' and value = $4 and retired_at is null)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(op)
+        .bind(rule)
+        .bind(actor)
+        .execute(&state.pool)
+        .await
+        .map_err(internal)?;
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -362,7 +478,12 @@ pub struct Regenerated {
     /// Annotations whose category or operation this specification does not
     /// have. Kept, and shown, never dropped.
     pub unmatched: Vec<AnnotationRow>,
-    /// The version published, when `publish` was asked for.
+    /// Gates the live version declares that this one would not, as `METHOD
+    /// path`. Publishing refuses while any are listed: a gate is removed by
+    /// somebody deciding to, never as a side effect of a new specification.
+    pub lost_gates: Vec<String>,
+    /// The version published, when `publish` was asked for and it changed
+    /// something. Absent when the output matched the live version.
     pub version: Option<VersionSummary>,
 }
 
@@ -388,7 +509,10 @@ pub async fn regenerate(
     let (base_url, auth_header): (String, Option<String>) = match (&source, &input.base_url) {
         (_, Some(url)) => (
             url.trim().trim_end_matches('/').to_string(),
-            input.auth_header.clone(),
+            input
+                .auth_header
+                .clone()
+                .or_else(|| source.as_ref().and_then(|r| r.get("auth_header"))),
         ),
         (Some(row), None) => (
             row.get("base_url"),
@@ -405,6 +529,12 @@ pub async fn regenerate(
     let (revision, spec) = match input.spec {
         Some(spec) => {
             let bytes = super::skills::spec_bytes(spec)?;
+            if source.is_none()
+                && let Some(v) = skill.version_id
+            {
+                let live = state.skills.version(owner, id, v).await?;
+                adopt_gates(&state, owner, id, actor, &live).await?;
+            }
             let revision = record(
                 &state,
                 owner,
@@ -475,6 +605,39 @@ pub async fn regenerate(
     );
     let body_changed = live.as_ref().is_none_or(|v| v.body != output.body);
 
+    let kept: std::collections::HashSet<String> = declared_gates(
+        &output
+            .files
+            .iter()
+            .zip(&generated)
+            .map(|((_, content), file)| (file.clone(), content.clone().into_bytes()))
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .map(|g| format!("{} {}", g.method, g.path_pattern))
+    .collect();
+    let lost_gates: Vec<String> = match &live {
+        Some(v) => gates_of(&state.pool, v.id)
+            .await?
+            .into_iter()
+            .map(|(_, shape)| shape)
+            .filter(|shape| !kept.contains(shape))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        None => Vec::new(),
+    };
+    if input.publish && !input.remove_gates && !lost_gates.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "publishing would remove approval gates the live version has: {}. \
+                 Add them as approval annotations, or say remove_gates to remove them",
+                lost_gates.join(", ")
+            ),
+        ));
+    }
+
     let version = if input.publish {
         let files: Vec<NewFile> = output
             .files
@@ -486,7 +649,7 @@ pub async fn regenerate(
         } else {
             input.note
         };
-        let (_, published) = super::skills::add_version_in(
+        let (status, published) = super::skills::add_version_in(
             &state,
             owner,
             id,
@@ -499,6 +662,18 @@ pub async fn regenerate(
             },
         )
         .await?;
+        // Nothing appended: the live version came back, and its record of what
+        // it was made from is still true. Rewriting it would make it lie.
+        if status != StatusCode::CREATED {
+            return Ok(Json(Regenerated {
+                revision,
+                body_changed,
+                changed,
+                unmatched,
+                lost_gates,
+                version: None,
+            }));
+        }
         let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
         sqlx::query(
             "update skill_versions set source_revision_id = $2, annotation_ids = $3 where id = $1",
@@ -520,6 +695,7 @@ pub async fn regenerate(
         body_changed,
         changed,
         unmatched,
+        lost_gates,
         version,
     }))
 }

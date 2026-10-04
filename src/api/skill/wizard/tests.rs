@@ -1097,6 +1097,36 @@ mod annotations {
         assert!(!out.body.contains(&format!("`{name}`")));
     }
 
+    /// A gate lives only in its operation's file, so hiding a gated operation
+    /// would remove the gate while the host stays allowed. The gate wins.
+    #[test]
+    fn a_gated_operation_is_never_hidden() {
+        let base = with(small_spec(), Vec::new());
+        let name = base
+            .files
+            .keys()
+            .next()
+            .unwrap()
+            .trim_end_matches(".md")
+            .to_string();
+        let out = with(
+            small_spec(),
+            vec![
+                Annotation {
+                    target: Target::Operation(name.clone()),
+                    kind: AnnotationKind::Hidden,
+                },
+                Annotation {
+                    target: Target::Operation(name.clone()),
+                    kind: AnnotationKind::Approval(
+                        "approval:\n  requires: x\n  matches: POST /x\n  binds: [a]".into(),
+                    ),
+                },
+            ],
+        );
+        assert!(out.files[&format!("{name}.md")].starts_with("---\napproval:"));
+    }
+
     /// The specification changed under an annotation: it is reported, not
     /// dropped and not rendered somewhere it no longer means anything.
     #[test]

@@ -48,6 +48,7 @@ export default function SkillSource({
   const [source, setSource] = useState<Source | null>(null)
   const [proposal, setProposal] = useState<Regenerated | null>(null)
   const [pendingSpec, setPendingSpec] = useState<string | null>(null)
+  const [removeGates, setRemoveGates] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -270,9 +271,10 @@ export default function SkillSource({
               type="button"
               disabled={busy}
               onClick={() =>
-                void run(async () =>
-                  setProposal(await regenerate(skillId, pendingSpec ? { spec: pendingSpec } : {})),
-                )
+                void run(async () => {
+                  setRemoveGates(false)
+                  setProposal(await regenerate(skillId, pendingSpec ? { spec: pendingSpec } : {}))
+                })
               }
               className="flex items-center gap-1 rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
             >
@@ -317,17 +319,40 @@ export default function SkillSource({
                   {proposal.unmatched.map(describe).join(', ')}. They are kept.
                 </p>
               )}
+              {proposal.lost_gates.length > 0 && (
+                <div className="text-red-700 dark:text-red-400">
+                  <p>
+                    This removes approval gate{proposal.lost_gates.length === 1 ? '' : 's'} the live
+                    version has: <span className="font-mono">{proposal.lost_gates.join(', ')}</span>
+                    . Add an approval rule for each to keep it.
+                  </p>
+                  <label className="mt-1 flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={removeGates}
+                      onChange={(e) => setRemoveGates(e.target.checked)}
+                    />
+                    Remove them: those requests will no longer wait for anybody
+                  </label>
+                </div>
+              )}
               <button
                 type="button"
-                disabled={busy || (!proposal.body_changed && proposal.changed.length === 0)}
+                disabled={
+                  busy ||
+                  (!proposal.body_changed && proposal.changed.length === 0) ||
+                  (proposal.lost_gates.length > 0 && !removeGates)
+                }
                 onClick={() =>
                   void run(async () => {
                     await regenerate(skillId, {
                       publish: true,
+                      ...(removeGates ? { remove_gates: true } : {}),
                       ...(pendingSpec ? { spec: pendingSpec } : {}),
                     })
                     setProposal(null)
                     setPendingSpec(null)
+                    setRemoveGates(false)
                     await load()
                     onPublished()
                   })
