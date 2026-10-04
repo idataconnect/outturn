@@ -1906,6 +1906,96 @@ async fn a_message_absorbed_by_a_lost_attempt_is_offered_to_the_retry() {
     assert_eq!(again[0].content, "two");
 }
 
+/// Thinking off with prompt repetition sends the turn's prompt twice and
+/// stores it once.
+///
+/// The setting accepts the value and reads it back, the runtime is handed the
+/// repeated form with thinking off, and the transcript keeps what was typed.
+#[tokio::test]
+async fn prompt_repetition_reaches_the_model_and_not_the_transcript() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id").to_string();
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/settings/reasoning_effort"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"value":"none_repeat_prompt"}"#))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    let (_, body) = h
+        .get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin))
+        .await;
+    let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .expect("effort");
+    assert_eq!(effort["value"], "none_repeat_prompt");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    let session_id = session["id"].as_str().expect("id").to_string();
+
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"What is 17 times 23?"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
+    assert_eq!(
+        assignment["reasoning_effort"], "none",
+        "a provider is told thinking is off, never the setting's own value"
+    );
+    let sent = assignment["conversation"].to_string();
+    assert!(
+        sent.contains(r"What is 17 times 23?\nLet me repeat that:\nWhat is 17 times 23?"),
+        "the prompt was not repeated: {sent}"
+    );
+
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        body.contains("What is 17 times 23?") && !body.contains("Let me repeat that"),
+        "the stored transcript should hold the prompt as typed: {body}"
+    );
+}
+
 // -- Roles as data -----------------------------------------------------------
 
 /// A workspace defines its own roles, and an edit takes effect on the next request.
