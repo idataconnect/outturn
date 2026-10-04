@@ -43,6 +43,21 @@ if [[ "$print" == true ]]; then
 fi
 
 if [[ -f "$file" && "$force" != true ]]; then
+  # A file from before sealed credentials has no seal keys. Added to it rather
+  # than the whole file regenerated, which would rotate the token keys and sign
+  # everybody out for the sake of a key that did not exist yet.
+  if ! grep -q '^OUTTURN_SEAL_KEY=' "$file"; then
+    seal=$(outturn_seal_key)
+    seal_public=$(outturn_seal_public_key_of "$seal")
+    cat >>"$file" <<EOF
+
+# The gateway opens sealed credentials with this; the API hands its public half
+# to whoever seals one. See docs/sealed-credentials.md.
+OUTTURN_SEAL_KEY=$seal
+OUTTURN_SEAL_PUBLIC_KEY=$seal_public
+EOF
+    echo "added seal keys to $file" >&2
+  fi
   # Quiet on the common path: this runs before every `skaffold dev`, and a
   # line saying nothing happened is a line nobody reads.
   exit 0
@@ -56,6 +71,8 @@ secret=$(outturn_token_secret)
 public=$(outturn_public_key_of "$secret")
 runtime=$(outturn_runtime_key)
 password=$(outturn_dev_password)
+seal=$(outturn_seal_key)
+seal_public=$(outturn_seal_public_key_of "$seal")
 
 umask 077
 cat >"$file" <<EOF
@@ -72,6 +89,11 @@ OUTTURN_TOKEN_PUBLIC_KEY=$public
 
 # What the runtime presents to take work. Means "the runtime tier", nothing more.
 OUTTURN_RUNTIME_KEY=$runtime
+
+# The gateway opens sealed credentials with this; the API hands its public half
+# to whoever seals one. See docs/sealed-credentials.md.
+OUTTURN_SEAL_KEY=$seal
+OUTTURN_SEAL_PUBLIC_KEY=$seal_public
 
 # Who OUTTURN_DEV_SEED creates on an empty database, for signing in locally.
 OUTTURN_DEV_ADMIN_EMAIL=admin@outturn.local
