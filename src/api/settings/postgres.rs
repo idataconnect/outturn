@@ -187,11 +187,14 @@ impl SettingsStore for PostgresSettingsStore {
             let setting = find(key).expect("catalogue key");
             walk(&chain, key, &setting.default).0
         };
+        let effort = get("reasoning_effort");
         Ok(Resolved {
+            repeat_prompt: effort.as_str() == Some(super::REPEAT_PROMPT),
             temperature: get("temperature").as_f64().map(|t| t as f32),
-            reasoning_effort: get("reasoning_effort")
+            reasoning_effort: effort
                 .as_str()
-                .filter(|e| *e != "none")
+                // Repetition is thinking off as far as a provider knows.
+                .filter(|e| *e != "none" && *e != super::REPEAT_PROMPT)
                 .map(str::to_string)
                 // "none" is sent through as an explicit off where the
                 // provider understands it; absent means "provider default",

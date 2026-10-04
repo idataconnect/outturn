@@ -70,6 +70,11 @@ pub struct Setting {
     pub owner: Owner,
 }
 
+/// The `reasoning_effort` value that turns thinking off and repeats the
+/// turn's prompt to the model. Never reaches a provider: it resolves to
+/// "none" and `Resolved::repeat_prompt`.
+pub const REPEAT_PROMPT: &str = "none_repeat_prompt";
+
 /// Every setting there is.
 pub fn catalogue() -> Vec<Setting> {
     vec![
@@ -100,6 +105,13 @@ pub fn catalogue() -> Vec<Setting> {
                     ChoiceOption {
                         value: "none",
                         label: "Off",
+                    },
+                    // Off, and the turn's prompt sent twice. Repetition is
+                    // what a model that does not deliberate gets instead: it
+                    // reads the question a second time with all of it in view.
+                    ChoiceOption {
+                        value: REPEAT_PROMPT,
+                        label: "Off, with prompt repetition",
                     },
                     ChoiceOption {
                         value: "low",
@@ -318,6 +330,9 @@ pub enum Level {
 pub struct Resolved {
     pub temperature: Option<f32>,
     pub reasoning_effort: Option<String>,
+    /// Send the turn's own prompt to the model twice. Only what is sent: the
+    /// stored message stays as typed. See `worker::repeated`.
+    pub repeat_prompt: bool,
     pub max_tool_rounds: u32,
     /// How many bytes of conversation may be sent, before the trim starts
     /// dropping the oldest tool results to fit.
@@ -450,6 +465,7 @@ mod tests {
         let e = find("reasoning_effort").expect("effort");
         assert!(validate(&e, &serde_json::json!("high")).is_ok());
         assert!(validate(&e, &serde_json::json!("maximum")).is_err());
+        assert!(validate(&e, &serde_json::json!(REPEAT_PROMPT)).is_ok());
 
         let r = find("max_tool_rounds").expect("rounds");
         assert!(validate(&r, &serde_json::json!(0)).is_ok());

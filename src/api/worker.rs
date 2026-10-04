@@ -545,6 +545,37 @@ fn answered(
         .collect()
 }
 
+/// The turn's own prompt, sent twice: `prompt\nLet me repeat that:\nprompt`.
+///
+/// Only the turn's prompt, never the rest of the history -- every earlier user
+/// message repeated would double what each round costs to say what the model
+/// already answered. A message sent after the prompt is not in the projection
+/// (`up_to`) and reaches the turn as a steer, unrepeated.
+///
+/// Found by its text rather than its position: a resumed turn ends with its own
+/// earlier attempt and the approval record, so the prompt is not always last.
+/// The newest user entry with exactly the prompt's text is the prompt, since
+/// nothing a user sent later is here. A prompt the projection relabels -- a
+/// wake, which nobody typed -- matches nothing and goes as it is.
+///
+/// What is stored is untouched; this is the projection only.
+fn repeated(mut projected: Vec<serde_json::Value>, prompt: Option<&str>) -> Vec<serde_json::Value> {
+    let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) else {
+        return projected;
+    };
+    let entry = projected.iter_mut().rev().find(|m| {
+        m["role"] == "user"
+            && m["parts"]
+                .as_array()
+                .is_some_and(|p| p.len() == 1 && p[0]["type"] == "text" && p[0]["text"] == prompt)
+    });
+    if let Some(entry) = entry {
+        entry["parts"][0]["text"] =
+            serde_json::json!(format!("{prompt}\nLet me repeat that:\n{prompt}"));
+    }
+    projected
+}
+
 /// Says why the conversation stops where it does, for a turn picking it up.
 ///
 /// Two shapes, and they need different words. Telling a model its reply was cut
@@ -1734,6 +1765,10 @@ impl Worker {
         let gate_commitment = gates.root(payload.workspace_id);
 
         let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
+        let prompt_text = history
+            .iter()
+            .find(|m| m.id == payload.message_id)
+            .map(|m| m.content.clone());
 
         Ok(Prepared::Run(Box::new(
             crate::runtime::router::ExecuteRequest {
@@ -1806,6 +1841,14 @@ impl Worker {
                             "conversation trimmed to fit"
                         );
                     }
+                    // Last, after compaction and the trim: repetition is how this
+                    // turn asks, not part of the conversation, so no summary is
+                    // written from it and no budget is spent cutting it.
+                    let projected = if settings.repeat_prompt {
+                        repeated(projected, prompt_text.as_deref())
+                    } else {
+                        projected
+                    };
                     projected
                         .into_iter()
                         .map(serde_json::from_value)
@@ -3625,4 +3668,51 @@ pub async fn gates_for(
         )
         .await?,
     ))
+}
+
+#[cfg(test)]
+mod repetition_tests {
+    use super::repeated;
+
+    fn user(text: &str) -> serde_json::Value {
+        serde_json::json!({"role": "user", "parts": [{"type": "text", "text": text}]})
+    }
+
+    fn assistant(text: &str) -> serde_json::Value {
+        serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn only_the_turns_own_prompt_is_repeated() {
+        let projected = vec![user("earlier"), assistant("answered"), user("now")];
+        let out = repeated(projected, Some("now"));
+        assert_eq!(out[0], user("earlier"), "history is not repeated");
+        assert_eq!(out[1], assistant("answered"));
+        assert_eq!(out[2], user("now\nLet me repeat that:\nnow"));
+    }
+
+    #[test]
+    fn a_resumed_turn_repeats_its_prompt_where_it_stands() {
+        // A turn resumed after an approval ends with its own earlier attempt,
+        // so the prompt is not last.
+        let projected = vec![user("now"), assistant("I tried")];
+        let out = repeated(projected, Some("now"));
+        assert_eq!(out[0], user("now\nLet me repeat that:\nnow"));
+        assert_eq!(out[1], assistant("I tried"));
+    }
+
+    #[test]
+    fn the_same_words_sent_earlier_are_left_alone() {
+        let projected = vec![user("again"), assistant("ok"), user("again")];
+        let out = repeated(projected, Some("again"));
+        assert_eq!(out[0], user("again"));
+        assert_eq!(out[2], user("again\nLet me repeat that:\nagain"));
+    }
+
+    #[test]
+    fn nothing_matching_changes_nothing() {
+        let projected = vec![user("[platform] you slept")];
+        assert_eq!(repeated(projected.clone(), Some("you slept")), projected);
+        assert_eq!(repeated(projected.clone(), None), projected);
+    }
 }
