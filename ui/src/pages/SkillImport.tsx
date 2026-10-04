@@ -25,7 +25,6 @@ type Form = {
   description: string
   base_url: string
   auth_header: string
-  credential_env: string
 }
 
 /**
@@ -68,7 +67,6 @@ export default function SkillImport() {
         description: p.description,
         base_url: p.base_url ?? '',
         auth_header: p.auth_header ?? '',
-        credential_env: p.credential_env,
       })
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'could not read the specification')
@@ -259,7 +257,7 @@ export default function SkillImport() {
                     ? 'None of the schemes the specification declares travels in a header a rule can carry.'
                     : 'The specification does not say; leave empty if the API takes no credential.'}
               {preview.auth_kind === 'basic' &&
-                ' The variable holds the whole value, Basic and the encoded credentials.'}
+                ' The key connected for it is the whole value: Basic and the encoded credentials.'}
             </span>
             {preview.unserved_operations > 0 && (
               <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
@@ -271,19 +269,6 @@ export default function SkillImport() {
               </span>
             )}
           </label>
-          <label className="block">
-            <span className={label}>Credential variable</span>
-            <input
-              value={form.credential_env}
-              onChange={set('credential_env')}
-              className={`${input} font-mono`}
-            />
-            <span className={hint}>
-              The environment variable on the gateway that holds the credential. Only its name
-              is stored.
-            </span>
-          </label>
-
           <div className="flex items-center gap-2">
             <button
               type="submit"
@@ -314,26 +299,14 @@ export default function SkillImport() {
   )
 }
 
-/** What the browser cannot do. The skill exists, but nothing it names is
- *  reachable until somebody does these. */
-function StillNeeded({
-  skill,
-  form,
-  preview,
-}: {
-  skill: Skill
-  form: Form
-  preview: OpenApiPreview
-}) {
+/**
+ * What happens next. The skill exists; it reaches nothing until a workspace
+ * allows its host and connects a key, and both are done on the skill's own
+ * page, in the workspace that will use it -- each workspace its own key,
+ * sealed in its own browser. Nothing is left for the gateway's environment.
+ */
+function StillNeeded({ skill, form, preview }: { skill: Skill; form: Form; preview: OpenApiPreview }) {
   const header = form.auth_header.trim()
-  const variable = form.credential_env.trim()
-  const rule = JSON.stringify(
-    header && variable
-      ? { host: skill.hosts[0], header, credential_env: variable }
-      : { host: skill.hosts[0] },
-    null,
-    2,
-  )
   return (
     <div className="mt-6 space-y-4 text-sm text-surface-800 dark:text-surface-200">
       <p>
@@ -341,34 +314,40 @@ function StillNeeded({
         <Link to={`/skills/${skill.id}`} className="underline underline-offset-2">
           {skill.name}
         </Link>
-        . It is not usable yet. Two things are still needed, and neither can be done from
-        here:
+        . In each workspace that will use it, open it and:
       </p>
       <ol className="list-decimal pl-5 space-y-3">
-        {header && variable && (
+        <li>
+          <strong>Allow {skill.hosts.join(', ')}</strong>, with the button the page shows
+          while the host is not yet allowed.
+        </li>
+        {header && (
           <li>
-            <strong>Set <code>{variable}</code> on the gateway</strong> to the value the{' '}
-            <code>{header}</code> header should carry, exactly as sent
+            <strong>Connect a key</strong> under Connections: the whole value the{' '}
+            <code>{header}</code> header should carry
             {header.toLowerCase() === 'authorization' && (
-              <> — including the scheme, such as <code>Bearer </code>, if the API wants one</>
-            )}.
-            The gateway reads it from its own environment; a browser cannot set it.
+              <>, including the scheme, such as <code>Bearer </code>, if the API wants one</>
+            )}
+            . It is sealed in that browser, and a test call says straight away whether it works.
           </li>
         )}
         <li>
-          <strong>Allow <code>{skill.hosts.join(', ')}</code></strong> in each workspace that
-          binds this skill, with an egress rule through <code>POST /v1/egress-rules</code> —
-          there is no page for it yet:
-          <pre className="mt-2 p-3 rounded-md bg-surface-100 dark:bg-surface-800 font-mono text-xs overflow-x-auto">
-            {rule}
-          </pre>
+          <strong>Give it to an agent</strong> on the agent&apos;s page.
         </li>
       </ol>
+      <p>
+        <Link
+          to={`/skills/${skill.id}`}
+          className="inline-flex items-center gap-1 rounded-md bg-brand-700 px-3 py-1.5 text-white hover:bg-brand-600"
+        >
+          Open {skill.name}
+        </Link>
+      </p>
       {preview.unserved_operations > 0 && (
         <p className="text-amber-700 dark:text-amber-500">
-          Even then, {preview.unserved_operations} of {preview.operations} operations need{' '}
-          {list(preview.unserved_kinds.map((k) => authKindLabel[k]))}, which no egress rule can
-          attach. The skill will not authenticate{' '}
+          {preview.unserved_operations} of {preview.operations} operations need{' '}
+          {list(preview.unserved_kinds.map((k) => authKindLabel[k]))}, which a connected key
+          cannot supply. The skill will not authenticate{' '}
           {preview.unserved_operations === preview.operations ? '' : 'those '}on its own.
         </p>
       )}
