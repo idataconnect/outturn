@@ -78,6 +78,9 @@ const TAG_LEAF: &[u8] = b"outturn:egress:leaf:v1\0";
 /// than more fields on the old leaf, so a rule without one hashes exactly as it
 /// did before, and no rule of one kind can ever hash like one of the other.
 const TAG_LEAF_CLIENT: &[u8] = b"outturn:egress:leaf-client:v1\0";
+/// A rule whose credential is sealed. Its own tag for the same reason, and
+/// because the credential's id is the one thing a runtime would want to swap.
+const TAG_LEAF_SEALED: &[u8] = b"outturn:egress:leaf-sealed:v1\0";
 const TAG_NODE: &[u8] = b"outturn:egress:node:v1\0";
 const TAG_EMPTY: &[u8] = b"outturn:egress:empty:v1\0";
 
@@ -134,6 +137,8 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
     let mut h = Sha256::new();
     h.update(if rule.client.is_some() {
         TAG_LEAF_CLIENT
+    } else if rule.credential.is_some() {
+        TAG_LEAF_SEALED
     } else {
         TAG_LEAF
     });
@@ -146,6 +151,9 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
             rule.credential_env.as_deref(),
         ],
     );
+    if let Some(credential) = rule.credential {
+        hash_fields(&mut h, [Some(credential.to_string().as_str())]);
+    }
     if let Some(client) = &rule.client {
         hash_fields(
             &mut h,
@@ -458,7 +466,33 @@ mod tests {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         }
+    }
+
+    /// A rule naming a sealed credential commits to which one, so a runtime
+    /// holding the turn's rules cannot point a rule at another workspace's
+    /// credential, or at another of its own, and keep the proof.
+    #[test]
+    fn a_sealed_rule_commits_to_its_credential() {
+        let ws = Uuid::from_bytes([3; 16]);
+        let sealed = |id: u8| EgressRule {
+            header: Some("authorization".into()),
+            credential: Some(Uuid::from_bytes([id; 16])),
+            ..rule("books.example.com")
+        };
+        assert_ne!(root(ws, &[sealed(1)]), root(ws, &[sealed(2)]));
+        assert_ne!(
+            root(ws, &[sealed(1)]),
+            root(
+                ws,
+                &[EgressRule {
+                    credential: None,
+                    ..sealed(1)
+                }]
+            ),
+            "a stripped credential must not hash as the rule without one"
+        );
     }
 
     fn with_credential(host: &str, header: &str, env: &str) -> EgressRule {
@@ -467,6 +501,7 @@ mod tests {
             header: Some(header.into()),
             credential_env: Some(env.into()),
             client: None,
+            credential: None,
         }
     }
 
@@ -552,6 +587,7 @@ mod tests {
                 client_secret_env: "BOOKING_CLIENT_SECRET".into(),
                 client_auth: crate::runtime::egress::ClientAuth::Basic,
             }),
+            credential: None,
         }
     }
 
@@ -711,6 +747,7 @@ mod tests {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         };
         let forged = Proof::Inclusion {
             rule: interior,

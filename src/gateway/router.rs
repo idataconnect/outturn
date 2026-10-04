@@ -37,6 +37,9 @@ pub struct GatewayState {
     /// go. The operator's, beside the secrets themselves, so neither a
     /// workspace's rule nor the API decides where a secret is sent.
     pub(crate) bindings: crate::egress::bindings::Bindings,
+    /// Sealed credentials, read by id and opened with this gateway's key. See
+    /// docs/sealed-credentials.md.
+    pub(crate) sealed: egress::sealed::Credentials,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -64,7 +67,15 @@ impl GatewayState {
             client_tokens: egress::client::Tokens::default(),
             // Read once, like the internal hosts, and for the same reason.
             bindings: crate::egress::bindings::Bindings::from_env(),
+            sealed: egress::sealed::Credentials::from_env(),
         }
+    }
+
+    /// Sealed credentials read from this database, for a test or a gateway
+    /// that has one. `with_health` does this too.
+    pub fn with_sealed(mut self, sealed: egress::sealed::Credentials) -> Self {
+        self.sealed = sealed;
+        self
     }
 
     /// The internal hosts to treat as open, for a test that needs some.
@@ -93,6 +104,10 @@ impl GatewayState {
     }
 
     pub fn with_health(mut self, pool: sqlx::postgres::PgPool) -> Self {
+        // The credentials table is in the same database, and a gateway with no
+        // database attaches no sealed credential -- there is nothing to read
+        // one from, so the request is refused rather than sent bare.
+        self.sealed = std::mem::take(&mut self.sealed).with_pool(pool.clone());
         self.health = Some(pool);
         self
     }

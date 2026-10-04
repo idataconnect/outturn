@@ -415,6 +415,7 @@ mod tests {
             header: Some("authorization".into()),
             credential_env: Some("OUTTURN_EGRESS_ACME_STRIPE".into()),
             client: None,
+            credential: None,
         };
         let b = bindings();
         assert!(b.check_rule(acme(), &rule("*.stripe.com")).is_ok());

@@ -63,6 +63,9 @@ pub struct ApiState {
     /// rule that could never attach its credential is refused when written.
     /// Not the enforcement; the gateway's copy is.
     pub(super) bindings: crate::egress::bindings::Bindings,
+    /// The gateway's seal public key and its id, handed to whoever seals a
+    /// credential. `None` when this deployment has none.
+    pub(super) seal_key: Option<(Vec<u8>, String)>,
 }
 
 impl ApiState {
@@ -123,7 +126,15 @@ impl ApiState {
             shutdown,
             worker: std::sync::OnceLock::new(),
             bindings: crate::egress::bindings::Bindings::from_env(),
+            seal_key: super::credentials::seal_key_from_env(),
         }
+    }
+
+    /// The seal public key to hand out, for a test that seals its own.
+    pub fn with_seal_key(mut self, public: Vec<u8>) -> Self {
+        let id = crate::egress::seal::key_id(&public);
+        self.seal_key = Some((public, id));
+        self
     }
 
     /// The credential bindings to check rules against, for a test that needs
@@ -1607,6 +1618,18 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/egress-rules",
             get(list_egress_rules).post(create_egress_rule),
+        )
+        .route(
+            "/v1/credentials",
+            get(super::credentials::list).post(super::credentials::create),
+        )
+        .route(
+            "/v1/credentials/seal-key",
+            get(super::credentials::seal_key_for),
+        )
+        .route(
+            "/v1/credentials/{id}",
+            axum::routing::put(super::credentials::rotate).delete(super::credentials::revoke),
         )
         .route(
             "/v1/egress-rules/{id}",

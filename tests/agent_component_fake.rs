@@ -1429,6 +1429,7 @@ async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
         header: None,
         credential_env: None,
         client: None,
+        credential: None,
     }];
 
     runner()
@@ -1459,6 +1460,7 @@ async fn the_node_metadata_service_is_not_reachable() {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         }],
     )
     .await;
@@ -1479,6 +1481,7 @@ async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         }],
     )
     .await;

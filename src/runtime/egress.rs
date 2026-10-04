@@ -48,6 +48,14 @@ pub struct EgressRule {
     /// a rule without one travels exactly as it did before this existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<ClientCredentials>,
+
+    /// A sealed credential whose value travels in `header`, instead of
+    /// `credential_env`. Its id only: the gateway reads the seal itself, from
+    /// its own database, and checks what the seal was bound to. See
+    /// docs/sealed-credentials.md. Left out of the encoding when absent, as
+    /// `client` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<uuid::Uuid>,
 }
 
 /// Where a rule's access token comes from. See docs/client-credentials.md.
@@ -528,6 +536,7 @@ mod tests {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         }
     }
 
@@ -537,6 +546,7 @@ mod tests {
             header: Some(header.into()),
             credential_env: Some(env.into()),
             client: None,
+            credential: None,
         }
     }
 
@@ -588,6 +598,7 @@ mod tests {
                 header: Some("authorization".into()),
                 credential_env: Some("EXAMPLE_KEY".into()),
                 client: None,
+                credential: None,
             },
         ];
         let found = rule_for(&rules, "api.example.com").expect("matched");
