@@ -552,6 +552,30 @@ AGENTS.md is explicit that those must not share a store. It is also partly an
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
 
+## Known costs, left until they matter
+
+Found by a read-only audit of what each list query loads, and narrowed since;
+what remains is cheap today and grows with something specific. Each says what
+it grows with, so the trigger to come back is a number rather than a feeling.
+
+**A skill's history is built from whole versions.** The browser receives
+summaries now, but the API builds them by loading every version on the page --
+prose, every file row and its links -- and keeping the counts and the changed
+files. Up to a hundred versions of a generated skill is tens of thousands of
+rows read to send a few hundred bytes. Grows with versions × files. The fix is
+the file count and the per-version changes computed in SQL, with neither the
+prose nor the links read for the list.
+
+**The agents list reads what it no longer sends.** The roster dropped each
+agent's system prompt and policy from its response, but the query behind it
+still selects them and the handler throws them away. Grows with prompt length
+× agents in a workspace, which is small. The fix is a list query and type of
+its own in the agent store.
+
+**The transcript is not virtualised.** A page of it is bounded, so this is a
+very long session scrolled far back. Grows with how much of one session
+somebody reads in one sitting.
+
 ## Not on this list
 
 Recorded so their absence is deliberate.
