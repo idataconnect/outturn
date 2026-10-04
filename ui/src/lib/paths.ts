@@ -18,6 +18,7 @@ export const paths = {
   newUser: '/settings/users/new',
   user: (id: string) => `/settings/users/${id}`,
   roles: '/settings/roles',
+  connections: '/settings/connections',
   newRole: '/settings/roles/new',
   role: (id: string) => `/settings/roles/${id}`,
 

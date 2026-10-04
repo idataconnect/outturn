@@ -12,6 +12,7 @@ import {
   BookText,
   Users as UsersIcon,
   KeyRound,
+  Plug,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -50,6 +51,7 @@ import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
+import Connections from './pages/Connections'
 import PlatformDefaults from './pages/PlatformDefaults'
 import Inbox from './pages/Inbox'
 import { paths } from './lib/paths'
@@ -227,6 +229,12 @@ function SettingsSection() {
         },
         { to: paths.users, label: 'Users', icon: UsersIcon, allowed: authorities.includes('users:read') },
         { to: paths.roles, label: 'Roles', icon: KeyRound, allowed: authorities.includes('roles:assign') },
+        {
+          to: paths.connections,
+          label: 'Connections',
+          icon: Plug,
+          allowed: authorities.includes('settings:read'),
+        },
       ]}
     />
   )
@@ -571,6 +579,14 @@ function Shell() {
           />
           <Route path={paths.settings} element={<SettingsSection />}>
             <Route index element={<SettingsHome />} />
+            <Route
+              path="connections"
+              element={
+                <RequireAuthority authority="settings:read">
+                  <Connections />
+                </RequireAuthority>
+              }
+            />
             <Route
               path="users"
               element={
