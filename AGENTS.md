@@ -629,11 +629,11 @@ not. Turn tokens also carry `Role::Turn`, which holds `GatewayInvoke` alone.
 The subject claim is a user id in the first kind and a chat session id in the
 second, and the audience is what says which.
 
-**Credentials are named, never stored** -- for now.
-[docs/sealed-credentials.md](docs/sealed-credentials.md) designs the
-replacement: a secret sealed in the browser to the gateway's public key, its
-binding as associated data, so the database stores it and only the gateway can
-use it or change where it goes. Until that is built, this holds. A rule carries the name of an
+**Credentials are named, or sealed -- never stored in the clear.** A rule
+either names a sealed credential ([docs/sealed-credentials.md](docs/sealed-credentials.md),
+built for static headers): a secret sealed in the browser to the gateway's
+public key, its binding as associated data, stored in a table only the gateway
+can open, with no restart to add one. Or, the older path, it carries the name of an
 environment variable; the host reads it and attaches the header on the way out.
 The guest cannot read it and cannot set the headers it travels in. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
