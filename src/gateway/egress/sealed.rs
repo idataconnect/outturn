@@ -31,6 +31,8 @@ const ENTRY_TTL: Duration = Duration::from_secs(60);
 pub struct Opened {
     pub binding: Binding,
     pub secret: zeroize::Zeroizing<Vec<u8>>,
+    /// `Keys::fingerprint` of the secret, for showing beside the credential.
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -184,7 +186,12 @@ impl Credentials {
             tracing::warn!(credential_id = %id, "a sealed credential is bound to another id");
             return Err(refused());
         }
-        let opened = Arc::new(Opened { binding, secret });
+        let fingerprint = self.keys.fingerprint(&key_id, &secret).unwrap_or_default();
+        let opened = Arc::new(Opened {
+            binding,
+            secret,
+            fingerprint,
+        });
         if let Ok(mut c) = self.cache.lock() {
             c.insert(id, ticket, Arc::clone(&opened), Instant::now());
         }
@@ -228,6 +235,7 @@ mod tests {
                 token_url: None,
             },
             secret: zeroize::Zeroizing::new(b"k".to_vec()),
+            fingerprint: String::new(),
         })
     }
 

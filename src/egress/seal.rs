@@ -205,6 +205,10 @@ pub fn seal(public: &[u8], binding: &[u8], secret: &[u8]) -> Result<Vec<u8>, Str
 #[derive(Default)]
 pub struct Keys {
     by_id: HashMap<String, <X25519HkdfSha256 as hpke::Kem>::PrivateKey>,
+    /// Per key, what fingerprints are keyed with: derived from the private key,
+    /// so nothing but this gateway can compute one, and a fingerprint is no
+    /// help to anybody guessing the secret behind it.
+    fingerprint_keys: HashMap<String, [u8; 32]>,
 }
 
 impl Keys {
@@ -229,14 +233,32 @@ impl Keys {
 
     pub fn parse(value: &str) -> Result<Self, String> {
         let mut by_id = HashMap::new();
+        let mut fingerprint_keys = HashMap::new();
         for hex_key in value.split(',').map(str::trim).filter(|k| !k.is_empty()) {
             let bytes = hex::decode(hex_key).map_err(|_| "a seal key is not hex".to_string())?;
             let sk = <X25519HkdfSha256 as hpke::Kem>::PrivateKey::from_bytes(&bytes)
                 .map_err(|_| "a seal key is not an X25519 private key".to_string())?;
             let pk = X25519HkdfSha256::sk_to_pk(&sk);
-            by_id.insert(key_id(&pk.to_bytes()), sk);
+            let id = key_id(&pk.to_bytes());
+            fingerprint_keys.insert(
+                id.clone(),
+                hmac(&bytes, b"outturn credential fingerprint v1"),
+            );
+            by_id.insert(id, sk);
         }
-        Ok(Self { by_id })
+        Ok(Self {
+            by_id,
+            fingerprint_keys,
+        })
+    }
+
+    /// A short name for an opened secret that only this gateway can compute,
+    /// shown beside a credential so a key swapped underneath its owner is seen:
+    /// the owner saw one value when they connected it, and a different key
+    /// shows a different one. See docs/sealed-credentials.md, "Who can seal".
+    pub fn fingerprint(&self, key_id: &str, secret: &[u8]) -> Option<String> {
+        let key = self.fingerprint_keys.get(key_id)?;
+        Some(hex::encode(&hmac(key, secret)[..4]))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -274,6 +296,14 @@ impl Keys {
         .map(zeroize::Zeroizing::new)
         .map_err(|_| "this credential could not be opened".to_string())
     }
+}
+
+fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
+    use hmac::Mac as _;
+    let mut mac =
+        hmac::Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(message);
+    mac.finalize().into_bytes().into()
 }
 
 #[cfg(test)]
@@ -335,6 +365,15 @@ mod tests {
             Binding::parse(&binding).is_ok(),
             "the page writes a binding this reads"
         );
+    }
+
+    #[test]
+    fn a_fingerprint_tells_two_secrets_apart_and_names_one_alike() {
+        let (keys, _, id) = keys();
+        let a = keys.fingerprint(&id, b"Bearer one").unwrap();
+        assert_eq!(a, keys.fingerprint(&id, b"Bearer one").unwrap());
+        assert_ne!(a, keys.fingerprint(&id, b"Bearer two").unwrap());
+        assert_eq!(a.len(), 8);
     }
 
     #[test]
