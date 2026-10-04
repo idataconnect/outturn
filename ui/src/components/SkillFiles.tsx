@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react'
+import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, FilePlus, FileText, ShieldCheck, Trash2, Upload } from 'lucide-react'
 
 import {
   MAX_FILE_BYTES,
   declaresApproval,
-  mentionedIn,
+  draftFile,
+  reachable,
   pathProblem,
   type DraftFile,
 } from '../lib/skills'
@@ -27,6 +28,7 @@ export default function SkillFiles({
   body,
   slug,
   editable,
+  onOpen,
 }: {
   files: DraftFile[]
   onChange: (files: DraftFile[]) => void
@@ -34,6 +36,9 @@ export default function SkillFiles({
   body: string
   slug: string
   editable: boolean
+  /** A file was opened, so its text is wanted before the rest. Keep it
+   *  stable: a new one each render re-renders every row. */
+  onOpen?: (path: string) => void
 }) {
   const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null)
   const [pathDraft, setPathDraft] = useState<string | null>(null)
@@ -42,16 +47,36 @@ export default function SkillFiles({
   // Falls back to the first file when the selected one is gone -- removed, or
   // not in the version just restored -- rather than showing an empty editor.
   const current = files.find((f) => f.path === selected) ?? files[0] ?? null
+  const { reached, complete } = useMemo(() => reachable(body, files), [body, files])
+  const unreached = (path: string) => complete && !reached.has(path)
 
-  function update(path: string, next: Partial<DraftFile>) {
-    onChange(files.map((f) => (f.path === path ? { ...f, ...next } : f)))
+  // Stable, so a row's props change only when that row does: a click then
+  // re-renders the two rows whose selection moved rather than every one of
+  // hundreds.
+  const pick = useCallback(
+    (path: string) => {
+      setSelected(path)
+      setPathDraft(null)
+      onOpen?.(path)
+    },
+    [onOpen],
+  )
+
+  function edit(path: string, content: string) {
+    onChange(files.map((f) => (f.path === path ? draftFile(path, content) : f)))
+  }
+
+  /** A new name is one any other file might mention, which the links the API
+   *  recorded cannot know about, so every file's are worked out here again. */
+  function withNewPaths(next: DraftFile[]): DraftFile[] {
+    return next.map((f) => (f.links === null ? f : { ...f, links: null }))
   }
 
   function add() {
     let n = files.length + 1
     let path = `operation-${n}.md`
     while (files.some((f) => f.path === path)) path = `operation-${++n}.md`
-    onChange([...files, { path, content: '' }])
+    onChange(withNewPaths([...files, draftFile(path, '')]))
     setSelected(path)
   }
 
@@ -69,19 +94,19 @@ export default function SkillFiles({
     if (to === from || pathProblem(to, files.map((f) => f.path).filter((p) => p !== from))) {
       return
     }
-    update(from, { path: to })
+    onChange(withNewPaths(files.map((f) => (f.path === from ? { ...f, path: to } : f))))
     setSelected(to)
   }
 
   async function fromDisk(list: FileList | null) {
     if (!list) return
     const read = await Promise.all(
-      Array.from(list).map(async (file) => ({ path: file.name, content: await file.text() })),
+      Array.from(list).map(async (file) => draftFile(file.name, await file.text())),
     )
     // A file of the same name replaces the one here, which is what dropping in
     // a newer copy of an operation's file means.
     const incoming = new Map(read.map((f) => [f.path, f]))
-    onChange([...files.filter((f) => !incoming.has(f.path)), ...read])
+    onChange(withNewPaths([...files.filter((f) => !incoming.has(f.path)), ...read]))
     setSelected(read[0]?.path ?? selected)
   }
 
@@ -146,57 +171,26 @@ export default function SkillFiles({
           No files. Everything this skill says is in the instructions above.
         </p>
       ) : (
-        <div className="mt-3 grid grid-cols-[minmax(0,14rem)_minmax(0,1fr)] gap-3">
-          <ul className="space-y-0.5" aria-label="Files">
-            {files.map((f) => {
-              const hidden = !mentionedIn(body, slug, f.path)
-              const tooBig = new TextEncoder().encode(f.content).length > MAX_FILE_BYTES
-              return (
-                <li key={f.path}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelected(f.path)
-                      setPathDraft(null)
-                    }}
-                    aria-current={f.path === selected ? 'true' : undefined}
-                    className={`w-full flex items-center gap-1.5 rounded px-2 py-1 text-left text-xs font-mono ${
-                      f.path === selected
-                        ? 'bg-surface-100 dark:bg-surface-800 text-surface-900 dark:text-surface-100'
-                        : 'text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/60'
-                    }`}
-                  >
-                    <FileText size={12} className="shrink-0" aria-hidden />
-                    <span className="truncate" title={f.path}>
-                      {f.path}
-                    </span>
-                    {declaresApproval(f.content) && (
-                      <ShieldCheck
-                        size={12}
-                        className="ml-auto shrink-0 text-brand-600 dark:text-brand-400"
-                        aria-label="needs approval"
-                        role="img"
-                      />
-                    )}
-                    {(hidden || tooBig) && (
-                      <AlertTriangle
-                        size={12}
-                        className={`${declaresApproval(f.content) ? '' : 'ml-auto '}shrink-0 text-amber-600 dark:text-amber-400`}
-                        aria-label={tooBig ? 'too large' : 'not mentioned in the instructions'}
-                        role="img"
-                      />
-                    )}
-                  </button>
-                </li>
-              )
-            })}
+        <div className="mt-3 grid grid-cols-[minmax(0,14rem)_minmax(0,1fr)] items-start gap-3">
+          {/* Scrolls on its own: a generated skill carries hundreds of files,
+              and a list that grew the page left the editor beside its top. */}
+          <ul className="max-h-[28rem] overflow-y-auto space-y-0.5" aria-label="Files">
+            {files.map((f) => (
+              <FileRow
+                key={f.path}
+                file={f}
+                selected={f.path === current?.path}
+                hidden={unreached(f.path)}
+                onPick={pick}
+              />
+            ))}
           </ul>
 
           {current && (
             <div className="min-w-0 space-y-2">
               <input
                 value={pathDraft ?? current.path}
-                disabled={!editable}
+                disabled={!editable || current.content === null}
                 aria-label="File name"
                 onChange={(e) => setPathDraft(e.target.value)}
                 onBlur={() => pathDraft !== null && rename(current.path, pathDraft)}
@@ -214,15 +208,15 @@ export default function SkillFiles({
                 </p>
               )}
 
-              {!mentionedIn(body, slug, current.path) && (
+              {unreached(current.path) && (
                 <p
                   className="flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-400"
                   role="status"
                 >
                   <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
                   <span>
-                    Your instructions never mention this file, so the agent will not know to
-                    read it. Name it there as{' '}
+                    Your instructions never mention this file, nor does any file they lead to,
+                    so the agent will not know to read it. Name it there as{' '}
                     <code className="font-mono">
                       skill/{slug || '…'}/{current.path}
                     </code>
@@ -230,13 +224,13 @@ export default function SkillFiles({
                   </span>
                 </p>
               )}
-              {new TextEncoder().encode(current.content).length > MAX_FILE_BYTES && (
+              {current.bytes > MAX_FILE_BYTES && (
                 <p className="text-xs text-red-600 dark:text-red-400" role="alert">
                   Larger than {MAX_FILE_BYTES / 1024} KB, which is the most an agent reads in
                   one go. Split it into files for separate operations.
                 </p>
               )}
-              {declaresApproval(current.content) && (
+              {current.content !== null && declaresApproval(current.content) && (
                 <p className="flex items-start gap-1.5 text-xs text-surface-600 dark:text-surface-400">
                   <ShieldCheck size={12} className="mt-0.5 shrink-0" aria-hidden />
                   <span>
@@ -246,10 +240,11 @@ export default function SkillFiles({
               )}
 
               <textarea
-                value={current.content}
-                disabled={!editable}
+                value={current.content ?? ''}
+                placeholder={current.content === null ? 'Loading…' : undefined}
+                disabled={!editable || current.content === null}
                 aria-label={`Contents of ${current.path}`}
-                onChange={(e) => update(current.path, { content: e.target.value })}
+                onChange={(e) => edit(current.path, e.target.value)}
                 rows={14}
                 className="w-full px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-xs font-mono text-surface-900 dark:text-surface-100 disabled:opacity-60"
               />
@@ -270,3 +265,55 @@ export default function SkillFiles({
     </section>
   )
 }
+
+/** One file in the list. */
+const FileRow = memo(function FileRow({
+  file,
+  selected,
+  hidden,
+  onPick,
+}: {
+  file: DraftFile
+  selected: boolean
+  /** Nothing leads an agent to it. */
+  hidden: boolean
+  onPick: (path: string) => void
+}) {
+  const tooBig = file.bytes > MAX_FILE_BYTES
+  const gated = file.content !== null && declaresApproval(file.content)
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onPick(file.path)}
+        aria-current={selected ? 'true' : undefined}
+        className={`w-full flex items-center gap-1.5 rounded px-2 py-1 text-left text-xs font-mono ${
+          selected
+            ? 'bg-surface-100 dark:bg-surface-800 text-surface-900 dark:text-surface-100'
+            : 'text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/60'
+        }`}
+      >
+        <FileText size={12} className="shrink-0" aria-hidden />
+        <span className="truncate" title={file.path}>
+          {file.path}
+        </span>
+        {gated && (
+          <ShieldCheck
+            size={12}
+            className="ml-auto shrink-0 text-brand-600 dark:text-brand-400"
+            aria-label="needs approval"
+            role="img"
+          />
+        )}
+        {(hidden || tooBig) && (
+          <AlertTriangle
+            size={12}
+            className={`${gated ? '' : 'ml-auto '}shrink-0 text-amber-600 dark:text-amber-400`}
+            aria-label={tooBig ? 'too large' : 'not mentioned in the instructions'}
+            role="img"
+          />
+        )}
+      </button>
+    </li>
+  )
+})

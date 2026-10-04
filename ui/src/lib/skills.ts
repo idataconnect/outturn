@@ -33,6 +33,15 @@ export type Skill = {
   base_moved: boolean
 }
 
+/** A file as a version records it: no content, which is fetched separately. */
+export type VersionFile = {
+  path: string
+  sha256: string
+  bytes: number
+  /** The other files of the version it names, recorded at publish. */
+  links: string[] | null
+}
+
 export type SkillVersion = {
   id: string
   skill_id: string
@@ -43,7 +52,10 @@ export type SkillVersion = {
   hosts: string[]
   /** The files published with it. Part of the version as much as its prose is,
    *  so a reader deciding whether to restore one needs to see them. */
-  files: { path: string; sha256: string; bytes: number }[]
+  files: VersionFile[]
+  /** Files nothing leads an agent to, worked out by the API from the body and
+   *  each file's links. Null when it is not known, which is not "none". */
+  unreached: string[] | null
   created_by: string | null
   created_at: string
 }
@@ -81,11 +93,34 @@ export type NewSkill = {
   base_skill_id?: string
   hosts?: string[]
   /** The first version's files. An override carries none. */
-  files?: DraftFile[]
+  files?: NewFile[]
 }
 
-/** A file as written in the editor: a path under the skill, and its text. */
-export type DraftFile = { path: string; content: string }
+/** A file as the API takes it. */
+export type NewFile = { path: string; content: string }
+
+/** A file as the editor holds it. */
+export type DraftFile = {
+  path: string
+  /** Null until fetched: a version's files are listed at once and read in the
+   *  background, so a skill of hundreds of them opens without waiting. */
+  content: string | null
+  bytes: number
+  /** The other files it names, as the API recorded them. Null once that may no
+   *  longer be true -- its text was edited, or a file was added or renamed that
+   *  it might name -- after which they are worked out from the text here. */
+  links: string[] | null
+}
+
+/** A file just written or uploaded here, so nothing about it came from the API. */
+export function draftFile(path: string, content: string): DraftFile {
+  return {
+    path,
+    content,
+    bytes: new TextEncoder().encode(content).length,
+    links: null,
+  }
+}
 
 /**
  * Creating, editing and publishing all come in two flavours.
@@ -122,7 +157,7 @@ export function publishVersion(
   platform = false,
   /** The whole set, when it changed. Left out, the new version keeps the
    *  previous one's files -- which is what an edit to the prose alone means. */
-  files?: DraftFile[],
+  files?: NewFile[],
 ): Promise<SkillVersion> {
   return api<SkillVersion>(
     platform ? `/v1/platform/skills/${id}/versions` : `/v1/skills/${id}/versions`,
@@ -139,15 +174,80 @@ export function readVersionFile(id: string, versionId: string, path: string): Pr
   return apiText(`/v1/skills/${id}/versions/${versionId}/files/${encoded}`)
 }
 
-/** Every file a version carries, with its text, in path order. */
-export async function readVersionFiles(v: SkillVersion): Promise<DraftFile[]> {
-  const files = await Promise.all(
-    v.files.map(async (f) => ({
+/** A version's files as the editor starts them: listed, with nothing read. */
+export function versionDrafts(v: SkillVersion): DraftFile[] {
+  return v.files
+    .map((f) => ({
       path: f.path,
-      content: await readVersionFile(v.skill_id, v.id, f.path),
-    })),
+      content: null,
+      bytes: f.bytes,
+      links: f.links,
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** Reads a version's files in the background. */
+export type FileLoader = {
+  /** Moves a file to the front, for the one somebody just opened. */
+  first(path: string): void
+  /** Every file read so far, by path. */
+  contents: Map<string, string>
+  /** Settles when every file is read, or the first read fails. */
+  done: Promise<void>
+  /** Stops reading and reports nothing further. */
+  cancel(): void
+}
+
+/**
+ * Reads every file of a version, a few at a time, reporting them in batches.
+ *
+ * In batches because each report re-renders the editor, and a report per file
+ * would be one per file of a skill with hundreds.
+ */
+export function loadVersionFiles(
+  v: SkillVersion,
+  onLoaded: (batch: Map<string, string>) => void,
+  width = 4,
+): FileLoader {
+  const queue = v.files.map((f) => f.path)
+  const contents = new Map<string, string>()
+  let pending = new Map<string, string>()
+  let flush: ReturnType<typeof setTimeout> | null = null
+  let cancelled = false
+
+  function report() {
+    flush = null
+    if (cancelled || pending.size === 0) return
+    const batch = pending
+    pending = new Map()
+    onLoaded(batch)
+  }
+
+  async function worker() {
+    for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+      if (cancelled) return
+      const content = await readVersionFile(v.skill_id, v.id, path)
+      contents.set(path, content)
+      pending.set(path, content)
+      flush ??= setTimeout(report, 50)
+    }
+  }
+
+  const done = Promise.all(Array.from({ length: Math.min(width, queue.length) }, worker)).then(
+    report,
   )
-  return files.sort((a, b) => a.path.localeCompare(b.path))
+  return {
+    first(path) {
+      const i = queue.indexOf(path)
+      if (i > 0) queue.unshift(...queue.splice(i, 1))
+    },
+    contents,
+    done,
+    cancel() {
+      cancelled = true
+      if (flush) clearTimeout(flush)
+    },
+  }
 }
 
 /** The most a file may hold: what an agent reads in one call. Mirrors the API. */
@@ -169,15 +269,71 @@ export function pathProblem(path: string, others: string[]): string | null {
 }
 
 /**
- * Whether the main instructions mention a file at all.
+ * Whether `text` names the file at `path`, either as the full path an agent
+ * reads (`skill/<slug>/<path>`) or bare.
  *
- * Files are never sent to the agent; it reads one only when the instructions
- * tell it to. A file they never name is one the agent will not know exists, so
- * it is flagged rather than left to be discovered by nobody. Either the full
- * path the agent reads (`skill/<slug>/<path>`) or the bare path counts.
+ * The same rule as `files::mentions` in the API, which records what each file
+ * names at publish; the two must agree, or a file the editor calls reachable
+ * is one the API calls unreached.
  */
-export function mentionedIn(body: string, slug: string, path: string): boolean {
-  return body.includes(`skill/${slug}/${path}`) || body.includes(path)
+export function mentions(text: string, path: string): boolean {
+  const name = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}_-]/u.test(c)
+  for (let i = text.indexOf(path); i !== -1; i = text.indexOf(path, i + 1)) {
+    const before = text[i - 1]
+    // A full stop may end the sentence the name is in; it may not begin it.
+    const after = text[i + path.length]
+    if (!(name(before) || before === '.') && !(name(after) || after === '/')) return true
+  }
+  return false
+}
+
+/** What each file names, worked out here, kept until its text or the set of
+ *  paths changes: an edit makes a new object, so only that file is redone. */
+const worked = new WeakMap<DraftFile, { paths: string; links: string[] }>()
+
+function linksOf(f: DraftFile, paths: string[], key: string): string[] | null {
+  if (f.links !== null) return f.links
+  if (f.content === null) return null
+  const known = worked.get(f)
+  if (known?.paths === key) return known.links
+  const content = f.content
+  const links = paths.filter((p) => p !== f.path && mentions(content, p))
+  worked.set(f, { paths: key, links })
+  return links
+}
+
+/**
+ * The files an agent can find by following names from the main instructions,
+ * through files that name other files -- a wizard's skill names its category
+ * files, and each of those names its operations' own.
+ *
+ * `complete` is false while a reached file whose links are unknown is still
+ * being read: until then a file not yet reached may yet be, so none is reported.
+ */
+export function reachable(
+  body: string,
+  files: DraftFile[],
+): { reached: Set<string>; complete: boolean } {
+  const paths = files.map((f) => f.path)
+  const key = paths.join('\n')
+  const byPath = new Map(files.map((f) => [f.path, f]))
+  const reached = new Set(paths.filter((p) => mentions(body, p)))
+  const queue = [...reached]
+  let complete = true
+  for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
+    const links = linksOf(byPath.get(path)!, paths, key)
+    if (links === null) {
+      complete = false
+      continue
+    }
+    for (const next of links) {
+      if (byPath.has(next) && !reached.has(next)) {
+        reached.add(next)
+        queue.push(next)
+      }
+    }
+  }
+  return { reached, complete }
 }
 
 /** Whether a file declares that the operation it documents needs approving. */

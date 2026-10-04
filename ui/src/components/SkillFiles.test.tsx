@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import SkillFiles from './SkillFiles'
-import type { DraftFile } from '../lib/skills'
+import { draftFile, type DraftFile } from '../lib/skills'
 
 function Harness({ start, body }: { start: DraftFile[]; body: string }) {
   const [files, setFiles] = useState(start)
@@ -26,7 +26,7 @@ describe('the files a skill carries', () => {
   /// The warning the section is built around: files are never sent, so one the
   /// instructions do not name is one the agent will not know is there.
   it('warns about a file the instructions never mention', () => {
-    render(<Harness start={[{ path: 'refunds.md', content: 'how' }]} body="Nothing here." />)
+    render(<Harness start={[draftFile('refunds.md', 'how')]} body="Nothing here." />)
     expect(screen.getByText(/never mention this file/)).toBeInTheDocument()
     expect(screen.getByText('skill/house/refunds.md')).toBeInTheDocument()
   })
@@ -34,7 +34,7 @@ describe('the files a skill carries', () => {
   it('says nothing about a file the instructions point to', () => {
     render(
       <Harness
-        start={[{ path: 'refunds.md', content: 'how' }]}
+        start={[draftFile('refunds.md', 'how')]}
         body="For refunds read skill/house/refunds.md."
       />,
     )
@@ -50,7 +50,7 @@ describe('the files a skill carries', () => {
   })
 
   it('renames a file when the name is left', () => {
-    render(<Harness start={[{ path: 'a.md', content: '' }]} body="" />)
+    render(<Harness start={[draftFile('a.md', '')]} body="" />)
     const name = screen.getByLabelText('File name')
     fireEvent.change(name, { target: { value: 'ops/get_room.md' } })
     fireEvent.blur(name)
@@ -63,8 +63,8 @@ describe('the files a skill carries', () => {
     render(
       <Harness
         start={[
-          { path: 'a.md', content: '' },
-          { path: 'b.md', content: '' },
+          draftFile('a.md', ''),
+          draftFile('b.md', ''),
         ]}
         body=""
       />,
@@ -79,7 +79,7 @@ describe('the files a skill carries', () => {
   it('marks a file that declares an approval', () => {
     render(
       <Harness
-        start={[{ path: 'charge.md', content: '---\napproval:\n  requires: charge\n---\n' }]}
+        start={[draftFile('charge.md', '---\napproval:\n  requires: charge\n---\n')]}
         body="charge.md"
       />,
     )

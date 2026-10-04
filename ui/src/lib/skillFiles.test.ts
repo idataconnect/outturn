@@ -1,22 +1,65 @@
 import { describe, expect, it } from 'vitest'
 
-import { declaresApproval, fileChanges, mentionedIn, pathProblem } from './skills'
+import { declaresApproval, fileChanges, mentions, pathProblem, reachable } from './skills'
 
 describe('a file the instructions never mention', () => {
   const body = 'Read `skill/hollowbrook/get_room.md` before describing a room.'
 
   it('is found by its full path', () => {
-    expect(mentionedIn(body, 'hollowbrook', 'get_room.md')).toBe(true)
+    expect(mentions(body, 'get_room.md')).toBe(true)
   })
 
-  it('or by its bare name', () => {
-    expect(mentionedIn('See create_booking.md.', 'hollowbrook', 'create_booking.md')).toBe(true)
+  it('or by its bare name, at the end of a sentence', () => {
+    expect(mentions('See create_booking.md.', 'create_booking.md')).toBe(true)
   })
 
   /// The case the warning exists for: files are never sent, so one the
   /// instructions do not name is one the agent will not know is there.
   it('is reported as not mentioned', () => {
-    expect(mentionedIn(body, 'hollowbrook', 'list_rooms.md')).toBe(false)
+    expect(mentions(body, 'list_rooms.md')).toBe(false)
+  })
+
+  /// A name inside a longer one is not that file.
+  it('is not named by a longer name that ends with it', () => {
+    expect(mentions('Read `skill/bc/sale_items.md`.', 'items.md')).toBe(false)
+  })
+})
+
+describe('a file named only by another file', () => {
+  const file = (path: string, content: string | null, links: string[] | null = null) => ({
+    path,
+    content,
+    bytes: 0,
+    links,
+  })
+
+  /// The wizard's shape: the instructions name a category, and the category
+  /// names its operations. Both levels are reachable; a file nothing names is not.
+  it('is reachable through the file that names it', () => {
+    const files = [
+      file('items.md', 'Detail: `skill/bc/create_item.md`'),
+      file('create_item.md', '# create'),
+      file('orphan.md', ''),
+    ]
+    expect(reachable('See `skill/bc/items.md`.', files)).toEqual({
+      reached: new Set(['items.md', 'create_item.md']),
+      complete: true,
+    })
+  })
+
+  /// The links the API recorded stand in for text not read yet.
+  it('is reachable through links the API recorded', () => {
+    const files = [file('items.md', null, ['create_item.md']), file('create_item.md', null)]
+    expect(reachable('See items.md.', files).reached).toEqual(
+      new Set(['items.md', 'create_item.md']),
+    )
+  })
+
+  /// Until a reached file's links are known, what it names is not, so no file
+  /// may yet be called unreached.
+  it('is not reported while a file that might name it is unread', () => {
+    const files = [file('items.md', null), file('create_item.md', null)]
+    expect(reachable('See items.md.', files).complete).toBe(false)
   })
 })
 

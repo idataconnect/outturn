@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { AlertTriangle, ArrowLeft, GitFork, Globe, History, Layers, ShieldCheck } from 'lucide-react'
 
@@ -12,12 +12,15 @@ import {
   listVersions,
   parseHosts,
   publishVersion,
+  loadVersionFiles,
   readVersionFile,
-  readVersionFiles,
+  versionDrafts,
   retireSkill,
   slugify,
   updateSkill,
   type DraftFile,
+  type FileLoader,
+  type NewFile,
   type Skill,
   type SkillVersion,
 } from '../lib/skills'
@@ -73,6 +76,9 @@ export default function SkillEditor() {
   // Only an operator sees this, and only when writing something new.
   const [forEveryone, setForEveryone] = useState(false)
   const [loading, setLoading] = useState(!creating)
+  // Reads the files' text behind the page rather than before it: listed at
+  // once, filled in as they arrive.
+  const loader = useRef<FileLoader | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -83,6 +89,40 @@ export default function SkillEditor() {
   // An override speaks about its base's instructions and carries no files of
   // its own; the API refuses them.
   const carriesFiles = !overriding && skill?.kind !== 'override'
+
+  /** Shows a version's files at once and reads their text behind them. */
+  function startFiles(v: SkillVersion | undefined) {
+    loader.current?.cancel()
+    loader.current = null
+    setFiles(v ? versionDrafts(v) : [])
+    if (!v || v.files.length === 0) return
+    const l = loadVersionFiles(v, (batch) =>
+      // Only into files still waiting: one already edited keeps the edit.
+      setFiles((fs) =>
+        fs.map((f) =>
+          f.content === null && batch.has(f.path) ? { ...f, content: batch.get(f.path)! } : f,
+        ),
+      ),
+    )
+    l.done.catch((e) => {
+      if (loader.current === l) setError(e instanceof ApiError ? e.message : 'failed to read files')
+    })
+    loader.current = l
+  }
+
+  /** The files as the API takes them, once every one has been read. */
+  async function filesToSend(): Promise<NewFile[]> {
+    await loader.current?.done
+    const read = loader.current?.contents
+    return files.map((f) => ({
+      path: f.path,
+      content: f.content ?? read?.get(f.path) ?? '',
+    }))
+  }
+
+  const openFile = useCallback((path: string) => loader.current?.first(path), [])
+
+  useEffect(() => () => loader.current?.cancel(), [])
 
   useEffect(() => {
     if (creating) {
@@ -107,7 +147,7 @@ export default function SkillEditor() {
         const [s, v, all] = await Promise.all([getSkill(id), listVersions(id), listSkills()])
         setSkill(s)
         setVersions(v)
-        setFiles(v[0] ? await readVersionFiles(v[0]) : [])
+        startFiles(v[0])
         setFilesChanged(false)
         setBase(all.find((x) => x.id === s.base_skill_id) ?? null)
         setForm({
@@ -139,7 +179,7 @@ export default function SkillEditor() {
           body: form.body,
           hosts: parseHosts(form.hosts),
           ...(overriding ? { base_skill_id: overriding } : {}),
-          ...(carriesFiles && files.length > 0 ? { files } : {}),
+          ...(carriesFiles && files.length > 0 ? { files: await filesToSend() } : {}),
         },
         // An override always belongs to the workspace that wrote it, whoever
         // is signed in: it is that workspace's variation, not the operator's.
@@ -178,7 +218,7 @@ export default function SkillEditor() {
           form.note,
           hosts,
           operators,
-          filesChanged ? files : undefined,
+          filesChanged ? await filesToSend() : undefined,
         )
       }
       const [s, v] = await Promise.all([getSkill(skill.id), listVersions(skill.id)])
@@ -246,12 +286,8 @@ export default function SkillEditor() {
     // The files too. A version is its instructions and its files together, and
     // restoring only the words would put back a table of contents pointing at
     // files the current version may no longer have.
-    try {
-      setFiles(await readVersionFiles(v))
-      setFilesChanged(true)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "failed to read that version's files")
-    }
+    startFiles(v)
+    setFilesChanged(true)
   }
 
   const title = creating ? (overriding ? 'New override' : 'New skill') : loading ? 'Skill' : form.name
@@ -420,6 +456,7 @@ export default function SkillEditor() {
               body={form.body}
               slug={form.slug}
               editable={editable}
+              onOpen={openFile}
             />
           )}
 
