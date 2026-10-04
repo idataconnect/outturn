@@ -350,12 +350,44 @@ impl Gates {
         self.gates
     }
 
-    /// The gate that covers this request, if any.
+    /// Every gate that covers this request, in the set's order.
+    ///
+    /// All of them, because each is an obligation and a request goes out only
+    /// when every one is satisfied. Asking only the first was the bug: `/*` sorts
+    /// before `/refunds`, so a grant for a host's `reach` gate -- approving
+    /// "reach this host", once, for a `POST /refunds` -- let the refund out with
+    /// its own gate never consulted.
+    pub fn covering_all(&self, host: &str, method: &str, path: &str) -> Vec<&Gate> {
+        self.gates
+            .iter()
+            .filter(|gate| gate.covers_request(host, method, path))
+            .collect()
+    }
+
+    /// The first gate covering this request that nothing here has approved it
+    /// through -- the one a refusal names and an approval asks about.
+    ///
+    /// `None` when no gate covers the request, or every one that does has a grant
+    /// permitting it.
+    pub fn unpermitted(
+        &self,
+        host: &str,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Option<&Gate> {
+        self.covering_all(host, method, path)
+            .into_iter()
+            .find(|gate| self.permitted(gate, method, host, path, body).is_none())
+    }
+
+    /// The first gate that covers this request, if any. Whether a request is
+    /// gated at all; never whether it may go out, which is every covering gate's
+    /// question -- see `covering_all`.
     ///
     /// Two gates covering one request is not an error: a workspace binding two
     /// skills that both document the same endpoint is ordinary, and refusing would
-    /// make a conversation impossible rather than gated. Either answer refuses the
-    /// request, so which one is found decides only the `requires` in the message.
+    /// make a conversation impossible rather than gated.
     ///
     /// Sorted on construction so that choice is the same on every pod. It was not,
     /// and the order happened to be deterministic because `gates_for_turn` reads

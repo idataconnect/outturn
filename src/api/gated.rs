@@ -119,12 +119,21 @@ pub async fn raise(
     // endpoint exists: what is gated for this turn is a statement this tier
     // makes, and the runtime relaying a refusal does not get to decide what it
     // was a refusal of.
-    let gates = super::worker::gates_for(&state.pool, &payload)
+    // With the grants this turn carries, so the question is about the gate the
+    // gateway actually refused on: of two covering one request, the one nobody
+    // has approved yet. Asking about the first instead would ask again about a
+    // gate already answered, and the turn would park on it for ever.
+    let granted = super::grant::live_for(&state.pool, payload.workspace_id, input.job_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let gates = super::worker::gates_for(&state.pool, &payload)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .with_grants(granted);
 
     let method = input.method.to_ascii_uppercase();
-    let Some(gate) = gates.covering(&input.host, &method, &input.path) else {
+    let Some(gate) = gates.unpermitted(&input.host, &method, &input.path, input.body.as_deref())
+    else {
         // Not gated, so there is nothing to approve. Logged at warn because the
         // only ways here are a runtime that is confused and a runtime that is
         // lying, and both are worth seeing.
@@ -140,11 +149,6 @@ pub async fn raise(
             "that request is not one this turn has to have approved".to_string(),
         ));
     };
-
-    // No grant check here. The gateway holds the grants this turn carries, in
-    // the same signed commitment as the gates, so a request somebody had already
-    // approved never reached a refusal and never got here. A refusal that did is
-    // one nothing covers.
 
     // What a grant would be keyed on, recorded on the item so answering it can
     // mint one without re-deriving any of this.
