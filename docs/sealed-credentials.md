@@ -28,6 +28,18 @@ does not give that: a row holding a ciphertext and a separate column saying
 which hosts it may reach lets the database's writer edit the column and leave
 the ciphertext alone. The binding has to be part of what was sealed.
 
+It is worth being exact about what that does not include, because the first
+draft of this document claimed more. The seal fixes where *a given secret* may
+go. It does not fix *which secret* a credential holds: anyone can seal, so a
+database writer can put their own key under somebody else's credential id, bound
+exactly as the original was, and the victim's agent then works in the attacker's
+account -- charges land in the attacker's Stripe, uploads in the attacker's
+Drive. That is destination without provenance, and it is the same power such a
+writer already has over the rules and skills that steer an agent, which are
+unsigned rows too. Authenticating the credential alone would buy little while
+those stay forgeable. What this design does instead is make a swap visible: see
+*Who can seal* below.
+
 It also gave a second reason, that the gateway's database is optional and "a
 binding that might not be readable is a check with a fallback somebody will one
 day write as allow". That one does not carry over, for a reason worth being
@@ -49,14 +61,34 @@ The **binding is the associated data**:
 ```json
 {
   "credential": "0192…",
-  "workspace": "0192…-acme",
+  "kind": "static",
+  "workspaces": ["0192…-acme"],
   "hosts": ["books.idataconnect.com"],
   "token_url": null,
   "header": "Authorization"
 }
 ```
 
-canonicalised (sorted keys, no whitespace) before it is fed to the AEAD.
+stored as the exact bytes that were fed to the AEAD, beside a parsed copy for
+reading. Bytes, because re-canonicalising JSON to check a tag is a way for a
+serialiser upgrade to make every valid seal fail to open.
+
+- **`kind`** is `static`, `client_id` or `client_secret`. The gateway attaches
+  only a `static` credential as a header, and exchanges only a `client_*` pair.
+  Without it a client secret, bound to the resource host for the token it buys,
+  could be named by a rule as a plain header and sent there raw -- which the
+  environment path did until it was fixed, by refusing a variable bound to a
+  token URL as a header credential.
+- **`workspaces`** is a list of ids, or the sole value `"*"`, read by the same
+  rule as `OUTTURN_CREDENTIAL_BINDINGS`: `"*"` alone or not at all.
+- **`hosts`** are exact names, as for environment bindings: no wildcard, no
+  port, no scheme, refused at write time by the API with a message and refused
+  again by the gateway, which parses the opened binding as strictly as it parses
+  the environment.
+
+The HPKE `info` is a fixed label, `outturn seal v1 egress-credential`, so a
+ciphertext made for anything else -- a manage token, below -- can never be opened
+as a credential, or the reverse.
 
 Associated data rather than plaintext, because it then serves both readers. The
 API and the browser can read the binding without decrypting anything -- to show
@@ -77,23 +109,35 @@ a key somebody typed.
 right host in a header the host logs -- a query string's worth of exposure
 reached by renaming one field.
 
-## Who can seal, and why that is safe
+## Who can seal, and what that allows
 
-Anybody can seal: the public key is public. That looks like a hole and is not.
-To seal something is to choose a secret and a binding for it, and the person
-doing so must already hold the secret. Somebody with write access to the
-database can mint a credential of their own bound wherever they like -- and
-attach their own key to their own requests, which they could do without the
-platform. What they cannot do is rebind somebody else's, because that needs the
-plaintext, and only the gateway can produce it.
+Anybody can seal: the public key is public. To seal something is to choose a
+secret and a binding for it, and the person doing so must already hold the
+secret. So somebody with write access to the database cannot rebind a key they
+do not have -- that needs the plaintext, and only the gateway can produce it.
+
+What they can do is seal a key they *do* have under another workspace's binding,
+and swap it in. That is the provenance gap described above, and it is closed by
+making it visible rather than impossible:
+
+- **A fingerprint, computed by the gateway.** When a credential is stored, and
+  on request after, the gateway opens it and returns an HMAC of the secret under
+  a gateway-only key, shortened for display. The page shows it beside the
+  credential, as `…k3f9`, and the owner who sealed it saw the same value then. A
+  key swapped underneath them shows a different one. Nobody else can compute it,
+  so a forger cannot make theirs match.
+- **Every store and rotation is recorded** in the credential's history with who
+  did it, through the API. A row changed without such a record is one the
+  database's writer changed, and the fingerprint is what says so.
 
 The API still decides who may store a seal in a workspace -- `CredentialsWrite`,
-assignable within a workspace -- and refuses a binding naming another workspace.
-That check is for the people using the API honestly. The one a forged row
-meets is at the gateway: the binding's workspace must equal the turn token's
-`workspace_id`, the request's host must be in its hosts, and the rule's header
-must equal its header. Those are the three questions credential-bindings.md
-asks today, asked of the seal instead of the environment.
+assignable within a workspace -- and refuses a binding naming any workspace but
+the writer's own, `"*"` included. That check is for the people using the API
+honestly. The one a forged row meets is at the gateway: the turn token's
+`workspace_id` must be among the binding's workspaces, the request's host must
+be in its hosts, the rule's header must equal its header, and its kind must be
+the one the rule uses it as. The first three are the questions
+credential-bindings.md asks today, asked of the seal instead of the environment.
 
 ## Where it is sealed
 
@@ -107,9 +151,16 @@ read or write the API's database and against an API that is later compromised.
 It does not protect against an API that is compromised *while* someone types
 their key into a page it serves, because that API serves the script doing the
 sealing. Nothing a web page does can; it is the same exposure every credential
-form on the web has. Where that matters, sealing is also a CLI command --
-`outturn seal --workspace … --host …`, reading the key from stdin -- and the API
-cannot tell the difference, since it only ever sees a ciphertext either way.
+form on the web has.
+
+Where that matters, sealing is also a CLI command -- `outturn seal --workspace …
+--host …`, reading the key from stdin -- and the API cannot tell the difference,
+since it only ever sees a ciphertext either way. **But only with the public key
+pinned.** A CLI that asked the API for the key would seal to whatever a
+compromised API served, which could be the API's own. So the CLI seals only to a
+key it already holds -- its fingerprint and id distributed with the operator's
+manifests, as the gateway's own key is -- and refuses one the API serves that
+does not match. A rotation of the seal key means distributing a new pin.
 
 ## Where it is stored, and how the gateway gets it
 
@@ -136,12 +187,29 @@ credential id, so a runtime cannot swap one credential for another without
 failing the proof -- the same reason client-credentials rules got a leaf tag of
 their own.
 
-The gateway reads the row by id when a request needs it: one indexed read, cached
-per replica by id and invalidated over LISTEN/NOTIFY on change, the way roles
-are. The opened secret is cached the same way, in memory, never written
-anywhere. A gateway with no database has no sealed credentials, and a request
-needing one is refused with the same message as a credential that does not
-exist.
+The gateway reads the row by id when a request needs it: one indexed read,
+cached per replica, with the opened secret cached beside it in memory and never
+written anywhere. A gateway with no database has no sealed credentials, and a
+request needing one is refused with the same message as a credential that does
+not exist.
+
+The cache is specified here rather than borrowed, because the obvious pattern
+loses a revocation. Reading a row, then inserting what was read, races an
+invalidation that lands in between: the stale entry goes in after the eviction,
+and a revoked row never changes again, so nothing ever evicts it. So:
+
+- **Each id has a generation**, bumped by every invalidation. A load records the
+  generation before it reads and inserts only if it is unchanged.
+- **Entries expire** after a minute whatever happens, so a missed notification
+  costs at most that.
+- **A dropped listener clears everything**, and nothing cached is used until it
+  is back -- a gateway that cannot hear about revocations must not go on
+  trusting what it holds.
+- **Invalidating a credential evicts the access tokens it bought**, for a
+  client-credentials pair, from the token cache as well.
+
+The role cache in the API has the first and third of those gaps today; fixing it
+there is the same change.
 
 ## Revocation reaches a running turn
 
@@ -153,6 +221,12 @@ rather than needing work, because the gateway reads the row by id on use rather
 than carrying the secret in the token. Revoking sets `revoked_at`, wipes
 `sealed` in the same statement, and notifies; the next request finds no
 credential.
+
+That stops honest use. It does not bind anybody who can write the database,
+because an old ciphertext still opens -- restored from a backup, it is a working
+credential again. So revoking a key that was compromised or misused means
+revoking it at the provider too, and the page says so when somebody revokes.
+Only rotating the seal key invalidates every copy a backup holds.
 
 ## Rotation
 
@@ -181,19 +255,24 @@ manifest edit to add.
 A key the operator shares with every workspace -- the booking API in
 credential-bindings.md -- is a seal whose binding says `"workspaces": "*"`, held
 in the platform workspace. Readable by the gateway for any workspace's turn,
-sealed once.
+sealed once. Only the operator may store or rotate one, through the platform
+routes; every workspace route refuses `"*"`.
 
 **The gateway's own provider keys are not part of this.** `GEMINI_API_KEY` and
 the rest are not reachable from a rule, are not per workspace, and change when
 the operator changes provider, which is a deploy anyway. They stay in the
 environment.
 
-**`OUTTURN_GRANT_KEY`** in integrations.md is a symmetric key for refresh tokens
-the gateway writes itself. It could be this scheme instead -- the gateway seals
-a refresh token to its own public key, with the grant's binding as associated
-data -- and one scheme is better than two. A symmetric key works there only
-because the writer and the reader are the same tier; a key a person types needs
-a writer who cannot read it back, which is why this one is asymmetric.
+**Not `OUTTURN_GRANT_KEY`.** integrations.md keeps refresh tokens under a
+symmetric key only the gateway holds, and that is right, for a reason this
+document's first draft missed when it proposed one scheme for both. A ciphertext
+under a key only the gateway holds is one only the gateway could have made, so
+it proves the gateway wrote it. A seal to a public key proves nothing about its
+author. For refresh tokens that difference is the whole defence: under a public
+key, somebody who completed a consent flow for their *own* Google account could
+seal the resulting token under a victim's grant and have the victim's agent
+working in their mailbox. The two schemes answer different questions -- who may
+read, and who wrote -- and both are needed.
 
 ## The credential is a rule's, not a skill's
 
@@ -217,6 +296,10 @@ in the page, and writing the rule. See *Hosts and credentials* in
 - **Who may read a credential's binding.** Showing an administrator where their
   key goes is the point; showing another member of the workspace which hosts a
   key reaches is probably fine and is not decided.
+- **Provenance for rules and skills.** The fingerprint makes a swapped
+  credential visible; nothing yet makes a swapped rule or skill version visible
+  in the same way. If credentials ever get a gateway-signed provenance, they are
+  the wrong place to start.
 - **An HSM or KMS for the seal key.** The gateway holding `OUTTURN_SEAL_KEY` in
   its environment is the credential-holding tier being what it already is. A
   deployment that wants the private key in a KMS changes where the open

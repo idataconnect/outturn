@@ -349,10 +349,11 @@ after the rule itself is gone.
   attaching their token to the wrong turns. The ciphertext carries a key id, and
   the gateway accepts two keys during a rotation and re-encrypts under the newer
   one on the next refresh, the same shape as two public keys during a token
-  rotation. [sealed-credentials.md](sealed-credentials.md) proposes one
-  asymmetric scheme for both: the gateway seals a refresh token to its own
-  public key with the grant's binding as associated data, as a person's browser
-  seals a pasted key.
+  rotation. Symmetric on purpose: only the gateway can make a ciphertext that
+  opens, so a row proves the gateway wrote it. [sealed-credentials.md](sealed-credentials.md)
+  seals a key a person pastes to a public key instead, which proves nothing
+  about its author -- right for that case, and the reason the two are not one
+  scheme.
 
 What this keeps: the API, a backup, a read replica, a support query and anyone
 holding the database password read ciphertext. What it does not: the gateway's
