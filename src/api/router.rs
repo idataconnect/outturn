@@ -548,6 +548,10 @@ async fn create_egress_rule(
     Json(input): Json<super::egress::CreateRule>,
 ) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    // Sending a key to the host is a second decision, beside allowing it.
+    if input.credential.is_some() {
+        authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    }
     let rule =
         super::egress::create(&state.pool, &state.bindings, claims.workspace_id, input).await?;
     // Worth a line in the log on its own: this is the moment a workspace's agents
@@ -559,6 +563,35 @@ async fn create_egress_rule(
         "egress rule added"
     );
     Ok((StatusCode::CREATED, Json(rule)))
+}
+
+/// Puts a sealed credential on an existing rule, or takes it off. Needs both
+/// halves of the decision: allowing the host is `settings:update`, and sending
+/// a key to it is `credentials:write`.
+async fn set_rule_credential(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::egress::SetCredential>,
+) -> Result<Json<super::egress::Rule>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    let rule = super::egress::set_credential(
+        &state.pool,
+        claims.workspace_id,
+        id,
+        input.header.map(|h| h.trim().to_ascii_lowercase()),
+        input.credential,
+    )
+    .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        host = %rule.host,
+        credential = ?rule.credential,
+        "egress rule credential set"
+    );
+    Ok(Json(rule))
 }
 
 async fn delete_egress_rule(
@@ -1631,9 +1664,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/credentials/{id}",
             axum::routing::put(super::credentials::rotate).delete(super::credentials::revoke),
         )
+        .route("/v1/credentials/{id}/test", post(super::credentials::test))
         .route(
             "/v1/egress-rules/{id}",
-            axum::routing::delete(delete_egress_rule),
+            axum::routing::delete(delete_egress_rule).patch(set_rule_credential),
         )
         // Runtimes ask here for work and report back what it produced. Both
         // require GatewayInvoke, which is the platform's own tier rather than

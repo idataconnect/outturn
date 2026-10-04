@@ -332,6 +332,97 @@ pub async fn create(
     Ok(read_rule(&row))
 }
 
+/// Puts a sealed credential on a rule that already exists, or takes it off.
+///
+/// Approving a skill's hosts writes their rules with no credential, and a
+/// workspace connecting its key afterwards should not have to delete the rule
+/// and lose the record of which skill opened it. Checked as `create` checks a
+/// rule naming a credential: this workspace's, live, and sealed for this exact
+/// host and header.
+pub async fn set_credential(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    id: Uuid,
+    header: Option<String>,
+    credential: Option<Uuid>,
+) -> Result<Rule, RuleError> {
+    let row = sqlx::query(
+        "select host, credential_env, token_url from egress_rules where id = $1 and workspace_id = $2",
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| RuleError::Database(e.to_string()))?
+    .ok_or_else(|| RuleError::Invalid("no such rule".into()))?;
+    let host: String = row.get("host");
+    if row.get::<Option<String>, _>("credential_env").is_some()
+        || row.get::<Option<String>, _>("token_url").is_some()
+    {
+        return Err(RuleError::Invalid(
+            "this rule's credential comes from the gateway's environment; remove it and add \
+             the host again to use a sealed credential"
+                .into(),
+        ));
+    }
+    match (&header, credential) {
+        (Some(header), Some(credential)) => {
+            if host.contains('*') {
+                return Err(RuleError::Invalid(
+                    "a sealed credential is sent to one host, not a wildcard".into(),
+                ));
+            }
+            if header.parse::<reqwest::header::HeaderName>().is_err() {
+                return Err(RuleError::Invalid(format!("{header} is not a header name")));
+            }
+            let binding = super::credentials::binding_of(pool, workspace_id, credential)
+                .await
+                .map_err(|e| RuleError::Database(e.to_string()))?
+                .ok_or_else(|| {
+                    RuleError::Invalid(
+                        "no such credential in this workspace, or it is revoked".into(),
+                    )
+                })?;
+            binding
+                .allows(
+                    workspace_id,
+                    &host,
+                    Some(header),
+                    crate::egress::seal::Kind::Static,
+                )
+                .map_err(RuleError::Invalid)?;
+        }
+        (None, None) => {}
+        _ => {
+            return Err(RuleError::Invalid(
+                "a credential and the header it travels in go together".into(),
+            ));
+        }
+    }
+    let row = sqlx::query(concat!(
+        "update egress_rules set header = $3, credential_id = $4 \
+         where id = $1 and workspace_id = $2 returning id, ",
+        rule_columns!(),
+        ", enabled"
+    ))
+    .bind(id)
+    .bind(workspace_id)
+    .bind(&header)
+    .bind(credential)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| RuleError::Database(e.to_string()))?;
+    Ok(read_rule(&row))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SetCredential {
+    #[serde(default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub credential: Option<Uuid>,
+}
+
 pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, RuleError> {
     // Scoped by workspace as well as id, so knowing an id from somewhere else is
     // not the same as being able to use it.
