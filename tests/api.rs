@@ -2867,6 +2867,79 @@ async fn a_skill_versions_its_files_with_its_body() {
     );
 }
 
+/// A version says which of its files nothing leads an agent to, following
+/// names from the body through the files it names -- and works that out for a
+/// version published before links were recorded, from the stored content.
+#[tokio::test]
+async fn a_version_says_which_files_nothing_names() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"inn","name":"Inn","body":"Read `skill/inn/rooms.md` first.",
+                "files":[{"path":"rooms.md","content":"Detail: `skill/inn/book.md`"},
+                         {"path":"book.md","content":"POST /bookings"},
+                         {"path":"stray.md","content":"nothing names this"}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "create: {body}");
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = skill["id"].as_str().unwrap().to_string();
+    let v1 = skill["version_id"].as_str().unwrap().to_string();
+    let read = || async {
+        let (_, body) = h
+            .get(&format!("/v1/skills/{id}/versions/{v1}"), Some(&admin))
+            .await;
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+    assert_eq!(read().await["unreached"], serde_json::json!(["stray.md"]));
+
+    // As if published before links were recorded.
+    sqlx::query("update skill_version_files set links = null where version_id = $1::uuid")
+        .bind(&v1)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await["unreached"],
+        serde_json::json!(["stray.md"]),
+        "not worked out again from the stored content"
+    );
+
+    // A body-only edit carries the files' links with them.
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{id}/versions"),
+            Some(&admin),
+            r#"{"body":"Read stray.md."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body edit: {body}");
+    let v2: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v2["unreached"], serde_json::json!(["book.md", "rooms.md"]));
+
+    // And the history says the same of each version.
+    let (status, body) = h
+        .get(&format!("/v1/skills/{id}/versions"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::OK, "history: {body}");
+    let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        page["items"][0]["unreached"],
+        serde_json::json!(["book.md", "rooms.md"])
+    );
+    assert_eq!(
+        page["items"][1]["unreached"],
+        serde_json::json!(["stray.md"])
+    );
+}
+
 /// An operator's skill reaches a workspace with its files, including through a
 /// fork, and a workspace's override cannot carry files of its own.
 #[tokio::test]

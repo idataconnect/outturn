@@ -107,6 +107,7 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
                 path: file.path,
                 sha256,
                 bytes: bytes.len() as i32,
+                links: None,
             },
             bytes,
         ));
@@ -118,7 +119,72 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
             w[0].0.path
         )));
     }
+    link(&mut out);
     Ok(out)
+}
+
+/// Records which of the set each file names. Done where the content is in hand,
+/// for the same reason as `declared_gates`: afterwards it is in the object
+/// store by hash, and working out which files an agent can find would mean
+/// fetching every one of them back on every read.
+pub fn link(files: &mut [(SkillFile, Vec<u8>)]) {
+    let paths: Vec<String> = files.iter().map(|(f, _)| f.path.clone()).collect();
+    for (file, bytes) in files.iter_mut() {
+        let text = String::from_utf8_lossy(bytes);
+        file.links = Some(
+            paths
+                .iter()
+                .filter(|p| **p != file.path && mentions(&text, p))
+                .cloned()
+                .collect(),
+        );
+    }
+}
+
+/// Whether `text` names the file at `path`, either as the full path an agent
+/// reads (`skill/<slug>/<path>`) or bare.
+///
+/// Bounded on both sides, so `items.md` is not named by `sale_items.md`. A `/`
+/// may come before, which is what lets the full path count without knowing the
+/// slug -- and a fork, which changes the slug, keeps the links it was given.
+pub fn mentions(text: &str, path: &str) -> bool {
+    let name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-');
+    text.match_indices(path).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        // A full stop may end the sentence the name is in; it may not begin it.
+        let after = text[i + path.len()..].chars().next();
+        !before.is_some_and(|c| name(c) || c == '.') && !after.is_some_and(|c| name(c) || c == '/')
+    })
+}
+
+/// The files nothing leads an agent to, following names from the body through
+/// every file it reaches. `None` when any file's links are unknown: an answer
+/// that guessed would say a file is missed that is not, or the reverse.
+pub fn unreached(body: &str, files: &[SkillFile]) -> Option<Vec<String>> {
+    let mut links = std::collections::HashMap::with_capacity(files.len());
+    for f in files {
+        links.insert(f.path.as_str(), f.links.as_ref()?);
+    }
+    let mut reached: std::collections::HashSet<&str> = files
+        .iter()
+        .map(|f| f.path.as_str())
+        .filter(|p| mentions(body, p))
+        .collect();
+    let mut queue: Vec<&str> = reached.iter().copied().collect();
+    while let Some(path) = queue.pop() {
+        for next in links[path] {
+            if reached.insert(next.as_str()) {
+                queue.push(next.as_str());
+            }
+        }
+    }
+    Some(
+        files
+            .iter()
+            .filter(|f| !reached.contains(f.path.as_str()))
+            .map(|f| f.path.clone())
+            .collect(),
+    )
 }
 
 /// A relative path of plain segments. Refused rather than cleaned up: a path
@@ -152,6 +218,50 @@ mod tests {
             path: path.into(),
             content: content.into(),
         }
+    }
+
+    /// The wizard's shape: the body names a category, the category names its
+    /// operations. A file nothing names is the one reported.
+    #[test]
+    fn unreached_follows_names_through_files() {
+        let files: Vec<SkillFile> = prepare(vec![
+            file("items.md", "Detail: `skill/bc/create_item.md`"),
+            file("create_item.md", "# create"),
+            file(
+                "orphan.md",
+                "names `skill/bc/items.md`, but nothing names it",
+            ),
+        ])
+        .unwrap()
+        .into_iter()
+        .map(|(f, _)| f)
+        .collect();
+        assert_eq!(
+            unreached("Read `skill/bc/items.md`.", &files),
+            Some(vec!["orphan.md".to_string()])
+        );
+    }
+
+    /// A file whose links were never recorded makes the answer unknown, not
+    /// empty: "nothing is missed" would be a guess.
+    #[test]
+    fn unreached_is_unknown_without_links() {
+        let mut files: Vec<SkillFile> = prepare(vec![file("a.md", "")])
+            .unwrap()
+            .into_iter()
+            .map(|(f, _)| f)
+            .collect();
+        files[0].links = None;
+        assert_eq!(unreached("a.md", &files), None);
+    }
+
+    #[test]
+    fn mentions_is_bounded_by_the_name() {
+        assert!(mentions("See create_booking.md.", "create_booking.md"));
+        assert!(mentions("`skill/bc/items.md`", "items.md"));
+        assert!(!mentions("`skill/bc/sale_items.md`", "items.md"));
+        assert!(!mentions("items.md/x", "items.md"));
+        assert!(!mentions("a.items.md", "items.md"));
     }
 
     #[test]
