@@ -24,6 +24,7 @@ pub mod session;
 mod sessions;
 pub mod settings;
 pub mod skill;
+mod skill_sources;
 mod skills;
 pub mod trigger;
 pub mod usage;
