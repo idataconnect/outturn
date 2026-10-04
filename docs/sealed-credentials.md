@@ -221,8 +221,10 @@ integrations.md gives about grants: somebody who revokes a key expects it to sto
 being sent now, not after a long-horizon turn finishes. Here that falls out
 rather than needing work, because the gateway reads the row by id on use rather
 than carrying the secret in the token. Revoking sets `revoked_at`, wipes
-`sealed` in the same statement, and notifies; the next request finds no
-credential.
+`sealed` in the same statement, and notifies; once the notification arrives --
+a matter of milliseconds, not the same breath, since the gateway is another
+process -- the next request finds no credential. A notification lost on the way
+costs at most the cache's minute.
 
 That stops honest use. It does not bind anybody who can write the database,
 because an old ciphertext still opens -- restored from a backup, it is a working

@@ -737,6 +737,7 @@ mod tests {
                 header: None,
                 credential_env: None,
                 client: None,
+                credential: None,
             }],
         );
 

@@ -28,6 +28,7 @@
 
 pub mod client;
 pub mod internal;
+pub mod sealed;
 pub mod transport;
 
 use std::sync::Arc;
@@ -243,7 +244,9 @@ pub async fn fetch(
     // A credential travels only where it cannot be read on the way. A
     // workspace that configured a key for a host did not consent to it going
     // out in clear because a model typed http.
-    if (rule.credential_env.is_some() || rule.client.is_some()) && url.scheme() != "https" {
+    if (rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some())
+        && url.scheme() != "https"
+    {
         return Err((
             StatusCode::FORBIDDEN,
             format!("{host} has a credential configured, so it can only be reached over https"),
@@ -322,6 +325,52 @@ pub async fn fetch(
             )
         })?;
         let mut value = reqwest::header::HeaderValue::from_str(&secret).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "this host's credential cannot be sent as a header".to_string(),
+            )
+        })?;
+        value.set_sensitive(true);
+        outgoing.insert(name, value);
+    }
+
+    // A sealed credential: read by id from this tier's database, opened with
+    // this tier's key, and sent only if what it was sealed to allows this
+    // workspace -- the token's, never the rule's -- this host and this header.
+    // The binding is the one the seal's tag covers, so nothing the API or the
+    // database's writer changed afterwards can widen it.
+    if let Some(id) = rule.credential {
+        if rule.credential_env.is_some() || rule.client.is_some() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("{host} has two credentials configured, so neither is sent"),
+            ));
+        }
+        let header = rule.header.as_deref().ok_or((
+            StatusCode::FORBIDDEN,
+            format!("{host}'s credential has no header to travel in"),
+        ))?;
+        let opened = state
+            .sealed
+            .get(id)
+            .await
+            .map_err(|why| (StatusCode::FORBIDDEN, why))?;
+        opened
+            .binding
+            .allows(
+                claims.workspace_id,
+                &host,
+                Some(header),
+                crate::egress::seal::Kind::Static,
+            )
+            .map_err(|why| (StatusCode::FORBIDDEN, why))?;
+        let name: reqwest::header::HeaderName = header.parse().map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{header} is not a header name"),
+            )
+        })?;
+        let mut value = reqwest::header::HeaderValue::from_bytes(&opened.secret).map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "this host's credential cannot be sent as a header".to_string(),
@@ -456,6 +505,7 @@ mod tests {
             header: None,
             credential_env: None,
             client: None,
+            credential: None,
         }
     }
 
@@ -465,6 +515,7 @@ mod tests {
             header: Some(header.into()),
             credential_env: Some(env.into()),
             client: None,
+            credential: None,
         }
     }
 
@@ -840,6 +891,7 @@ mod client_credentials {
                 client_secret_env: "OUTTURN_EGRESS_TEST_FETCH_CC_SECRET".into(),
                 client_auth: crate::runtime::egress::ClientAuth::Basic,
             }),
+            credential: None,
         };
 
         let seed = [9u8; 32];
@@ -1007,6 +1059,7 @@ mod client_credentials {
             header: Some("authorization".into()),
             credential_env: Some("OUTTURN_EGRESS_TEST_ACME_STRIPE".into()),
             client: None,
+            credential: None,
         };
         let client = |host: &str, token_url: &str| EgressRule {
             host: host.into(),
@@ -1019,6 +1072,7 @@ mod client_credentials {
                 client_secret_env: "OUTTURN_EGRESS_TEST_ACME_SECRET".into(),
                 client_auth: crate::runtime::egress::ClientAuth::Basic,
             }),
+            credential: None,
         };
 
         // The thief's own host, ACME's variable.

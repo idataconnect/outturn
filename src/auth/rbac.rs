@@ -92,6 +92,15 @@ pub enum Authority {
     SkillsWrite,
     /// Reading the usage ledger: what was spent, by whom, for which customer.
     UsageRead,
+    /// Seeing which sealed credentials a workspace holds and where each may go.
+    /// Never their values, which nothing but the gateway can open.
+    CredentialsRead,
+    /// Storing, rotating and revoking a workspace's sealed credentials.
+    ///
+    /// Separate from `SettingsUpdate`, which writes egress rules: allowing a
+    /// host and supplying the key that is sent to it are different trusts, and
+    /// the second is the one whose misuse spends somebody else's money.
+    CredentialsWrite,
     GatewayInvoke,
     /// Fetching one document through the gateway's egress path, for the API
     /// itself rather than for a turn: a GET, with a larger response allowed
@@ -153,6 +162,8 @@ impl Authority {
         Authority::SkillsRead,
         Authority::SkillsWrite,
         Authority::UsageRead,
+        Authority::CredentialsRead,
+        Authority::CredentialsWrite,
         Authority::WorkspacesInhibit,
         Authority::AgentsInhibit,
         Authority::ApprovalsAnswer,
@@ -191,6 +202,8 @@ impl Authority {
             Authority::SkillsRead => "skills:read",
             Authority::SkillsWrite => "skills:write",
             Authority::UsageRead => "usage:read",
+            Authority::CredentialsRead => "credentials:read",
+            Authority::CredentialsWrite => "credentials:write",
             Authority::WorkspacesInhibit => "workspaces:inhibit",
             Authority::AgentsInhibit => "agents:inhibit",
             Authority::GatewayInvoke => "gateway:invoke",
@@ -231,6 +244,8 @@ impl Authority {
             Authority::SkillsRead => "See skills, the workspace's own and the operator's",
             Authority::SkillsWrite => "Write skills, and override or fork the operator's",
             Authority::UsageRead => "Read the usage ledger",
+            Authority::CredentialsRead => "See the workspace's credentials and where each may go",
+            Authority::CredentialsWrite => "Store, rotate and revoke the workspace's credentials",
             Authority::ApprovalsAnswer => "Answer approvals an agent is waiting on",
             Authority::WorkspacesInhibit => "Stop and restart everything this workspace runs",
             Authority::AgentsInhibit => "Stop and restart one agent",

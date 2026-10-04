@@ -460,6 +460,7 @@ mod tests {
             header: None,
             credential_env: None,
             client: Some(client.clone()),
+            credential: None,
         }
     }
 

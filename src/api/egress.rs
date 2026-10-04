@@ -15,7 +15,7 @@ use crate::runtime::egress::{ClientAuth, ClientCredentials, EgressRule};
 /// queries are static strings, which is what keeps them out of reach of input.
 macro_rules! rule_columns {
     () => {
-        "host, header, credential_env, \
+        "host, header, credential_env, credential_id, \
      token_url, scope, client_id_env, client_secret_env, client_auth"
     };
 }
@@ -45,6 +45,7 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
             header: r.get("header"),
             credential_env: r.get("credential_env"),
             client: read_client(r),
+            credential: r.get("credential_id"),
         })
         .collect())
 }
@@ -108,6 +109,9 @@ pub struct Rule {
     pub credential_env: Option<String>,
     /// Names and a URL, never a secret or a token, for the same reason.
     pub client: Option<ClientCredentials>,
+    /// A sealed credential, by id: safe for the same reason, since what the
+    /// row holds is a ciphertext only the gateway can open.
+    pub credential: Option<Uuid>,
     pub enabled: bool,
     /// Its credential is not bound to this workspace and host, so the gateway
     /// will refuse every request it matches. Said here because a rule written
@@ -123,6 +127,7 @@ impl Rule {
             header: self.header.clone(),
             credential_env: self.credential_env.clone(),
             client: self.client.clone(),
+            credential: self.credential,
         }
     }
 }
@@ -140,6 +145,9 @@ pub struct CreateRule {
     /// `credential_env`.
     #[serde(default)]
     pub client: Option<ClientCredentials>,
+    /// A sealed credential sent in `header`, instead of `credential_env`.
+    #[serde(default)]
+    pub credential: Option<Uuid>,
 }
 
 #[derive(Debug)]
@@ -201,13 +209,25 @@ pub async fn create(
     // A header without a variable would attach nothing; a variable without a
     // header has nowhere to go. Either alone is a rule that looks configured
     // and is not, which is worse than one that plainly is not.
-    match (&input.header, &input.credential_env) {
-        (Some(_), None) => {
+    match (&input.header, &input.credential_env, input.credential) {
+        (Some(_), None, None) => {
             return Err(RuleError::Invalid(
-                "a header needs the name of an environment variable to take its value from".into(),
+                "a header needs a credential, or the name of an environment variable, to take \
+                 its value from"
+                    .into(),
             ));
         }
-        (None, Some(_)) => {
+        (_, Some(_), Some(_)) => {
+            return Err(RuleError::Invalid(
+                "a rule takes a sealed credential or an environment variable, not both".into(),
+            ));
+        }
+        (None, _, Some(_)) => {
+            return Err(RuleError::Invalid(
+                "a credential needs a header to travel in, such as authorization".into(),
+            ));
+        }
+        (None, Some(_), None) => {
             return Err(RuleError::Invalid(
                 "a credential needs a header to travel in, such as authorization".into(),
             ));
@@ -238,6 +258,33 @@ pub async fn create(
         crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
     }
 
+    // A sealed credential is checked against what it was sealed to go to: this
+    // workspace, this exact host, this header. Said now, while somebody is
+    // looking; the gateway asks the same of every request, of the seal itself.
+    if let Some(id) = input.credential {
+        if host.contains('*') {
+            return Err(RuleError::Invalid(
+                "a rule sending a sealed credential names one host, not a wildcard: a \
+                 credential is bound to names, not patterns"
+                    .into(),
+            ));
+        }
+        let binding = super::credentials::binding_of(pool, workspace_id, id)
+            .await
+            .map_err(|e| RuleError::Database(e.to_string()))?
+            .ok_or_else(|| {
+                RuleError::Invalid("no such credential in this workspace, or it is revoked".into())
+            })?;
+        binding
+            .allows(
+                workspace_id,
+                &host,
+                input.header.as_deref(),
+                crate::egress::seal::Kind::Static,
+            )
+            .map_err(RuleError::Invalid)?;
+    }
+
     // Said now, while somebody is looking. Not the enforcement -- the gateway
     // asks again of every request, from bindings this tier cannot write.
     bindings
@@ -248,6 +295,7 @@ pub async fn create(
                 header: input.header.clone(),
                 credential_env: input.credential_env.clone(),
                 client: input.client.clone(),
+                credential: input.credential,
             },
         )
         .map_err(RuleError::Invalid)?;
@@ -255,8 +303,8 @@ pub async fn create(
     let client = input.client.as_ref();
     let row = sqlx::query(concat!(
         "insert into egress_rules (id, workspace_id, host, header, credential_env, \
-             token_url, scope, client_id_env, client_secret_env, client_auth) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             token_url, scope, client_id_env, client_secret_env, client_auth, credential_id) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          returning id, ",
         rule_columns!(),
         ", enabled"
@@ -271,6 +319,7 @@ pub async fn create(
     .bind(client.map(|c| &c.client_id_env))
     .bind(client.map(|c| &c.client_secret_env))
     .bind(client.map(|c| c.client_auth.as_str()))
+    .bind(input.credential)
     .fetch_one(pool)
     .await
     .map_err(|e| match &e {
@@ -301,6 +350,7 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
         host: row.get("host"),
         header: row.get("header"),
         credential_env: row.get("credential_env"),
+        credential: row.get("credential_id"),
         client: read_client(row),
         enabled: row.get("enabled"),
         unbound: false,
