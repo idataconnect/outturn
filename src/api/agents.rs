@@ -25,16 +25,44 @@ impl From<AgentError> for ApiError {
 }
 
 /// An agent as the roster shows it to one caller.
+///
+/// Without its system prompt or policy. A list names agents and says which can
+/// be talked to; the prompt is the largest thing an agent has and nothing that
+/// lists them reads it, so it is fetched with the agent itself
+/// (`GET /v1/agents/{id}`) by the page that edits it.
 #[derive(Debug, serde::Serialize)]
 pub struct ListedAgent {
     #[serde(flatten)]
-    pub agent: Agent,
+    pub agent: AgentSummary,
     /// Whether this caller may start a conversation with it that it will
     /// answer. The roster is workspace-public but starting a conversation is
     /// narrowed, and a disabled agent accepts a session and then fails its
     /// first turn -- so without this a page offers every agent and a person
     /// finds out which ones work by being refused.
     pub can_chat: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentSummary {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+impl From<Agent> for AgentSummary {
+    fn from(agent: Agent) -> Self {
+        Self {
+            id: agent.id,
+            workspace_id: agent.workspace_id,
+            name: agent.name,
+            slug: agent.slug,
+            description: agent.description,
+            enabled: agent.enabled,
+        }
+    }
 }
 
 pub async fn list_agents(
@@ -61,7 +89,7 @@ pub async fn list_agents(
                 Authority::SessionsCreate,
                 agent.id,
             ) && agent.takes_conversations(),
-            agent,
+            agent: AgentSummary::from(agent),
         })
         .collect();
     Ok(Json(super::Page::from_rows(items, limit, |a| a.agent.id)))
