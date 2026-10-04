@@ -8,6 +8,7 @@ import { fileUrl, isMarkdown, readPreview, type Preview } from '../lib/chat'
 import { ApiError } from '../lib/api'
 import { iconButton } from '../lib/buttons'
 import { useFocusTrap } from '../lib/useFocusTrap'
+import { UnfetchedImage } from './MarkdownText'
 
 /**
  * A look at one stored file, over the conversation.
@@ -156,7 +157,17 @@ export default function FilePreview({
                     same library underneath. Raw HTML is not enabled, so a
                     markdown file written by an agent cannot smuggle a script
                     tag into this origin. */}
-                <Markdown remarkPlugins={[remarkGfm]}>{preview.text}</Markdown>
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  // An agent may have written this file: see UnfetchedImage.
+                  components={{
+                    img: ({ src, alt }) => (
+                      <UnfetchedImage src={typeof src === 'string' ? src : undefined} alt={alt} />
+                    ),
+                  }}
+                >
+                  {preview.text}
+                </Markdown>
               </div>
             ) : (
               // Monospace and wrapped: a preview of a log or a CSV is read as
