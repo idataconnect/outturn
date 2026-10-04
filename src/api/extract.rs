@@ -177,6 +177,48 @@ pub async fn backfill(
     }
 }
 
+/// `backfill`, after the response rather than before it.
+///
+/// A listing is somebody waiting on a click, and backfill costs up to two
+/// storage round trips per file -- in a workspace scope that only ever grows,
+/// that made opening the Files tab slower every week for work the reader is
+/// not waiting on. So the listing answers at once and this runs beside it.
+///
+/// One at a time per listed root: opening the tab twice in a row would
+/// otherwise stat the same files twice concurrently, and the second pass
+/// finds nothing the first will not. A root skipped this way is picked up on
+/// the next listing that finds it idle.
+pub fn backfill_later(
+    pool: sqlx::PgPool,
+    storage: Arc<dyn crate::runtime::storage::StorageBackend>,
+    workspace_id: Uuid,
+    root: String,
+    keys: Vec<String>,
+) {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+
+    static RUNNING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+    if tika_url().is_none() || keys.is_empty() {
+        return;
+    }
+    if !RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root.clone())
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        backfill(&pool, storage.as_ref(), workspace_id, keys).await;
+        RUNNING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&root);
+    });
+}
+
 /// Claims extraction work and does it, until shutdown.
 ///
 /// Runs in the API tier because that is where the bucket and the database
