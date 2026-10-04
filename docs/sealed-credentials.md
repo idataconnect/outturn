@@ -208,8 +208,10 @@ and a revoked row never changes again, so nothing ever evicts it. So:
 - **Invalidating a credential evicts the access tokens it bought**, for a
   client-credentials pair, from the token cache as well.
 
-The role cache in the API has the first and third of those gaps today; fixing it
-there is the same change.
+The role cache in the API (`api::role::postgres`) follows the first three: a
+per-workspace generation, a minute's expiry, and a listener that clears and
+bypasses the cache from the moment it is seen to drop until it is listening
+again.
 
 ## Revocation reaches a running turn
 
