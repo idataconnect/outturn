@@ -332,11 +332,16 @@ pub struct Tested {
     /// The host's own status: 200 means the key worked, 401 that it did not.
     pub status: u16,
     pub ok: bool,
+    /// The gateway's fingerprint of the key it sent. The same key always shows
+    /// the same one; a different one means the key is not the one it was.
+    pub fingerprint: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct Fetched {
     status: u16,
+    #[serde(default)]
+    credential_fingerprint: Option<String>,
 }
 
 /// Makes one GET through the gateway with the credential attached, exactly as
@@ -422,5 +427,6 @@ pub async fn test(
         url,
         status: fetched.status,
         ok: (200..300).contains(&fetched.status),
+        fingerprint: fetched.credential_fingerprint,
     }))
 }

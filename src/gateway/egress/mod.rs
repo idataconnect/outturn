@@ -88,6 +88,11 @@ pub struct EgressResponse {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub truncated: bool,
+    /// Which sealed credential was sent, as a fingerprint only this gateway can
+    /// compute: what the credentials page shows so a swapped key is seen.
+    /// Absent when no sealed credential was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_fingerprint: Option<String>,
 }
 
 /// Makes a request for a caller that has shown it is allowed to.
@@ -339,6 +344,7 @@ pub async fn fetch(
     // workspace -- the token's, never the rule's -- this host and this header.
     // The binding is the one the seal's tag covers, so nothing the API or the
     // database's writer changed afterwards can widen it.
+    let mut credential_fingerprint = None;
     if let Some(id) = rule.credential {
         if rule.credential_env.is_some() || rule.client.is_some() {
             return Err((
@@ -378,6 +384,7 @@ pub async fn fetch(
         })?;
         value.set_sensitive(true);
         outgoing.insert(name, value);
+        credential_fingerprint = Some(opened.fingerprint.clone());
     }
 
     // Exchanged here, after everything about the request itself has been
@@ -463,6 +470,7 @@ pub async fn fetch(
                 headers: response.headers,
                 body: response.body,
                 truncated: response.truncated,
+                credential_fingerprint,
             }))
         }
         // A failed request is not a refusal: the caller was allowed, and the

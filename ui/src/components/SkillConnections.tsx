@@ -275,6 +275,14 @@ export function Connection({
                 ? `The server answered ${tested.status}: the key works.`
                 : (httpFailure(JSON.stringify({ status: tested.status })) ??
                   `The server answered ${tested.status}.`)}
+              {tested.fingerprint && (
+                <span
+                  className="ml-1 font-mono text-surface-500 dark:text-surface-400"
+                  title="The gateway's fingerprint of the key it sent. The same key always shows the same one; if this changes and nobody replaced the key, somebody else did."
+                >
+                  · key {tested.fingerprint}
+                </span>
+              )}
             </p>
           )}
           <div className="flex gap-2">
