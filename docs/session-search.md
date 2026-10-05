@@ -1,7 +1,7 @@
 # Session search
 
-Finding a conversation again. Designed; the recent list by last activity is
-built (step 1 below), search is not.
+Finding a conversation again. The recent list by last activity and title
+search are built (steps 1 and 2 below); content search and embeddings are not.
 
 ## Why the list stops being enough
 
@@ -148,7 +148,14 @@ weighted sum.
    session became active or was deleted between pages.
    The UI's sidebar reads pages and says when there are more. This alone
    retires the audit finding.
-2. Title search. Most of what people type, for a trigram index.
+2. Title search. Most of what people type, for a trigram index. Built: `q` on
+   `/v1/agent-sessions` narrows the same list in the same order and pages the
+   same way, matched with `ilike` over a `pg_trgm` GIN index, a typed `%` or
+   `_` taken literally. The sidebar searches the server rather than the page it
+   holds, and loads further pages as it is scrolled; a link to a conversation
+   no page has reached is read on its own (`GET /v1/agent-sessions/{id}`)
+   before it is called missing. Until step 1 was finished on the client, the
+   sidebar read every page at once, which this retires.
 3. Content search, narrowed in the query, with the excerpt.
 4. The embeddings component, the gateway operation, the worker job and the
    backfill.

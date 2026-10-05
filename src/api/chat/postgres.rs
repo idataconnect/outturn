@@ -427,9 +427,21 @@ impl ChatStore for PostgresChatStore {
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
         agent: Option<Uuid>,
+        title: Option<&str>,
         after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError> {
+        // Matched anywhere in the title, ignoring case, with the wildcards a
+        // person might type taken literally: searching for "50%" means the
+        // characters, not "50 then anything".
+        let title = title.map(|t| {
+            format!(
+                "%{}%",
+                t.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )
+        });
         let rows = sqlx::query(
             // Most recently active first, keyed on (last_active_at, id), and
             // the cursor is that pair rather than an id whose position is
@@ -446,6 +458,7 @@ impl ChatStore for PostgresChatStore {
                and ($2::uuid[] is null or s.agent_id = any($2) or s.user_id = $3) \
                and ($4::timestamptz is null or (s.last_active_at, s.id) < ($4, $5)) \
                and ($7::uuid is null or s.agent_id = $7) \
+               and ($8::text is null or s.title ilike $8) \
              order by s.last_active_at desc, s.id desc \
              limit $6",
         )
@@ -456,6 +469,7 @@ impl ChatStore for PostgresChatStore {
         .bind(after.map(|r| r.id))
         .bind(limit)
         .bind(agent)
+        .bind(title)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;

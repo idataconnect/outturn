@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Chat from './Chat'
+import { sessionsPage, type AgentSession } from '../lib/chat'
 import { SessionContext, type SessionState } from '../lib/session'
 
 function setWidth(px: number) {
@@ -23,10 +24,21 @@ vi.mock('../lib/chat', () => ({
     { id: 'a1', name: 'Helper', slug: 'helper', description: '', enabled: true, can_chat: true },
     { id: 'a2', name: 'Other', slug: 'other', description: '', enabled: true, can_chat: true },
   ]),
-  listSessions: vi.fn(async () => [
-    { id: 's1', agent_id: 'a1', title: 'First chat' },
-    { id: 's2', agent_id: 'a1', title: 'Second chat' },
-  ]),
+  sessionsPage: vi.fn(async () => ({
+    items: [
+      { id: 's1', agent_id: 'a1', title: 'First chat' },
+      { id: 's2', agent_id: 'a1', title: 'Second chat' },
+    ],
+    next: null,
+  })),
+  // Anything not on the page is, in these tests, a session that does not exist.
+  getSession: vi.fn(async () => {
+    throw new Error('not found')
+  }),
+  mergeRecent: (held: { id: string }[], fresh: { id: string }[]) => [
+    ...fresh,
+    ...held.filter((s) => !fresh.some((f) => f.id === s.id)),
+  ],
   createSession: vi.fn(async () => ({ id: 's3', agent_id: 'a1', title: null })),
   renameSession: vi.fn(),
   sessionName: (s: { title?: string | null }) => s?.title ?? 'Untitled',
@@ -284,5 +296,40 @@ describe('a failed turn', () => {
 
     expect(await screen.findByText(/not available in this workspace/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+})
+
+describe('searching', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('asks the server, and shows what it found in place of the recent list', async () => {
+    const user = userEvent.setup()
+    setWidth(1440)
+    vi.mocked(sessionsPage).mockImplementation(async (opts = {}) =>
+      opts.q
+        ? { items: [{ id: 's9', agent_id: 'a1', title: 'Rose Room, from March' } as AgentSession], next: null }
+        : {
+            items: [
+              { id: 's1', agent_id: 'a1', title: 'First chat' } as AgentSession,
+              { id: 's2', agent_id: 'a1', title: 'Second chat' } as AgentSession,
+            ],
+            next: null,
+          },
+    )
+    show()
+    const aside = () => within(document.querySelector('aside')!)
+    await aside().findByText('Second chat')
+
+    await user.type(screen.getByRole('searchbox', { name: /search conversations/i }), 'rose')
+
+    expect(await aside().findByText('Rose Room, from March')).toBeInTheDocument()
+    expect(aside().queryByText('Second chat')).toBeNull()
+    expect(sessionsPage).toHaveBeenCalledWith({ q: 'rose' })
+
+    await user.clear(screen.getByRole('searchbox', { name: /search conversations/i }))
+    expect(await aside().findByText('Second chat')).toBeInTheDocument()
   })
 })

@@ -1568,7 +1568,8 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route(
             "/v1/agent-sessions/{id}",
-            axum::routing::delete(super::sessions::delete_session)
+            get(super::sessions::get_session)
+                .delete(super::sessions::delete_session)
                 .patch(super::sessions::rename_session),
         )
         .route(

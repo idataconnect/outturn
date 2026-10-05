@@ -291,7 +291,20 @@ export type AgentActivity = {
   live_session_id: string | null
 }
 export const agentActivity = () => api<AgentActivity[]>('/v1/agents/activity')
-export const listSessions = () => allPages<AgentSession>('/v1/agent-sessions')
+/** One page of the recent list, most recently active first. `next` continues
+ *  it; `q` narrows it to titles containing those words, in the same order. */
+export type SessionPage = { items: AgentSession[]; next: string | null }
+
+export function sessionsPage(opts: { after?: string; q?: string } = {}): Promise<SessionPage> {
+  const params = new URLSearchParams({ limit: '50' })
+  if (opts.after) params.set('after', opts.after)
+  if (opts.q) params.set('q', opts.q)
+  return api<SessionPage>(`/v1/agent-sessions?${params}`)
+}
+
+/** One session, for a link to a conversation the paged list has not reached. */
+export const getSession = (sessionId: string) =>
+  api<AgentSession>(`/v1/agent-sessions/${sessionId}`)
 
 /** One agent's most recently active sessions. */
 export const recentSessionsOf = async (agentId: string, limit: number) =>
