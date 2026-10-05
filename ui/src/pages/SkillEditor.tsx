@@ -581,7 +581,7 @@ export default function SkillEditor() {
                 onClick={() => void onRetire()}
                 className="ml-auto px-3 py-2 rounded-md text-sm text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800"
               >
-                {skill?.retired_at ? 'Bring back' : 'Retire'}
+                {skill?.retired_at ? 'Reactivate' : 'Retire'}
               </button>
             )}
           </div>
