@@ -133,16 +133,16 @@ export default function AgentSkills({ agentId }: { agentId: string }) {
                     <p className="mt-1 flex items-start gap-1 text-xs text-amber-700 dark:text-amber-500">
                       <Globe size={12} className="mt-0.5 shrink-0" aria-hidden />
                       <span>
-                        Reaches{' '}
+                        Needs network access to{' '}
                         <span className="font-mono">
                           {[
                             ...skill.unmet_hosts,
                             ...(overrideFor(skill.id)?.unmet_hosts ?? []),
                           ].join(', ')}
                         </span>
-                        , which this workspace has not allowed.{' '}
+                        , which this workspace doesn't allow yet.{' '}
                         <Link to={`/skills/${skill.id}`} className="underline underline-offset-2">
-                          Review it
+                          More on the skill's page
                         </Link>
                         .
                       </span>
