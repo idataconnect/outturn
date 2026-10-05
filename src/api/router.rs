@@ -1579,6 +1579,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // acted on is the conversation, and which job is answering it is the
         // platform's business rather than the caller's.
         .route(
+            "/v1/agent-sessions/{id}/compact",
+            post(super::compact::request),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/prompt",
+            get(super::compact::status),
+        )
+        .route(
             "/v1/agent-sessions/{id}/cancel",
             post(super::sessions::cancel_turn),
         )

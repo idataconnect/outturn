@@ -729,6 +729,28 @@ pub struct Worker {
     pub gateway_url: Option<String>,
 }
 
+/// What a conversation's kept system prompt is against what would be composed
+/// now.
+#[derive(Debug, serde::Serialize)]
+pub struct PromptStatus {
+    /// When it was composed. Absent before the first turn.
+    pub composed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether it is what would be composed now. False also when only the
+    /// agent's own prompt changed, which `skills` cannot show.
+    pub current: bool,
+    /// The skills whose version moved on, or were added or removed since.
+    pub skills: Vec<StaleSkill>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StaleSkill {
+    pub name: String,
+    /// The version ordinal the conversation has; absent for a skill added since.
+    pub kept: Option<i32>,
+    /// The one it would have now; absent for a skill removed since.
+    pub live: Option<i32>,
+}
+
 /// What preparing a turn concluded.
 ///
 /// Three outcomes, because a turn that is being kept is neither ready nor
@@ -1789,7 +1811,7 @@ impl Worker {
         // compacting is when the conversation takes that prompt up: the summary
         // has to know what the agent is being told from here on.
         let summary = self
-            .summarised(
+            .compacting(
                 &projected,
                 &sources,
                 &fresh_prompt,
@@ -1896,6 +1918,231 @@ impl Worker {
                 gates,
             },
         )))
+    }
+
+    /// `summarised`, announced: a compaction is a model call in the middle of
+    /// preparing a turn, and a reader left watching a pause with no reason
+    /// given is told nothing about why the reply is slow to start. Said only
+    /// when a summary is actually attempted.
+    #[allow(clippy::too_many_arguments)]
+    async fn compacting(
+        &self,
+        conversation: &[serde_json::Value],
+        sources: &[Uuid],
+        system_prompt: &str,
+        budget: usize,
+        session_id: Uuid,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+        model: &str,
+    ) -> Option<Vec<serde_json::Value>> {
+        if super::chat::trim::total_cost(conversation) <= budget
+            || self.minter.is_none()
+            || self.gateway_url.is_none()
+            || super::chat::summarise::boundary(conversation).is_none()
+        {
+            return None;
+        }
+        self.tell(
+            workspace_id,
+            session_id,
+            "chat.compacting",
+            serde_json::json!({}),
+        )
+        .await;
+        let summary = self
+            .summarised(
+                conversation,
+                sources,
+                system_prompt,
+                budget,
+                session_id,
+                workspace_id,
+                agent_id,
+                model,
+            )
+            .await;
+        self.tell(
+            workspace_id,
+            session_id,
+            "chat.compacted",
+            serde_json::json!({ "summarised": summary.is_some() }),
+        )
+        .await;
+        summary
+    }
+
+    /// Best effort: an event nobody receives must not cost the work it
+    /// describes.
+    async fn tell(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        if let Err(e) =
+            events::append(&self.pool, workspace_id, Some(session_id), kind, payload).await
+        {
+            tracing::warn!(%session_id, error = %e, kind, "could not announce");
+        }
+    }
+
+    /// Compacts a conversation because somebody asked: summarises what the
+    /// usual rule would summarise, whatever the budget, and composes the
+    /// system prompt again from the agent and its skills as they stand.
+    ///
+    /// Not a special case of anything. Asked of a conversation too short to
+    /// summarise, the summary is skipped as it always would be and the prompt
+    /// is still composed again, since that is what compacting is for here:
+    /// taking up what was published since the conversation began.
+    pub async fn compact(&self, workspace_id: Uuid, session_id: Uuid) -> anyhow::Result<()> {
+        let session = match self.chat.get_session(workspace_id, session_id).await {
+            Ok(s) => s,
+            Err(super::chat::ChatError::NotFound) => return Ok(()),
+            Err(e) => anyhow::bail!("session: {e}"),
+        };
+        let agent = self
+            .agents
+            .get(workspace_id, session.agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
+        let live_skills = self
+            .skills
+            .resolve_for_agent(workspace_id, agent.id)
+            .await
+            .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
+        let model = model_for(&agent.policy)?;
+        let fresh_prompt =
+            super::skill::compose_for_turn(&agent.system_prompt, &live_skills, &model);
+
+        let history = self
+            .chat
+            .turn_history(session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+        let (projected, sources) = projected_with_sources(&history.messages);
+
+        self.tell(
+            workspace_id,
+            session_id,
+            "chat.compacting",
+            serde_json::json!({}),
+        )
+        .await;
+        // A budget of nothing is what "whatever the budget" means to the one
+        // check that reads it; everything else is the ordinary path.
+        let summarised = self
+            .summarised(
+                &projected,
+                &sources,
+                &fresh_prompt,
+                0,
+                session_id,
+                workspace_id,
+                agent.id,
+                &model,
+            )
+            .await
+            .is_some();
+        self.keep_prompt(session_id, &model, &fresh_prompt, &live_skills)
+            .await?;
+        self.tell(
+            workspace_id,
+            session_id,
+            "chat.compacted",
+            serde_json::json!({ "summarised": summarised }),
+        )
+        .await;
+        tracing::info!(%session_id, summarised, "conversation compacted on request");
+        Ok(())
+    }
+
+    /// Whether a conversation's kept system prompt is still what would be
+    /// composed now, and if not, which skills moved on. Asked by the session
+    /// page, so a conversation running on an older version says so rather
+    /// than looking like an edit that did not take.
+    pub async fn prompt_status(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        agent_id: Uuid,
+    ) -> anyhow::Result<PromptStatus> {
+        use sqlx::Row as _;
+        let Some(row) = sqlx::query(
+            "select model, prompt, skills, composed_at from session_prompts where session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(PromptStatus {
+                composed_at: None,
+                current: true,
+                skills: Vec::new(),
+            });
+        };
+        let agent = self
+            .agents
+            .get(workspace_id, agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
+        let live = self
+            .skills
+            .resolve_for_agent(workspace_id, agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
+        let model: String = row.get("model");
+        // Another model composes again on the next turn by itself; nothing to
+        // offer here.
+        if model_for(&agent.policy).ok().as_deref() != Some(model.as_str()) {
+            return Ok(PromptStatus {
+                composed_at: Some(row.get("composed_at")),
+                current: true,
+                skills: Vec::new(),
+            });
+        }
+        let kept: Vec<super::skill::ResolvedSkill> =
+            serde_json::from_value(row.get("skills")).unwrap_or_default();
+        let fresh = super::skill::compose_for_turn(&agent.system_prompt, &live, &model);
+        let current = fresh == row.get::<String, _>("prompt");
+
+        let mut ids: Vec<Uuid> = kept.iter().chain(&live).map(|s| s.version_id).collect();
+        ids.sort();
+        ids.dedup();
+        let ordinals: std::collections::HashMap<Uuid, i32> =
+            sqlx::query_as("select id, ordinal from skill_versions where id = any($1)")
+                .bind(&ids)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .collect();
+        let mut skills = Vec::new();
+        for s in &live {
+            let was = kept.iter().find(|k| k.skill_id == s.skill_id);
+            if was.map(|k| k.version_id) != Some(s.version_id) {
+                skills.push(StaleSkill {
+                    name: s.name.clone(),
+                    kept: was.and_then(|k| ordinals.get(&k.version_id).copied()),
+                    live: ordinals.get(&s.version_id).copied(),
+                });
+            }
+        }
+        for k in kept
+            .iter()
+            .filter(|k| !live.iter().any(|s| s.skill_id == k.skill_id))
+        {
+            skills.push(StaleSkill {
+                name: k.name.clone(),
+                kept: ordinals.get(&k.version_id).copied(),
+                live: None,
+            });
+        }
+        Ok(PromptStatus {
+            composed_at: Some(row.get("composed_at")),
+            current,
+            skills,
+        })
     }
 
     /// The system prompt this conversation was given, and the skills it was

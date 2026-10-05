@@ -8,6 +8,7 @@ import { useSkillCommands } from '../lib/useSkillCommands'
 import ApprovalPrompt from '../components/ApprovalPrompt'
 import SleepBanner from '../components/SleepBanner'
 import Thread from '../components/Thread'
+import PromptBanner from '../components/PromptBanner'
 import AgentList from '../components/AgentList'
 import FilesPanel from '../components/FilesPanel'
 import SidePane, { type PaneTab } from '../components/SidePane'
@@ -95,7 +96,17 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
    *  shows what happened without anyone reopening it. */
   const [storedChange, setStoredChange] = useState(0)
 
-  const { runtime, error: chatError, held, stopping, retry, clearHeld, dismissError } = useChatRuntime(
+  const {
+    runtime,
+    error: chatError,
+    held,
+    stopping,
+    compacting,
+    compactions,
+    retry,
+    clearHeld,
+    dismissError,
+  } = useChatRuntime(
     active,
     (title) => {
       if (!active) return
@@ -510,6 +521,14 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
               />
             )}
           </div>
+        )}
+        {active && current && (
+          <PromptBanner
+            sessionId={active}
+            agentId={current.agent_id}
+            compacting={compacting}
+            compactions={compactions}
+          />
         )}
         <div className="flex-1 min-h-0">
           {/* A new chat draws nothing until the agents are in: whether to ask
