@@ -33,6 +33,7 @@ export default function PromptBanner({
 }) {
   const [status, setStatus] = useState<PromptStatus | null>(null)
   const [asked, setAsked] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
 
   useEffect(() => {
     let stopped = false
@@ -56,28 +57,33 @@ export default function PromptBanner({
     )
   }
 
-  if (!status || status.current || status.skills.length === 0) return null
+  if (!status || status.current) return null
 
-  const changes = status.skills.map(describe).join(', ')
+  // Only the agent's own instructions changed when no skill did.
+  const changes =
+    status.skills.length > 0
+      ? status.skills.map(describe).join(', ')
+      : "This agent's instructions were changed"
+  const it = status.skills.length > 1 ? 'them' : 'it'
 
   return (
     <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
       <p className="text-sm text-surface-700 dark:text-surface-300" role="status">
-        {changes}. This conversation keeps what it started with until it compacts. To use the newer
-        version,{' '}
+        {changes}. To use {it},{' '}
         <button
           type="button"
           disabled={asked}
           onClick={() => {
             setAsked(true)
+            setFailed(null)
             void compactSession(sessionId).catch((e) => {
               setAsked(false)
-              if (!(e instanceof ApiError)) throw e
+              setFailed(e instanceof ApiError ? e.message : 'the request did not go through')
             })
           }}
           className="underline underline-offset-2 disabled:opacity-50"
         >
-          compact this one
+          compact this session
         </button>{' '}
         or{' '}
         <Link to={`/sessions/new?agent=${agentId}`} className="underline underline-offset-2">
@@ -85,6 +91,11 @@ export default function PromptBanner({
         </Link>
         .
       </p>
+      {failed && (
+        <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">
+          Compacting did not start: {failed}
+        </p>
+      )}
     </div>
   )
 }
