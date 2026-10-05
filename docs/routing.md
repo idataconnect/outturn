@@ -85,7 +85,7 @@ A different family is allowed but visible: recorded on the reply and the
 ledger as a model change, shown in the UI, and something a workspace opts into
 per route rather than gets for free. Cross-provider failover is not honest
 until the durable transcript is separated from the per-provider projection
-(see AGENTS.md), because a transcript that has been through two families
+(see [compaction.md](compaction.md)), because a transcript that has been through two families
 holds artifacts each rejects. A skill certified on one model declares that it
 accepts same-model fallback only; the workspace cannot loosen that, the operator
 can.

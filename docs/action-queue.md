@@ -41,7 +41,7 @@ the work, `worker::inhibited` already consults it at every checkpoint, and
 
 The queue does not restate that. Storing a `pending`/`resolved` column beside a
 hold that is itself either held or released puts one fact in two places, and
-`AGENTS.md` opens its invariants with what that costs here: `cancelled` was
+[invariants.md](invariants.md) opens with what that costs here: `cancelled` was
 added to a check constraint and two SQL lists and missed in two others, and a
 session wedged permanently. A queue row saying "still waiting" for a hold
 somebody released is the same bug, and its symptom is a person answering a

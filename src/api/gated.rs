@@ -91,7 +91,7 @@ pub async fn raise(
     // The lease, as `work::report` and `work::abandon` require it. Without it
     // `WorkTake` alone is enough to raise an approval against *any* job, so a
     // runtime holding one turn could park other tenants' conversations and fill
-    // their approvers' queues -- AGENTS.md calls the lease "the only thing
+    // their approvers' queues -- docs/invariants.md calls the lease "the only thing
     // joining a claim to the runtime running it", and this endpoint was taking
     // the runtime's word for which turn it was speaking about.
     let lease = super::work::lease_from(&headers)?;

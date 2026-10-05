@@ -217,7 +217,7 @@ pub fn verify(
                 // hmac delivery with no protection at all. The tolerance
                 // check above makes it unreachable today, which is exactly
                 // the kind of reasoning that stops being true two refactors
-                // later. "Could not verify" means refused; see AGENTS.md.
+                // later. "Could not verify" means refused; see docs/invariants.md.
                 let Some(at) = DateTime::from_timestamp(sent, 0) else {
                     return Err(Refusal::StaleTimestamp);
                 };

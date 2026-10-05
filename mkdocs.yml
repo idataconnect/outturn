@@ -73,6 +73,8 @@ nav:
       - This machine's model: local-development.md
   - Design:
       - Roadmap: roadmap.md
+      - Design notes: design-notes.md
+      - Invariants: invariants.md
       - Glossary: glossary.md
       - Tenancy and access:
           - Tenancy, credentials and attribution: workspaces.md
@@ -82,6 +84,7 @@ nav:
           - Routing: routing.md
           - Usage: usage.md
           - Prompt caching: caching.md
+          - Compaction: compaction.md
       - Reaching the outside:
           - Egress: egress.md
           - Integrations: integrations.md

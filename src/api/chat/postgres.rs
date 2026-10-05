@@ -578,7 +578,7 @@ impl ChatStore for PostgresChatStore {
     ) -> Result<History, ChatError> {
         // Summaries are served, not hidden. The reader's complaint was never
         // that a summary is here -- it is that an unmarked one reads as
-        // something the agent said to them. AGENTS.md is explicit that the
+        // something the agent said to them. docs/compaction.md is explicit that the
         // mark is what fixes that, and for two reasons: "both so a reader can
         // see what happened, and so the next compaction knows it is compacting
         // a summary". Withholding it would leave a person unable to see that

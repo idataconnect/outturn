@@ -47,7 +47,7 @@ Mac. Nothing in the repository recorded it, so `context_budget` was sized
 against a number nobody could see. When the two disagree, a budget larger than
 the window hands the model server the job of deciding what to drop from a long
 conversation, and it drops oldest first and silently, without the order
-outturn's own trim keeps. See "Compaction" in AGENTS.md.
+outturn's own trim keeps. See [compaction.md](compaction.md).
 
 So with ollama the script serves a tag of its own, `outturn/qwen3.5-ctx32768`,
 made from the pulled model with `num_ctx` set to the answer. A model's
