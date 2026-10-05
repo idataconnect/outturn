@@ -62,7 +62,7 @@ const WORK_POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug, Serialize)]
 pub struct Assignment {
     pub job_id: Uuid,
-    /// Exactly what used to be POSTed to a runtime, travelling the other way.
+    /// Exactly what used to be POSTed to a runtime, traveling the other way.
     #[serde(flatten)]
     pub request: crate::runtime::router::ExecuteRequest,
     /// Minted per turn rather than held by the runtime, so what a turn may
@@ -268,7 +268,7 @@ pub async fn take(
 /// bounded by what this tier granted for that turn rather than by whatever the
 /// runtime happens to hold. `egress_commitment` comes from the same
 /// `ExecuteRequest` this token is minted for, so the claim and the rules
-/// travelling beside it are always the API's word about the same turn.
+/// traveling beside it are always the API's word about the same turn.
 pub fn mint_for(
     state: &ApiState,
     session_id: Uuid,
@@ -319,7 +319,7 @@ pub struct Refreshed {
 /// five minutes.
 ///
 /// Only a token that is still good is accepted. An expired one is refused
-/// rather than read, because a path that honours an expired credential is the
+/// rather than read, because a path that honors an expired credential is the
 /// kind of exception that outlives the reason it was added.
 pub async fn refresh_token(
     State(state): State<Arc<ApiState>>,

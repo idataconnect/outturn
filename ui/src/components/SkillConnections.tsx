@@ -23,7 +23,7 @@ import { httpFailure } from '../lib/httpFailure'
  * where a workspace does that -- paste the key, and it is sealed in this
  * browser to the gateway, stored, and put on the host's rule, with no restart
  * anywhere. Then one GET says whether it works, so a wrong key is a red 401
- * here rather than an agent apologising for it later.
+ * here rather than an agent apologizing for it later.
  *
  * Only hosts the workspace already allows are shown; allowing one is the
  * banner above this.

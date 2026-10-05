@@ -111,11 +111,11 @@ pub async fn claim(
     limit: i64,
     lease: Duration,
 ) -> Result<Vec<JobHandle>, JobError> {
-    // Serialisation takes two statements, and the second one is the point.
+    // Serialization takes two statements, and the second one is the point.
     //
     // Everything below used to be a single statement: pick candidates, take a
     // transaction-scoped advisory lock on the serial key, check that nothing
-    // with that key is already running, claim. The advisory lock did serialise
+    // with that key is already running, claim. The advisory lock did serialize
     // correctly. It bought nothing, because under READ COMMITTED one statement
     // sees one snapshot, taken before the statement began -- so a claimer that
     // acquired the lock *after* another had claimed and committed still
@@ -286,7 +286,7 @@ pub async fn fail(
 ///
 /// For the tier recording a turn's result, which knows the job by id and needs
 /// what it was for. Deliberately not scoped by state: a job whose lease
-/// lapsed while it ran still has to be recognisable when its results arrive.
+/// lapsed while it ran still has to be recognizable when its results arrive.
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
     let row = sqlx::query(
         "select id, workspace_id, kind, payload, attempts, max_attempts, lease_token \
@@ -303,7 +303,7 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
 
 /// Whether a job is out with something that claimed it.
 ///
-/// The claim is what authorises reporting a turn: a job that is pending was
+/// The claim is what authorizes reporting a turn: a job that is pending was
 /// never handed out, and one that has finished was reported already. Checking
 /// the state is what stops a job id alone from being enough to write into a
 /// transcript.
@@ -735,7 +735,7 @@ where
 ///
 /// The one place the mapping from a hold's scope to a resume's breadth lives.
 /// Both callers -- releasing a hold by hand, and answering an approval -- had
-/// their own copy of it, and the second derived the session from a denormalised
+/// their own copy of it, and the second derived the session from a denormalized
 /// copy in the queue item's payload instead of from the hold. That copy is there
 /// for the reader; as control flow a missing key becomes `(None, None)`, which
 /// `resume_parked` reads as every parked turn in the workspace. One function, so

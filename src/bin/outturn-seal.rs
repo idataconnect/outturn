@@ -87,7 +87,7 @@ fn main() {
         "hosts": hosts,
         "header": header,
     }))
-    .expect("a binding serialises");
+    .expect("a binding serializes");
     // Checked before sealing, so a mistake is said here rather than by the API.
     if let Err(why) = seal::Binding::parse(&binding) {
         eprintln!("{why}");

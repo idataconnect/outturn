@@ -35,7 +35,7 @@ the one holding the key.
 character. `session-name` is the second: the one request made after a
 conversation's first turn to give it a title, sent by the API tier under its
 own class so an operator can point it at a small model with a row. More come
-as they are needed -- `customer-service`, `summarise`, `compaction` -- and
+as they are needed -- `customer-service`, `summarize`, `compaction` -- and
 each is a row set, not code. Absent a row for a class, the gateway's static
 providers serve it, so a class costs nothing to introduce.
 
@@ -55,7 +55,7 @@ is a fallback, not a derivation: priority is a property of the trigger (is
 somebody waiting?), class is a property of the task (what is good enough?),
 and the same class runs at both. A message handler enqueues realtime, a
 scheduler or webhook enqueues background, and only a job that says nothing
-takes the class's default. `summarise` and `compaction` default to background
+takes the class's default. `summarize` and `compaction` default to background
 because nobody is ever watching them.
 
 ## Rows as the whole of routing
@@ -91,7 +91,7 @@ accepts same-model fallback only; the workspace cannot loosen that, the operator
 can.
 
 The editor infers the kind from model names so the obvious cases need no
-labelling.
+labeling.
 
 ## The surcharge fallback
 

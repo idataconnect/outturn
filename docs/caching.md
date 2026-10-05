@@ -74,7 +74,7 @@ again. Each compaction costs one miss rather than one per turn, and the
 compacted-history breakpoint stays good between them. The order of sacrifice
 in AGENTS.md is unchanged; it is the batching that is new.
 
-Summarising completed turns' tool results fits the same rule. Done once, when
+Summarizing completed turns' tool results fits the same rule. Done once, when
 the turn has finished, it is a single miss, after which every turn caches and
 sends the smaller version.
 

@@ -18,7 +18,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 ///
 /// Deliberately about hosts rather than URLs. A workspace adding an API knows its
 /// hostname and would have to guess at its paths, and a rule written in paths
-/// silently stops matching when the vendor reorganises them. Scheme, port and
+/// silently stops matching when the vendor reorganizes them. Scheme, port and
 /// path are the request's business; whether this host may be spoken to at all
 /// is the rule's.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -212,7 +212,7 @@ fn opened_by_operator(host: &str) -> bool {
 /// `https://api.stripe.com/v1/charges`, or `API.Stripe.com`, or a trailing
 /// slash. All of those name the same host and all of them are accepted. What
 /// is refused is a rule that would not mean what its author thought.
-pub fn normalise_host(input: &str) -> Result<String, String> {
+pub fn normalize_host(input: &str) -> Result<String, String> {
     let mut host = input.trim().to_ascii_lowercase();
 
     // Pasted from a browser or a curl example.
@@ -485,7 +485,7 @@ pub async fn resolve_and_vet(host: &str, port: u16) -> Result<Vec<std::net::Sock
 /// Where a host is, without judging whether it may be reached.
 ///
 /// Split out for the one caller that has already been told the answer: a host
-/// an operator opened is reached despite being private, and the judgement is
+/// an operator opened is reached despite being private, and the judgment is
 /// the only part being skipped. Resolution still happens and the addresses are
 /// still pinned, so what was checked and what is connected to stay the same
 /// place -- which is the property that would be lost by resolving twice.
@@ -623,13 +623,13 @@ mod tests {
             "api.stripe.com.",
         ] {
             assert_eq!(
-                normalise_host(typed).expect(typed),
+                normalize_host(typed).expect(typed),
                 "api.stripe.com",
                 "{typed:?} did not become a rule"
             );
         }
         assert_eq!(
-            normalise_host("*.EXAMPLE.com").expect("wildcard"),
+            normalize_host("*.EXAMPLE.com").expect("wildcard"),
             "*.example.com"
         );
     }
@@ -649,7 +649,7 @@ mod tests {
             "postgres",
             "-bad.example.com",
         ] {
-            assert!(normalise_host(typed).is_err(), "{typed:?} was accepted");
+            assert!(normalize_host(typed).is_err(), "{typed:?} was accepted");
         }
     }
 
@@ -657,11 +657,11 @@ mod tests {
     fn an_address_inside_the_cluster_is_refused_when_it_is_typed() {
         // It would never permit anything, and finding that out here is better
         // than finding it out in an agent's transcript.
-        let refused = normalise_host("10.0.0.5").expect_err("accepted");
+        let refused = normalize_host("10.0.0.5").expect_err("accepted");
         assert!(refused.contains("inside the network"), "{refused}");
-        assert!(normalise_host("169.254.169.254").is_err());
+        assert!(normalize_host("169.254.169.254").is_err());
         // A public address is a legitimate thing to name.
-        assert_eq!(normalise_host("1.1.1.1").expect("public"), "1.1.1.1");
+        assert_eq!(normalize_host("1.1.1.1").expect("public"), "1.1.1.1");
     }
 
     #[test]

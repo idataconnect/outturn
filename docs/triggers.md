@@ -13,7 +13,7 @@ is spent in the systems the agent is supposed to be helping with.
 
 Everything else a workspace might want an agent to react to has no way in. A
 booking arrives and the welcome note should be drafted. It is Monday and last
-week's figures should be summarised. A customer replies to a thread and
+week's figures should be summarized. A customer replies to a thread and
 somebody should decide whether it needs a person. None of that is a message
 anyone will type.
 
@@ -61,7 +61,7 @@ prompt and pay for it on every round.
 
 A shared session is the wrong fix for "the agent should remember last week".
 What that wants is something durable and narrow, and the shape of it is not
-settled -- an agent writing notes for its future self is a judgement about what
+settled -- an agent writing notes for its future self is a judgment about what
 mattered, which is nearer to carry-over than to user-declared memory, and
 AGENTS.md is explicit that those must not share a store. It is also, as much as
 anything, an evaluation problem: knowing what was worth keeping means knowing
@@ -198,7 +198,7 @@ and the skip is recorded so somebody can see it happened.
 ### The prompt
 
 A schedule carries the text the turn begins with, which is the whole of what
-distinguishes "summarise last week's bookings" from "check for unpaid
+distinguishes "summarize last week's bookings" from "check for unpaid
 invoices". It is stored as an ordinary message, so the transcript reads the
 same as any other conversation and the agent needs no notion of having been
 triggered.
@@ -245,7 +245,7 @@ recomputes over the bytes as received, compares in constant time, and refuses a
 timestamp outside a few minutes so a captured request cannot be replayed
 indefinitely. Over the raw bytes rather than a parsed body, because two JSON
 documents that mean the same thing have different bytes, and a signature over a
-reserialised body verifies something the sender never sent.
+reserialized body verifies something the sender never sent.
 
 `shared_secret` exists because the alternative is refusing real senders. Some
 of them do not sign at all -- a common recommendation among those is a bearer
@@ -286,9 +286,9 @@ as the prompt: that makes the entire instruction attacker-controlled text, with
 nothing saying what it is or what to do with it.
 
 A template puts the workspace's own framing around untrusted content -- "A
-booking notification arrived. Summarise it and check availability: {{body}}" --
+booking notification arrived. Summarize it and check availability: {{body}}" --
 so the model reads the payload as data inside an instruction rather than as the
-instruction. That is not a defence against prompt injection and must not be
+instruction. That is not a defense against prompt injection and must not be
 described as one. It is the difference between a model that has been told what
 it is looking at and one that has not.
 
@@ -312,10 +312,10 @@ costs less than guessing at those now.
 ### Replay is refused, under `hmac`
 
 A signature stays valid until its own timestamp ages out, so the window alone
-is not a replay defence: it bounds how long a captured request works and does
+is not a replay defense: it bounds how long a captured request works and does
 not stop it working. Said plainly because the earlier wording was not --
 "refuses a timestamp outside a few minutes so a captured request cannot be
-replayed indefinitely" is true and reads as a defence it never was.
+replayed indefinitely" is true and reads as a defense it never was.
 
 So the signature is recorded. `webhook_deliveries` holds one row per delivery,
 keyed on the trigger and a hash of the signature, and the insert *is* the

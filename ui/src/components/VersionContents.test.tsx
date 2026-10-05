@@ -41,7 +41,7 @@ describe('what a version said', () => {
   })
 })
 
-describe('a version the history only summarised', () => {
+describe('a version the history only summarized', () => {
   /// The history lists versions without their prose; a version is read when
   /// somebody opens it, and not before.
   it('is read when opened, and not before', async () => {

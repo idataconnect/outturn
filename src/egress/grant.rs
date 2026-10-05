@@ -86,7 +86,7 @@ impl Shape {
         let call: serde_json::Value = serde_json::from_str(arguments).ok()?;
 
         // `reqwest::Url`, because that is what the gateway parses with and
-        // `normalise_path` is documented against its resolution of `.` and
+        // `normalize_path` is documented against its resolution of `.` and
         // `..`. A different parser could agree on the string and disagree on
         // the path that gets hashed.
         let url = reqwest::Url::parse(call["url"].as_str()?).ok()?;
@@ -123,7 +123,7 @@ pub fn digest(gate: &Gate, method: &str, host: &str, path: &str, body: Option<&s
     hasher.update([0]);
     hasher.update(host.to_ascii_lowercase().as_bytes());
     hasher.update([0]);
-    hasher.update(super::gate::normalise_path(path).as_bytes());
+    hasher.update(super::gate::normalize_path(path).as_bytes());
 
     for field in &gate.binds {
         hasher.update([0]);
@@ -194,7 +194,7 @@ pub fn missing_bound_field(gate: &Gate, body: Option<&str>) -> Option<String> {
     // No guard for the empty declaration: a search over nothing finds nothing,
     // so the `reach` gate is satisfied by construction. An early return here
     // would read as the thing keeping it legal and would not be -- removing it
-    // changes no behaviour, which is how it was found.
+    // changes no behavior, which is how it was found.
     let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
     gate.binds
         .iter()
@@ -349,7 +349,7 @@ mod tests {
             "the approved request itself must be covered"
         );
         // The spellings a gate already treats as one path, and a method the
-        // request normalised differently.
+        // request normalized differently.
         assert!(
             grant.permits(
                 &gate,

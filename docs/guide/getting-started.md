@@ -14,7 +14,7 @@ and says what is missing. It changes nothing.
 
 !!! warning "Name your cluster as local"
     skaffold decides whether to push the images it builds by guessing from the
-    kube-context name. A local cluster under a name it does not recognise means
+    kube-context name. A local cluster under a name it does not recognize means
     four images pushed to Docker Hub. Tell it the cluster is local before the
     first build:
 

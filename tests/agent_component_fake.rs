@@ -1015,7 +1015,7 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
         .expect("the agent's own file");
     assert_eq!(written, b"written by the agent");
 
-    // And the neighbour's file is untouched and unreachable by name.
+    // And the neighbor's file is untouched and unreachable by name.
     assert!(
         scope::resolve(&ours, "workspace/../../{theirs}/secrets.txt").is_err(),
         "a path climbing out of the space must be refused"
@@ -1401,7 +1401,7 @@ async fn an_agent_reaches_nothing_it_was_not_allowed() {
 /// but "did it ask" -- the request must leave this tier and be judged where
 /// the signed commitment can be read.
 ///
-/// The gateway's own tests cover the judgement. Here the fake gateway serves
+/// The gateway's own tests cover the judgment. Here the fake gateway serves
 /// model calls and has no egress endpoint at all, so a fetch that was properly
 /// handed over comes back as the refusal that endpoint's absence produces,
 /// which is exactly the evidence wanted: it left.
@@ -1837,7 +1837,7 @@ async fn listing_a_scope_it_may_not_read_is_refused() {
     );
 }
 
-/// A load that recognised nothing is reported as a failure.
+/// A load that recognized nothing is reported as a failure.
 ///
 /// Not an empty success: a model told the call worked goes on to use tools it
 /// does not have, and a reader watching the turn sees a tick against work that
@@ -1882,7 +1882,7 @@ async fn a_load_that_matched_nothing_is_an_error() {
     let (content, is_error) = results.first().expect("the loader answered").clone();
     assert!(
         is_error,
-        "a load that recognised nothing should be an error, got {content:?}"
+        "a load that recognized nothing should be an error, got {content:?}"
     );
     assert!(
         content.contains("fetch_the_web"),

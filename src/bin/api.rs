@@ -112,7 +112,7 @@ async fn main() {
         }
     };
 
-    // Read once at boot so a template naming something this build cannot honour
+    // Read once at boot so a template naming something this build cannot honor
     // is complained about here, rather than at whatever hour the next workspace
     // happens to be created.
     match roles.templates().await {

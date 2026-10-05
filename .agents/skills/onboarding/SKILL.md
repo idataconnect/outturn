@@ -61,7 +61,7 @@ The trap worth this whole skill.
 Skaffold decides whether to push built images by guessing from the context
 name: `kind-*`, `minikube`, `docker-desktop` and a few others are treated as
 local, and everything else is assumed remote. A local cluster under a name it
-does not recognise -- `dev`, `k3s-default`, a renamed kind cluster -- means
+does not recognize -- `dev`, `k3s-default`, a renamed kind cluster -- means
 skaffold tries to **push four images to Docker Hub**, which fails slowly if
 the person is not logged in and succeeds embarrassingly if they are.
 
@@ -80,7 +80,7 @@ the cluster is ever renamed. The fix, with the real context name:
 skaffold config set -k <context> local-cluster true
 ```
 
-README.md gives this for colima, which skaffold does not recognise. It applies
+README.md gives this for colima, which skaffold does not recognize. It applies
 to any local cluster not named to suit the guess.
 
 ### 4. The container daemon

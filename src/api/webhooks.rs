@@ -96,7 +96,7 @@ pub async fn get_trigger(
 
 /// What a trigger's creation returns, once.
 ///
-/// The secret is shown here and never again -- `Trigger` does not serialise
+/// The secret is shown here and never again -- `Trigger` does not serialize
 /// it, so a later read cannot recover it. Rotating is how somebody who lost it
 /// gets a working trigger back, which is the same trade every platform that
 /// issues credentials makes, and for the same reason: a secret readable

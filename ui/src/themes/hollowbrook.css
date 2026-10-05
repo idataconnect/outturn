@@ -38,7 +38,7 @@
 
   /*
    * Warmer and greener than the default's near-neutral: hue 120 at a low
-   * chroma reads as sage on a large surface without becoming a colour. A
+   * chroma reads as sage on a large surface without becoming a color. A
    * guesthouse should feel like paper and plaster, not like a console.
    */
   --color-surface-50: oklch(0.985 0.006 100);
@@ -54,7 +54,7 @@
   --color-surface-900: oklch(0.214 0.010 126);
   --color-surface-950: oklch(0.153 0.008 128);
 
-  /* Honey, against the terracotta: the second colour in the house's sign. */
+  /* Honey, against the terracotta: the second color in the house's sign. */
   --color-accent-400: oklch(0.82 0.13 85);
   --color-accent-500: oklch(0.76 0.15 80);
   --color-accent-600: oklch(0.68 0.14 75);
@@ -65,7 +65,7 @@
    */
   --font-display: "Fraunces", Georgia, "Times New Roman", serif;
   /* The body face stays the system stack: a guesthouse's personality belongs
-     in its name and its colour, not in every line of a settings form. */
+     in its name and its color, not in every line of a settings form. */
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 }

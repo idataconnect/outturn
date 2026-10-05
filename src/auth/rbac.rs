@@ -120,7 +120,7 @@ pub enum Authority {
     /// Separate from `WorkspacesInhibit` and `AgentsInhibit`, which are about
     /// stopping work. Answering an approval releases a hold and lets work
     /// proceed, and somebody trusted to halt an agent is not thereby the right
-    /// person to authorise a payment.
+    /// person to authorize a payment.
     ApprovalsAnswer,
     /// Taking turns off the queue and reporting what they produced.
     ///

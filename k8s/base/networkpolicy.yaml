@@ -26,7 +26,7 @@ spec:
     - Egress
   egress:
     # DNS, or nothing resolves the three names below. Deliberately not a
-    # licence to reach the internet: a name is not a connection.
+    # license to reach the internet: a name is not a connection.
     - to:
         - namespaceSelector: {}
           podSelector:

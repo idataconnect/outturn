@@ -318,7 +318,7 @@ two are the same problem from opposite ends -- that document approaches it from
 the credential, this one from the work.
 
 Installing must be a plan a person approves rather than an act, since the
-alternative is a catalogue click that reaches a host and takes a credential.
+alternative is a catalog click that reaches a host and takes a credential.
 The unsettled part is versioning: whether a workspace may edit a bundle's
 skills, and what an upgrade does when they have.
 
@@ -536,7 +536,7 @@ and the second is the surprising one.
 As a correction channel: a flag retracts what was derived from that session,
 and repeated flags against one operation say the signal is unreliable there.
 
-And as the *only labelling that will ever happen*. Every turn stored is real
+And as the *only labeling that will ever happen*. Every turn stored is real
 and none of it says whether it went well, so a held set of cases to test a
 skill edit against has to come from somewhere -- and the alternatives are
 asking a workspace to author test cases, which is a second job, or inventing
@@ -550,7 +550,7 @@ to that.
 **Memory, or whatever the durable thing turns out to be.** A schedule running
 weekly in a fresh session each time cannot learn anything, and the fix is not a
 long-lived session. What it wants is narrow and durable, and the shape is
-unsettled: an agent writing notes for its future self is a judgement about what
+unsettled: an agent writing notes for its future self is a judgment about what
 mattered, which is nearer compaction carry-over than user-declared memory, and
 AGENTS.md is explicit that those must not share a store. It is also partly an
 evaluation problem, since knowing what was worth keeping means knowing what
@@ -565,7 +565,7 @@ preamble, the agent's prompt, skills, a voice, a stance, tools loaded and
 operations read up front, the time a conversation started -- each with an
 owner, a placement, a priority, a budget and a reach, recorded per turn. The
 system prompt is composed once per conversation and again only at compaction
--- built, the first piece -- and that is what a catalogue of installable
+-- built, the first piece -- and that is what a catalog of installable
 contributors would be built on.
 
 ### Personalities

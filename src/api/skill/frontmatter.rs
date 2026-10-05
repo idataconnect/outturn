@@ -39,7 +39,7 @@ pub struct ApprovalRule {
     pub matches: String,
     /// The unit a wider grant may span, when the approver ticks it. Absent
     /// means an approval covers this call and its retries and nothing else,
-    /// which is the default because it needs no judgement from the approver.
+    /// which is the default because it needs no judgment from the approver.
     pub covers: Option<String>,
     /// Which field of the request names that unit. Required when `covers` is
     /// present and meaningless without it.
@@ -151,7 +151,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             // A new top-level key ends the block. Split at the colon and trim
             // the key rather than matching a literal `approval:`: YAML accepts
             // `approval :`, and comparing against the literal left that spelling
-            // unrecognised, its children skipped, and the operation ungated with
+            // unrecognized, its children skipped, and the operation ungated with
             // nothing said -- which is the one outcome this module exists to
             // prevent.
             let (key, value) = match line.split_once(':') {
@@ -225,7 +225,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             ));
         }
         // Nothing was declared. Which is only safe to conclude if the word does
-        // not appear at all: a declaration this parser failed to recognise --
+        // not appear at all: a declaration this parser failed to recognize --
         // nested under another key, or in a shape nobody anticipated -- would
         // otherwise leave an operation meant to be gated ungated, silently. So
         // the presence of the word with no rule to show for it is refused.
@@ -571,7 +571,7 @@ mod what_it_must_not_do_quietly {
     #[test]
     fn a_space_before_the_colon_is_still_the_approval_key() {
         // YAML accepts `approval :`, so somebody writes it. Matching the literal
-        // `approval:` left this unrecognised, its children skipped, and the
+        // `approval:` left this unrecognized, its children skipped, and the
         // operation ungated.
         let parsed = parse("---\napproval :\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\n---\n")
             .expect("parse");

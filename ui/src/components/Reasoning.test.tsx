@@ -43,7 +43,7 @@ describe('Reasoning', () => {
     expect(screen.getByText(/1 word(?!s)/)).toBeInTheDocument()
   })
 
-  /// Words, never tokens. Nothing here counts tokens, and a guess labelled
+  /// Words, never tokens. Nothing here counts tokens, and a guess labeled
   /// "tokens" would be read as the number on somebody's bill.
   it('does not claim to count tokens', () => {
     reasoning('some thinking here', false, 1000)

@@ -73,7 +73,7 @@ pub struct ChatTurnPayload {
 /// approval, the note an agent wakes to -- on its way to the model.
 ///
 /// Sent in the user position, where every protocol accepts a message between
-/// turns, and labelled so that position is not read as the person typing it.
+/// turns, and labeled so that position is not read as the person typing it.
 /// One wording for every such note, so the agent learns one thing.
 const PLATFORM_NOTE: &str = "[the platform wrote this; nobody in the conversation sent it]";
 
@@ -81,7 +81,7 @@ const PLATFORM_NOTE: &str = "[the platform wrote this; nobody in the conversatio
 ///
 /// A crash keeps what an attempt said (`chat::attempt_for` seals it), and the
 /// retry is handed it as its own earlier words, which is right: it should not
-/// start blind. But unlabelled, an attempt that had written most of its answer
+/// start blind. But unlabeled, an attempt that had written most of its answer
 /// before the pod died reads as a finished reply -- and the retry, seeing that
 /// it had apparently already answered, said nothing at all. The reader was
 /// then told the agent had "started this reply again below" over a reply with
@@ -146,7 +146,7 @@ fn projected_with_sources(
     // something is a bad turn rather than a bad archive.
     let covered = messages
         .iter()
-        .filter_map(|m| super::chat::summarise::mark_of(&m.metadata).map(|through| (m.id, through)))
+        .filter_map(|m| super::chat::summarize::mark_of(&m.metadata).map(|through| (m.id, through)))
         .next_back();
 
     // The summary stands where what it replaced stood: in front of the tail
@@ -154,7 +154,7 @@ fn projected_with_sources(
     // sorts after everything it covers *and* after the tail -- left in id
     // order it arrives as the agent's most recent utterance, immediately
     // before the new prompt, with the retained tail opening mid-conversation
-    // and nothing to say why. `summarise::apply` puts it at the front for the
+    // and nothing to say why. `summarize::apply` puts it at the front for the
     // turn that writes it, and a conversation must not change shape the moment
     // it is read back.
     let messages: Vec<&super::chat::Message> = match covered {
@@ -205,19 +205,19 @@ fn projected_with_sources(
         };
 
         if calls.is_empty() {
-            // Every summary is labelled on the way out, not only the newest.
+            // Every summary is labeled on the way out, not only the newest.
             // An older one whose id sorts above the newest mark survives
-            // inside the retained tail, and unlabelled it replays as ordinary
+            // inside the retained tail, and unlabeled it replays as ordinary
             // speech -- the agent reading its own summary as something it said
             // and answering it, which is the failure `framed` exists to stop.
             //
             // Stored bare, because what is kept is what the model wrote and
             // the label is how it is presented.
             let mut role = message.role.as_str();
-            let text = if super::chat::summarise::is_summary(&message.metadata) {
-                super::chat::summarise::framed(&message.content)
+            let text = if super::chat::summarize::is_summary(&message.metadata) {
+                super::chat::summarize::framed(&message.content)
             } else if message.metadata.get(super::chat::APPROVAL_MARK).is_some() {
-                // In the user position, labelled as the platform's. Stored as
+                // In the user position, labeled as the platform's. Stored as
                 // an assistant message, since that is what the transcript
                 // serves and the browser draws -- but sent that way, the agent
                 // read the record as its own last words and its reply carried
@@ -390,7 +390,7 @@ fn up_to(messages: Vec<super::chat::Message>, prompt: Uuid) -> Vec<super::chat::
             // own first attempt's side effects already there, declined. That
             // read as the model being sensible; it was the model being handed a
             // transcript with the relevant part missing, and it is why the
-            // grant-honouring path went so long without ever being exercised.
+            // grant-honoring path went so long without ever being exercised.
             m.role == "assistant" && m.replies_to == Some(prompt)
                 || m.metadata.get(super::chat::APPROVAL_MARK).is_some()
         })
@@ -579,7 +579,7 @@ fn repeated(mut projected: Vec<serde_json::Value>, prompt: Option<&str>) -> Vec<
 /// Says why the conversation stops where it does, for a turn picking it up.
 ///
 /// Two shapes, and they need different words. Telling a model its reply was cut
-/// off when it never wrote one invites it to apologise for a fragment that does
+/// off when it never wrote one invites it to apologize for a fragment that does
 /// not exist; telling it a message went unanswered when half a reply is sitting
 /// there leaves the fragment unexplained, which is how a turn ends up finishing
 /// somebody else's abandoned sentence.
@@ -629,14 +629,14 @@ fn marked(
              stopped {waited} ago -- {reason} -- and has been restarted. Carry \
              on from where it broke off if that still makes sense. Anything you \
              established before the pause may have changed since; check rather \
-             than restate it, and do not apologise for the pause.]"
+             than restate it, and do not apologize for the pause.]"
         )
     } else {
         format!(
             "[the messages below went unanswered: this conversation was stopped \
              {waited} ago -- {reason} -- and has been restarted. Answer what was \
              asked. Anything established before the pause may have changed \
-             since; check rather than restate it, and do not apologise for the \
+             since; check rather than restate it, and do not apologize for the \
              pause.]"
         )
     };
@@ -722,9 +722,9 @@ pub struct Worker {
     pub inhibitors: Arc<dyn super::inhibitor::InhibitorStore>,
     /// Signs the token a summary's model call carries. Optional because the
     /// worker runs without one: a deployment with no gateway configured still
-    /// prepares turns, it just cannot summarise.
+    /// prepares turns, it just cannot summarize.
     pub minter: Option<Arc<crate::auth::TokenMinter>>,
-    /// Where to ask for a summary. Absent means no summarising, and the trim
+    /// Where to ask for a summary. Absent means no summarizing, and the trim
     /// underneath carries on alone.
     pub gateway_url: Option<String>,
 }
@@ -1457,7 +1457,7 @@ impl Worker {
             Verdict::Stopped => {
                 // Said in the transcript as well as latched: the next turn
                 // reads this history, and a reply that simply stops is one the
-                // model apologises for or tries to finish.
+                // model apologizes for or tries to finish.
                 //
                 // A no-op when the session was already stopped, which is what
                 // keeps the original reason and time.
@@ -1920,7 +1920,7 @@ impl Worker {
         )))
     }
 
-    /// `summarised`, announced: a compaction is a model call in the middle of
+    /// `summarized`, announced: a compaction is a model call in the middle of
     /// preparing a turn, and a reader left watching a pause with no reason
     /// given is told nothing about why the reply is slow to start. Said only
     /// when a summary is actually attempted.
@@ -1939,7 +1939,7 @@ impl Worker {
         if super::chat::trim::total_cost(conversation) <= budget
             || self.minter.is_none()
             || self.gateway_url.is_none()
-            || super::chat::summarise::boundary(conversation).is_none()
+            || super::chat::summarize::boundary(conversation).is_none()
         {
             return None;
         }
@@ -1951,7 +1951,7 @@ impl Worker {
         )
         .await;
         let summary = self
-            .summarised(
+            .summarized(
                 conversation,
                 sources,
                 system_prompt,
@@ -1966,7 +1966,7 @@ impl Worker {
             workspace_id,
             session_id,
             "chat.compacted",
-            serde_json::json!({ "summarised": summary.is_some() }),
+            serde_json::json!({ "summarized": summary.is_some() }),
         )
         .await;
         summary
@@ -1988,12 +1988,12 @@ impl Worker {
         }
     }
 
-    /// Compacts a conversation because somebody asked: summarises what the
-    /// usual rule would summarise, whatever the budget, and composes the
+    /// Compacts a conversation because somebody asked: summarizes what the
+    /// usual rule would summarize, whatever the budget, and composes the
     /// system prompt again from the agent and its skills as they stand.
     ///
     /// Not a special case of anything. Asked of a conversation too short to
-    /// summarise, the summary is skipped as it always would be and the prompt
+    /// summarize, the summary is skipped as it always would be and the prompt
     /// is still composed again, since that is what compacting is for here:
     /// taking up what was published since the conversation began.
     pub async fn compact(&self, workspace_id: Uuid, session_id: Uuid) -> anyhow::Result<()> {
@@ -2032,8 +2032,8 @@ impl Worker {
         .await;
         // A budget of nothing is what "whatever the budget" means to the one
         // check that reads it; everything else is the ordinary path.
-        let summarised = self
-            .summarised(
+        let summarized = self
+            .summarized(
                 &projected,
                 &sources,
                 &fresh_prompt,
@@ -2051,10 +2051,10 @@ impl Worker {
             workspace_id,
             session_id,
             "chat.compacted",
-            serde_json::json!({ "summarised": summarised }),
+            serde_json::json!({ "summarized": summarized }),
         )
         .await;
-        tracing::info!(%session_id, summarised, "conversation compacted on request");
+        tracing::info!(%session_id, summarized, "conversation compacted on request");
         Ok(())
     }
 
@@ -2208,11 +2208,11 @@ impl Worker {
     /// is over budget and there is a model to ask.
     ///
     /// Returns `None` whenever it did not happen, for any reason -- no
-    /// gateway, nothing worth summarising, the model refused, the summary came
+    /// gateway, nothing worth summarizing, the model refused, the summary came
     /// back empty. Every one of those means the trim underneath does the work
     /// alone, which is exactly what it is for. A failure here must never cost
     /// a turn: the user asked for an answer, not for a summary.
-    async fn summarised(
+    async fn summarized(
         &self,
         conversation: &[serde_json::Value],
         // Which stored message each projected entry came from, so the summary
@@ -2238,7 +2238,7 @@ impl Worker {
         // every compaction while the turn itself is fine.
         model: &str,
     ) -> Option<Vec<serde_json::Value>> {
-        use super::chat::summarise;
+        use super::chat::summarize;
         use crate::gateway::llm::types::{
             ChatCompletionRequest, ChatCompletionResponse, ContentPart, MessageContent,
         };
@@ -2249,9 +2249,9 @@ impl Worker {
         let (Some(minter), Some(gateway_url)) = (&self.minter, &self.gateway_url) else {
             return None;
         };
-        let through = summarise::boundary(conversation)?;
+        let through = summarize::boundary(conversation)?;
 
-        let request = summarise::request(system_prompt, &conversation[..through]);
+        let request = summarize::request(system_prompt, &conversation[..through]);
         // Bounded by construction: the system prompt, what is being replaced,
         // and the instruction. Never the whole transcript, which is the thing
         // that does not fit.
@@ -2263,16 +2263,16 @@ impl Worker {
             // a summary cannot itself become the thing that does not fit.
             max_tokens: Some(1024),
             tools: None,
-            // Summarising is reading, not deciding.
+            // Summarizing is reading, not deciding.
             reasoning_effort: Some("none".into()),
             stream: false,
             stream_options: None,
         };
 
-        // Signed for the session it is summarising, so the spend lands on the
+        // Signed for the session it is summarizing, so the spend lands on the
         // workspace that caused it: every model call is a row in the usage
         // ledger, and a summary nobody is billed for is a summary nobody can
-        // account for. No egress commitment, because summarising reaches
+        // account for. No egress commitment, because summarizing reaches
         // nothing but the model.
         let token = minter
             .mint_turn(
@@ -2280,7 +2280,7 @@ impl Worker {
                 workspace_id,
                 crate::egress::commit::empty_root(),
                 // As in `naming`: said rather than absent, and empty because
-                // summarising reaches nothing but the model.
+                // summarizing reaches nothing but the model.
                 crate::egress::gate::Gates::none().root(workspace_id),
             )
             .ok()?;
@@ -2288,7 +2288,7 @@ impl Worker {
         let response = reqwest::Client::new()
             .post(format!("{gateway_url}/v1/chat/completions"))
             .bearer_auth(token)
-            .header(crate::gateway::TRAFFIC_HEADER, summarise::TRAFFIC_TYPE)
+            .header(crate::gateway::TRAFFIC_HEADER, summarize::TRAFFIC_TYPE)
             .json(&body)
             .send()
             .await
@@ -2297,7 +2297,7 @@ impl Worker {
         if !response.status().is_success() {
             tracing::warn!(
                 status = %response.status(),
-                "could not summarise; the trim will carry the conversation"
+                "could not summarize; the trim will carry the conversation"
             );
             return None;
         }
@@ -2349,16 +2349,16 @@ impl Worker {
         // bound the summary is refused rather than truncated: half a summary
         // ending mid-sentence would be carried forward for the rest of the
         // session, and the trim underneath loses less than that.
-        if summary.len() > summarise::SUMMARY_MAX_BYTES {
+        if summary.len() > summarize::SUMMARY_MAX_BYTES {
             tracing::warn!(
                 summary_bytes = summary.len(),
-                limit = summarise::SUMMARY_MAX_BYTES,
+                limit = summarize::SUMMARY_MAX_BYTES,
                 "the summary came back longer than a summary may be; the trim will carry the conversation"
             );
             return None;
         }
 
-        let replaced = summarise::apply(conversation.to_vec(), summary, through);
+        let replaced = summarize::apply(conversation.to_vec(), summary, through);
         // A summary larger than what it replaced is one that helped nobody,
         // and sending it would be worse than the trim alone.
         if super::chat::trim::total_cost(&replaced) >= super::chat::trim::total_cost(conversation) {
@@ -2369,7 +2369,7 @@ impl Worker {
         }
 
         // A carried summary that has grown past the bound is folded rather
-        // than carried again: it was at the front of what was just summarised,
+        // than carried again: it was at the front of what was just summarized,
         // so the new summary already stands for it and everything after it.
         // Under the bound the old one is left where it is and the new one
         // supersedes it by covering more -- the projection takes the last mark
@@ -2380,14 +2380,14 @@ impl Worker {
         // still done its job for this turn, and a failed write must not cost
         // the turn the user actually asked for.
         //
-        // Covered is the stored message the last summarised entry came from,
+        // Covered is the stored message the last summarized entry came from,
         // which `sources` names outright. It used to be counted instead --
         // `history.len() - TAIL_MESSAGES - 1` -- which assumed the projection
         // and the stored rows were aligned from the end. They are not, and a
         // stored summary breaks the alignment by exactly one: it is a single
         // entry at the *front* of the projection while still being a row near
         // the *end* of history, and the rows it hides are gone from one and
-        // present in the other. From the second summarisation round onward the
+        // present in the other. From the second summarization round onward the
         // count named a message the summary had never read, `project` then
         // dropped it as covered, and every later mark sat above it -- one
         // message silently out of context, permanently, per round.
@@ -2441,7 +2441,7 @@ impl Worker {
                 reply_id: None,
                 job_id: None,
                 round: 0,
-                traffic_type: summarise::TRAFFIC_TYPE.to_string(),
+                traffic_type: summarize::TRAFFIC_TYPE.to_string(),
                 endpoint,
                 // What answered, falling back to what was asked for -- the
                 // same order the turn path uses, so a route that rewrote the
@@ -2478,7 +2478,7 @@ impl Worker {
         tracing::info!(
             messages_replaced = through,
             summary_bytes = summary.len(),
-            "conversation summarised"
+            "conversation summarized"
         );
         Some(replaced)
     }
@@ -2532,7 +2532,7 @@ impl Worker {
                 Some(model),
                 None,
                 Usage::default(),
-                serde_json::json!({ super::chat::summarise::SUMMARY_MARK: through.to_string() }),
+                serde_json::json!({ super::chat::summarize::SUMMARY_MARK: through.to_string() }),
             )
             .await
         {
@@ -2723,7 +2723,7 @@ impl Worker {
                 metadata,
             )
             .await
-            .map_err(|e| anyhow::anyhow!("finalise: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
 
         events::append(
             &self.pool,
@@ -2895,7 +2895,7 @@ mod projection_tests {
         );
 
         let projected = project(&[reply]);
-        let wire = serde_json::to_string(&projected).expect("serialise");
+        let wire = serde_json::to_string(&projected).expect("serialize");
         assert!(
             !wire.contains("reasoning"),
             "no reasoning part may reach a model: {wire}"
@@ -3138,7 +3138,7 @@ mod projection_tests {
     /// The crux of the whole change: `gated` hashes the *live* request when it
     /// raises the approval, and this recomputes the same hash from the call as
     /// the transcript stored it. If those disagree in any field -- method
-    /// casing, the port on the host, a raw versus normalised path, the body's
+    /// casing, the port on the host, a raw versus normalized path, the body's
     /// exact bytes -- the retraction silently never fires and the original bug
     /// is back, reading as the model being cautious.
     ///
@@ -3343,7 +3343,7 @@ mod projection_tests {
         let summary = message(
             "assistant",
             "they discussed beginnings",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: second.id.to_string() }),
         );
         let after = message("user", "and then?", serde_json::json!({}));
 
@@ -3352,7 +3352,7 @@ mod projection_tests {
         assert_eq!(projected.len(), 2, "{projected:?}");
         assert_eq!(
             projected[0]["parts"][0]["text"],
-            super::super::chat::summarise::framed("they discussed beginnings")
+            super::super::chat::summarize::framed("they discussed beginnings")
         );
         assert_eq!(projected[1]["parts"][0]["text"], "and then?");
     }
@@ -3378,7 +3378,7 @@ mod projection_tests {
         let summary = message(
             "assistant",
             "they discussed beginnings",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: second.id.to_string() }),
         );
 
         let projected = project(&[first, second, tail, summary]);
@@ -3386,8 +3386,8 @@ mod projection_tests {
         assert_eq!(projected.len(), 2, "{projected:?}");
         assert_eq!(
             projected[0]["parts"][0]["text"],
-            super::super::chat::summarise::framed("they discussed beginnings"),
-            "the summary leads, and is labelled as one"
+            super::super::chat::summarize::framed("they discussed beginnings"),
+            "the summary leads, and is labeled as one"
         );
         assert_eq!(
             projected[1]["parts"][0]["text"], "and then?",
@@ -3406,13 +3406,13 @@ mod projection_tests {
         let older = message(
             "assistant",
             "an older summary",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: first.id.to_string() }),
         );
         let middle = message("user", "more talk", serde_json::json!({}));
         let newer = message(
             "assistant",
             "a newer summary",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: middle.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: middle.id.to_string() }),
         );
         let after = message("user", "and now?", serde_json::json!({}));
 
@@ -3421,18 +3421,18 @@ mod projection_tests {
         assert_eq!(projected.len(), 2, "{projected:?}");
         assert_eq!(
             projected[0]["parts"][0]["text"],
-            super::super::chat::summarise::framed("a newer summary")
+            super::super::chat::summarize::framed("a newer summary")
         );
         assert_eq!(projected[1]["parts"][0]["text"], "and now?");
     }
 
-    /// Any summary that reaches the model is labelled, not only the newest.
+    /// Any summary that reaches the model is labeled, not only the newest.
     ///
     /// Reached for defensively rather than because the writer produces it: in
     /// practice a later summary always covers an earlier one, because the
     /// earlier one leads the projection the later is written from, so it is
     /// always the first thing the cut swallows. What this pins is the weaker
-    /// guarantee the labelling should rest on -- a summary that survives into
+    /// guarantee the labeling should rest on -- a summary that survives into
     /// the tail for *any* reason is still presented as a summary. Bare, it
     /// replays as ordinary speech, and the agent answers its own summary as
     /// something it said.
@@ -3441,19 +3441,19 @@ mod projection_tests {
     /// before it. "The last one wins" permits that; nothing currently writes
     /// it.
     #[test]
-    fn any_summary_that_survives_into_the_tail_is_still_labelled() {
+    fn any_summary_that_survives_into_the_tail_is_still_labeled() {
         let first = message("user", "the long beginning", serde_json::json!({}));
         let older = message(
             "assistant",
             "an older summary",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: first.id.to_string() }),
         );
         let middle = message("user", "more talk", serde_json::json!({}));
         let newer = message(
             "assistant",
             "a newer summary",
             // Deliberately covers only `first`, so `older` lands in the tail.
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: first.id.to_string() }),
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: first.id.to_string() }),
         );
         let after = message("user", "and now?", serde_json::json!({}));
 
@@ -3464,8 +3464,8 @@ mod projection_tests {
             .map(|m| m["parts"][0]["text"].as_str().unwrap_or(""))
             .collect();
         assert!(
-            texts.contains(&super::super::chat::summarise::framed("an older summary").as_str()),
-            "a summary surviving in the tail replayed unlabelled: {texts:?}"
+            texts.contains(&super::super::chat::summarize::framed("an older summary").as_str()),
+            "a summary surviving in the tail replayed unlabeled: {texts:?}"
         );
     }
 
@@ -3485,8 +3485,8 @@ mod projection_tests {
         let third = message("user", "three", serde_json::json!({}));
         let summary = message(
             "assistant",
-            "the beginning, summarised",
-            serde_json::json!({ super::super::chat::summarise::SUMMARY_MARK: second.id.to_string() }),
+            "the beginning, summarized",
+            serde_json::json!({ super::super::chat::summarize::SUMMARY_MARK: second.id.to_string() }),
         );
         let ids = [first.id, second.id, third.id, summary.id];
 
@@ -3713,7 +3713,7 @@ mod projection_tests {
             "done",
             serde_json::json!({ "tool_calls": [call("call_1", Some("short"))] }),
         )]);
-        let sent = serde_json::to_string(&projected).expect("serialise");
+        let sent = serde_json::to_string(&projected).expect("serialize");
         assert!(
             !sent.contains("for the reader"),
             "the untruncated result reached the model: {sent}"

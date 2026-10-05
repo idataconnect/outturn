@@ -1,17 +1,17 @@
 # Settings
 
 How defaults cascade from the operator to workspaces to agents, and who may
-change what. Built: the catalogue is `src/api/settings/mod.rs`, the rows are
+change what. Built: the catalog is `src/api/settings/mod.rs`, the rows are
 `setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
 turn in `prepare_turn`. The first three entries are temperature, reasoning
 effort and model calls per turn.
 
 ## The shape
 
-A **catalogue in code** and **overrides as rows**. The same split as
+A **catalog in code** and **overrides as rows**. The same split as
 authorities and roles.
 
-The catalogue lists every setting: its key, its type, its default, and who may
+The catalog lists every setting: its key, its type, its default, and who may
 override it. It changes when the code changes, because a setting nothing reads
 is noise and a value nothing names cannot be set.
 
@@ -24,7 +24,7 @@ agent       (Invoicer)   --                    override off: no row, inherits
 ```
 
 Resolution walks up: the agent's row, else the workspace's, else the system's,
-else the catalogue default. Turning an override off deletes the row, so that
+else the catalog default. Turning an override off deletes the row, so that
 level falls back to whatever is above it. There is no "copy the default down"
 step, which is what lets an operator change a system value and have it reach
 every workspace that never chose otherwise.
@@ -46,7 +46,7 @@ turns it into ordinary gates when it prepares a turn.
 
 ## Who may override
 
-Part of the catalogue, not of the roles. Each setting is either
+Part of the catalog, not of the roles. Each setting is either
 *operator-only* or *workspace-overridable*, and a workspace-overridable setting may
 also be overridden per agent.
 
@@ -60,10 +60,10 @@ also be overridden per agent.
 
 ## What the UI does with it
 
-A settings page reads the catalogue and shows each setting's *effective*
+A settings page reads the catalog and shows each setting's *effective*
 value and where it came from: "platform default", "set by this workspace",
 "set for this agent". Beside each workspace-overridable setting is an **Override**
-checkbox. Off, the value is shown greyed and inherited. On, it becomes
+checkbox. Off, the value is shown grayed and inherited. On, it becomes
 editable and a row is written. The agent editor uses the same component for
 agent-level overrides.
 
@@ -104,7 +104,7 @@ removes it.
   into prompts, not resolved as a default.
 
 A generic key-value store with a generic editor would be the quick way to
-build this and the wrong one: the catalogue is what keeps the page honest
+build this and the wrong one: the catalog is what keeps the page honest
 about types, defaults and who may touch what. Purpose-built features that
 happen to store their "who may override" bit in one place is the intended
 layering.

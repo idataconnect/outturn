@@ -19,7 +19,7 @@ export default function ThemeToggle() {
   return (
     <div
       role="radiogroup"
-      aria-label="Colour theme"
+      aria-label="Color theme"
       className="flex gap-0.5 p-0.5 rounded-md bg-surface-100 dark:bg-surface-800"
     >
       {options.map(({ value, icon: Icon, label }) => (

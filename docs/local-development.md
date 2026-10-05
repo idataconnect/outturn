@@ -92,7 +92,7 @@ shape OpenAI and Anthropic send, which the "Preparing…" card is built for.
 
 With `OUTTURN_DEV_SERVER=llama.cpp`:
 
-- The model is a Hugging Face GGUF as `organisation/repository:quantization`,
+- The model is a Hugging Face GGUF as `organization/repository:quantization`,
   for instance `unsloth/Qwen3.5-9B-GGUF:Q4_K_M`, the same model and
   quantization as ollama's `qwen3.5`. llama-server downloads
   and caches it on first use. MLX builds are ollama's: llama.cpp runs GGUF on

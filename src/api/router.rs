@@ -29,7 +29,7 @@ pub struct ApiState {
     /// them each agent gets.
     pub(super) skills: Arc<dyn super::skill::SkillStore>,
     pub(super) chat: Arc<dyn ChatStore>,
-    /// What a workspace's roles mean. Consulted on every authorised request.
+    /// What a workspace's roles mean. Consulted on every authorized request.
     pub(super) roles: Arc<dyn RoleStore>,
     pub(super) usage: Arc<dyn super::usage::UsageStore>,
     pub(super) skill_stats: Arc<dyn super::skill::stats::SkillStatsStore>,
@@ -221,7 +221,7 @@ pub(super) async fn require(
 /// exception: it reads across every workspace the person belongs to, so an item
 /// it hands back may be one the token was not minted for -- and resolving the
 /// authority against the token would mean holding it in one workspace
-/// authorised the act in all of them.
+/// authorized the act in all of them.
 ///
 /// Roles are resolved per workspace by name (`authorities_for`), so the same
 /// role name carrying different authorities in two workspaces is the ordinary
@@ -1128,7 +1128,7 @@ async fn skill_statistics(
     Ok(Json(stats))
 }
 
-async fn summarise_usage(
+async fn summarize_usage(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
@@ -1185,7 +1185,7 @@ async fn summarise_usage(
 
     let summary = state
         .usage
-        .summarise(workspace_id, from, to)
+        .summarize(workspace_id, from, to)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(summary))
@@ -1416,7 +1416,7 @@ async fn stop_agent(
 ///
 /// By id rather than by scope, because several holds can cover the same work
 /// and releasing "the workspace's" would be ambiguous about which -- the whole
-/// reason this is a set. Authorised by what the hold covers: releasing an
+/// reason this is a set. Authorized by what the hold covers: releasing an
 /// agent's hold needs `agents:inhibit`, a workspace's needs the wider one.
 async fn release_inhibitor(
     State(state): State<Arc<ApiState>>,
@@ -1704,7 +1704,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 )),
         )
         .route("/v1/usage", get(export_usage))
-        .route("/v1/usage/summary", get(summarise_usage))
+        .route("/v1/usage/summary", get(summarize_usage))
         .route("/v1/skills/stats", get(skill_statistics))
         .route("/v1/inhibitors", get(list_inhibitors))
         .route(

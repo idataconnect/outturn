@@ -260,12 +260,12 @@ produces the failure the marker exists to prevent.
 *Stopped before the turn ran.* Nothing started, so there is no partial reply --
 the transcript is a prompt followed by silence. What the next turn needs is not
 "your reply was cut off" but that a message went unanswered and why. Telling a
-model its reply was stopped when it never wrote one invites it to apologise for
+model its reply was stopped when it never wrote one invites it to apologize for
 a fragment that does not exist.
 
 *Stopped mid-flight.* There is a partial assistant message, and the next turn
 replays it. Without an explanation the model reads its own reply trailing off
-and either apologises or tries to finish the abandoned thought. So it is told
+and either apologizes or tries to finish the abandoned thought. So it is told
 the reply stops partway, and to carry on from there if that still makes sense.
 
 The transcript says which happened, so nothing has to be recorded to tell them
@@ -315,7 +315,7 @@ written before the failure is reported.
 ## Input is never blocked
 
 A suspended turn keeps accepting messages. Refusing them is the one place the
-agent would suddenly stop listening, and a composer greyed out because the agent
+agent would suddenly stop listening, and a composer grayed out because the agent
 is waiting on a human reads as broken however deliberate it is.
 
 Messages arriving while suspended queue rather than being folded into a running
@@ -396,7 +396,7 @@ technician was never in it and cannot be.
 
 So for a remote call the approval is what it says it is: a person who holds
 `approvals:answer` looked at this and said yes, recorded with what they saw.
-Modelling more would mean maintaining a mapping from every integration's
+Modeling more would mean maintaining a mapping from every integration's
 operations onto authorities we do not own, to make a guarantee the remote system
 never asked for -- it either checks the credential the workspace supplied or it
 does not.
@@ -439,7 +439,7 @@ a Haiku token cost wildly differently, so this is a crude proxy for money -- and
 a fine one for a runaway guard, which is what it is. Pricing stays out, for the
 reason `docs/usage.md` gives.
 
-**Charged on completion, admitted optimistically.** A call's cost is known only
+**Charged on completion, admitted optimiztically.** A call's cost is known only
 after it returns, so the bucket is always a little behind and a single enormous
 call can overshoot. Against a looping agent spending five figures, one call of
 slack is a rounding error, and the alternative -- reserving an estimate and

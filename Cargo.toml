@@ -176,7 +176,7 @@ too_many_arguments = "allow"
 # being handled. Clarity wins over the idiom here.
 chunks_exact_to_as_chunks = "allow"
 
-# Dependencies optimised even in a debug build; this crate's own code is not.
+# Dependencies optimized even in a debug build; this crate's own code is not.
 # Wasmtime compiling a component, Postgres decoding and the hashing behind
 # every commitment run noticeably faster at opt-level 1, which is felt in every
 # test run, and the cost is paid once: dependencies are rebuilt when they

@@ -206,7 +206,7 @@ const SEGMENT: Record<State, string> = {
 
 function Dot({ state }: { state: State }) {
   if (state === 'waiting')
-    // Status is never colour alone: the hand says "a person is needed".
+    // Status is never color alone: the hand says "a person is needed".
     return <Hand size={12} className="shrink-0 text-amber-600 dark:text-amber-400" aria-label="Waiting" />
   return (
     <span

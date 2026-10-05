@@ -28,7 +28,7 @@ describe('showing what a load made available', () => {
     expect(screen.getByText('fetch_url, read_object')).toBeInTheDocument()
   })
 
-  it('lists what did load when only some names were recognised', () => {
+  it('lists what did load when only some names were recognized', () => {
     // A partial load is still a load: the turn continues with what arrived,
     // so the reader is told what that was.
     load({
@@ -40,7 +40,7 @@ describe('showing what a load made available', () => {
     expect(screen.getByText('fetch_url')).toBeInTheDocument()
   })
 
-  it('shows the failure and no list when nothing was recognised', () => {
+  it('shows the failure and no list when nothing was recognized', () => {
     // Nothing loaded, so there is no list to show -- and the error is what
     // the reader needs. An empty list beside a warning says less than the
     // warning alone.

@@ -59,7 +59,7 @@ pub fn reporting_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
-        // Only fails if the TLS backend cannot be initialised, which is a
+        // Only fails if the TLS backend cannot be initialized, which is a
         // deployment fault rather than a runtime condition.
         .expect("failed to build HTTP client")
 }
@@ -73,7 +73,7 @@ pub fn streaming_client(idle: Duration) -> reqwest::Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(idle)
         .build()
-        // Only fails if the TLS backend cannot be initialised, which is a
+        // Only fails if the TLS backend cannot be initialized, which is a
         // deployment fault rather than a runtime condition.
         .expect("failed to build HTTP client")
 }
@@ -92,7 +92,7 @@ mod tests {
     /// mid-sentence with the rest of it sitting in the database.
     ///
     /// Driven against a real socket rather than by inspecting the builder,
-    /// because what is being asserted is behaviour reqwest provides and a
+    /// because what is being asserted is behavior reqwest provides and a
     /// field this crate cannot read back.
     #[tokio::test]
     async fn reporting_waits_out_a_silence_that_streaming_would_not() {

@@ -21,7 +21,7 @@ those files into something a rule can safely live in:
   history -- a governance rule stored that way is one nobody can prove the
   wording of.
 - **Written through the skill's own authorities.** `SkillsWrite`, not
-  `StorageWorkspaceWrite`. Prose that governs behaviour must not be editable
+  `StorageWorkspaceWrite`. Prose that governs behavior must not be editable
   through the path meant for reference spreadsheets.
 - **Read-only to the agent**, through the `skill/<slug>/` scope, resolved
   against the version the turn bound. A guest cannot edit the rule that governs
@@ -64,7 +64,7 @@ somebody eventually writes and expects to work.
 What it refuses is worth knowing, because every refusal is a rule that would
 otherwise be half-applied -- and a rule half-applied is an operation the file
 says is gated and the platform does not gate. Review found four ways that
-happened. `approval :` with a space was unrecognised and its keys skipped, so
+happened. `approval :` with a space was unrecognized and its keys skipped, so
 the operation was ungated and nothing said so. A wholly indented block was the
 same. An unclosed quote made `"charge` the act, which compares unequal to every
 grant for `charge`, so the rule existed and matched nothing. And a key given
@@ -151,7 +151,7 @@ be the requests that are indistinguishable from what they saw, and nothing else.
 `binds` is how the platform knows which parts of the request made it that one.
 
 The grant is keyed on a digest over `requires`, the method, the host, the
-normalised path, and each bound field's value in declared order. A retry carries
+normalized path, and each bound field's value in declared order. A retry carries
 the same values and matches by construction. A second charge for a different
 amount does not, because `amount_pence` is in the digest.
 
@@ -166,7 +166,7 @@ looked at.
 
 Declared rather than hashed whole, for two reasons that pull the same way. A
 digest over the entire body breaks its own approval the moment anything
-incidental varies -- a re-serialisation with different key order, a timestamp, a
+incidental varies -- a re-serialization with different key order, a timestamp, a
 client-generated nonce -- and the failure is a person asked twice for one charge,
 who reasonably concludes the button does not work. And a whole-body digest says
 nothing about *why* a request is the one it is, so a reader of the skill cannot
@@ -191,7 +191,7 @@ with a grant taken out when it was present.
 ### `covers` -- the unit one yes may span
 
 Absent, an approval covers **this call and its retries, and nothing else**. That
-is the default and it is the one that needs no judgement from the approver: they
+is the default and it is the one that needs no judgment from the approver: they
 were shown a charge and they approved that charge.
 
 Present, it *offers* a wider extent -- here, every declared `charge` against one
@@ -336,7 +336,7 @@ transcript, that a person said no and to discuss it before re-attempting
 (`chat::DECLINED_GUIDANCE`). Prose rather than a mechanism, deliberately.
 
 **A declined operation can always be raised again.** That is the intended
-behaviour and not a gap. Somebody who declines a charge, talks it over and
+behavior and not a gap. Somebody who declines a charge, talks it over and
 changes their mind must be able to have it go through, which means the agent has
 to be free to try again once that conversation has happened -- and the gate holds
 the line regardless, since the retry raises a fresh approval rather than slipping
@@ -372,7 +372,7 @@ saw.
 Which is why the queue targets a **role** rather than a person, and resolves
 membership when the queue is read -- see
 [action-queue.md](action-queue.md). Who may approve a charge is a question about
-the workspace's own organisation, and it changes without the pending request
+the workspace's own organization, and it changes without the pending request
 changing.
 
 ## How the gate fires
@@ -442,7 +442,7 @@ move and get approved afterwards -- which is the ordering that matters.
 fires only when the guest chooses to ask, which is the same fault
 [inhibitors.md](inhibitors.md) names in delivering a denial as a tool result. A
 guest may additionally ask -- "this looks unusual, check with a human" -- as a
-judgement above the mandatory gate. What must not happen is the mandatory gate
+judgment above the mandatory gate. What must not happen is the mandatory gate
 depending on it.
 
 ## Not yet

@@ -27,7 +27,7 @@ fn internal(e: sqlx::Error) -> InhibitorError {
 /// with `api::actions`, which lifts a hold inside its own transaction and needs
 /// the same strictness: an inline copy there mapped an unknown level to
 /// workspace-wide, which is the fail-open direction -- every parked turn in the
-/// workspace given back on the strength of a level nobody recognised.
+/// workspace given back on the strength of a level nobody recognized.
 pub(crate) fn read_scope(row: &PgRow) -> Result<Scope, InhibitorError> {
     let level: String = row.get("level");
     let workspace_id: Option<Uuid> = row.get("workspace_id");

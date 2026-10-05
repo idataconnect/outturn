@@ -240,7 +240,7 @@ pub enum ExecuteEvent {
         /// opposite -- answering it is what resumes the turn, and latching would
         /// leave the conversation stopped after the yes.
         ///
-        /// False from an older runtime, which is the latching behaviour it had.
+        /// False from an older runtime, which is the latching behavior it had.
         #[serde(default)]
         awaiting_approval: bool,
     },

@@ -591,7 +591,7 @@ const SESSIONS_REFRESH_MS = 5_000
 /**
  * Whether a conversation has a turn in flight, beside its name.
  *
- * Working (running or queued) pulses in the brand colour; waiting on a person
+ * Working (running or queued) pulses in the brand color; waiting on a person
  * is amber and still, since nothing will happen until somebody answers. Idle
  * draws nothing, which is most of the list.
  */

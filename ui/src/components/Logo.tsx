@@ -9,20 +9,20 @@ import { logoUrl, productName } from '../lib/brand'
  *
  * Decorative by default: the wordmark beside it already names the product, and
  * a screen reader that reads the name twice is worse than one that reads it
- * once. Pass `labelled` where the mark stands alone.
+ * once. Pass `labeled` where the mark stands alone.
  */
 export default function Logo({
   className = 'w-6 h-6 shrink-0',
-  labelled = false,
+  labeled = false,
 }: {
   className?: string
-  labelled?: boolean
+  labeled?: boolean
 }) {
   return (
     <img
       src={logoUrl}
-      alt={labelled ? productName : ''}
-      aria-hidden={labelled ? undefined : true}
+      alt={labeled ? productName : ''}
+      aria-hidden={labeled ? undefined : true}
       className={className}
     />
   )

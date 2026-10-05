@@ -4,12 +4,12 @@ import ToolCall from './ToolCall'
 /**
  * Which tools a load actually made available.
  *
- * The agent names tools it wants and the guest hands back what it recognised,
+ * The agent names tools it wants and the guest hands back what it recognized,
  * so the interesting part is the list -- "Getting the tools ready" says nothing
  * about which ones, and whether the right ones arrived is the only question a
  * reader has about this call.
  *
- * A load that recognised nothing reports an error instead, which `ToolCall`
+ * A load that recognized nothing reports an error instead, which `ToolCall`
  * already draws; this adds nothing in that case rather than showing an empty
  * list beside a warning.
  */

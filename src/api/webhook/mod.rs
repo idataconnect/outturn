@@ -26,7 +26,7 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// How far out a delivery's timestamp may be before it is refused as a replay.
 ///
 /// Five minutes each way, which is enough for ordinary clock drift between two
-/// machines nobody is synchronising deliberately, and short enough that a
+/// machines nobody is synchronizing deliberately, and short enough that a
 /// captured request is not useful for long.
 pub const TIMESTAMP_TOLERANCE_SECS: i64 = 300;
 
@@ -45,7 +45,7 @@ pub struct Trigger {
     pub name: String,
     pub path: String,
     pub scheme: String,
-    /// Never serialised. The struct is returned to a browser and this is the
+    /// Never serialized. The struct is returned to a browser and this is the
     /// one field on it that is a credential rather than a description of one.
     #[serde(skip)]
     pub secret: String,
@@ -151,7 +151,7 @@ impl Refusal {
 ///
 /// Takes the body as bytes rather than as a parsed value on purpose: a
 /// signature covers what was sent, and two JSON documents that mean the same
-/// thing have different bytes, so verifying a reserialisation verifies
+/// thing have different bytes, so verifying a reserialization verifies
 /// something the sender never sent.
 ///
 /// Returns the instant the credential stops being accepted, which is what a
@@ -440,9 +440,9 @@ mod tests {
     }
 
     #[test]
-    fn the_secret_never_serialises() {
+    fn the_secret_never_serializes() {
         let t = trigger("hmac", "very-secret");
-        let json = serde_json::to_string(&t).expect("serialise");
+        let json = serde_json::to_string(&t).expect("serialize");
         assert!(
             !json.contains("very-secret"),
             "the secret reached a browser: {json}"

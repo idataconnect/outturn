@@ -323,7 +323,7 @@ pub const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 ///
 /// An allowlist and a short one. These files are uploaded by people and
 /// written by agents, so serving one inline means running somebody else's
-/// content on this origin -- and the session cookie that authorises every API
+/// content on this origin -- and the session cookie that authorizes every API
 /// call is on this origin. HTML and SVG are the obvious ways that goes wrong
 /// and are deliberately absent: an SVG is a document that can carry script,
 /// whatever its extension says.
@@ -385,7 +385,7 @@ pub async fn preview(
             (header::CONTENT_TYPE, media_type.to_string()),
             // Inline, which is the whole point, but under a sandbox: even if
             // something got through the allowlist it runs as its own origin
-            // with no script, so it cannot reach the cookie that authorises
+            // with no script, so it cannot reach the cookie that authorizes
             // this API.
             (header::CONTENT_DISPOSITION, "inline".to_string()),
             (

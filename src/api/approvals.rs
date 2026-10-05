@@ -14,7 +14,7 @@
 //! was gated before asking anybody. `request` below is the by-hand one, for a
 //! person who wants a conversation held on something no skill declared.
 //!
-//! They are authorised differently on purpose. Asking and answering are
+//! They are authorized differently on purpose. Asking and answering are
 //! different acts, so the authority that gates one must not gate the other --
 //! otherwise anybody who may approve a payment may also park any conversation in
 //! the workspace.
@@ -53,7 +53,7 @@ pub struct RequestApproval {
     /// Why, for the person deciding. Shown in the queue row and on the hold.
     pub reason: String,
     /// Who is being asked. Roles, not people: who may approve a charge is a
-    /// question about the workspace's organisation, and it changes without the
+    /// question about the workspace's organization, and it changes without the
     /// pending request changing.
     #[serde(default)]
     pub roles: Vec<Uuid>,
@@ -242,10 +242,10 @@ pub async fn answer(
     Path(item_id): Path<Uuid>,
     Json(input): Json<AnswerApproval>,
 ) -> Result<Json<Answered>, ApiError> {
-    // Authenticated here and authorised below, once the item is known, because
+    // Authenticated here and authorized below, once the item is known, because
     // the queue reads across workspaces: the authority has to be resolved in the
     // *item's* workspace rather than the token's. Checked against the token it
-    // would mean approvals:answer in one workspace authorised payments in every
+    // would mean approvals:answer in one workspace authorized payments in every
     // other one the person belongs to -- which it did, until a test said so.
     let claims = authenticate(&state, &headers)?;
 

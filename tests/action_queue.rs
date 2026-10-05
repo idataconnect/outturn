@@ -1,6 +1,6 @@
 //! The action queue against a real Postgres.
 //!
-//! Every behaviour here is in SQL -- partial unique indexes, a composite
+//! Every behavior here is in SQL -- partial unique indexes, a composite
 //! foreign key, `count(distinct)`, and a conditional update that decides who
 //! wins a race. None of it is reachable from a unit test, and an in-memory
 //! implementation of the trait would only test the in-memory implementation.
@@ -834,7 +834,7 @@ async fn a_rolled_back_raise_announces_nothing() {
 //
 // The global badge is the one query in this design with no `workspace_id`
 // predicate, so it is the one place a missing filter leaks another tenant's
-// work into somebody's notification centre. The workspace set is derived from
+// work into somebody's notification center. The workspace set is derived from
 // `user_workspace_roles` rather than supplied by the caller, and these tests
 // are what hold that: each seeds a workspace the reader has no role in and
 // asserts it contributes nothing.

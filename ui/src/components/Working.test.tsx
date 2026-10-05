@@ -29,7 +29,7 @@ describe('the working mark', () => {
     const { container } = render(<Working />)
 
     // Not merely paused: SMIL ignores prefers-reduced-motion, so the only way
-    // to honour it is for the elements not to exist.
+    // to honor it is for the elements not to exist.
     expect(container.querySelectorAll('animate')).toHaveLength(0)
   })
 
@@ -41,7 +41,7 @@ describe('the working mark', () => {
     expect(container.querySelectorAll('rect')).toHaveLength(3)
   })
 
-  it('staggers each dot\'s colour to match its place in the swell', () => {
+  it('staggers each dot\'s color to match its place in the swell', () => {
     prefersReducedMotion(false)
 
     const { container } = render(<Working />)
@@ -54,7 +54,7 @@ describe('the working mark', () => {
     expect(delays).toEqual(['0s', '0.4s', '0.8s'])
   })
 
-  it('leaves the colour to the stylesheet, so a theme can replace it', () => {
+  it('leaves the color to the stylesheet, so a theme can replace it', () => {
     prefersReducedMotion(false)
 
     const { container } = render(<Working />)
@@ -154,7 +154,7 @@ describe('the mark when the turn ends', () => {
 
     const { container } = render(<Working phase="held" />)
 
-    // The travelling swell is SMIL and belongs to `running` alone. Held is a
+    // The traveling swell is SMIL and belongs to `running` alone. Held is a
     // CSS pulse: no <animate> at all, which is also what stops the two from
     // running at once on the same attributes.
     expect(container.querySelectorAll('animate')).toHaveLength(0)
@@ -169,7 +169,7 @@ describe('the mark when the turn ends', () => {
     const { container } = render(<Working phase="held" />)
 
     // The whole distinction the mark rests on: in unison reads as waiting,
-    // travelling reads as advancing. A stagger here would blur the two.
+    // traveling reads as advancing. A stagger here would blur the two.
     const delays = Array.from(container.querySelectorAll('rect')).map(
       (dot) => dot.style.animationDelay,
     )

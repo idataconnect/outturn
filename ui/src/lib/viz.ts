@@ -1,7 +1,7 @@
 /**
  * The vocabulary every chart in this app draws with.
  *
- * Two things live here and nothing else: the series colours, and the small
+ * Two things live here and nothing else: the series colors, and the small
  * formatting rules that make numbers comparable across panels. Components
  * import roles from here rather than writing hex or `toLocaleString` calls of
  * their own, so a deployment that replaces the theme replaces the charts with
@@ -24,18 +24,18 @@
  * nobody checked.
  *
  * Written as hex rather than as `var(--color-brand-600)` because these are not
- * the interface's colours: a chart needs steps chosen against the chart
+ * the interface's colors: a chart needs steps chosen against the chart
  * surface, and reusing the interactive ramp would put an unvalidated pair side
  * by side the first time a workspace had two models.
  */
 export const SERIES_LIGHT = ['#008e89', '#d55c13', '#6359b5', '#708500', '#b25196'] as const
 export const SERIES_DARK = ['#04a19b', '#d8662a', '#7970d5', '#889e2a', '#c361a5'] as const
 
-/** The colour of slot `i`, folding anything past the last slot onto a neutral. */
+/** The color of slot `i`, folding anything past the last slot onto a neutral. */
 export function seriesColor(index: number, dark: boolean): string {
   const slots = dark ? SERIES_DARK : SERIES_LIGHT
   // Past the ceiling is the "others" fold, which is not an identity and should
-  // not wear one -- a grey says "the rest" in a way a sixth hue cannot.
+  // not wear one -- a gray says "the rest" in a way a sixth hue cannot.
   return slots[index] ?? (dark ? '#8a8a80' : '#77776e')
 }
 

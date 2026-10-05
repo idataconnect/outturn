@@ -33,10 +33,10 @@ function show(value: unknown): string {
 }
 
 /**
- * One level's view of the settings catalogue.
+ * One level's view of the settings catalog.
  *
  * Each setting shows the value that applies and where it came from. Beside it
- * an Override checkbox: off, the value is inherited and shown greyed; on, a
+ * an Override checkbox: off, the value is inherited and shown grayed; on, a
  * row exists at this level and the control is live. Turning it off deletes
  * the row and the level falls back to whatever is above it. Nothing is copied
  * down, so an operator changing a default reaches every level that never

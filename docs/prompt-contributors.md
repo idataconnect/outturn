@@ -15,7 +15,7 @@ unwritten rules:
 - the platform preamble (`skill::platform_preamble`);
 - the agent's system prompt;
 - the bodies of its skills, composed in order;
-- compaction summaries, framed as summaries (`summarise::framed`);
+- compaction summaries, framed as summaries (`summarize::framed`);
 - and, designed, carry-over, memory and [personalities](personalities.md).
 
 Each of those answers the same questions differently or not at all: who may
@@ -36,7 +36,7 @@ and eventually as things somebody else publishes.
 ## What a contributor is
 
 A declaration, not code. A contributor says what it adds and where, from a
-fixed vocabulary the platform executes -- so a contributor from a catalogue is
+fixed vocabulary the platform executes -- so a contributor from a catalog is
 something the platform can reason about, show a person, and refuse, rather
 than something it runs.
 
@@ -173,14 +173,14 @@ model's, so a reader can see the agent did not choose to make it.
 
 *Contributor* is the mechanism -- something that contributes to what a turn
 sees -- and it is the word for it here and in the code. It is not a product
-name. What a catalogue offers is a **plugin**: a versioned, installable package
+name. What a catalog offers is a **plugin**: a versioned, installable package
 that may hold contributors, skills, and later integrations, which is also the
 natural home for what [skill-bundles.md](skill-bundles.md) calls a bundle.
 *Extension* is avoided on purpose: [integrations.md](integrations.md) already
 uses it for the OAuth integrations a workspace turns on, and one word meaning
 two things is the ambiguity [glossary.md](glossary.md) exists to prevent.
 
-## A catalogue, later
+## A catalog, later
 
 Contributors as things somebody publishes and a workspace installs, the way
 skills are bound -- "eagerly load tools", "load these operations of this skill",
@@ -192,7 +192,7 @@ is a new approval rather than an update.
 
 A contributor from somebody else is untrusted text in the prompt, which is to
 say a prompt injection somebody chose to install. The declaration vocabulary is
-what keeps that bounded: a catalogue contributor can add text at the priority
+what keeps that bounded: a catalog contributor can add text at the priority
 its owner is allowed and run the read-only tools it declared, and nothing else.
 Showing a person exactly what will be added -- the text, the tools, the
 placement -- before they install it is the same rule as approving a skill's
@@ -209,7 +209,7 @@ replies only.
 
 A stance -- "hold me to a higher standard" -- is a contributor too, but not a
 personality: it is meant to change what the agent produces, so it belongs to
-whoever owns the agent's behaviour, at `agent` placement, and is evaluated as
+whoever owns the agent's behavior, at `agent` placement, and is evaluated as
 part of the agent rather than excused as somebody's taste.
 
 ## Not settled

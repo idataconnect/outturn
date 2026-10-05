@@ -865,7 +865,7 @@ async fn transcript_cursor_excludes_deltas_already_in_content() {
             serde_json::json!({}),
         )
         .await
-        .expect("finalise");
+        .expect("finalize");
 
     let history = store.messages(session_id).await.expect("history");
     assert_eq!(history.messages.len(), 1);
@@ -1030,7 +1030,7 @@ async fn paged_read_still_assembles_a_streaming_reply() {
             serde_json::json!({}),
         )
         .await
-        .expect("finalise");
+        .expect("finalize");
 
     let second = store
         .append_message(
@@ -1454,7 +1454,7 @@ async fn a_tool_only_reply_from_a_finished_turn_does_not_wedge_the_session() {
             serde_json::json!({ "tool_calls": [{ "id": "c1", "name": "list_objects", "is_error": true }] }),
         )
         .await
-        .expect("finalise");
+        .expect("finalize");
 
     store
         .append_message(
@@ -2060,7 +2060,7 @@ async fn an_open_circuit_removes_a_destination_from_the_list() {
     finish!(db);
 }
 
-// -- Serialised work ----------------------------------------------------------
+// -- Serialized work ----------------------------------------------------------
 
 /// Two turns in one conversation are answered in order, never at once.
 ///
@@ -2177,7 +2177,7 @@ async fn a_busy_session_does_not_block_other_sessions_from_being_claimed() {
     finish!(db);
 }
 
-/// Serialisation is per key: different conversations still run in parallel.
+/// Serialization is per key: different conversations still run in parallel.
 #[tokio::test]
 async fn different_keys_still_run_in_parallel() {
     let (db, workspace) = setup_or_skip!();
@@ -2206,9 +2206,9 @@ async fn different_keys_still_run_in_parallel() {
     finish!(db);
 }
 
-/// Work with no key is unconstrained, as it was before serialisation existed.
+/// Work with no key is unconstrained, as it was before serialization existed.
 #[tokio::test]
-async fn unkeyed_work_is_not_serialised() {
+async fn unkeyed_work_is_not_serialized() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
@@ -2293,7 +2293,7 @@ async fn racing_claimers_cannot_both_take_one_key() {
     assert_eq!(
         taken, 1,
         "{racers} workers raced and {taken} turns started, which means the \
-         serialisation guarantee does not hold"
+         serialization guarantee does not hold"
     );
 
     finish!(db);
@@ -2459,7 +2459,7 @@ async fn the_backlog_counts_work_that_could_actually_start() {
         .await
         .expect("enqueue");
     }
-    // Two more sessions, and two jobs with nothing to serialise on.
+    // Two more sessions, and two jobs with nothing to serialize on.
     for _ in 0..2 {
         let other = Uuid::now_v7().to_string();
         jobs::enqueue(
@@ -2497,7 +2497,7 @@ async fn the_backlog_counts_work_that_could_actually_start() {
         .expect("backlog")
     };
 
-    // Three serialised keys plus two unconstrained jobs.
+    // Three serialized keys plus two unconstrained jobs.
     assert_eq!(
         backlog().await,
         5,
@@ -2700,7 +2700,7 @@ async fn a_turn_reports_against_its_reply_not_its_prompt() {
         serde_json::json!({}),
     )
     .await
-    .expect("finalise");
+    .expect("finalize");
 
     let history = chat.messages(session_id).await.expect("history");
     let stored_prompt = history
@@ -3870,7 +3870,7 @@ async fn a_parked_turn_is_not_counted_as_claimable_work() {
 /// and the summary before it, are left unread.
 ///
 /// A summary whose mark does not read is not a summary to the projection
-/// (`summarise::mark_of`), so it must not be one to this read either --
+/// (`summarize::mark_of`), so it must not be one to this read either --
 /// otherwise the two pick different summaries and the turn loses messages.
 #[tokio::test]
 async fn a_turn_reads_from_its_newest_summary_on() {

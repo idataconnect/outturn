@@ -31,7 +31,7 @@ pub fn blob_key(workspace_id: Uuid, sha256: &str) -> String {
 pub struct DeclaredGate {
     pub path: String,
     pub requires: String,
-    /// Upper case, as a request's method is normalised to.
+    /// Upper case, as a request's method is normalized to.
     pub method: String,
     pub path_pattern: String,
     pub identified_by: Option<String>,

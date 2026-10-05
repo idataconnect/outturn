@@ -21,7 +21,7 @@ Every dimension a bill might be cut along is on the row:
 | `endpoint`, `model` | Who answered, and with what. The model that *actually* served, which routing may have chosen |
 | `credential_owner` | Whose key paid: `operator` or `workspace` |
 | `fallback` | `none`, `same_model` or `cross_model` |
-| five token columns | As the provider reported them, normalised |
+| five token columns | As the provider reported them, normalized |
 | `provider_usage` | The provider's usage object verbatim, for dimensions the columns do not model |
 | `service_tier` | The price tier that served it, where a provider has them |
 
@@ -29,12 +29,12 @@ Tokens, never prices. Rate cards change and disputes happen, and a ledger that
 stored a computed cost would have to be corrected where one that stores tokens
 is re-priced by whoever is billing.
 
-The five normalised columns are what every provider agrees on and every rate
+The five normalized columns are what every provider agrees on and every rate
 card needs. They are not a superset and never will be: cache writes priced by
 TTL, service tiers, long-context thresholds, server-side tools billed per call,
 audio and image tokens. So the provider's usage object is kept whole beside
 them. The columns build today's bill; the raw object lets yesterday's calls be
-re-priced under a dimension nobody thought to normalise, without a backfill.
+re-priced under a dimension nobody thought to normalize, without a backfill.
 For the Anthropic protocol the gateway's translation is lossy by design, so
 the original rides through under an `anthropic` key.
 
@@ -154,7 +154,7 @@ answer. The line is dashed and its own maximum is written into the legend,
 because a reader must be able to see that it does not share the axis beside it.
 
 The other is that every chart has a table behind it carrying the same figures,
-and that the series colours are checked rather than chosen: they come from the
+and that the series colors are checked rather than chosen: they come from the
 theme's own ramps, stepped until both modes cleared a validator for the
 lightness band, the chroma floor, adjacent-pair separation under protanopia and
 deuteranopia, and contrast against the surface. `ui/src/lib/viz.ts` holds them,

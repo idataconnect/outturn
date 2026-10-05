@@ -25,7 +25,7 @@ pub use outturn::agent::host::{
 /// What a byte string is, when it is plainly not text -- or None when it may be.
 ///
 /// Magic numbers first, because a name helps: told it holds a zip, a model
-/// reaches for `expand_archive`; told "binary", it can only apologise. Then a
+/// reaches for `expand_archive`; told "binary", it can only apologize. Then a
 /// coarse test for the rest: a NUL, or a window that is mostly control
 /// characters, is not something anyone wanted to read.
 pub(crate) fn describe_binary(bytes: &[u8]) -> Option<&'static str> {
@@ -780,7 +780,7 @@ impl outturn::agent::host::Host for AgentHost {
 
         // This tier makes no outbound request of its own. It runs workspace
         // code, so a socket here is a socket a compromised guest's host could
-        // use for anything -- and an approval it was trusted to honour would
+        // use for anything -- and an approval it was trusted to honor would
         // be worth nothing, because it could simply not ask. The gateway makes
         // the call: it holds the credentials, it can read the commitment out
         // of the turn token this presents, and it is the tier that never runs
@@ -830,7 +830,7 @@ impl outturn::agent::host::Host for AgentHost {
             Ok(outcome) => outcome,
             Err(refusal) => {
                 // A refusal for want of an approval is the one the API has to
-                // hear about, because it owns the queue and the job. Recognised
+                // hear about, because it owns the queue and the job. Recognized
                 // by asking the gates this turn carries rather than by reading
                 // the gateway's wording: matching on prose would break the moment
                 // somebody rephrased a message, and silently -- the failure would
@@ -1733,7 +1733,7 @@ impl<T: Clone> CompiledCache<T> {
 
     fn insert(&self, key: [u8; 32], component: T) {
         let Ok(mut entries) = self.entries.lock() else {
-            // A poisoned cache is a lost optimisation, not a lost turn.
+            // A poisoned cache is a lost optimization, not a lost turn.
             return;
         };
         Self::drop_idle(&mut entries);
@@ -1814,7 +1814,7 @@ pub struct RunOptions {
     pub on_wait: Option<WaitSink>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
-    /// Unrecognised or absent means the clock answers in UTC.
+    /// Unrecognized or absent means the clock answers in UTC.
     pub timezone: Option<String>,
     /// Passed to providers that support it; ignored by those that do not.
     pub reasoning_effort: Option<String>,
@@ -2307,7 +2307,7 @@ mod reasoning_tests {
             assert_eq!(
                 thinking_in(&chunk),
                 Some("the user wants"),
-                "{field} should be recognised as thinking"
+                "{field} should be recognized as thinking"
             );
         }
     }

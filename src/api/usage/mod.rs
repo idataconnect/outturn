@@ -138,7 +138,7 @@ pub struct UsageSummary {
     pub to: chrono::DateTime<chrono::Utc>,
     pub totals: UsageTotals,
     /// One entry per day in the window, including days nothing happened --
-    /// see [`UsageStore::summarise`]. Ascending.
+    /// see [`UsageStore::summarize`]. Ascending.
     pub daily: Vec<UsageBucket>,
     /// The dimensions a reader cuts by, each already ordered and capped.
     pub by_workspace: Vec<UsageSlice>,
@@ -228,7 +228,7 @@ pub trait UsageStore: Send + Sync {
     /// Days with no rows are filled in with zeros rather than omitted. A chart
     /// drawn from a series that skips its empty days draws a quiet day as no
     /// day at all, which reads as a shorter window rather than an idle one.
-    async fn summarise(
+    async fn summarize(
         &self,
         workspace_id: Option<Uuid>,
         from: chrono::DateTime<chrono::Utc>,

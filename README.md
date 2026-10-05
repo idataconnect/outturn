@@ -66,7 +66,7 @@ own Kubernetes or kind will do, and so will colima, which is lighter:
 
 ```
 colima start --kubernetes --cpu 8 --memory 16
-# skaffold does not recognise colima as local, and would push the images it
+# skaffold does not recognize colima as local, and would push the images it
 # builds rather than leave them on the node
 skaffold config set -k colima local-cluster true
 ```
@@ -209,6 +209,6 @@ what to open an issue about first. Security reports go through
 explains why secret scanners flag this repository's early history, and why that
 is expected.
 
-## Licence
+## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

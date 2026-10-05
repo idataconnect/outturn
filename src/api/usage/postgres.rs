@@ -294,7 +294,7 @@ impl UsageStore for PostgresUsageStore {
         Ok(UsagePage { entries, next })
     }
 
-    async fn summarise(
+    async fn summarize(
         &self,
         workspace_id: Option<Uuid>,
         from: chrono::DateTime<chrono::Utc>,

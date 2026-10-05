@@ -15,7 +15,7 @@ const QUERY = '(prefers-reduced-motion: reduce)'
  */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(() => {
-    // Read during initialisation so the first render already agrees with the
+    // Read during initialization so the first render already agrees with the
     // setting, rather than animating for a frame and then stopping.
     if (typeof window === 'undefined' || !window.matchMedia) return false
     return window.matchMedia(QUERY).matches

@@ -171,8 +171,8 @@ No migration. Rules keep their rows and their variable names; what changes is
 that each variable now needs a binding before it attaches to anything. A
 deployment that upgrades without writing bindings finds every credentialed
 request refused, loudly, with the variable named -- which is the right failure
-for a fix whose point is that the old behaviour was unsafe. A grace flag that
-kept the old behaviour would be the leak with a setting.
+for a fix whose point is that the old behavior was unsafe. A grace flag that
+kept the old behavior would be the leak with a setting.
 
 To make the upgrade a reading exercise rather than archaeology, the gateway
 logs at startup every variable under the prefix that has no binding, by name.
@@ -206,7 +206,7 @@ claiming to be narrower than it is, and is refused.
 **Tier 2, extensions.** A per-workspace credential from a consent flow cannot
 be an environment variable, so it lives in the credential store integrations.md
 describes. The binding moves with it: the store row carries its workspace and
-the extension's approved hosts, fixed at authorisation, and the gateway asks
+the extension's approved hosts, fixed at authorization, and the gateway asks
 the same question of it that it asks of a variable. The check is one function
 over two sources, not two checks.
 

@@ -15,7 +15,7 @@ import type { SkillCommand } from '../lib/useSkillCommands'
  * decides what to use, as it always has, and this only saves somebody
  * remembering what a skill was called and typing it exactly. A menu that
  * bound the turn to one skill would be a different feature with a different
- * risk -- it would have to be honoured somewhere, and nothing honours it yet.
+ * risk -- it would have to be honored somewhere, and nothing honors it yet.
  *
  * Built on the trigger primitives rather than the styled component their
  * example names: `ComposerTriggerPopover` lives in @assistant-ui/react-ui,
@@ -45,7 +45,7 @@ import type { SkillCommand } from '../lib/useSkillCommands'
  * Plain words instead, legible to the model, to a person reading the
  * transcript back, and to anything else that ever reads a message.
  *
- * `parse` hands the text back whole rather than recognising what `serialize`
+ * `parse` hands the text back whole rather than recognizing what `serialize`
  * wrote. The round trip exists so a renderer can find directives to draw; a
  * sentence has none to find, and claiming otherwise would draw a pill around
  * three ordinary words.

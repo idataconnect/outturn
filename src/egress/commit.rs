@@ -391,7 +391,7 @@ pub fn prove(workspace_id: Uuid, rules: &[EgressRule], rule: &EgressRule) -> Opt
     match (encoded_len(&inclusion), encoded_len(&whole)) {
         (Some(a), Some(b)) if a <= b => Some(inclusion),
         (Some(_), Some(_)) => Some(whole),
-        // A rule set that will not serialise is one nothing can send anyway;
+        // A rule set that will not serialize is one nothing can send anyway;
         // the inclusion proof is the bounded shape, so it is the safer default.
         _ => Some(inclusion),
     }
@@ -829,8 +829,8 @@ mod tests {
             let set = many(n);
             let proof = prove(ws, &set, &set[0]).expect("in the set");
             let whole = Proof::WholeSet { rules: set.clone() };
-            let chosen = serde_json::to_string(&proof).expect("serialises").len();
-            let alternative = serde_json::to_string(&whole).expect("serialises").len();
+            let chosen = serde_json::to_string(&proof).expect("serializes").len();
+            let alternative = serde_json::to_string(&whole).expect("serializes").len();
             assert!(
                 chosen <= alternative,
                 "n={n}: sent {chosen} bytes where {alternative} would have done"
@@ -861,8 +861,8 @@ mod tests {
         let committed = root(ws, &set);
         let proof = prove(ws, &set, &set[4]).expect("in the set");
 
-        let wire = serde_json::to_string(&(committed, &proof)).expect("serialises");
-        let (there, back): (Hash, Proof) = serde_json::from_str(&wire).expect("deserialises");
+        let wire = serde_json::to_string(&(committed, &proof)).expect("serializes");
+        let (there, back): (Hash, Proof) = serde_json::from_str(&wire).expect("deserializes");
 
         assert_eq!(there, committed);
         assert!(verify(ws, &there, &back).is_ok());

@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn a_malformed_payload_is_not_read_as_a_wildcard() {
         // The listener logs and drops these; what matters is that a payload
-        // missing its lists deserialises to empty rather than failing open.
+        // missing its lists deserializes to empty rather than failing open.
         let p: Payload =
             serde_json::from_str(r#"{"workspace_id":"00000000-0000-0000-0000-000000000001"}"#)
                 .expect("absent lists default");

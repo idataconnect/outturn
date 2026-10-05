@@ -41,7 +41,7 @@ pub enum Kind {
 
 /// Where a credential may go: the associated data it was sealed under.
 ///
-/// Read from the exact bytes that were sealed, never re-serialised to check a
+/// Read from the exact bytes that were sealed, never re-serialized to check a
 /// tag, so a change in how JSON is written cannot make a valid seal stop
 /// opening.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

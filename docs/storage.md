@@ -73,7 +73,7 @@ Three lifetimes, which is a property of the data rather than of who wrote it:
 
 - **Workspace** — operating procedures, reference material, anything an agent is
   expected to consult across sessions. Kept until someone deletes it.
-- **Agent** — belonging to one agent's work rather than to the organisation.
+- **Agent** — belonging to one agent's work rather than to the organization.
 - **Session** — artifacts of one conversation. Overflow from a tool result too
   large to show, intermediate files, scratch. Valuable for minutes.
 

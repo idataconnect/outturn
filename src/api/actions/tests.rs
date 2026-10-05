@@ -206,7 +206,7 @@ fn an_unknown_state_does_not_parse() {
     assert_eq!(State::parse(""), None);
 }
 
-// --- serialisation --------------------------------------------------------
+// --- serialization --------------------------------------------------------
 
 #[test]
 fn a_target_round_trips_through_json() {
@@ -219,7 +219,7 @@ fn a_target_round_trips_through_json() {
 }
 
 #[test]
-fn a_target_serialises_with_its_kind_named() {
+fn a_target_serializes_with_its_kind_named() {
     let json = serde_json::to_value(Target::Role(id(4))).unwrap();
     assert_eq!(json["kind"], "role");
 }

@@ -113,7 +113,7 @@ where
         return;
     }
     let payload = serde_json::json!({ "key": key, "path": path });
-    // Serialised on the key so a file replaced twice in quick succession is
+    // Serialized on the key so a file replaced twice in quick succession is
     // read once per write and never by two workers at once, which would race
     // to store different text for the same object.
     if let Err(e) = jobs::enqueue(
@@ -146,7 +146,7 @@ where
 /// extractable, has no text beside it and no failure recorded against it is
 /// one nothing has ever read. Queueing it makes "ask again shortly" true.
 ///
-/// Quiet and best-effort. Serialised on the key like every other enqueue, so
+/// Quiet and best-effort. Serialized on the key like every other enqueue, so
 /// asking twice before the first finishes does not read the same file twice.
 pub async fn backfill(
     pool: &sqlx::PgPool,

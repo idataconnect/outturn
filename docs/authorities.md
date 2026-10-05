@@ -10,7 +10,7 @@ Who may do what, and where each half of that answer lives.
 the code changes and nowhere else, because an authority nothing checks is
 noise and an action nothing names cannot be granted.
 
-**Roles** bundle authorities under a name a person recognises. For workspaces,
+**Roles** bundle authorities under a name a person recognizes. For workspaces,
 roles are data: rows in `roles` and `role_authorities`, owned by the workspace,
 created and edited by whoever holds `roles:manage` there. Every workspace starts
 with copies of the three defaults in `rbac::DEFAULT_ROLES` -- admin, operator,

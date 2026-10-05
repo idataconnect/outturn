@@ -492,7 +492,7 @@ export const authKindLabel: Record<AuthKind, string> = {
   oauth2: 'OAuth 2.0',
   open_id_connect: 'OpenID Connect',
   mutual_tls: 'mutual TLS',
-  other: 'a scheme the platform does not recognise',
+  other: 'a scheme the platform does not recognize',
 }
 
 /** The specification travels parsed, as the object it is, to both routes --

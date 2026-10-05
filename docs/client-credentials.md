@@ -17,7 +17,7 @@ only the access token is accepted on requests.
 
 This is the two-legged grant, RFC 6749 section 4.4 -- the platform
 authenticating as itself, with credentials an operator was issued. It is *not*
-the three-legged flow tier 2 needs, where each workspace authorises outturn
+the three-legged flow tier 2 needs, where each workspace authorizes outturn
 against its own account and a refresh token is held per workspace.
 integrations.md is right that client credentials are the wrong grant for that
 case, and nothing here changes it: a client-credentials rule is a static
@@ -45,7 +45,7 @@ A rule carries one of two credential shapes, never both:
   (`login.example.com/<tenant>/oauth2/token`), so a rule committed to the host
   alone could have its secret presented to somebody else's tenant.
 - **`scope`** is a single string, space-separated, sent exactly as written and
-  nullable for providers that want none. Not normalised -- sorting a list into
+  nullable for providers that want none. Not normalized -- sorting a list into
   canonical order would be a second reading of the field for the commitment to
   disagree with, and a provider that cared about order would be sent something
   nobody wrote.
@@ -99,7 +99,7 @@ only while the field lists happen to differ in length.
 
 The proof format does not change: it carries the rule, and the rule now carries
 more. The runtime passes the rule through rather than reading it, but it does
-deserialise it, and a runtime built before this would drop the new fields and
+deserialize it, and a runtime built before this would drop the new fields and
 send a rule that fails to verify. So the three tiers deploy together for this
 change, or the runtime gains the type first. Failing closed is the right
 direction for that mistake to go.

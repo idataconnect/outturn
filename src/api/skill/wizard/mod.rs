@@ -125,7 +125,7 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
     let notes = render::Notes::from(&input.annotations, &unmatched);
 
     api.operations.retain(|op| !notes.hidden(&op.name));
-    let categories = categorise(&api.operations);
+    let categories = categorize(&api.operations);
     let needs_categories = api.operations.len() > MANIFEST_THRESHOLD;
 
     let mut files = BTreeMap::new();
@@ -216,7 +216,7 @@ struct Category {
     operations: Vec<usize>,
 }
 
-fn categorise(operations: &[parse::Operation]) -> BTreeMap<String, Category> {
+fn categorize(operations: &[parse::Operation]) -> BTreeMap<String, Category> {
     let mut cats: BTreeMap<String, Category> = BTreeMap::new();
 
     for (i, op) in operations.iter().enumerate() {

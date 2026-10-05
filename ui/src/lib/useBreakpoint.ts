@@ -29,7 +29,7 @@ export function currentBreakpoint(): Breakpoint {
 }
 
 export function useBreakpoint(): Breakpoint {
-  // Read during initialisation, so the first render is already correct rather
+  // Read during initialization, so the first render is already correct rather
   // than flashing the wrong layout and correcting it.
   const [breakpoint, setBreakpoint] = useState<Breakpoint>(currentBreakpoint)
 

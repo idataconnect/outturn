@@ -135,7 +135,7 @@ struct PaymentAccount {
     id: String,
     /// Whose it is, for the guesthouse's own records.
     holder: String,
-    /// What the guest would recognise, e.g. "Visa ending 4471". Not a number.
+    /// What the guest would recognize, e.g. "Visa ending 4471". Not a number.
     label: String,
 }
 
@@ -508,7 +508,7 @@ async fn list_charges(State(state): State<Arc<Fixture>>) -> impl IntoResponse {
 ///
 /// The operation the approval demo is about. Nothing here decides whether it is
 /// allowed -- that is outturn's business, and a fixture that refused on its own
-/// judgement would be testing the fixture. What it does is behave like a
+/// judgment would be testing the fixture. What it does is behave like a
 /// recipient that was built properly: it validates, it refuses a repeat that
 /// quotes a key it has seen, and it records enough that a test can assert money
 /// moved rather than that a turn finished.
@@ -638,7 +638,7 @@ async fn announce(state: &Fixture, booking: &Booking) {
             req = req.header("x-outturn-token", &target.secret);
         }
         _ => {
-            // Signed over the bytes being sent, not over a reserialisation of
+            // Signed over the bytes being sent, not over a reserialization of
             // them: the receiver verifies what arrived, and two JSON documents
             // that mean the same thing have different bytes.
             let timestamp = Utc::now().timestamp().to_string();
@@ -725,7 +725,7 @@ async fn openapi(State(_state): State<Arc<Fixture>>) -> impl IntoResponse {
                 "A handle for a card the house already holds, e.g. `pa_4471`. Never a card number: quote this to a guest and put it in a record without a second thought." },
               "holder": { "type": "string" },
               "label": { "type": "string", "description":
-                "What a guest would recognise, e.g. `Visa ending 4471`." }
+                "What a guest would recognize, e.g. `Visa ending 4471`." }
             }
           },
           "Charge": {

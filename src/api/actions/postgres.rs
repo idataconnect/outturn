@@ -550,7 +550,7 @@ impl ActionStore for PostgresActionStore {
             // means *every parked turn in the workspace*: the fail-open direction,
             // saved only by a check constraint and a `level != "platform"` guard.
             // `read_scope` refuses a row whose level and columns disagree, which is
-            // the behaviour a fifth level should inherit rather than rediscover.
+            // the behavior a fifth level should inherit rather than rediscover.
             let row = sqlx::query(
                 "select level, workspace_id, agent_id, session_id from inhibitors \
                  where id = $1",
