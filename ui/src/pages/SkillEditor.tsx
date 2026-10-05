@@ -380,9 +380,9 @@ export default function SkillEditor() {
           <p className="flex items-start gap-2 text-sm text-amber-800 dark:text-amber-400">
             <Globe size={16} className="mt-0.5 shrink-0" aria-hidden />
             <span>
-              This skill reaches {skill.unmet_hosts.length === 1 ? 'a host' : 'hosts'} your
-              workspace has not allowed. Agents cannot be given it until{' '}
-              {skill.unmet_hosts.length === 1 ? 'that host is' : 'those hosts are'} opened.
+              This skill requires network access to{' '}
+              {skill.unmet_hosts.length === 1 ? 'a host' : 'hosts'} that your workspace must allow
+              before it can be assigned to an agent.
             </span>
           </p>
           <ul className="mt-2 ml-6 space-y-0.5">
