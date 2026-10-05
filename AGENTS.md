@@ -295,19 +295,17 @@ Two labels rather than one: the *owner* who set a trigger up is recorded for
 accountability, while `user_id` stays null because nobody is waiting, which is
 also what stops an agent clearing its own stopped-session latch.
 
-Turning an API specification into a skill is designed but unbuilt, in
+Turning an API specification into a skill is built, designed in
 [docs/openapi-wizard.md](docs/openapi-wizard.md) — a manifest in the prompt and
 a file per operation in the object store, because a skill body is paid for on
 every round of every turn and a real specification is megabytes. The agent
 reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
-The wizard and its page are built now; what it makes is still final, which is
-the next thing to change. A generated skill is designed to become a
-*derivation* -- a stored specification plus annotations keyed by operation
-(notes, preferences, hidden operations, approval rules, observed examples) --
-so an updated specification proposes a new version that keeps everything people
-added and reports what no longer applies. Agents still read only published
+The wizard and its page are built, and what it makes is a *derivation* -- a stored specification plus annotations keyed by operation
+(notes, preferences, hidden operations, approval rules; observed examples are
+still to come) -- so an updated specification proposes a new version that keeps
+everything people added and reports what no longer applies. Agents still read only published
 versions; annotations never reach a turn. In the same document, under "A
 derivation, not an output".
 
@@ -331,9 +329,9 @@ untrusted transcripts, which is the part to be careful with.
 
 Finding a conversation again is in
 [docs/session-search.md](docs/session-search.md), partly built: the recent list
-by last activity rather than every session ever made exists, and so does
-`/v1/agents/activity` beside it. Still designed only: lexical search built in, and
-embeddings as an optional component like Tika. They go through the gateway
+by last activity rather than every session ever made exists, paged in the
+sidebar and searchable by title, and so does `/v1/agents/activity` beside it.
+Still designed only: searching message content, and embeddings as an optional component like Tika. They go through the gateway
 rather than beside it: an embedding is a model call, and a model call that
 skipped the ledger would be the first.
 
@@ -741,8 +739,9 @@ Intended but not yet built, so that nobody mistakes these for facts about the
 code: Redis caching, per-workspace usage attribution, OpenTelemetry, and workflows
 as scripted tasks in sub-sessions.
 
-A workspace's egress list is managed through `/v1/egress-rules` and has no UI
-yet, so allowing a host means an API call.
+A workspace's egress list is managed through `/v1/egress-rules`, and from
+Settings > Connections, which allows and removes hosts and connects each one's
+key. The agent and platform levels have no UI.
 
 There is no per-workspace fairness in the queue, on purpose for now. Priority
 classes put a waiting person ahead of background work; within a class, order

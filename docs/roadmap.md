@@ -42,10 +42,10 @@ operation in `workspace/` scope that the agent reads with `read_object` when it
 needs one. That is what lets it include every operation without the prompt
 growing with the API.
 
-Worth building early because it needs nothing that does not exist -- the object
-store, `read_object`, `skill_version_hosts` and the files API are all in place.
-It is also what makes the fork below answerable with evidence rather than
-argument.
+Built: the wizard and its page, from a specification to a published skill
+with a manifest, category files and a file per operation, and the key it needs
+connected on the way. It is also what makes the fork below answerable with
+evidence rather than argument.
 
 And the premise now has evidence of its own. One run was written out by hand
 for Hollowbrook on 2026-09-22 -- `k8s/components/hollowbrook/skill/` is what a
@@ -135,7 +135,17 @@ A generated skill as a function of a stored specification and annotations keyed
 by operation -- notes, preferences, hidden operations, approval rules, observed
 examples -- so updating the specification proposes a new version that keeps
 everything people added, and reports what no longer applies. Agents still read
-only published versions. Needs only the wizard, which is built.
+only published versions.
+
+Built: annotations at three levels (skill, category, operation) -- notes,
+preferences, hidden operations and approval rules -- kept beside the stored
+specification and applied on every regeneration, which is a proposal until it
+is published. A gate survives everything that could drop it quietly: a gated
+operation is never hidden, adopting a skill made before specifications were
+kept turns its hand-written rules into annotations, and a publish that would
+drop a gate the live version has is refused unless told to. Not built:
+detaching a skill from its specification, refreshing one from its URL, and
+observed examples.
 
 ### Idempotency
 
@@ -181,8 +191,12 @@ trigram and content by full-text, both narrowed in the query. Embeddings are an
 optional component on top, called through the gateway so they land in the
 ledger like any other model call.
 
-The first step alone retires the unbounded sessions query, and none of the
-first three needs a decision the document has not made.
+Built: the recent list, paged by last activity, read a page at a time by the
+sidebar; title search by trigram, narrowing the same list; and a read of one
+session for a link the list has not reached. Not built: content search and
+embeddings. Content search is heavier than titles -- index user messages only,
+capped per message, with the workspace in the index -- and the least valuable
+of the three, so it waits until titles are not enough.
 
 ### ~~Confirm what inhibitors actually does~~ — done, 2026-09-20
 
@@ -565,8 +579,9 @@ preamble, the agent's prompt, skills, a voice, a stance, tools loaded and
 operations read up front, the time a conversation started -- each with an
 owner, a placement, a priority, a budget and a reach, recorded per turn. The
 system prompt is composed once per conversation and again only at compaction
--- built, the first piece -- and that is what a catalog of installable
-contributors would be built on.
+-- built, the first piece, with compaction on request (`/compact`, and a
+banner when a conversation is behind what is published) -- and that is what a
+catalog of installable contributors would be built on.
 
 ### Personalities
 
