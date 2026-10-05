@@ -799,7 +799,7 @@ export default function Thread({
                 {
                   id: 'compact',
                   label: 'Compact',
-                  description: 'Summarize this conversation and take up newer skill versions',
+                  description: 'Summarize conversation to reduce context usage.',
                   run: () => void compactSession(sessionId),
                 },
               ]
