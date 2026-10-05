@@ -42,6 +42,27 @@ import VersionContents from '../components/VersionContents'
  * the only real decision on this page, so it is the one the page is arranged
  * around.
  */
+/** The shortest GET the specification documents with no parameter to fill --
+ *  a listing, usually -- under the base URL's own path. Undefined when it has
+ *  none, and the test path is left for somebody to type. */
+function readToTest(
+  outline: { operations: { method: string; path: string }[] } | null,
+  baseUrl: string | null,
+): string | undefined {
+  const reads = (outline?.operations ?? [])
+    .filter((o) => o.method.toUpperCase() === 'GET' && !o.path.includes('{'))
+    .map((o) => o.path)
+    .sort((a, b) => a.length - b.length)
+  if (reads.length === 0) return undefined
+  let prefix = ''
+  try {
+    prefix = baseUrl ? new URL(baseUrl).pathname.replace(/\/$/, '') : ''
+  } catch {
+    prefix = ''
+  }
+  return `${prefix}${reads[0]}`
+}
+
 export default function SkillEditor() {
   const state = useSession()
   const navigate = useNavigate()
@@ -99,6 +120,9 @@ export default function SkillEditor() {
   // instructions, files and hosts come from the specification and the notes
   // on it, and an edit here would be overwritten the next time it is made.
   const [derived, setDerived] = useState(false)
+  /** A read from the skill's own specification, with no parameters to fill,
+   *  to test its key against: the root of an API usually answers anybody. */
+  const [testPath, setTestPath] = useState<string | undefined>(undefined)
   const [reloads, setReloads] = useState(0)
   const writable = editable && !derived
   // An override speaks about its base's instructions and carries no files of
@@ -379,11 +403,17 @@ export default function SkillEditor() {
           editable={isOperator && canWrite}
           onDerived={setDerived}
           onPublished={() => setReloads((n) => n + 1)}
+          onOutline={(outline, baseUrl) => setTestPath(readToTest(outline, baseUrl))}
         />
       )}
 
       {skill && workspaceId && skill.hosts.length > 0 && (
-        <SkillConnections hosts={skill.hosts} skillName={skill.name} workspaceId={workspaceId} />
+        <SkillConnections
+          hosts={skill.hosts}
+          skillName={skill.name}
+          workspaceId={workspaceId}
+          testPath={testPath}
+        />
       )}
 
       {skill && skill.unmet_hosts.length > 0 && (
