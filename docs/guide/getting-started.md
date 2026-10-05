@@ -57,7 +57,7 @@ The first run asks which model, at what context window, and how much of a
 conversation to send it, and keeps the answers in
 `k8s/overlays/local/dev-machine.env`. The suggestion is qwen3.5, or
 qwen3.8:27b-mlx on a Mac with enough memory. What each answer drives, and how
-to change one, is in [This machine's model](../local-development.md).
+to change one, is in [This machine's model](../local-development.md#this-machines-model).
 
 `--with` adds optional components from `k8s/components`, such as document
 extraction or the Hollowbrook guesthouse:

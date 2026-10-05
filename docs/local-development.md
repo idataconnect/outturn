@@ -1,4 +1,87 @@
-# This machine's model
+# Local development
+
+Running the whole platform on one machine: the cluster, the UI, and the model.
+
+## Running it
+
+On a machine that has never run this, `.agents/skills/onboarding/SKILL.md`
+lists requirements — the tools, a reachable cluster, the container
+daemon, ollama (or compatible) and its model — and the one trap worth knowing
+before it bites:
+skaffold decides whether to push images by guessing from the kube-context
+name, so a local cluster under an unfamiliar name means four images pushed to
+Docker Hub. It diagnoses and explains; it changes nothing.
+
+Start the cluster with the Control API open, so a build and deploy can be
+triggered without hitting Enter:
+
+```bash
+scripts/dev.sh        # skaffold dev, Control API on :50052, nothing auto
+                      # --with tika,hollowbrook adds components
+scripts/build.sh      # in another terminal: one build-and-deploy round
+```
+
+Which is this, with the traps below already handled:
+
+```bash
+skaffold dev --auto-build=false --auto-deploy=false --auto-sync=false --rpc-http-port=50052
+curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
+```
+
+Build and deploy must go in **one** request; a lone deploy can softlock the
+loop (skaffold #4886), which is why `build.sh` offers no way to ask for one.
+`--trigger=manual` on its own does not work — it gates file watching, not the
+API. Check `buildState.autoTrigger` in `/v1/state`: `true` means `/v1/execute`
+returns `{}` and silently does nothing, which `build.sh` checks for rather than
+leaving you to wonder why a build changed nothing.
+
+Skaffold forwards 18080 (api), 18081 (gateway), 18082 (runtime) and 15432
+(postgres), and keeps them alive across redeploys. **Do not start your own
+`kubectl port-forward`** — it will not reconnect, and it pushes skaffold onto
+different ports without saying so.
+
+The UI runs outside the cluster:
+
+```bash
+cd ui && npm run dev     # :3000, proxies /v1 to localhost:18080
+```
+
+The proxy mounts the API at `/v1`, matching production. Do not introduce a
+prefix: the refresh cookie is `Path`-scoped to `/v1/session/refresh`, and a
+browser matches `Path` against the URL it requests, not the one a proxy
+forwards. A `/api` prefix means refresh silently never works.
+
+Local dev seeds `admin@outturn.local`, with a password generated per clone
+into `k8s/overlays/local/dev-secrets.env` — `scripts/dev-secrets.sh --print`
+shows it. The keys live there too, gitignored and never committed; a build
+generates them if they are missing.
+
+## Models
+
+Local development runs against ollama through the OpenAI protocol
+(`OPENAI_BASE_URL`, no key). **Use qwen3.5.** It works well enough for most
+tasks, including tool use. It fits in an 8Gi card when using 8-bit quantized
+KV.
+
+Setting thinking to off will sometimes cause strange behavior around tool
+calling, such as increasing the number of pointless tool calls, and stopping
+the turn right after a tool call without continuing.
+
+On a Mac, `scripts/dev-mac.sh` builds on the `local-mac` overlay instead:
+ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
+the suggestion. Both scripts share `scripts/lib/dev.sh`, so `--with` and
+everything else behave the same on either.
+
+Which model, its context window and `context_budget` are this machine's
+answers rather than the overlay's: asked on the first run, kept in the
+gitignored `k8s/overlays/local/dev-machine.env`, and changed with
+`scripts/dev-setup.sh --reconfigure`. With ollama the model is served as a tag
+of its own, `outturn/<model>-ctx<window>`, carrying the window as `num_ctx`.
+That tag is the only thing that sets the window whatever
+`OLLAMA_CONTEXT_LENGTH` the server started with. See
+[docs/local-development.md](#this-machines-model).
+
+## This machine's model
 
 A local cluster needs three facts that belong to the machine rather than to
 the code: which model answers, how large a context window it runs at, and
@@ -15,7 +98,7 @@ scripts/dev.sh --reconfigure         # the same, then start the loop
 Or edit `k8s/overlays/local/dev-machine.env` by hand; it is plain
 `KEY=value`, gitignored, and read on every run.
 
-## The answers, and what each one drives
+### The answers, and what each one drives
 
 | Answer | Drives |
 |---|---|
@@ -39,7 +122,7 @@ a token, less 40% for the reply, tool results arriving mid-turn and the
 request itself. A budget somebody typed stays put when the window changes. One
 nobody changed follows it.
 
-## Why the window is part of the model's name
+### Why the window is part of the model's name
 
 The window used to be whatever the ollama server was started with:
 `OLLAMA_CONTEXT_LENGTH` in somebody's shell on Linux, ollama's own default on a
@@ -69,7 +152,7 @@ With a model server that is not ollama, the model is used as named and the
 window is that server's business. The budget is still yours to size against
 it.
 
-## llama.cpp instead of ollama
+### llama.cpp instead of ollama
 
 Both speak the OpenAI protocol, so the platform needs nothing different; what
 differs is how each turns a model's raw output into that protocol, and that
@@ -113,7 +196,7 @@ With `OUTTURN_DEV_SERVER=llama.cpp`:
 `scripts/dev-setup.sh --show` prints the command it starts llama-server with
 and the address the gateway uses.
 
-## What the answers cannot set
+### What the answers cannot set
 
 What the tag cannot set is anything server-wide. On Linux, ollama must listen
 beyond loopback for the cluster to reach it (`OLLAMA_HOST=0.0.0.0`), and
@@ -121,7 +204,7 @@ qwen3.5 at 32k fits an 8GB card only with the 8-bit KV cache
 (`OLLAMA_KV_CACHE_TYPE=q8_0`, with `OLLAMA_FLASH_ATTENTION=1`). Those stay with
 whoever starts the server.
 
-## How the answers reach the cluster
+### How the answers reach the cluster
 
 `scripts/lib/dev.sh` already writes `k8s/overlays/.generated` for each run: the
 base, plus whichever `--with` components were asked for. It now also patches
@@ -146,7 +229,7 @@ platform-settings` does the same.
 The operator's level is deliberate. A value set on a workspace in the Settings
 page still wins, so experimenting there is not undone by the next deploy.
 
-## Where the file lives
+### Where the file lives
 
 Beside `dev-secrets.env`, so everything a clone generates for itself is in
 one place. It is not per checkout, though. Run from a `git worktree`, the
