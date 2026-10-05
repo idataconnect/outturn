@@ -384,6 +384,14 @@ export function retireSkill(id: string, retired: boolean, platform = false): Pro
   })
 }
 
+/** Deletes a skill nothing has used. One given to an agent or run in a turn is
+ *  refused, and is retired instead. */
+export function deleteSkill(id: string, platform = false): Promise<void> {
+  return api<void>(platform ? `/v1/platform/skills/${id}` : `/v1/skills/${id}`, {
+    method: 'DELETE',
+  })
+}
+
 /** Takes a copy, keeping only a note of where it came from. Nothing merges back. */
 export function forkSkill(
   id: string,
@@ -393,10 +401,6 @@ export function forkSkill(
     method: 'POST',
     body: JSON.stringify(input),
   })
-}
-
-export function deleteSkill(id: string): Promise<void> {
-  return api<void>(`/v1/skills/${id}`, { method: 'DELETE' })
 }
 
 export function agentSkills(agentId: string): Promise<Binding[]> {
