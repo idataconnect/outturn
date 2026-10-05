@@ -33,6 +33,7 @@ import ToolCall from './ToolCall'
 import toolRenderers from './toolRenderers'
 import Working from './Working'
 import SkillMenu from './SkillMenu'
+import { compactSession } from '../lib/chat'
 import type { SkillCommand } from '../lib/useSkillCommands'
 import { deleteFile, uploadFile, uploadPastedImage, type WakeRecord } from '../lib/chat'
 import { ApiError } from '../lib/api'
@@ -790,7 +791,21 @@ export default function Thread({
           provider that watches what is typed, so the input has to be within
           it. Draws nothing until a `/` is typed, and nothing at all when the
           agent has no skills. */}
-      <SkillMenu commands={skills}>
+      <SkillMenu
+        commands={skills}
+        actions={
+          sessionId
+            ? [
+                {
+                  id: 'compact',
+                  label: 'Compact',
+                  description: 'Summarise this conversation and take up newer skill versions',
+                  run: () => void compactSession(sessionId),
+                },
+              ]
+            : []
+        }
+      >
       <ComposerPrimitive.Root
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
