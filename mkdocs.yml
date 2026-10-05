@@ -70,7 +70,7 @@ nav:
       - Getting started: guide/getting-started.md
       - Concepts: guide/concepts.md
       - Take it for a spin: take-it-for-a-spin.md
-      - This machine's model: local-development.md
+      - Local development: local-development.md
   - Design:
       - Roadmap: roadmap.md
       - Design notes: design-notes.md

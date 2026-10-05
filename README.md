@@ -115,7 +115,7 @@ curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
 
 On Linux, `scripts/dev.sh` does the same with ollama left to you to start.
 It reaches ollama across the Docker bridge and suggests qwen3.5.
-[AGENTS.md](AGENTS.md) covers both in more depth, including which models can
+[docs/local-development.md](docs/local-development.md) covers both in more depth, including which models can
 be relied on to call a tool and why thinking is left on.
 
 ## Keys
