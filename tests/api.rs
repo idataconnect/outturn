@@ -10126,3 +10126,137 @@ async fn an_unused_platform_skill_can_be_deleted_and_a_bound_one_cannot() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("retire it instead"), "{body}");
 }
+
+/// A conversation keeps the system prompt it was given: a skill edited after
+/// its first turn reaches a new conversation at once and this one only when it
+/// compacts, so every turn sends the same prefix. A different model composes
+/// again, since the preamble names the model.
+#[tokio::test]
+async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let runtime = h.runtime_token(acme);
+    let json = |body: &str| serde_json::from_str::<Value>(body).unwrap();
+
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"guide","name":"Guide","body":"Say one."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill = json(&body)["id"].as_str().unwrap().to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent = json(&body)["id"].as_str().unwrap().to_string();
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent}/skills"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{skill}"}}]"#)))
+        .unwrap();
+    assert_eq!(h.send(req).await.0, StatusCode::OK);
+
+    let session = || async {
+        let (_, body) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &format!(r#"{{"agent_id":"{agent}","title":""}}"#),
+            )
+            .await;
+        json(&body)["id"].as_str().unwrap().to_string()
+    };
+    // Sends a message, takes the turn, finishes it, and says what it was given.
+    let turn = |session: String| {
+        let h = &h;
+        let admin = admin.clone();
+        let runtime = runtime.clone();
+        async move {
+            let (status, _) = h
+                .post(
+                    &format!("/v1/agent-sessions/{session}/messages"),
+                    Some(&admin),
+                    r#"{"content":"hello"}"#,
+                )
+                .await;
+            assert_eq!(status, StatusCode::ACCEPTED);
+            let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+            assert_eq!(status, StatusCode::OK, "no work: {body}");
+            let assignment = serde_json::from_str::<Value>(&body).unwrap();
+            let job = assignment["job_id"].as_str().unwrap();
+            let lease = assignment["lease_token"].as_str().unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri(format!("/v1/work/{job}/events"))
+                .header("authorization", format!("Bearer {runtime}"))
+                .header(outturn::api::work::LEASE_HEADER, lease)
+                .body(Body::from(
+                    "{\"kind\":\"done\",\"content\":\"ok\",\"prompt_tokens\":1,\"completion_tokens\":1}\n",
+                ))
+                .unwrap();
+            assert_eq!(h.send(req).await.0, StatusCode::NO_CONTENT);
+            let reply: Uuid = assignment["reply_id"].as_str().unwrap().parse().unwrap();
+            let version: Uuid =
+                sqlx::query_scalar("select version_id from turn_skills where reply_id = $1")
+                    .bind(reply)
+                    .fetch_one(&h.db.pool)
+                    .await
+                    .unwrap();
+            (
+                assignment["system_prompt"].as_str().unwrap().to_string(),
+                version,
+            )
+        }
+    };
+
+    let running = session().await;
+    let (first, v1) = turn(running.clone()).await;
+    assert!(first.contains("Say one."), "{first}");
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{skill}/versions"),
+            Some(&admin),
+            r#"{"body":"Say two."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // The running conversation: the same prompt, byte for byte, and the turn
+    // records the version it was actually given rather than the live one.
+    let (second, recorded) = turn(running.clone()).await;
+    assert_eq!(
+        second, first,
+        "the prompt changed under a running conversation"
+    );
+    assert_eq!(recorded, v1);
+
+    // A new one has the edit at once.
+    let (fresh, v2) = turn(session().await).await;
+    assert!(fresh.contains("Say two."), "{fresh}");
+    assert_ne!(v2, v1);
+
+    // Another model composes again: the preamble names it.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/agents/{agent}"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"policy":{"model":"other-model"}}"#))
+        .unwrap();
+    assert_eq!(h.send(req).await.0, StatusCode::OK);
+    let (third, _) = turn(running).await;
+    assert!(third.contains("Say two."), "{third}");
+    assert!(third.contains("other-model"), "{third}");
+}

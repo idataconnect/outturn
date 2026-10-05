@@ -857,7 +857,8 @@ results arriving mid-turn, and for the compaction call itself.
 
 The system prompt is **spent**, not compacted. It goes to the model on every
 round exactly as the conversation does, but it is a separate field nothing can
-trim -- rebuilt from the agent and its skills each turn -- so it comes out of
+trim -- composed once per conversation and again at compaction, see
+[docs/prompt-contributors.md](docs/prompt-contributors.md) -- so it comes out of
 `context_budget` before the conversation gets any (`trim::room_for_conversation`).
 Uncounted, the budget quietly meant something else: ten long skills could
 exceed it on their own while the trim reported the conversation comfortably

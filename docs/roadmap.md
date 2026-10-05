@@ -564,9 +564,9 @@ One shape for everything that shapes a turn besides the conversation -- the
 preamble, the agent's prompt, skills, a voice, a stance, tools loaded and
 operations read up front, the time a conversation started -- each with an
 owner, a placement, a priority, a budget and a reach, recorded per turn. The
-system prompt is composed once per conversation and again only at compaction,
-which is a change from rebuilding it every turn, and what a catalogue of
-installable contributors would be built on.
+system prompt is composed once per conversation and again only at compaction
+-- built, the first piece -- and that is what a catalogue of installable
+contributors would be built on.
 
 ### Personalities
 
