@@ -37,6 +37,9 @@ export default function PromptBanner({
 
   useEffect(() => {
     let stopped = false
+    // A compaction has landed (or the session changed), so the optimistic
+    // "asked" state is spent: read the status again and let it decide.
+    setAsked(false)
     void getPromptStatus(sessionId)
       .then((s) => {
         if (!stopped) setStatus(s)
@@ -49,7 +52,11 @@ export default function PromptBanner({
     }
   }, [sessionId, compactions])
 
-  if (compacting) {
+  // "asked" shows the progress the moment the button is pressed, rather than
+  // waiting for `chat.compacting` to arrive on a later poll -- which, for a
+  // fast compaction, can land in the same batch as `chat.compacted` and never
+  // paint. It clears when the compaction lands (the effect above) or fails.
+  if (compacting || asked) {
     return (
       <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 text-sm text-surface-600 dark:border-surface-800 dark:bg-surface-800 dark:text-surface-400">
         Compacting this conversation…
