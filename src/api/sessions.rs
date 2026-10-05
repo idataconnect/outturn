@@ -40,6 +40,9 @@ pub struct RecentQuery {
     /// `agent_sessions_agent_recent_idx` where filtering the workspace's whole
     /// list in the browser was a read of every session it had.
     pub agent: Option<Uuid>,
+    /// Conversations whose title contains this, ignoring case. Narrows the
+    /// same list in the same order, so a search pages like the list does.
+    pub q: Option<String>,
 }
 
 /// A page of the recent list. The same shape as `Page`, with a string cursor.
@@ -79,6 +82,7 @@ pub async fn list_sessions(
             agent_ids.as_deref(),
             claims.subject,
             query.agent,
+            query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()),
             after,
             limit + 1,
         )
@@ -229,6 +233,26 @@ pub struct RenameSession {
 /// A name a person gives stands: the namer only ever writes to a session
 /// that has none. Clearing it is allowed and means "unnamed", which puts the
 /// session back where it started, and on the namer's list for the next turn.
+/// One conversation, for a page opened on a session the recent list has not
+/// reached: the list is paged, so not being on it says nothing about whether
+/// the reader may see it. Narrowed the same way reading its messages is.
+pub async fn get_session(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AgentSession>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SessionsRead).await?;
+    let session = session_for(
+        &state,
+        &claims,
+        id,
+        Authority::SessionsRead,
+        Ownership::Suffices,
+    )
+    .await?;
+    Ok(Json(session))
+}
+
 pub async fn rename_session(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

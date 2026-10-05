@@ -291,6 +291,7 @@ pub trait ChatStore: Send + Sync {
         agent_ids: Option<&[Uuid]>,
         user_id: Uuid,
         agent: Option<Uuid>,
+        title: Option<&str>,
         after: Option<Recent>,
         limit: i64,
     ) -> Result<Vec<AgentSession>, ChatError>;

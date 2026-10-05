@@ -15,9 +15,10 @@ import SidePane, { type PaneTab } from '../components/SidePane'
 import { ApiError } from '../lib/api'
 import {
   createSession,
+  getSession,
   listAgents,
-  listSessions,
   mergeRecent,
+  sessionsPage,
   recentSessions,
   renameSession,
   sessionName,
@@ -46,6 +47,18 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   const draftAgent = draft ? search.get('agent') : null
   const [agents, setAgents] = useState<Agent[]>([])
   const [sessions, setSessions] = useState<AgentSession[]>([])
+  /** Where the recent list continues; null once it has all been read. */
+  const [next, setNext] = useState<string | null>(null)
+  /** What the search box holds, and what the server found for it -- null
+   *  while nothing is being searched for, so the recent list shows. */
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<AgentSession[] | null>(null)
+  const [resultsNext, setResultsNext] = useState<string | null>(null)
+  /** A page being fetched, so scrolling does not ask for the same one twice. */
+  const fetching = useRef(false)
+  /** Sessions in the URL already looked up on their own, so a missing one is
+   *  asked about once rather than on every render. */
+  const lookedUp = useRef<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   // A URL naming a session this workspace cannot see. Kept apart from
   // `error` because it is about the address, not the page: it goes away the
@@ -188,10 +201,15 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     let cancelled = false
     void (async () => {
       try {
-        const [a, s] = await Promise.all([listAgents(), listSessions()])
+        // One page, not the workspace's whole history: the rest arrives as the
+        // list is scrolled, and anything older is found by searching.
+        lookedUp.current = new Set()
+        setQuery('')
+        const [a, page] = await Promise.all([listAgents(), sessionsPage()])
         if (cancelled) return
         setAgents(a)
-        setSessions(s)
+        setSessions(page.items)
+        setNext(page.next)
         setError(null)
       } catch (e) {
         if (cancelled) return
@@ -230,6 +248,60 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     }
   }, [workspaceId])
 
+  // Searching asks the server, not the list in hand: the list is one page of
+  // recent conversations, and the one somebody is looking for is usually not
+  // on it. Debounced, so typing a word is one request rather than one a key.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) {
+      setResults(null)
+      setResultsNext(null)
+      return
+    }
+    let current = true
+    const id = setTimeout(() => {
+      sessionsPage({ q }).then(
+        (page) => {
+          if (!current) return
+          setResults(page.items)
+          setResultsNext(page.next)
+        },
+        () => {
+          if (current) setResults([])
+        },
+      )
+    }, 250)
+    return () => {
+      current = false
+      clearTimeout(id)
+    }
+  }, [query, workspaceId])
+
+  /** The next page of whichever list is showing, when it is scrolled near its end. */
+  const loadMore = () => {
+    const searching = results !== null
+    const after = searching ? resultsNext : next
+    if (!after || fetching.current) return
+    fetching.current = true
+    sessionsPage({ after, q: searching ? query.trim() : undefined })
+      .then(
+        (page) => {
+          if (searching) {
+            setResults((held) => mergeRecent(held ?? [], page.items))
+            setResultsNext(page.next)
+          } else {
+            setSessions((held) => mergeRecent(held, page.items))
+            setNext(page.next)
+          }
+        },
+        // A page that failed is asked for again on the next scroll.
+        () => {},
+      )
+      .finally(() => {
+        fetching.current = false
+      })
+  }
+
   // Stale the instant the workspace changes, so the reconciliation below waits
   // for the new lists rather than judging the URL against the old ones.
   const loaded = loadedFor !== null && loadedFor === workspaceId
@@ -258,6 +330,17 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     // was decided a render later, and somebody who clicked something in
     // between had their choice replaced by the landing.
     if (!sessions.some((session) => session.id === sessionId)) {
+      // The list is paged, so an older conversation is simply not on it yet.
+      // Asked about once on its own; only a refusal makes it missing.
+      if (!lookedUp.current.has(sessionId)) {
+        lookedUp.current.add(sessionId)
+        getSession(sessionId).then(
+          (found) => setSessions((held) => mergeRecent(held, [found])),
+          // Refused or gone: run this again, which now takes the branch below.
+          () => setSessions((held) => [...held]),
+        )
+        return
+      }
       setMissing('That session is not available in this workspace.')
       if (sessions.length > 0) {
         landed.current = sessions[0].id
@@ -383,8 +466,29 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
             </span>
           )}
         </div>
-        <div className="flex-1 overflow-auto p-2 space-y-1">
-          {sessions.map((session) => (
+        <div className="px-3 pt-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search conversations"
+            aria-label="Search conversations by title"
+            className="w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 text-sm text-surface-800 dark:text-surface-200 placeholder:text-surface-400"
+          />
+        </div>
+        <div
+          className="flex-1 overflow-auto p-2 space-y-1"
+          onScroll={(e) => {
+            const el = e.currentTarget
+            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMore()
+          }}
+        >
+          {results !== null && results.length === 0 && (
+            <p className="px-2 py-1.5 text-sm text-surface-500 dark:text-surface-400">
+              No conversations with that in the title.
+            </p>
+          )}
+          {(results ?? sessions).map((session) => (
             <NavLink
               key={session.id}
               to={`/sessions/${session.id}`}

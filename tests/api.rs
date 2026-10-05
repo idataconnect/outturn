@@ -10327,3 +10327,127 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
     assert!(third.contains("Say two."), "{third}");
     assert!(third.contains("other-model"), "{third}");
 }
+
+/// Searching the list narrows it by title, ignoring case and matching part of
+/// a word, and pages the way the list does. A typed `%` is a character, not a
+/// wildcard.
+#[tokio::test]
+async fn sessions_can_be_found_by_part_of_their_title() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).unwrap();
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    for title in [
+        "Booking the Rose Room",
+        "rose garden tour",
+        "Invoices for March",
+        "Fifty percent: 50% off",
+        "500 cranes",
+    ] {
+        let (status, body) = h
+            .post(
+                "/v1/agent-sessions",
+                Some(&admin),
+                &serde_json::json!({ "agent_id": agent_id, "title": title }).to_string(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    let titles = |path: String| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let (status, body) = h.get(&path, Some(admin)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let page: Value = serde_json::from_str(&body).unwrap();
+            let mut found: Vec<String> = page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["title"].as_str().unwrap().to_string())
+                .collect();
+            found.sort();
+            (found, page["next"].clone())
+        }
+    };
+
+    let (found, _) = titles("/v1/agent-sessions?q=ROSE".into()).await;
+    assert_eq!(found, ["Booking the Rose Room", "rose garden tour"]);
+
+    let (found, _) = titles("/v1/agent-sessions?q=50%25".into()).await;
+    assert_eq!(found, ["Fifty percent: 50% off"], "% is literal");
+
+    let (found, _) = titles("/v1/agent-sessions?q=%20%20".into()).await;
+    assert_eq!(found.len(), 5, "blank search is no search");
+
+    let (found, next) = titles("/v1/agent-sessions?q=o&limit=2".into()).await;
+    assert_eq!(found.len(), 2);
+    let next = next.as_str().expect("more to page through").to_string();
+    let (rest, _) = titles(format!("/v1/agent-sessions?q=o&limit=10&after={next}")).await;
+    assert_eq!(found.len() + rest.len(), 4, "every title with an o, once");
+
+    h.db.cleanup().await;
+}
+
+/// One session can be read on its own, for a page opened on a conversation the
+/// paged list has not reached; one that does not exist is not found.
+#[tokio::test]
+async fn one_session_can_be_read_on_its_own() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":"Old one"}}"#),
+        )
+        .await;
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = h
+        .get(&format!("/v1/agent-sessions/{id}"), Some(&admin))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["title"],
+        "Old one"
+    );
+
+    let (status, _) = h
+        .get(
+            &format!("/v1/agent-sessions/{}", Uuid::now_v7()),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    h.db.cleanup().await;
+}
