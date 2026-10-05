@@ -51,7 +51,13 @@ export default function PromptBanner({
 
   if (compacting) {
     return (
-      <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 text-sm text-surface-600 dark:border-surface-800 dark:bg-surface-800 dark:text-surface-400">
+      // Work happening now, drawn the way the session list draws a running
+      // turn: a pulsing dot in the brand colour, on a faint brand tint.
+      <div
+        className="flex items-center gap-2 border-b border-brand-200 bg-brand-50 px-6 py-2 text-sm text-brand-800 dark:border-brand-900 dark:bg-brand-950/40 dark:text-brand-300"
+        role="status"
+      >
+        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-500" aria-hidden />
         Compacting this conversation…
       </div>
     )
