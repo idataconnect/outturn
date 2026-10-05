@@ -342,7 +342,7 @@ function AssistantMessage() {
       <MessagePrimitive.Root className="flex justify-center">
         <div className="w-full my-2 px-4 py-2 rounded-lg text-xs bg-surface-50 dark:bg-surface-900/60 border border-dashed border-surface-300 dark:border-surface-700 text-surface-600 dark:text-surface-400">
           <p className="font-medium mb-1 uppercase tracking-wide text-[10px]">
-            Earlier messages, summarised
+            Earlier messages, summarized
           </p>
           <MessagePrimitive.Parts components={{ Text: MarkdownText, Empty: Nothing }} />
         </div>
@@ -799,7 +799,7 @@ export default function Thread({
                 {
                   id: 'compact',
                   label: 'Compact',
-                  description: 'Summarise this conversation and take up newer skill versions',
+                  description: 'Summarize this conversation and take up newer skill versions',
                   run: () => void compactSession(sessionId),
                 },
               ]
