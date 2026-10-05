@@ -278,7 +278,7 @@ export function Connection({
               {tested.fingerprint && (
                 <span
                   className="ml-1 font-mono text-surface-500 dark:text-surface-400"
-                  title="Identifies the key the gateway sent without revealing it. The same key always shows the same fingerprint, so a different one means the key was replaced."
+                  title="Identifies the key the gateway sent without revealing it. It stays the same until the key is replaced or the gateway's sealing key is rotated."
                 >
                   · key {tested.fingerprint}
                 </span>
