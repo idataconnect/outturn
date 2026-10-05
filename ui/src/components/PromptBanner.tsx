@@ -64,7 +64,7 @@ export default function PromptBanner({
     status.skills.length > 0
       ? status.skills.map(describe).join(', ')
       : "This agent's instructions were changed"
-  const it = status.skills.length > 1 ? 'them' : 'it'
+  const it = status.skills.length === 1 ? 'it' : 'them'
 
   return (
     <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
