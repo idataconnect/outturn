@@ -62,28 +62,53 @@ const plainWords: Unstable_DirectiveFormatter = {
   parse: (text) => [{ kind: 'text', text }],
 }
 
+/** Something the menu does rather than writes: picking it runs `run` and
+ *  leaves nothing in the message. */
+export type MenuAction = {
+  id: string;
+  label: string;
+  description: string;
+  run: () => void;
+};
+
 export default function SkillMenu({
   commands,
+  actions = [],
   children,
 }: {
   commands: SkillCommand[];
+  actions?: MenuAction[];
   children: ReactNode;
 }) {
+  const actionIds = new Set(actions.map((a) => a.id));
+  // An action writes nothing: the slash and what was typed after it go, and
+  // the action runs instead. Skills still write their name -- see `plainWords`.
+  const formatter: Unstable_DirectiveFormatter = {
+    serialize: (item) => (actionIds.has(item.id) ? '' : plainWords.serialize(item)),
+    parse: plainWords.parse,
+  };
   const slash = unstable_useSlashCommandAdapter({
-    // Selecting writes the slug and nothing else. `execute` is where a
-    // version that did something to the turn would put it, and deliberately
-    // does nothing.
-    commands: commands.map((command) => ({
-      id: command.id,
-      label: command.label,
-      description: command.description,
-      execute: () => {},
-    })),
+    // Selecting a skill writes its name and nothing else, so its `execute`
+    // does nothing. An action's runs.
+    commands: [
+      ...actions.map((action) => ({
+        id: action.id,
+        label: action.label,
+        description: action.description,
+        execute: action.run,
+      })),
+      ...commands.map((command) => ({
+        id: command.id,
+        label: command.label,
+        description: command.description,
+        execute: () => {},
+      })),
+    ],
   });
 
   // Nothing to offer: an empty popover on every `/` would punish anybody
   // typing a path or a fraction, which is most of what a slash is for.
-  if (commands.length === 0) return <>{children}</>;
+  if (commands.length === 0 && actions.length === 0) return <>{children}</>;
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -97,7 +122,7 @@ export default function SkillMenu({
             message nobody could read back. Written as words, not as a
             directive -- see `plainWords`. */}
         <ComposerPrimitive.Unstable_TriggerPopover.Action
-          formatter={plainWords}
+          formatter={formatter}
           onExecute={slash.action.onExecute}
         />
         <ComposerPrimitive.Unstable_TriggerPopoverItems>
