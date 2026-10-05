@@ -7,7 +7,7 @@ import { defineConfig } from 'vite'
 // Which brand's tokens get compiled in. A deployment sets VITE_THEME to a
 // file in src/themes/; the default is outturn's own look. Resolved at build
 // time rather than fetched, so there is no frame where the page is the wrong
-// colour, and no theme a deployment is not using shipped in its bundle.
+// color, and no theme a deployment is not using shipped in its bundle.
 const theme = process.env.VITE_THEME ?? 'outturn'
 
 export default defineConfig({

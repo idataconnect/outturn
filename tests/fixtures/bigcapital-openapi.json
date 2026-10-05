@@ -45496,9 +45496,9 @@
             "type": "string",
             "description": "The resource model associated with the view"
           },
-          "favourite": {
+          "favorite": {
             "type": "boolean",
-            "description": "Whether the view is marked as favourite"
+            "description": "Whether the view is marked as favorite"
           },
           "rolesLogicExpression": {
             "type": "string",
@@ -45535,7 +45535,7 @@
           "slug",
           "predefined",
           "resourceModel",
-          "favourite",
+          "favorite",
           "rolesLogicExpression",
           "roles",
           "columns",

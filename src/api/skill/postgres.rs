@@ -20,7 +20,7 @@ impl PostgresSkillStore {
     }
 }
 
-/// Declared hosts go through the same normaliser a hand-written rule does, so
+/// Declared hosts go through the same normalizer a hand-written rule does, so
 /// `https://api.example.com/v1/x` and `api.example.com` are one host and the
 /// comparison against the egress rules is a string match rather than a guess.
 fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, SkillError> {
@@ -29,7 +29,7 @@ fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, SkillError> {
         if h.trim().is_empty() {
             continue;
         }
-        let host = crate::runtime::egress::normalise_host(h).map_err(SkillError::Invalid)?;
+        let host = crate::runtime::egress::normalize_host(h).map_err(SkillError::Invalid)?;
         if !out.contains(&host) {
             out.push(host);
         }

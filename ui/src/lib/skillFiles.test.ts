@@ -84,7 +84,7 @@ describe("a file's path", () => {
 })
 
 describe('a file that declares an approval', () => {
-  it('is recognised from its frontmatter', () => {
+  it('is recognized from its frontmatter', () => {
     expect(declaresApproval('---\napproval:\n  requires: charge\n---\n# charge')).toBe(true)
   })
 

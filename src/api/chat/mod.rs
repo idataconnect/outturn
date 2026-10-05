@@ -1,6 +1,6 @@
 pub mod parts;
 mod postgres;
-pub mod summarise;
+pub mod summarize;
 pub mod trim;
 
 pub use postgres::PostgresChatStore;
@@ -198,7 +198,7 @@ pub struct ApprovalAnswer<'a> {
 
 /// The metadata key marking a message as the record of an approval.
 ///
-/// Named like `summarise::SUMMARY_MARK` and read the same way: the client
+/// Named like `summarize::SUMMARY_MARK` and read the same way: the client
 /// switches on its presence to draw the message as a boundary rather than as
 /// something the agent said.
 pub const APPROVAL_MARK: &str = "approval";
@@ -447,7 +447,7 @@ pub trait ChatStore: Send + Sync {
     /// about.
     ///
     /// A message rather than an event, because an event is swept and this is the
-    /// audit trail: a person authorised a payment, and the place somebody would
+    /// audit trail: a person authorized a payment, and the place somebody would
     /// look for that is the conversation. The grant row records it too, but
     /// nobody reads grant rows to find out what happened in a chat.
     ///

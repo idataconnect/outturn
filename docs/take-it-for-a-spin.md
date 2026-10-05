@@ -200,7 +200,7 @@ curl -X POST localhost:18080/v1/approvals -b "outturn_session=$COOKIE" \
 
 That holds the conversation and puts the request in the queue, addressed to a
 role rather than to a person: who may approve a charge is a question about the
-house's own organisation, and it changes without the pending request changing.
+house's own organization, and it changes without the pending request changing.
 Answering it releases the hold and gives back any turn parked under it.
 
 What does not yet follow is the charge going through. An approval records no
@@ -234,7 +234,7 @@ which is the difference between being asked and being entitled.
   consistent, kept its place, and carried on when somebody answered -- which is
   a different thing from a turn that errored and was retried.
 - **An approval addressed to a role.** Not to a person, so who may answer
-  changes when the house reorganises and the pending request does not. And an
+  changes when the house reorganizes and the pending request does not. And an
   authority to answer that is separate from being asked.
 - **Usage attribution.** The Dashboard has the tokens those turns cost, by
   model and by agent.

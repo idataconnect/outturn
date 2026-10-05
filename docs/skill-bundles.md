@@ -30,7 +30,7 @@ step is a place to stop halfway, and a half-installed bundle is worse than none
 -- an agent that can take a payment but not apply a credit note will take
 payments it should not.
 
-So a bundle is an installable unit with a name a person recognises, and
+So a bundle is an installable unit with a name a person recognizes, and
 installing it is one decision rather than a dozen.
 
 ## What is in one
@@ -63,7 +63,7 @@ to attach a skill would need all of it again.
 
 The dangerous shape is a bundle that installs itself: reaches a host, takes a
 credential, and starts answering customers because somebody clicked a name in a
-catalogue.
+catalog.
 
 So installing a bundle produces a *plan* a person approves: these skills will
 be created, this host will be added to your egress rules, these credentials are

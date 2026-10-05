@@ -78,7 +78,7 @@ pub async fn hosts_from_skills(
     //
     // Approving a skill's hosts takes `settings:update`, which is also what sets
     // `approve_new_hosts` -- so whoever turns the ceiling on can exempt a host from
-    // it, and `normalise_host` permits a wildcard over a domain. Declaring
+    // it, and `normalize_host` permits a wildcard over a domain. Declaring
     // `*.example.com` in a skill and approving it would exempt every host under it
     // from every turn: not an escalation across an authority boundary, but a wider
     // door than the setting reads as having. (`*.com` is refused already, since
@@ -204,7 +204,7 @@ pub async fn create(
     workspace_id: Uuid,
     input: CreateRule,
 ) -> Result<Rule, RuleError> {
-    let host = crate::runtime::egress::normalise_host(&input.host).map_err(RuleError::Invalid)?;
+    let host = crate::runtime::egress::normalize_host(&input.host).map_err(RuleError::Invalid)?;
 
     // A header without a variable would attach nothing; a variable without a
     // header has nowhere to go. Either alone is a rule that looks configured

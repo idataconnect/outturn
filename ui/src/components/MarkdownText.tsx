@@ -38,7 +38,7 @@ export function UnfetchedImage({ src, alt }: { src?: string; alt?: string }) {
  * streams: without it each token would re-parse and re-render the whole
  * message, which gets expensive on a long answer.
  *
- * The same components serve the user's bubble, which sits on a brand-coloured
+ * The same components serve the user's bubble, which sits on a brand-colored
  * background rather than the surface. Anything that paints its own background
  * or border carries a `group-[.user]:` variant so it stays legible there; the
  * bubble marks itself with `group user`.

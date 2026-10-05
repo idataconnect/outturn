@@ -24,10 +24,10 @@ rule from the skill would lose the record, and the record is most of what
 approvals are for. It is also the half of approvals.md's own warning worth
 repeating: a gate nobody commits to is a gate nobody enforces.
 
-**Not the agent's judgement.** A policy may only test facts about the request:
+**Not the agent's judgment.** A policy may only test facts about the request:
 which operation, and the values of fields the gate already names. Never the
 agent's account of why -- "auto-approve when it has classified the message as
-spam" trusts exactly the judgement the gate exists to check, and an injected
+spam" trusts exactly the judgment the gate exists to check, and an injected
 instruction that persuades the agent a message is spam persuades the policy
 too. "Auto-approve moving a message to the spam folder" tests the request. The
 first is refused; the [admin agent](admin-agent.md) offers the second in its
@@ -201,7 +201,7 @@ gate let a `/refunds` request past its own.
 fields, and forwards the original bytes -- so a body with `amount_pence` twice
 can satisfy the policy with the first and charge the second, if the remote API
 reads JSON differently. For a request a policy admits, the gateway forwards the
-body as it parsed it, re-serialised, with `Content-Type: application/json`, and
+body as it parsed it, re-serialized, with `Content-Type: application/json`, and
 refuses: a query string on a gated path, which the policy never saw; and a
 top-level key that differs from a bound field only by case.
 

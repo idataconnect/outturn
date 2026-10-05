@@ -19,7 +19,7 @@ export type AgentSession = {
   turn?: 'pending' | 'running' | 'parked' | null
 }
 
-/** A tool the agent ran, labelled by the agent with what it was doing. */
+/** A tool the agent ran, labeled by the agent with what it was doing. */
 export type ToolCallRecord = {
   id: string
   name: string
@@ -270,7 +270,7 @@ export type ChatEvent =
   /** A summary of the conversation is being written; `chat.compacted` follows,
    *  saying whether one was. The system prompt is composed again either way. */
   | { id: string; kind: 'chat.compacting'; payload: Record<string, never> }
-  | { id: string; kind: 'chat.compacted'; payload: { summarised: boolean } }
+  | { id: string; kind: 'chat.compacted'; payload: { summarized: boolean } }
   /** The session was named, by a person or by the namer after its first turn. */
   | { id: string; kind: 'session.renamed'; payload: { title: string } }
 

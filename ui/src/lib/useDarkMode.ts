@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
  * `useTheme` returns the *choice* -- light, dark or system -- which is the
  * right thing for a control that sets it and the wrong thing for a chart: SVG
  * fills are attributes rather than CSS, so a chart has to resolve the choice to
- * a colour itself, and under "system" the answer changes without anything in
+ * a color itself, and under "system" the answer changes without anything in
  * React re-rendering.
  *
  * So this watches the `dark` class on <html> rather than the media query or the

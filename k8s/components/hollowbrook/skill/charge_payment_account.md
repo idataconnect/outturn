@@ -37,7 +37,7 @@ off.
   fresh is a key the house has not seen, so it takes the money a second time —
   and a charge that needs approving is refused, approved and then *retried*, so
   the second attempt is the ordinary path rather than a rare one. Deriving it
-  from the booking and the amount means your retry is recognised as the same
+  from the booking and the amount means your retry is recognized as the same
   charge, whatever happened in between.
 
 ## What comes back

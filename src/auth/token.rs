@@ -82,7 +82,7 @@ pub struct SessionClaims {
     /// hundreds, and a token that carried them would grow with every one.
     pub roles: Vec<String>,
     /// What the API committed to over this turn's egress rules, for the tokens
-    /// that authorise a turn. `None` on a browser session token, which never
+    /// that authorize a turn. `None` on a browser session token, which never
     /// carries a turn's rules and has no business making a statement about
     /// them -- a claim meaning "allows nothing" on a token that could never
     /// prove a rule anyway is a claim waiting to be read as an answer.
@@ -130,7 +130,7 @@ impl SessionClaims {
     /// The gate commitment, for the tier deciding whether a request may go out
     /// without an approval.
     ///
-    /// Refuses when absent, as its neighbour does, and the direction matters more
+    /// Refuses when absent, as its neighbor does, and the direction matters more
     /// here: a missing egress commitment means no request can prove a rule and
     /// everything is refused, which is safe. A missing gate commitment, defaulted
     /// to the empty set, would mean *nothing* is gated and every request goes
@@ -318,7 +318,7 @@ impl TokenMinter {
             serde_json::to_value(roles).map_err(|e| AuthError::Internal(e.to_string()))?;
         claims.add_additional(SCOPE, scp_json).map_err(internal)?;
 
-        // Added only where it means something. A token that cannot authorise a
+        // Added only where it means something. A token that cannot authorize a
         // turn does not get to carry a statement about what a turn may reach.
         if let Some(committed) = egress_commitment {
             let egr_json =

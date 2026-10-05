@@ -258,7 +258,7 @@ pub trait InhibitorStore: Send + Sync {
     /// One hold, by the handle taking it returned.
     ///
     /// The caller checks what it covers before acting on it: a hold is
-    /// authorised by the work it holds, which cannot be known from the id.
+    /// authorized by the work it holds, which cannot be known from the id.
     async fn get(&self, id: Uuid) -> Result<Inhibitor, InhibitorError>;
 
     /// Everything held anywhere in a workspace, including on its agents and

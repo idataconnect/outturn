@@ -389,7 +389,7 @@ impl GatewayState {
 
 /// The class of traffic this request belongs to.
 ///
-/// A header rather than a body field: the request body is serialised straight
+/// A header rather than a body field: the request body is serialized straight
 /// through to the provider, so anything added there leaks upstream. Routing is
 /// also not something a model should be told about.
 pub const TRAFFIC_HEADER: &str = "x-outturn-traffic";

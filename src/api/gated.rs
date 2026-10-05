@@ -80,7 +80,7 @@ pub async fn raise(
 ) -> Result<Json<Raised>, ApiError> {
     // The same authority `/v1/work` takes, because this is the runtime tier
     // talking and no workspace role may reach it. A workspace Admin raising an
-    // approval does it through `/v1/approvals`, which is authorised differently
+    // approval does it through `/v1/approvals`, which is authorized differently
     // and says who asked.
     super::router::authorize(&state, &headers, Authority::WorkTake).await?;
 
@@ -325,7 +325,7 @@ async fn approvers(state: &ApiState, workspace_id: Uuid) -> Result<Vec<Target>, 
 ///
 /// Only what the row already carries, and only what every target of it may see:
 /// the queue applies no agent narrowing, so what an agent said stays behind the
-/// event rather than travelling on a held banner.
+/// event rather than traveling on a held banner.
 pub fn answerable(item: &super::actions::ActionItem) -> serde_json::Value {
     serde_json::json!({
         "item_id": item.id,

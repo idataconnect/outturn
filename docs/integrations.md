@@ -15,7 +15,7 @@ all.
 
 A booking platform is the clearest example. The operator is the platform; a
 workspace is a host with a few properties; the agents do booking, customer
-service, billing, tax document preparation. The traveller books on the
+service, billing, tax document preparation. The traveler books on the
 operator's website and receives an email, and neither of those is served by
 outturn. What outturn provides is the way a *workspace* works: agents that
 reach the operator's booking API, the workspace's own tools, and whatever else
@@ -65,7 +65,7 @@ Calendar. They should be able to turn that on without the operator brokering
 each one by hand, and without the operator having enumerated Notion in advance.
 
 An extension is a package the operator has approved: the hosts it reaches, the
-tools it exposes, the scopes it asks for. A workspace enables it and authorises
+tools it exposes, the scopes it asks for. A workspace enables it and authorizes
 it against their own account.
 
 Two things make this the expensive tier, and neither is the packaging.
@@ -89,7 +89,7 @@ in-workspace write is bounded where its outgoing webhook is not.
 
 So it is per-scope rather than per-vendor -- `gmail.readonly` and `gmail.send`
 are the same vendor and the same flow -- and it is a minority of scopes on an
-otherwise bounded catalogue. It needs no separate mechanism, since approval is
+otherwise bounded catalog. It needs no separate mechanism, since approval is
 already per-scope. What it needs is for the approval to be able to record that
 a scope is a conduit, so the question gets asked when one is proposed rather
 than noticed after something has been sent. A conduit scope may still be worth
@@ -103,7 +103,7 @@ reason the registration seam below is the load-bearing piece.
 
 **The OAuth is three-legged, and that breaks an invariant.** Client credentials
 -- machine to machine -- authenticate the platform to Notion, which is not what
-is wanted: each workspace has their own Notion tenant and must authorise
+is wanted: each workspace has their own Notion tenant and must authorize
 outturn against it themselves. That means an authorization-code flow per
 workspace, a refresh token per workspace, and refresh, revocation and
 expiry handled by the platform.
@@ -150,7 +150,7 @@ The rotating case breaks a different thing. A provider that returns a new
 refresh token on each exchange invalidates the old one, so the new token must
 be persisted in the same transaction that records the exchange. A process that
 dies between receiving and storing has lost the grant, and the tenant must
-authorise again. This is the most common way these integrations break in
+authorize again. This is the most common way these integrations break in
 practice.
 
 Access tokens are refreshed on demand -- when one is needed and the held one
@@ -161,7 +161,7 @@ is not extended by refreshing early.
 
 What does want a schedule is noticing a grant that has *died* -- revoked, or
 past an absolute expiry. Not to keep anything alive, but so the workspace is
-told their integration needs re-authorising before an agent fails a turn with a
+told their integration needs re-authorizing before an agent fails a turn with a
 provider error the tenant cannot interpret. The constraint is the provider's;
 discovering it from a broken turn is the platform's choice, and the wrong one.
 
@@ -191,7 +191,7 @@ consent flow and an approval model.
 A workspace needs their agent to reach something nobody anticipated. The
 operator has no reason to refuse and no wish to be asked.
 
-**This is today's behaviour, not a future feature.** `egress_rules` is
+**This is today's behavior, not a future feature.** `egress_rules` is
 per-workspace and the workspace's list is checked first. So the work is not
 adding the capability; it is adding the restriction, and the default flips from
 what deployments do now.
@@ -229,9 +229,9 @@ choosing. Nothing is read, and the theft is complete anyway: the gateway
 attaches the tenant's token to a request whose destination the attacker
 controls.
 
-So the defence is not keeping people from reading secrets, which already works.
+So the defense is not keeping people from reading secrets, which already works.
 It is that **a credential and the hosts it may travel to are one fact, fixed
-when the integration is authorised, and not separately editable afterwards**. A
+when the integration is authorized, and not separately editable afterwards**. A
 Notion credential attaches on Notion's hosts and nowhere else. The binding
 belongs to the integration rather than to a row a workspace administrator can
 change, and a rule that names a credential without inheriting that binding

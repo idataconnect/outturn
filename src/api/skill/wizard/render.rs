@@ -78,14 +78,14 @@ pub fn flat_body(
 
     write_auth_preamble(&mut out, auth_header);
     // A category's notes have no file of their own to go in when there are no
-    // categories, so they come up to the body, labelled.
+    // categories, so they come up to the body, labeled.
     let mut first = notes.skill.clone();
-    let labelled: Vec<String> = notes
+    let labeled: Vec<String> = notes
         .category
         .iter()
         .flat_map(|(tag, ns)| ns.iter().map(move |n| format!("{tag}: {}", n.trim())))
         .collect();
-    first.extend(labelled.iter().map(String::as_str));
+    first.extend(labeled.iter().map(String::as_str));
     write_notes(&mut out, &first);
 
     writeln!(

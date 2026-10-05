@@ -5,7 +5,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{MAX_SPEC_BYTES, ParseError, categorise, parse, slugify};
+use super::{MAX_SPEC_BYTES, ParseError, categorize, parse, slugify};
 
 #[derive(Debug, Serialize)]
 pub struct Preview {
@@ -71,7 +71,7 @@ pub fn preview(spec_json: &[u8], fetched_from: Option<&str>) -> Result<Preview, 
         auth_kind: auth.chosen.map(|(_, _, kind)| kind),
         unserved_operations: auth.unserved_operations,
         unserved_kinds: auth.unserved_kinds,
-        categories: categorise(&api.operations).len(),
+        categories: categorize(&api.operations).len(),
         operations: api.operations.len(),
         name,
         description,

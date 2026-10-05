@@ -488,7 +488,7 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
                 "object": "chat.completion",
                 // Required by the response the gateway decodes into, and its
                 // absence is why a non-streaming call here failed to parse while
-                // the streamed path was fine: the summariser is the only caller
+                // the streamed path was fine: the summarizer is the only caller
                 // that does not stream, so nothing exercised this until it existed.
                 "created": std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -987,7 +987,7 @@ fn tool_name(req: &ChatRequest) -> String {
 /// Wraps a chunk's variable part in the envelope every chunk carries.
 ///
 /// `id`, `object`, `created` and `model` are not decoration: a consumer
-/// deserialises the whole chunk, so one missing field drops the chunk entirely
+/// deserializes the whole chunk, so one missing field drops the chunk entirely
 /// and the reply arrives empty with only a warning in a log. A fixture that
 /// omits them tests the consumer's error path rather than its success path,
 /// convincingly enough to look like a platform bug.

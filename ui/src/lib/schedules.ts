@@ -114,7 +114,7 @@ export function buildExpression(
  * Which preset an existing expression came from, so editing one does not
  * silently move it to Custom.
  *
- * Only the shapes this editor produces are recognised. Anything else is
+ * Only the shapes this editor produces are recognized. Anything else is
  * genuinely custom, including an expression somebody wrote by hand that
  * happens to mean the same thing -- rewriting it into a preset would change
  * the stored text under somebody who chose it.

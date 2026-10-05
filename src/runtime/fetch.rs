@@ -136,7 +136,7 @@ mod tests {
             body: None,
             proof,
         })
-        .expect("serialises");
+        .expect("serializes");
 
         assert!(
             !body.contains("host49.example.com"),

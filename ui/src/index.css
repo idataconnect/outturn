@@ -12,12 +12,12 @@
 /*
  * Dark mode follows a `dark` class on <html> rather than the media query
  * alone, so a chosen theme can override the operating system's. The system
- * setting is honoured by the app applying the class itself -- see lib/theme.ts.
+ * setting is honored by the app applying the class itself -- see lib/theme.ts.
  */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Tells the browser which built-in colours to use for scrollbars, form
+ * Tells the browser which built-in colors to use for scrollbars, form
  * controls and the like. Without it those stay light in a dark page.
  */
 :root {
@@ -40,19 +40,19 @@
 }
 
 /*
- * The working mark's colour is positional rather than shared: whichever dot
+ * The working mark's color is positional rather than shared: whichever dot
  * is currently swollen carries the accent the theme reserves for the mark,
  * and the two at rest stay the teal that carries everything interactive. The
  * accent travels along the row because the dots take it in turn.
  *
  * Done as three CSS animations on `fill` rather than one on the parent's
- * `color`, because the dots now need different colours at the same instant
+ * `color`, because the dots now need different colors at the same instant
  * and `currentColor` can only give them all one. `fill` is animated here and
  * the swell is animated in SMIL on the same elements; the two do not collide,
  * as each owns a different attribute.
  *
  * Both ends are theme tokens, so a deployment replacing the theme replaces
- * this with it -- which is why the colours are not resolved in the component.
+ * this with it -- which is why the colors are not resolved in the component.
  */
 @keyframes outturn-working-fill {
   0%,
@@ -65,14 +65,14 @@
 }
 
 .working-dot {
-  /* Matches the SMIL swell's 1.2s and its 0.4s stagger, so the colour peaks
+  /* Matches the SMIL swell's 1.2s and its 0.4s stagger, so the color peaks
      on the same dot that is widest. Set per dot by an inline delay.
      
      The accent sits at 50% because that is where the swell peaks: `r` runs
      2;3.4;2 over keyTimes 0;0.5;1. An earlier version put it at 25% and
-     returned to brand by 50%, so the colour crossed each dot a full quarter
+     returned to brand by 50%, so the color crossed each dot a full quarter
      cycle -- 300ms -- before the dot swelled under it, and the two read as
-     separate effects travelling at the same speed. */
+     separate effects traveling at the same speed. */
   animation: outturn-working-fill 1.2s linear infinite;
 }
 
@@ -92,9 +92,9 @@
 
 /*
  * What the mark becomes once the turn is over: one stroke in the brand's own
- * colour, not the accent the swell carries and not a status colour. Green
+ * color, not the accent the swell carries and not a status color. Green
  * would say the turn succeeded, which this cannot know -- a reply that ended
- * badly would wear it too -- so the shape says "finished" and the colour says
+ * badly would wear it too -- so the shape says "finished" and the color says
  * nothing at all.
  */
 .working-line {
@@ -106,12 +106,12 @@
 }
 
 /*
- * While the dots are drawing together the travelling colour has to stop, or
+ * While the dots are drawing together the traveling color has to stop, or
  * the accent keeps sweeping a row that is collapsing. Held at the brand end
- * so the three dots and the line arriving between them are one colour.
+ * so the three dots and the line arriving between them are one color.
  */
 .working-dot-settling {
-  /* The whole settle in one animation: the shape and the colour on the same
+  /* The whole settle in one animation: the shape and the color on the same
      clock, so they cannot come apart.
      
      CSS rather than SMIL, which is what the swell uses. SMIL freezes its last
@@ -123,7 +123,7 @@
      animatable, and the keyframe simply owns them for its duration. */
   animation: outturn-working-settle 900ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
   fill: var(--color-brand-600);
-  /* Scaled about the dot's own centre, so each grows sideways where it
+  /* Scaled about the dot's own center, so each grows sideways where it
      stands: 2.5x of a 4-wide dot is 10, which is the 10 they sit apart, so
      the three meet exactly. Transform rather than the geometry properties --
      `x` and `width` as CSS want units and a var() inside an animated
@@ -185,7 +185,7 @@
  * A turn that is held: asked for, and nothing back yet. The three dots
  * breathe together rather than passing a swell along the row, which is the
  * whole distinction the mark rests on -- in unison reads as one object
- * waiting, travelling reads as something advancing. A reader can tell the two
+ * waiting, traveling reads as something advancing. A reader can tell the two
  * apart across the room without having to know which is which.
  *
  * Slower than the swell (1.8s against 1.2s) and shallower, because nothing is
@@ -217,7 +217,7 @@
   }
 }
 
-/* One colour across all three, unlike the running mark where the accent
+/* One color across all three, unlike the running mark where the accent
    travels. There is nowhere for it to travel to: nothing is moving along the
    row, so an accent picking out one dot would invent a position that means
    nothing. */
@@ -247,8 +247,8 @@
 
 /*
  * Someone who asked for less motion gets the mark holding still: three dots
- * in the resting colour, saying a reply is coming without any travel. The
- * swell is not rendered at all -- SMIL does not honour this query, so the
+ * in the resting color, saying a reply is coming without any travel. The
+ * swell is not rendered at all -- SMIL does not honor this query, so the
  * component leaves it out; see Working.tsx.
  */
 @media (prefers-reduced-motion: reduce) {

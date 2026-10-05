@@ -68,7 +68,7 @@ pub struct Gate {
     /// gateway can say what is being asked for without reading a skill.
     pub requires: String,
     pub host: String,
-    /// Upper case, as the request's own method is normalised to.
+    /// Upper case, as the request's own method is normalized to.
     pub method: String,
     /// The path this applies to. A trailing `*` matches anything below it, which
     /// is how an operation whose path carries an id is expressed.
@@ -97,7 +97,7 @@ impl Gate {
     pub fn covers_request(&self, host: &str, method: &str, path: &str) -> bool {
         // Through the same matcher an egress rule uses, because the host stored
         // here came from the skill's declared hosts and those go through
-        // `normalise_host`, which *accepts wildcards*. An exact compare -- which
+        // `normalize_host`, which *accepts wildcards*. An exact compare -- which
         // this was -- meant a skill declaring `*.stripe.com` stored a gate on
         // `*.stripe.com`, the gateway matched it against `api.stripe.com`, and the
         // charge went out unapproved. Not a forgery: an ordinary configuration
@@ -108,8 +108,8 @@ impl Gate {
         {
             return false;
         }
-        let path = normalise_path(path);
-        let pattern = normalise_path(&self.path);
+        let path = normalize_path(path);
+        let pattern = normalize_path(&self.path);
         match pattern.strip_suffix('*') {
             Some(prefix) => path.starts_with(prefix),
             None => path == pattern,
@@ -128,7 +128,7 @@ impl Gate {
 ///
 /// So: percent-decode, collapse repeated slashes, and drop one trailing slash.
 /// `reqwest::Url::parse` has already resolved `.` and `..` by the time a path
-/// reaches here, which is the one normalisation this does not have to do.
+/// reaches here, which is the one normalization this does not have to do.
 ///
 /// Deliberately not case-folding. Paths are case-sensitive in HTTP and on most
 /// servers, so folding them would gate `/Charges` as well and refuse work nobody
@@ -154,7 +154,7 @@ pub const GATED_MARK: &str = "\u{2060}outturn:gated\u{2060}";
 /// What a gated refusal tells the guest to do, ending in `GATED_MARK`.
 pub const GATED_REFUSAL: &str = "Do not retry this request.";
 
-pub fn normalise_path(path: &str) -> String {
+pub fn normalize_path(path: &str) -> String {
     let decoded = percent_decode(path);
     let mut out = String::with_capacity(decoded.len());
     let mut last_was_slash = false;
@@ -514,7 +514,7 @@ mod tests {
     /// The one thing standing between a compromised runtime and permission to
     /// send whatever it likes: it relays the gate set and the grants, so if the
     /// commitment did not cover them it could add a grant for the request it
-    /// wants and the gateway would honour it. Left out of the tree, every other
+    /// wants and the gateway would honor it. Left out of the tree, every other
     /// test in this crate still passed.
     #[test]
     fn a_grant_the_runtime_added_does_not_verify() {
@@ -829,7 +829,7 @@ mod bypasses {
 
     #[test]
     fn a_different_path_is_still_not_gated() {
-        // Normalising must not widen the gate onto endpoints it does not name.
+        // Normalizing must not widen the gate onto endpoints it does not name.
         let g = gate();
         for path in ["/bookings", "/chargesx", "/charges2", "/rooms/charges"] {
             assert!(
@@ -852,7 +852,7 @@ mod bypasses {
     }
 
     #[test]
-    fn a_wildcard_normalises_too() {
+    fn a_wildcard_normalizes_too() {
         let mut g = gate();
         g.path = "/bookings/*".into();
         assert!(g.covers_request("outturn-hollowbrook", "POST", "//bookings/bk_1"));
@@ -869,7 +869,7 @@ mod bypasses {
     }
 
     #[test]
-    fn the_root_path_survives_normalising() {
+    fn the_root_path_survives_normalizing() {
         let mut g = gate();
         g.path = "/".into();
         assert!(g.covers_request("outturn-hollowbrook", "POST", "/"));
@@ -885,7 +885,7 @@ mod hosts {
     ///
     /// The bug this replaced: `covers_request` compared hosts exactly, and the
     /// host stored on a gate comes from the skill's declared hosts -- which go
-    /// through `normalise_host` and may be `*.stripe.com`. So a workspace
+    /// through `normalize_host` and may be `*.stripe.com`. So a workspace
     /// declaring a wildcard published a skill whose file said an operation was
     /// gated, and the gateway, matching `api.stripe.com` against `*.stripe.com`,
     /// found no gate and let the charge out. Ordinary configuration, not an

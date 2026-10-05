@@ -212,7 +212,7 @@ dev_require_cluster() {
 
   # The trap worth catching before it bites: skaffold decides whether to push
   # by guessing from the kube-context name, and a local cluster under a name
-  # it does not recognise means four images pushed to a registry. Diagnosed
+  # it does not recognize means four images pushed to a registry. Diagnosed
   # and explained; nothing is changed, because which registry is right is not
   # this script's call. See .agents/skills/onboarding/SKILL.md.
   local context
@@ -220,7 +220,7 @@ dev_require_cluster() {
   case "$context" in
     kind-* | docker-desktop | minikube | colima | k3d-*) ;;
     *)
-      echo "warning: skaffold does not recognise the context '$context' as local," >&2
+      echo "warning: skaffold does not recognize the context '$context' as local," >&2
       echo "so it will PUSH images rather than loading them into the cluster." >&2
       echo "If that is not what you want, either rename the context or set:" >&2
       echo "  skaffold config set --kube-context '$context' local-cluster true" >&2
@@ -375,7 +375,7 @@ dev_gateway_base_url() {
 # window is the server's business.
 #
 # llama.cpp gets the same kind of name, as the alias llama-server is started
-# with: the GGUF's file name without its organisation, so a log line says
+# with: the GGUF's file name without its organization, so a log line says
 # which model and which window rather than a Hugging Face path.
 dev_served_model_for() {
   case "${dev_server:-ollama}" in
@@ -406,7 +406,7 @@ dev_machine_ask() {
     echo "  ollama, llama.cpp or other"
   done
   # A model named for one server is a wrong suggestion for another: ollama's
-  # names have no organisation, llama.cpp's are a Hugging Face GGUF with a
+  # names have no organization, llama.cpp's are a Hugging Face GGUF with a
   # quantization after the colon.
   if [[ "$answer" == llama.cpp && "$dev_model" != */*:* ]]; then
     dev_model=$dev_llama_default_model
@@ -418,7 +418,7 @@ dev_machine_ask() {
   local naming
   case "$dev_server" in
     ollama) naming="as ollama names it" ;;
-    llama.cpp) naming="a Hugging Face GGUF, organisation/repository:quantization" ;;
+    llama.cpp) naming="a Hugging Face GGUF, organization/repository:quantization" ;;
     *) naming="as the server names it" ;;
   esac
   while :; do

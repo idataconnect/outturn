@@ -347,7 +347,7 @@ pub trait ActionStore: Send + Sync {
 
     /// What is waiting on this user across every workspace they belong to.
     ///
-    /// The notification centre is global: a decision owed in a workspace the
+    /// The notification center is global: a decision owed in a workspace the
     /// reader is not currently looking at is exactly the one that would
     /// otherwise go unseen, and a badge per workspace is a badge nobody adds
     /// up. So this is the one read here with no `workspace_id` predicate.

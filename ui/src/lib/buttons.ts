@@ -2,8 +2,8 @@
  * How an icon button looks.
  *
  * These had drifted into four near-identical strings: some rounded, some
- * rounded-md, some lighting up on hover and some only changing colour. The
- * ones that only changed colour read as inert next to the ones that did not,
+ * rounded-md, some lighting up on hover and some only changing color. The
+ * ones that only changed color read as inert next to the ones that did not,
  * because a 14px glyph going one shade darker is not much of an answer to
  * being pointed at.
  *
@@ -22,9 +22,9 @@ export const iconButtonLarge =
   'hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors'
 
 /**
- * Destructive: the hover colour carries the warning, so it keeps its red
+ * Destructive: the hover color carries the warning, so it keeps its red
  * rather than going the way of the others, but it gains the same background
- * so it sits level with its neighbours.
+ * so it sits level with its neighbors.
  */
 export const iconButtonDanger =
   'p-1 rounded-md text-surface-400 hover:text-red-600 dark:hover:text-red-400 ' +

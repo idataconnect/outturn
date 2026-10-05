@@ -218,7 +218,7 @@ describe('saying a reply is still going', () => {
     // A turn that crashed mid-generation leaves a reply the agent resumes
     // when the next message arrives -- so the older reply runs while a newer
     // one already exists. Drawn on `running || newest`, that was two marks at
-    // once: a settled line below and a travelling swell above it.
+    // once: a settled line below and a traveling swell above it.
     render(
       <Harness
         running

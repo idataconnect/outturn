@@ -1,4 +1,4 @@
-//! The settings catalogue and the cascade that resolves it.
+//! The settings catalog and the cascade that resolves it.
 //!
 //! A setting is defined once, here: its key, its type, its default and who may
 //! override it. Values that differ from the default are rows, one per level
@@ -6,8 +6,8 @@
 //! walks agent, workspace, operator, default. A row's existence is the override
 //! toggle; deleting it is turning the toggle off. See docs/settings.md.
 //!
-//! A catalogue in code rather than a free key-value store, because the
-//! catalogue is what keeps the settings page honest about types, defaults
+//! A catalog in code rather than a free key-value store, because the
+//! catalog is what keeps the settings page honest about types, defaults
 //! and who may touch what, and what lets a workspace who has never heard of
 //! temperature see a value that is already right and a checkbox to leave
 //! alone.
@@ -76,7 +76,7 @@ pub struct Setting {
 pub const REPEAT_PROMPT: &str = "none_repeat_prompt";
 
 /// Every setting there is.
-pub fn catalogue() -> Vec<Setting> {
+pub fn catalog() -> Vec<Setting> {
     vec![
         Setting {
             key: "temperature",
@@ -279,7 +279,7 @@ pub fn catalogue() -> Vec<Setting> {
 }
 
 pub fn find(key: &str) -> Option<Setting> {
-    catalogue().into_iter().find(|s| s.key == key)
+    catalog().into_iter().find(|s| s.key == key)
 }
 
 /// Where a resolved value came from.
@@ -312,7 +312,7 @@ pub struct Effective {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub override_value: Option<serde_json::Value>,
     /// What this level would get if its own row were removed: the value from
-    /// the levels above. Shown greyed beside the toggle so turning it off has
+    /// the levels above. Shown grayed beside the toggle so turning it off has
     /// no surprises.
     pub inherited: serde_json::Value,
 }
@@ -367,7 +367,7 @@ pub trait SettingsStore: Send + Sync {
     /// Every setting as seen from `level`.
     async fn view(&self, level: Level) -> Result<Vec<Effective>, SettingsError>;
     /// Turns the override on at `level` with `value`, validated against the
-    /// catalogue. The caller has already decided the level may.
+    /// catalog. The caller has already decided the level may.
     async fn set(
         &self,
         level: Level,
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn defaults_satisfy_their_own_kinds() {
-        for s in catalogue() {
+        for s in catalog() {
             validate(&s, &s.default).unwrap_or_else(|e| panic!("{}: {e}", s.key));
         }
     }
@@ -494,7 +494,7 @@ mod wire_tests {
         // that does not exist made every setting on a new agent look
         // overridden, and unchecking the box deleted nothing and changed
         // nothing -- the box stayed on because the field was still there.
-        let json = serde_json::to_value(effective(None)).expect("serialises");
+        let json = serde_json::to_value(effective(None)).expect("serializes");
         assert!(
             json.get("override_value").is_none(),
             "an absent override was sent anyway: {json}"
@@ -507,7 +507,7 @@ mod wire_tests {
         // it to the provider". So null on the wire has to mean that, which is
         // why absence is what says there is no row.
         let json =
-            serde_json::to_value(effective(Some(serde_json::Value::Null))).expect("serialises");
+            serde_json::to_value(effective(Some(serde_json::Value::Null))).expect("serializes");
         assert!(
             json.get("override_value").is_some(),
             "an override to null vanished: {json}"
@@ -518,7 +518,7 @@ mod wire_tests {
     #[test]
     fn an_ordinary_override_is_sent_as_its_value() {
         let json =
-            serde_json::to_value(effective(Some(serde_json::json!(0.7)))).expect("serialises");
+            serde_json::to_value(effective(Some(serde_json::json!(0.7)))).expect("serializes");
         assert_eq!(json["override_value"], 0.7);
     }
 }

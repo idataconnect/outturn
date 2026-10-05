@@ -1,4 +1,4 @@
-//! The notification centre: what is waiting on the person reading.
+//! The notification center: what is waiting on the person reading.
 //!
 //! Global rather than per-workspace, so a decision owed in a workspace they are
 //! not looking at is still seen. Which is why these handlers authenticate and
@@ -13,7 +13,7 @@
 //! another's. Membership is the tenancy check, and it is in the query.
 //!
 //! Settling is the opposite case and is not here. Answering an approval acts
-//! on one workspace's item, so it belongs on a route that authorises against
+//! on one workspace's item, so it belongs on a route that authorizes against
 //! that workspace.
 
 use std::sync::Arc;
@@ -80,7 +80,7 @@ pub async fn queue(
     headers: axum::http::HeaderMap,
     Query(query): Query<QueueQuery>,
 ) -> Result<Json<super::Page<ActionItem>>, ApiError> {
-    // Authenticated, not authorised: see the module comment.
+    // Authenticated, not authorized: see the module comment.
     let claims = super::router::authenticate(&state, &headers)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 

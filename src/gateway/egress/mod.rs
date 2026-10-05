@@ -9,7 +9,7 @@
 //! could rewrite is not the one consulted.
 //!
 //! Which is why the request is made from here rather than approved from here.
-//! An approval the runtime is trusted to honour is worth nothing against a
+//! An approval the runtime is trusted to honor is worth nothing against a
 //! runtime that has been compromised -- it would simply not ask. The tier that
 //! runs workspace code has no outbound path of its own, so asking is the only
 //! way out. (The cluster should say so too: a NetworkPolicy denying egress
@@ -271,7 +271,7 @@ pub async fn fetch(
     // workspace aiming the gateway at `outturn-api`, and it stops a customer's
     // own ticketing API for the same reason -- so the exceptions are named by
     // somebody outside the workspace. Resolution still happens and the address
-    // is still pinned; only the judgement about the address is skipped, so what
+    // is still pinned; only the judgment about the address is skipped, so what
     // was checked and what is connected to remain the same place.
     let addrs = if state.internal.allows(&host, port) {
         let addrs = rules::resolve(&host, port)
@@ -748,7 +748,7 @@ mod gating {
     /// resumed turn re-derives what it was doing through a model, and in every
     /// live attempt so far it found the room already booked by its own earlier
     /// try and declined before charging anything. That is honest model
-    /// behaviour, and it means the gateway honouring a grant was never
+    /// behavior, and it means the gateway honoring a grant was never
     /// exercised -- so it is exercised here, where it is decidable.
     #[test]
     fn a_granted_request_is_let_through_the_gate_that_refused_it() {

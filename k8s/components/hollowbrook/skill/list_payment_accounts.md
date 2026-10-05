@@ -14,7 +14,7 @@ account belongs to a guest before charging one.
 - `id` — the handle, like `pa_4471`. This is what `charge_payment_account`
   takes.
 - `holder` — whose card it is, as the house records it.
-- `label` — what a guest would recognise, like "Visa ending 4471". Say this to
+- `label` — what a guest would recognize, like "Visa ending 4471". Say this to
   a guest rather than the handle.
 
 ## No card numbers, here or anywhere
@@ -22,4 +22,4 @@ account belongs to a guest before charging one.
 A payment account number stands for a card; it is not one. There is no endpoint
 that returns a card number and nothing here will ever hand you one, so a guest
 asking you to read their card back cannot be helped with — say the label
-instead, which is what they will recognise.
+instead, which is what they will recognize.

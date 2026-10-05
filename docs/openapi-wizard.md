@@ -241,7 +241,7 @@ generated document carries `tags` on its operations, written by the people who
 designed the API and grouping it the way the domain actually divides. That is
 better input than anything inferred, and it is free.
 
-**A model groups them only when tags fail**, which happens in recognisable
+**A model groups them only when tags fail**, which happens in recognizable
 ways: no tags at all, one tag covering everything, or a tag per operation.
 Then a model reads the operation names and summaries -- not the whole
 specification, which is the point -- and proposes categories and

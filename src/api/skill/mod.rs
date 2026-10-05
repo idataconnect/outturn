@@ -263,7 +263,7 @@ pub struct Binding {
     pub position: i32,
 }
 
-/// One piece of prose as a turn will actually receive it. Serialised because
+/// One piece of prose as a turn will actually receive it. Serialized because
 /// a conversation keeps the set its system prompt was composed from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedSkill {

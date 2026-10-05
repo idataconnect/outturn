@@ -25,9 +25,9 @@
   --color-brand-950: oklch(0.20 0.03 190);
 
   /*
-   * A slightly warm neutral rather than a true grey. Large flat surfaces in a
+   * A slightly warm neutral rather than a true gray. Large flat surfaces in a
    * pure neutral read as cold and clinical; a trace of hue keeps them calm
-   * without becoming a colour in their own right.
+   * without becoming a color in their own right.
    */
   --color-surface-50: oklch(0.985 0.002 90);
   --color-surface-100: oklch(0.968 0.003 90);
@@ -48,7 +48,7 @@
   --color-surface-950: oklch(0.155 0.004 90);
 
   /*
-   * The mark's second colour, used where something wants to catch the eye
+   * The mark's second color, used where something wants to catch the eye
    * without becoming another interactive element -- the avatar gradient, and
    * anything else that is decoration rather than a control.
    *

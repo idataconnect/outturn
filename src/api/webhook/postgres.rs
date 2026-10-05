@@ -146,7 +146,7 @@ pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool,
 ///
 /// Workspace-blind, because the caller has no workspace: this is reached by
 /// whoever holds the URL. The path is the only thing that selects a row, and
-/// everything that decides whether the delivery is honoured happens after.
+/// everything that decides whether the delivery is honored happens after.
 pub async fn by_path(pool: &PgPool, path: &str) -> Result<Option<Trigger>, sqlx::Error> {
     let found = sqlx::query(
         "select id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \

@@ -75,7 +75,7 @@ The **binding is the associated data**:
 
 stored as the exact bytes that were fed to the AEAD, beside a parsed copy for
 reading. Bytes, because re-canonicalising JSON to check a tag is a way for a
-serialiser upgrade to make every valid seal fail to open.
+serializer upgrade to make every valid seal fail to open.
 
 - **`kind`** is `static`, `client_id` or `client_secret`. The gateway attaches
   only a `static` credential as a header, and exchanges only a `client_*` pair.
@@ -276,7 +276,7 @@ symmetric key only the gateway holds, and that is right, for a reason this
 document's first draft missed when it proposed one scheme for both. A ciphertext
 under a key only the gateway holds is one only the gateway could have made, so
 it proves the gateway wrote it. A seal to a public key proves nothing about its
-author. For refresh tokens that difference is the whole defence: under a public
+author. For refresh tokens that difference is the whole defense: under a public
 key, somebody who completed a consent flow for their *own* Google account could
 seal the resulting token under a victim's grant and have the victim's agent
 working in their mailbox. The two schemes answer different questions -- who may

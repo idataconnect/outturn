@@ -22,7 +22,7 @@ right and did not help. The model then gave up on the tool and answered from
 memory -- asserting something about itself it had been told not to invent,
 which is the failure the skill existed to prevent.
 
-In a neighbouring session the same model called a tool named after the skill's
+In a neighboring session the same model called a tool named after the skill's
 own heading, `DuckDuckGo Instant Answer Search`, with `{"query": ...}`. Same
 mistake, different wrong name.
 
@@ -62,7 +62,7 @@ anything.
 has a 40% tool-call error rate" is where the mechanical half stops. "The model
 is calling `GET https://...` as a tool name because your skill documents the
 call as an HTTP request line; name `fetch_url` and pass the URL as an argument"
-is a judgement, and worth a model. Run on demand rather than continuously,
+is a judgment, and worth a model. Run on demand rather than continuously,
 because it costs tokens per run and the mechanical signal is what decides when
 it is worth spending them.
 
@@ -211,8 +211,8 @@ thing under test. Synthetic cases cannot show that prose is confusing, because
 whoever wrote them already knew what it was supposed to say.
 
 A flagged session is the alternative and it is free. Real inputs, a real
-failure, and a person's judgement that it went wrong -- which is the only
-labelling that is ever going to happen here. Enough of them and there is a
+failure, and a person's judgment that it went wrong -- which is the only
+labeling that is ever going to happen here. Enough of them and there is a
 corpus nobody wrote, made of things that actually broke.
 
 So the order is flagging first, cases accumulate, and this test becomes
@@ -284,7 +284,7 @@ right thing to do.
 
 ## A flag invalidates what was learned from it
 
-Somebody marking a session as wrong is a person's judgement arriving after the
+Somebody marking a session as wrong is a person's judgment arriving after the
 automated signal, about the same evidence. It is the correction channel the
 loop otherwise has no way to hear, and it has to do more than stop future
 harm.
@@ -319,7 +319,7 @@ of a call that demonstrably parsed. One that could be wrong waits for a person,
 and the bar for interrupting is that nobody else could have made the call.
 
 What silence must not mean is unrecorded. A platform quietly changing its own
-behaviour with no trail is the failure [inhibitors.md](inhibitors.md) already
+behavior with no trail is the failure [inhibitors.md](inhibitors.md) already
 names for summaries, where a misstatement becomes the record nobody can see
 being made. Every automatic change is visible after the fact, attributable to
 the turn it came from, and reversible by a flag.

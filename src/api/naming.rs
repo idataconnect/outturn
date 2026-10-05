@@ -28,7 +28,7 @@ use crate::{events, jobs};
 
 use super::chat::{AgentSession, ChatStore};
 
-/// The job kind. Serialised on the session so a fast second turn cannot
+/// The job kind. Serialized on the session so a fast second turn cannot
 /// queue a second namer racing the first.
 pub const NAME: &str = "session.name";
 

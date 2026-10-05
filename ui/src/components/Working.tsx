@@ -16,16 +16,16 @@ import { useReducedMotion } from '../lib/useReducedMotion'
  *            movement goes somewhere the way the reply does
  *   done     the three draw out into a line and hold
  *
- * Breathing in unison and a travelling swell are the distinction the whole
+ * Breathing in unison and a traveling swell are the distinction the whole
  * thing rests on: one says "held", the other says "advancing". A spinner
  * cannot make that distinction -- it turns at the same rate whether anything
  * is happening or not, which is why the one that used to sit under the
  * prompt is gone and this covers both ends.
  *
  * Whichever dot is widest wears the accent the theme reserves for the mark,
- * so in the running phase the colour travels with the swell rather than the
+ * so in the running phase the color travels with the swell rather than the
  * whole row changing hue at once. In the held phase there is no travel, so
- * all three share the colour: the row pulses as one object.
+ * all three share the color: the row pulses as one object.
  */
 
 /** How long the dots take to draw out into the line.
@@ -55,7 +55,7 @@ export default function Working({
   label?: string
 }) {
   // SMIL is not covered by `prefers-reduced-motion`, so the only way to
-  // honour it for the swell is not to draw the animation at all. The colour
+  // honor it for the swell is not to draw the animation at all. The color
   // is CSS on each dot and stops itself -- see index.css.
   const reduced = useReducedMotion()
 
@@ -86,10 +86,10 @@ export default function Working({
   }, [done, reduced])
 
   const settling = done && !settled && !reduced
-  // The travelling swell, which belongs to `running` alone. A held turn gets
+  // The traveling swell, which belongs to `running` alone. A held turn gets
   // the CSS pulse instead: same three dots, no stagger, so the row breathes
   // as one object rather than passing a wave along itself.
-  const travelling = phase === 'running' && !reduced && !settling && !settled
+  const traveling = phase === 'running' && !reduced && !settling && !settled
   const held = phase === 'held' && !reduced
 
   const meaning = label ?? (done ? 'Finished' : phase === 'held' ? 'Waiting' : 'Working')
@@ -104,7 +104,7 @@ export default function Working({
       <svg width={26} height={10} viewBox="0 0 26 10" aria-hidden focusable="false">
         {/* The turn is over, and the mark says so by becoming a line: each dot
             stretches sideways from where it stands until the three meet. A
-            shape rather than a colour, because a colour would have to mean
+            shape rather than a color, because a color would have to mean
             something -- green would claim the turn succeeded, which this
             cannot know, and a reply that ended badly would wear it too.
 
@@ -147,8 +147,8 @@ export default function Working({
           >
             {/* One keyframe set, three dots, staggered by delay: the swell
                 passes along the row rather than all three breathing together,
-                which is what makes it read as travelling. */}
-            {travelling && (
+                which is what makes it read as traveling. */}
+            {traveling && (
               <>
                 <animate
                   attributeName="width"
@@ -170,7 +170,7 @@ export default function Working({
                   keySplines="0.4 0 0.6 1;0.4 0 0.6 1"
                   keyTimes="0;0.5;1"
                 />
-                {/* x and y follow so the dot swells about its centre rather
+                {/* x and y follow so the dot swells about its center rather
                     than growing down and to the right. */}
                 <animate
                   attributeName="x"

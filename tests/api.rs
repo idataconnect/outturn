@@ -152,7 +152,7 @@ async fn harness() -> Harness {
         inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
-        // No gateway, so no summarising: the trim underneath carries the
+        // No gateway, so no summarizing: the trim underneath carries the
         // whole of what these tests exercise.
         minter: None,
         gateway_url: None,
@@ -1234,7 +1234,7 @@ async fn system_admin_sees_only_the_workspace_they_are_scoped_to() {
         .await
         .expect("create");
 
-    // Scoped to Acme: system_admin is not a licence to see every workspace at
+    // Scoped to Acme: system_admin is not a license to see every workspace at
     // once, it is the ability to mint a token for any of them.
     let token = h
         .login_as(
@@ -2279,7 +2279,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
     assert_eq!(page["entries"][0]["round"], 1);
     assert_eq!(page["entries"][0]["model"], "claude-sonnet-5");
     assert_eq!(page["entries"][0]["reasoning_tokens"], 1);
-    // What the provider said, verbatim, beside what was normalised from it.
+    // What the provider said, verbatim, beside what was normalized from it.
     assert_eq!(page["entries"][0]["service_tier"], "priority");
     assert_eq!(
         page["entries"][0]["provider_usage"]["cache_creation"]["ephemeral_1h_input_tokens"], 7,
@@ -2450,7 +2450,7 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
         .login_as("admin@acme.example", None, Some((acme, "admin")))
         .await;
 
-    // Nothing set anywhere: the catalogue default applies.
+    // Nothing set anywhere: the catalog default applies.
     let (status, body) = h.get("/v1/settings", Some(&admin)).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let view: Vec<serde_json::Value> = serde_json::from_str(&body).expect("view");
@@ -2459,7 +2459,7 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
         .find(|s| s["key"] == "reasoning_effort")
         .expect("effort");
     // Low rather than none: thinking off leaves a tool turn silent on some
-    // models, so the catalogue default was raised.
+    // models, so the catalog default was raised.
     assert_eq!(effort["value"], "low");
     assert_eq!(effort["source"], "default");
 
@@ -2534,7 +2534,7 @@ async fn settings_cascade_from_operator_to_workspace_to_agent() {
     assert_eq!(effort["source"], "workspace");
     assert_eq!(effort["inherited"], "high");
 
-    // Bad values are refused by the catalogue, not stored.
+    // Bad values are refused by the catalog, not stored.
     let (status, body) = h
         .send(req(
             "PUT",
@@ -3654,13 +3654,13 @@ async fn a_turn_is_handed_its_pinned_skill_files() {
 }
 
 /// The templates a workspace's roles are copied from must be ones the code can
-/// honour.
+/// honor.
 ///
 /// They are rows now, not constants, so nothing about them is checked when this
 /// builds. Read raw rather than through the store, which filters: the point is
 /// to catch a seed that would come out quietly narrower than it reads.
 #[tokio::test]
-async fn seeded_role_templates_are_all_honourable() {
+async fn seeded_role_templates_are_all_honorable() {
     let h = harness_or_skip!();
 
     let rows: Vec<(String, String)> =
@@ -3784,7 +3784,7 @@ async fn a_skill_cannot_be_bound_until_the_hosts_it_names_are_allowed() {
     // The URL is reduced to a host, the same way a hand-written rule is.
     assert_eq!(
         skill["hosts"][0], "api.open-meteo.com",
-        "not normalised: {body}"
+        "not normalized: {body}"
     );
     assert_eq!(
         skill["unmet_hosts"][0], "api.open-meteo.com",
@@ -5488,7 +5488,7 @@ async fn a_schedule_round_trips_through_the_database() {
             "/v1/schedules",
             Some(&token),
             &format!(
-                r#"{{"agent_id":"{agent_id}","name":"Morning","prompt":"Summarise yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London","account":"acme-ops"}}"#
+                r#"{{"agent_id":"{agent_id}","name":"Morning","prompt":"Summarize yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London","account":"acme-ops"}}"#
             ),
         )
         .await;
@@ -5533,7 +5533,7 @@ async fn a_schedule_round_trips_through_the_database() {
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(format!(
-            r#"{{"agent_id":"{second_id}","name":"Morning","prompt":"Summarise yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London"}}"#
+            r#"{{"agent_id":"{second_id}","name":"Morning","prompt":"Summarize yesterday","expression":"0 9 * * 1-5","timezone":"Europe/London"}}"#
         )))
         .expect("request");
     let (status, body) = h.send(req).await;
@@ -6812,7 +6812,7 @@ async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
     finish!(h);
 }
 
-// --- the notification centre ----------------------------------------------
+// --- the notification center ----------------------------------------------
 
 /// A GET carrying the session cookie a login returned.
 async fn get_with_cookie(h: &Harness, uri: &str, cookie: &str) -> (StatusCode, String) {
@@ -6874,7 +6874,7 @@ async fn the_queue_returns_what_is_waiting_on_the_reader() {
 
 #[tokio::test]
 async fn the_queue_refuses_a_caller_with_no_session() {
-    // Authenticated but not authorised is the design; unauthenticated is still
+    // Authenticated but not authorized is the design; unauthenticated is still
     // refused, and this is what says the first did not cost the second.
     let h = harness().await;
 
@@ -7649,7 +7649,7 @@ async fn answering_needs_the_authority_in_the_items_own_workspace() {
     // the token was not minted for -- and the authority has to be resolved
     // there rather than against whichever workspace the caller happens to be
     // signed into. Otherwise holding approvals:answer in one workspace
-    // authorises payments in every other one the person belongs to.
+    // authorizes payments in every other one the person belongs to.
     let h = harness().await;
     let armed = h.make_workspace("Armed", "armed").await;
     let unarmed = h.make_workspace("Unarmed", "unarmed").await;
@@ -7745,7 +7745,7 @@ async fn answering_needs_the_authority_in_the_items_own_workspace() {
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
-        "an authority held in another workspace authorised this: {body}"
+        "an authority held in another workspace authorized this: {body}"
     );
 
     h.db.cleanup().await;
@@ -7800,7 +7800,7 @@ async fn a_gate_declaration_with_no_host_is_refused_at_publish() {
     assert_eq!(status, StatusCode::CREATED, "{message}");
 
     // Stored as the egress matcher spells it, which is what the gateway compares
-    // against -- `normalise_host` strips a port and lower-cases, so a gate written
+    // against -- `normalize_host` strips a port and lower-cases, so a gate written
     // from the host as typed would never match the request.
     let host: String = sqlx::query_scalar(
         "select host from skill_version_gates \
@@ -8085,7 +8085,7 @@ async fn a_body_only_edit_keeps_the_gates_its_files_declare() {
 async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
     // Approving a skill's hosts takes `settings:update`, which is also what turns
     // the ceiling on -- so whoever sets it can exempt a host from it, and
-    // `normalise_host` permits a wildcard over a domain. Declaring `*.example.com`
+    // `normalize_host` permits a wildcard over a domain. Declaring `*.example.com`
     // in a skill and approving it would exempt every host under it from every turn.
     // (`*.com` is refused outright, since `com` has no domain of its own.)
     //
@@ -8371,7 +8371,7 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
     let (status, _) = refresh(lease.clone(), other).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // An expired token is refused rather than read. A path honouring expired
+    // An expired token is refused rather than read. A path honoring expired
     // credentials is the exception that outlives its reason.
     let expired = h
         .minter

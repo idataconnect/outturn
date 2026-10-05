@@ -44,8 +44,8 @@ wind up; the only interruption primitives are blunt ones — drop the future,
 which unwinds at an await point, or exhaust fuel, which traps. Neither is a
 request the guest can answer gracefully.
 
-So the guest is always torn down. That is not a judgement call, it follows from
-where the memory lives. The judgement call is what we *record* about the call it
+So the guest is always torn down. That is not a judgment call, it follows from
+where the memory lives. The judgment call is what we *record* about the call it
 was suspended inside.
 
 ## Three states, not two
@@ -75,7 +75,7 @@ durable, and it is resolved by evidence or by a person.
 They solve different halves and conflating them is how these systems go wrong.
 
 **The key is for the recipient.** It is a claim about identity that a remote
-system honours: send the same key twice, get the original response back, and
+system honors: send the same key twice, get the original response back, and
 correctness holds even if our pod died between send and receive. This is real
 idempotency, and it is the only thing that closes the window.
 

@@ -104,7 +104,7 @@ pub trait RoleStore: Send + Sync {
 
     /// The authorities that follow from holding these roles in this workspace.
     ///
-    /// Called on every authorised request, so implementations cache per
+    /// Called on every authorized request, so implementations cache per
     /// workspace and drop the entry when a role there changes. Names that match
     /// no role -- a platform role, or one deleted since the token was minted
     /// -- contribute nothing.
@@ -129,7 +129,7 @@ pub trait RoleStore: Send + Sync {
     /// What a new workspace's roles are copied from.
     ///
     /// Read rather than compiled in, so a deployment can ship its own names and
-    /// bundles without a rebuild. Anything the code cannot honour is left out
+    /// bundles without a rebuild. Anything the code cannot honor is left out
     /// here and said so, which is the price of the vocabulary living in rows.
     async fn templates(&self) -> Result<Vec<RoleTemplate>, RoleError>;
 

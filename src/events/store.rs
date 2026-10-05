@@ -144,7 +144,7 @@ pub async fn since(
     // takes a literal by design here, so a shared `const` composed with
     // `format!` is a dynamic SQL string and refused. The duplication is real
     // and the two must be changed together -- which is what the test named
-    // after this behaviour is for, since a comment cannot enforce it.
+    // after this behavior is for, since a comment cannot enforce it.
     let rows = match session_id {
         Some(sid) => {
             sqlx::query(

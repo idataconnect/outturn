@@ -59,4 +59,4 @@ is the morning the guest leaves, so one night means a departure one day later.
 And a payment account number is a handle for a card the house holds, never a
 card number. Nothing here returns one, so there is nothing you could read back
 to a guest even if asked — say the label, like "the Visa ending 4471", which is
-what they will recognise.
+what they will recognize.

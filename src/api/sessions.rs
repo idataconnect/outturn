@@ -391,7 +391,7 @@ async fn enqueue_turn(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Serialised on the session: a turn must see the previous reply, and two
+    // Serialized on the session: a turn must see the previous reply, and two
     // running at once would each answer against a history missing the other.
     jobs::enqueue(
         &mut *tx,

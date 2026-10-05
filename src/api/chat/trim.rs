@@ -39,7 +39,7 @@ const DROPPED: &str = "{\"note\":\"this result was dropped to fit the conversati
 /// Bytes, not tokens. Nothing in this codebase counts tokens, and a per-model
 /// tokeniser is a dependency that is wrong for every model it was not built
 /// for -- so this is deliberately approximate, in the direction that costs
-/// headroom rather than a failed turn. Serialising is what the model is
+/// headroom rather than a failed turn. Serializing is what the model is
 /// actually sent, framing included, which is closer than measuring the text.
 fn cost(message: &Value) -> usize {
     serde_json::to_string(message).map(|s| s.len()).unwrap_or(0)

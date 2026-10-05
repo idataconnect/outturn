@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// An enum rather than loose JSON, so a kind added later is a compile error at
 /// every place that reads one rather than a silent drop. The projection that
 /// builds a model's request is the reason: its catch-all used to swallow
-/// anything it did not recognise, and a part the model never sees is a failure
+/// anything it did not recognize, and a part the model never sees is a failure
 /// whose every symptom points somewhere else.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

@@ -303,7 +303,7 @@ export default function Dashboard() {
 
             {unmeasured.calls > 0 && (
               // Not an error, so not red: it is a caveat about precision, and
-              // it carries an icon and words rather than resting on colour.
+              // it carries an icon and words rather than resting on color.
               <p className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
                 <span>
@@ -350,7 +350,7 @@ export default function Dashboard() {
             <div className="mt-4">
               {table ? (
                 // The table view the chart's accessibility rests on: every
-                // figure the chart encodes, readable without colour or hover.
+                // figure the chart encodes, readable without color or hover.
                 <div className="max-h-80 overflow-auto">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-white dark:bg-surface-900">

@@ -53,7 +53,7 @@ cargo clippy --all-targets -- --deny warnings
 says what should be true, and the body arranges the situation that would break
 it. Several subsystems were rebuilt after a real incident, and the tests are
 the record of what went wrong -- a test that only exercises a line is less
-useful than one that pins a behaviour somebody was surprised by.
+useful than one that pins a behavior somebody was surprised by.
 
 **Comments that say why.** The code is commented more heavily than most, and
 deliberately: almost always about the reason, the alternative that was
@@ -62,7 +62,7 @@ line below it is noise. A comment saying what broke last time is the most
 valuable thing in the file. See `scripts/lib/keys.sh` or `build.rs` for the
 register.
 
-**Commit messages in the imperative, describing the behaviour.** No
+**Commit messages in the imperative, describing the behavior.** No
 conventional-commits prefixes. `git log` shows the style -- "Let a trigger
 declare its scheme, because not every sender can sign", not
 "fix(triggers): scheme".
@@ -79,7 +79,7 @@ in detail.
 Do not open an issue for a vulnerability. [SECURITY.md](SECURITY.md) has the
 private reporting path.
 
-## Licence
+## License
 
-Contributions are under [Apache-2.0](LICENSE), the project's licence. There is
+Contributions are under [Apache-2.0](LICENSE), the project's license. There is
 no CLA.

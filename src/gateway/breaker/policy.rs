@@ -35,7 +35,7 @@
 //! also never holds an open circuit open or delays a probe; it contributes to
 //! breadth and to nothing else, or the misattribution would simply have moved.
 //!
-//! **Clocks must be tightly synchronised.** Every time here is wall-clock,
+//! **Clocks must be tightly synchronized.** Every time here is wall-clock,
 //! because it is the only time two replicas can both name; `Instant` is
 //! monotonic but process-local and cannot be stored or compared across pods.
 //! Replicas whose clocks differ by more than the backoff will disagree about

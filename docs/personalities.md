@@ -145,7 +145,7 @@ Three rules do:
   often* -- which points at the voice and the model, never at whoever chose it.
 - **Sampling for a skill leans plain.** A sample meant to improve a skill draws
   from turns with no voice by default, and takes voiced turns only in
-  proportion and labelled as such. A failure that appears only under one voice
+  proportion and labeled as such. A failure that appears only under one voice
   is a finding about that voice's cost, not about the skill.
 - **Findings are about skills, not people.** What a judge reports is aggregated
   by skill and by voice, never by person. Which voice somebody talks to their

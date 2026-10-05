@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { applyTheme, readTheme, storeTheme, type Theme } from './theme'
 
 export function useTheme(): [Theme, (theme: Theme) => void] {
-  // Read during initialisation rather than in an effect, so the first render
+  // Read during initialization rather than in an effect, so the first render
   // already matches what the inline script in index.html applied.
   const [theme, setThemeState] = useState<Theme>(readTheme)
 

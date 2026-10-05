@@ -156,7 +156,7 @@ a priority, a budget and a reach, and is recorded per turn. Contributions are
 made once per conversation and again only at compaction, so the system prompt
 never changes between. Designed, unbuilt. [prompt-contributors.md](prompt-contributors.md).
 
-**Plugin** — what a catalogue would offer: a versioned, installable package of
+**Plugin** — what a catalog would offer: a versioned, installable package of
 contributors, skills and later integrations. Not *extension*, which
 [integrations.md](integrations.md) uses for OAuth integrations. Designed only
 as a name. [prompt-contributors.md](prompt-contributors.md#naming).

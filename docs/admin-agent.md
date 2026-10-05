@@ -168,7 +168,7 @@ able to read them.
 **Transcripts are untrusted input.** A support conversation the admin agent
 reads to explain a failure may contain somebody's injected instruction, now
 inside a context that can propose policies. The proposal-and-confirm rule is the
-defence, and it is why it must hold without exception: the worst a hijacked
+defense, and it is why it must hold without exception: the worst a hijacked
 admin agent can do is propose something wrong to somebody who is reading what
 they confirm.
 
@@ -186,7 +186,7 @@ operator drives it.
 The manage routes overlap with the ordinary API -- listing skills, publishing a
 version, reading usage -- and should not duplicate it. Each is a thin handler
 over the same functions the ordinary route calls, differing in how the caller is
-authorised and in writing a proposal where the ordinary route would write the
+authorized and in writing a proposal where the ordinary route would write the
 change. One rule, two doors.
 
 ## Not settled

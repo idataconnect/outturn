@@ -20,13 +20,13 @@ Copy `hollowbrook.css`, change the values, and set `VITE_THEME` to its name.
 Every token the default defines should be set; anything left out falls back
 to outturn's value and will look like outturn by accident.
 
-Colours are OKLCH so a ramp can be reasoned about rather than eyeballed: hold
+Colors are OKLCH so a ramp can be reasoned about rather than eyeballed: hold
 lightness and chroma, move hue, and the new scale stays as legible as the one
 it came from.
 
 ## What a theme may set
 
-| Token | What it colours |
+| Token | What it colors |
 |---|---|
 | `--color-brand-50..950` | Interactive elements: links, primary buttons, the active nav item |
 | `--color-surface-50..950` | Every flat surface, and text on them |
@@ -34,5 +34,5 @@ it came from.
 | `--color-accent-400..600` | Decoration that is not a control, such as the avatar gradient |
 | `--font-sans`, `--font-display` | Body text, and the wordmark |
 
-Branding that is not colour -- the product name, the logo -- comes from
+Branding that is not color -- the product name, the logo -- comes from
 `src/lib/brand.ts`, which reads the same environment.

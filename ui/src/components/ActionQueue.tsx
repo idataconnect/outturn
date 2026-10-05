@@ -87,7 +87,7 @@ function ActionRow({
 }) {
   const age = waitingFor(item.id, now)
   const Icon = ICONS[iconKey(item.kind)]
-  const summary = summarise(item)
+  const summary = summarize(item)
 
   // A real `button` when there is somewhere to go, rather than a div wearing a
   // button's role: Enter and Space, the focus ring and the accessibility tree
@@ -198,7 +198,7 @@ function iconKey(kind: string): keyof typeof ICONS {
  * component does not know, so anything missing or of the wrong type renders as
  * nothing rather than as `[object Object]`.
  */
-function summarise(item: ActionItem): string | null {
+function summarize(item: ActionItem): string | null {
   for (const key of ['question', 'summary', 'title', 'reason']) {
     const value = item.payload[key]
     if (typeof value === 'string' && value.trim() !== '') return value

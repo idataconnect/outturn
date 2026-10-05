@@ -152,7 +152,7 @@ fn server_url(url: &str) -> String {
 /// wholesale. Tests are isolated either way; this is the same isolation
 /// arriving twenty-five times faster.
 ///
-/// Concurrent copies from one template serialise in Postgres, so a suite of
+/// Concurrent copies from one template serialize in Postgres, so a suite of
 /// seventy queues rather than parallelising here. At forty-eight milliseconds
 /// apiece that is a few seconds in total, against the eighty it replaced.
 pub struct TestDb {

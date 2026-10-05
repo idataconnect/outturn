@@ -18,7 +18,7 @@ export type Slice = {
  *
  * The bars are nominal, not ordinal: a model is not more of anything than
  * another model, so every bar takes the same slot-1 hue rather than being
- * coloured by its own value. Colouring nominal bars by rank spends the identity
+ * colored by its own value. Coloring nominal bars by rank spends the identity
  * channel re-encoding what the bar's length already says.
  */
 export default function UsageRanked({

@@ -435,7 +435,7 @@ function Diff({ sections }: { sections: ReturnType<typeof collapse> }) {
 /**
  * One line of a diff.
  *
- * The sign carries the meaning rather than the colour alone, so this reads on a
+ * The sign carries the meaning rather than the color alone, so this reads on a
  * monochrome display and to somebody who cannot tell the two greens from the two
  * reds -- which is most of why `+`/`-` survived into every diff since `ed`.
  *

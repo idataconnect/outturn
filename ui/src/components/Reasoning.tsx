@@ -25,7 +25,7 @@ import { ThoughtMarkdownText } from './MarkdownText'
  *
  * Words rather than tokens. Nothing in this codebase counts tokens -- a
  * per-model tokeniser is wrong for every model it was not built for -- and a
- * figure labelled "tokens" that was really a guess would be read as the number
+ * figure labeled "tokens" that was really a guess would be read as the number
  * on somebody's bill. Where a provider reports reasoning tokens of its own
  * they belong here instead, under their own name; until then this is the true
  * thing that can be said.

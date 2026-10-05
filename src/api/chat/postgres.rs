@@ -551,7 +551,7 @@ impl ChatStore for PostgresChatStore {
         .map_err(internal)?;
         let since = summaries.iter().rev().find_map(|row| {
             let metadata: serde_json::Value = row.get("metadata");
-            super::summarise::mark_of(&metadata).map(|through| (row.get("id"), through))
+            super::summarize::mark_of(&metadata).map(|through| (row.get("id"), through))
         });
         self.read_history(session_id, None, None, since).await
     }
@@ -850,7 +850,7 @@ impl ChatStore for PostgresChatStore {
         // all.
         //
         // What stops the agent reading it as its own speech is the mark plus the
-        // framing on the way to the model, exactly as `summarise::framed` does
+        // framing on the way to the model, exactly as `summarize::framed` does
         // for a summary. The content below is written to be true either way.
         //
         // Deliberately not going through `append_message`, which refuses to

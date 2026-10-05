@@ -27,8 +27,8 @@ const PAD = { top: 12, right: 12, bottom: 24, left: 48 }
  * layer -- is a crosshair over a day index, which is the easy part.
  *
  * The stack is a part-to-whole over time, so the bands carry categorical
- * colour and the legend is always present; the tooltip carries the figures, so
- * nothing is encoded by colour alone.
+ * color and the legend is always present; the tooltip carries the figures, so
+ * nothing is encoded by color alone.
  */
 export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   const dark = useDarkMode()
@@ -38,7 +38,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
 
   // Which kinds this window actually contains. A band that is zero everywhere
   // is not drawn and not given a legend entry: an empty band still takes a
-  // colour slot, and a legend that lists "Cache write" for a provider that has
+  // color slot, and a legend that lists "Cache write" for a provider that has
   // never reported one teaches the reader something untrue about their bill.
   const present = KINDS.filter((k) => buckets.some((b) => b[k.key] > 0))
   const kinds = present.length > 0 ? present : [KINDS[0]]
@@ -63,7 +63,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   }
 
   // Cache reads against their own maximum, drawn as a line in the muted ink
-  // rather than a sixth series colour: it is context for the stack, not
+  // rather than a sixth series color: it is context for the stack, not
   // another member of it, and a hue would say they were comparable.
   const cacheReads = buckets.map((b) => b[CACHE_READ.key])
   const cacheMax = niceMax(Math.max(...cacheReads, 1))
@@ -161,7 +161,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
           </g>
         )}
 
-        {/* Cache reads: dashed, muted, and labelled with their own maximum.
+        {/* Cache reads: dashed, muted, and labeled with their own maximum.
             Dashed because it is the one mark on this panel that does not share
             the axis beside it, and a reader must be able to see that at a
             glance rather than discover it in the legend. */}
@@ -214,7 +214,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
           </g>
         )}
 
-        {/* Only the ends of the axis are labelled: a tick under every day is
+        {/* Only the ends of the axis are labeled: a tick under every day is
             unreadable at a month's width, and the tooltip names the day the
             reader is actually pointing at. */}
         {buckets.length > 0 && (
@@ -242,7 +242,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
       </svg>
 
       {/* The legend is always present for two or more bands, so identity never
-          rests on colour alone. */}
+          rests on color alone. */}
       {(kinds.length > 1 || hasCache) && (
         <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {kinds.map((kind, band) => (

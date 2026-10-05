@@ -261,7 +261,7 @@ Who supplies those hosts and the credentials that go with them is a separate
 question, designed and unbuilt in [docs/integrations.md](docs/integrations.md):
 the operator installs their own APIs, approves extensions a workspace can turn
 on for itself, and may optionally let a workspace add its own hosts -- which is
-today's behaviour, so that tier is a restriction to add rather than a feature.
+today's behavior, so that tier is a restriction to add rather than a feature.
 None of the three waits on a new tool. `fetch_url` already reaches any host a
 workspace is allowed, so an integration is a permitted host, a credential bound
 to it, and a skill saying what to call -- and the work is in the rules and the
@@ -429,7 +429,7 @@ limit has always been refused — see the truncation guard in
 Letting a workspace stop being asked about a gate it trusts the agent with is
 designed and unbuilt in [docs/auto-approval.md](docs/auto-approval.md):
 policies over the operator's declared `risk` and `auto` ceiling, conditions
-only on the gate's bound fields -- never the agent's own judgement -- decided at
+only on the gate's bound fields -- never the agent's own judgment -- decided at
 the gateway and recorded there before the request goes out. Configuring that,
 and the rest of a workspace, through an agent is in
 [docs/admin-agent.md](docs/admin-agent.md), and its one rule is that the agent
@@ -441,6 +441,14 @@ conversation, since a few are easy to misread — and two of them recently swapp
 A *package* is one skill shipped as a body plus its files; a *bundle* is several
 skills shipped together. Until recently "bundle" meant the first, so anything
 written before the swap that says "bundle" for one skill means *package*.
+
+Spelling is American English everywhere -- code, comments, docs and anything
+a person reads: *summarize*, *color*, *behavior*, *catalog*. Two exceptions,
+both because the word is stored rather than written: `cancelled` and
+`cancelling` are job states and event kinds in the database and in applied
+migrations, which cannot change (both spellings are accepted in American
+English anyway). And never edit an applied migration to fix one: sqlx
+checksums them.
 
 ## Invariants worth knowing before you change things
 
@@ -521,7 +529,7 @@ kinds and the builder that assembles them, and both the live path and `replay`
 go through it -- they produced the same shape by two transcriptions of one rule
 until they did not. `Part` is an enum, so a kind added later is a compile error
 at every consumer rather than a silent drop in the projection that builds a
-model's request; an unrecognised kind decodes to `Unknown` so a rolling deploy
+model's request; an unrecognized kind decodes to `Unknown` so a rolling deploy
 can still read its own rows. Two copies remain and cannot be collapsed: the
 browser's, in `ui/src/lib/useChatRuntime.ts`, and the SQL predicate
 `said_something`, which both `discard_placeholder` and the
@@ -578,7 +586,7 @@ minted for it. The gateway reads the egress commitment out of that token,
 checks the rule the caller offered against it, vets the address, attaches the
 credential and makes the call. A runtime that rewrote its own copy of the rules
 gets nowhere, because the copy it can rewrite is not the one consulted -- and
-an approval it was merely trusted to honour would be worth nothing, since a
+an approval it was merely trusted to honor would be worth nothing, since a
 compromised runtime would simply not ask.
 
 Two things follow that are easy to undo by accident. Nothing in the runtime may
@@ -746,7 +754,7 @@ together.
 
 ### Compaction
 
-Built: `api::chat::summarise`, `worker::summarised` and `worker::store_summary`,
+Built: `api::chat::summarize`, `worker::summarized` and `worker::store_summary`,
 under the `context_budget` setting, with the trim below it as the floor. The
 design, so it is not rediscovered:
 
@@ -756,13 +764,13 @@ than the one before it. The naive ordering, compact in the outgoing model
 before switching, is a trap: it bills the user for an expensive operation they
 did not ask for, at the moment they asked for something else.
 
-Summarise from the system prompt, the previous summary, and the tail. That
+Summarize from the system prompt, the previous summary, and the tail. That
 input is bounded by construction, so the incoming model can always do it
 however long the session has run, and no compaction depends on a model that is
 being switched away from. The tail is also where the live context is: what is
 being worked on now, the recent tool results, the thread of the conversation.
 
-Summaries are cumulative — each one summarises the tail plus the summary before
+Summaries are cumulative — each one summarizes the tail plus the summary before
 it — because the alternative loses durable facts. Constraints stated once at the
 start are exactly what gets dropped and then violated. Cumulative carrying is
 not a guarantee, only a much better chance.
@@ -778,7 +786,7 @@ or a summary becomes the record of a fact nobody can see leaving.
 **Carry-over is not memory, and the two must not share a store.** Memory is
 user-declared and durable — "I am off on Thursdays, so never set a pay date
 there, whatever the skill says" — stated once, applying to every session, and
-expected to hold. Carry-over is one model's judgement about one conversation,
+expected to hold. Carry-over is one model's judgment about one conversation,
 and it belongs to that session's transcript. Mixing them makes memory
 unreviewable: a standing instruction somebody gave and a guess a model made
 about a transcript become indistinguishable a month later, and nobody can say
@@ -797,12 +805,12 @@ has already been got wrong once. Withholding summaries from the reader's page
 was tried and reverted: it left a person unable to see that their conversation
 had been compacted at all, which is the quiet bound this section warns against
 two paragraphs above. Serving them unmarked is the other failure — a paragraph
-summarising the reader's own conversation, presented as something the agent said
+summarizing the reader's own conversation, presented as something the agent said
 to them. They are served, and the client draws them as the boundary they are.
 
-On the way *to* the model a summary is labelled too (`summarise::framed`), and
+On the way *to* the model a summary is labeled too (`summarize::framed`), and
 every summary is, not only the newest: an older one can survive inside the
-retained tail, and unlabelled there the agent reads its own summary as something
+retained tail, and unlabeled there the agent reads its own summary as something
 it said and answers it. What a summary covers is recorded from the projection's
 own account of which stored message each entry came from, never by counting the
 projection against the stored rows — they are not aligned, a stored summary

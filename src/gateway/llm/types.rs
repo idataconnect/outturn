@@ -253,7 +253,7 @@ pub struct Delta {
     pub content: Option<String>,
     /// A thinking model's reasoning, where the provider sends it.
     ///
-    /// Carried because a chunk is decoded into this struct and re-serialised
+    /// Carried because a chunk is decoded into this struct and re-serialized
     /// from it, so a field absent here is a field the tier above never sees --
     /// however carefully it looks. Thinking arrives with `content` set to `""`
     /// beside it, so dropping it made a turn the model spent deliberating

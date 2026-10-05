@@ -286,7 +286,7 @@ function Shell() {
 
   const breakpoint = useBreakpoint()
   const phone = breakpoint === 'phone'
-  // Labelled by default where there is room, icons-only once someone asks for
+  // Labeled by default where there is room, icons-only once someone asks for
   // the space back. On a phone neither: it is a drawer, and opening it shows
   // the labels because a drawer has the width to spare.
   const [expanded, setExpanded] = useState(() => readFlag('nav.expanded', true))
@@ -310,7 +310,7 @@ function Shell() {
   // Labels are shown in the drawer even though it is a phone: the drawer is
   // wide, and an icon rail the reader deliberately opened should say what its
   // icons mean.
-  const labelled = phone ? true : expanded
+  const labeled = phone ? true : expanded
   const railed = !phone && !expanded
 
   return (
@@ -330,7 +330,7 @@ function Shell() {
       >
         <div
           // Top-aligned, with the same padding above in both states, so the
-          // mark stays put when the nav opens: centred, it dropped to the
+          // mark stays put when the nav opens: centerd, it dropped to the
           // middle of a product name long enough to wrap.
           className={`flex items-start gap-2 border-b border-surface-200 dark:border-surface-800 ${
             railed ? 'justify-center p-3' : 'px-4 py-3'
@@ -381,7 +381,7 @@ function Shell() {
               )}
             </button>
           )}
-          {labelled && (
+          {labeled && (
             // The first line level with the mark's 32px button.
             <h1 className="mt-0.5 flex-1 text-lg font-display font-semibold text-surface-900 dark:text-surface-100">
               {productName}
@@ -445,14 +445,14 @@ function Shell() {
                 <Icon size={16} />
                 {/* Railed there is no room for the number beside the label,
                     so it rides on the icon. */}
-                {count && !labelled && (
+                {count && !labeled && (
                   <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-brand-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
                     {count}
                   </span>
                 )}
               </span>
-              {labelled && label}
-              {count && labelled && (
+              {labeled && label}
+              {count && labeled && (
                 <span className="ml-auto rounded-full bg-brand-600 px-1.5 text-[11px] font-semibold leading-5 text-white">
                   {count}
                 </span>

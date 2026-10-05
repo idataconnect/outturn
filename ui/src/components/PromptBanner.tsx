@@ -52,7 +52,7 @@ export default function PromptBanner({
   if (compacting) {
     return (
       // Work happening now, drawn the way the session list draws a running
-      // turn: a pulsing dot in the brand colour, on a faint brand tint.
+      // turn: a pulsing dot in the brand color, on a faint brand tint.
       <div
         className="flex items-center gap-2 border-b border-brand-200 bg-brand-50 px-6 py-2 text-sm text-brand-800 dark:border-brand-900 dark:bg-brand-950/40 dark:text-brand-300"
         role="status"

@@ -5,7 +5,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use super::{Effective, Level, Resolved, SettingsError, SettingsStore, catalogue, find, validate};
+use super::{Effective, Level, Resolved, SettingsError, SettingsStore, catalog, find, validate};
 use crate::api::usage::PLATFORM_WORKSPACE;
 
 pub struct PostgresSettingsStore {
@@ -120,7 +120,7 @@ impl SettingsStore for PostgresSettingsStore {
         let (above, here) = chain.split_at(chain.len() - 1);
         let here = &here[0].1;
 
-        Ok(catalogue()
+        Ok(catalog()
             .into_iter()
             .map(|setting| {
                 let (value, source) = walk(&chain, setting.key, &setting.default);
@@ -184,7 +184,7 @@ impl SettingsStore for PostgresSettingsStore {
             })
             .await?;
         let get = |key: &str| {
-            let setting = find(key).expect("catalogue key");
+            let setting = find(key).expect("catalog key");
             walk(&chain, key, &setting.default).0
         };
         let effort = get("reasoning_effort");

@@ -53,7 +53,7 @@ Hollowbrook's install script puts the body in the skill and the detail in
   manifest points at files the original can still rewrite.
 - **The wrong authority edits them.** Anyone with `StorageWorkspaceWrite` can
   change what agents are told about an API, without a version, a note or the
-  skill's own permissions. It is prose governing behaviour, edited through the
+  skill's own permissions. It is prose governing behavior, edited through the
   path meant for reference spreadsheets.
 - **The operator cannot ship one.** A skill in the platform workspace reaches
   every workspace, but its files would sit in the platform workspace's
@@ -148,7 +148,7 @@ A file may open with YAML between `---` fences. Today one key is defined --
 rather than anywhere else is everything this document argues: a version is
 immutable and published whole, so what a rule said on a date is recorded rather
 than inferred; it is written under `SkillsWrite` rather than
-`StorageWorkspaceWrite`, so prose that governs behaviour is not editable through
+`StorageWorkspaceWrite`, so prose that governs behavior is not editable through
 the path meant for spreadsheets; and the agent reads it through a scope that is
 read-only, resolved against the version its turn bound.
 

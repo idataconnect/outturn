@@ -5,7 +5,7 @@
 //! published since it began without starting over. Queued under the session's
 //! own serial key, the same one its turns use, so it can never run beside one:
 //! a summary written while a turn was still adding to the conversation would
-//! summarise something already out of date.
+//! summarize something already out of date.
 //!
 //! Runs in the API tier, like naming: it reaches a model and writes the
 //! transcript, and needs nothing a runtime has.

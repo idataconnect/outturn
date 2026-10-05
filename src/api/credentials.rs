@@ -349,7 +349,7 @@ struct Fetched {
 /// says what the host answered.
 ///
 /// So a wrong key is a red 401 here, while somebody is setting it up, rather
-/// than an agent apologising for it later. Only the status comes back: the
+/// than an agent apologizing for it later. Only the status comes back: the
 /// body is the account's data, and the question asked was whether the key
 /// works.
 pub async fn test(

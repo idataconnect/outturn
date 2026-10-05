@@ -279,7 +279,7 @@ function AssistantMessage() {
   const summary = useAuiState((s) => s.message.metadata.custom?.summary === true)
   // What somebody decided about an approval. Drawn across the width like a
   // summary and for the same reason: the agent did not say it, and shown as
-  // speech it reads as the agent announcing its own authorisation.
+  // speech it reads as the agent announcing its own authorization.
   const approval = useAuiState(
     (s) => s.message.metadata.custom?.approval as ApprovalRecord | null | undefined,
   )
@@ -427,7 +427,7 @@ function AssistantMessage() {
           mid-generation leaves a reply the agent resumes when the next
           message arrives -- so an older reply can be running while a newer
           one exists, and the pair drew two marks at once: a settled line on
-          the new one and a travelling swell on the old. The mark says where
+          the new one and a traveling swell on the old. The mark says where
           the conversation is, and the conversation is at its last reply
           whichever one the agent happens to be finishing. */}
       {newest && <Working phase={running ? 'running' : 'done'} />}
@@ -441,8 +441,8 @@ type Attachment = {
   path: string
   /** A local object URL for an image, so the preview costs no round trip.
    *  Absent for anything that is not an image: a thumbnail of a PDF or a CSV
-   *  would be a grey rectangle pretending to be a preview, and the name is
-   *  the thing somebody actually recognises it by. */
+   *  would be a gray rectangle pretending to be a preview, and the name is
+   *  the thing somebody actually recognizes it by. */
   preview?: string
   /** What to call it in the chip. The stored name rather than the path,
    *  which is longer and mostly the part every file shares. */
@@ -514,7 +514,7 @@ export default function Thread({
   // Stop is what an empty composer offers mid-run, and the only state in
   // which the send button is not the more useful of the two. `canCancel`
   // rather than the thread's `isRunning`, so the stop is never shown by a
-  // runtime that could not honour it.
+  // runtime that could not honor it.
   const canCancel = useAuiState((s) => s.composer.canCancel)
   const showSend = !canCancel || !composerEmpty
 
@@ -636,7 +636,7 @@ export default function Thread({
             {
               path: stored.path,
               // A preview for an image, nothing for anything else: a
-              // thumbnail of a spreadsheet is a grey rectangle that has to be
+              // thumbnail of a spreadsheet is a gray rectangle that has to be
               // read to be understood, which is what the name is for.
               preview: file.type.startsWith('image/')
                 ? URL.createObjectURL(file)
