@@ -650,8 +650,7 @@ export function useChatRuntime(
    */
   // A compaction belongs to the session it ran in: its progress and its count
   // reset when the conversation changes, so "Compacting…" cannot carry over to
-  // the next one. Keyed on the session alone, apart from the poll effect below
-  // whose `merge` dependency would otherwise fire this mid-compaction.
+  // the next one.
   useEffect(() => {
     setCompacting(false)
     setCompactions(0)
