@@ -219,7 +219,7 @@ pub struct NewFile {
 
 /// A file a version carries. The content is in the object store under
 /// `blob_key` of the owning workspace and this hash.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillFile {
     pub path: String,
     pub sha256: String,
@@ -263,8 +263,9 @@ pub struct Binding {
     pub position: i32,
 }
 
-/// One piece of prose as a turn will actually receive it.
-#[derive(Debug, Clone)]
+/// One piece of prose as a turn will actually receive it. Serialised because
+/// a conversation keeps the set its system prompt was composed from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedSkill {
     pub skill_id: Uuid,
     pub version_id: Uuid,

@@ -4,7 +4,8 @@ Everything that shapes what a model is given on a turn, other than the
 conversation itself, as one kind of thing with one set of rules -- so that a
 voice, an eagerly loaded tool, the time a conversation began and a skill's chosen operations
 can each be added, owned, measured and eventually published without each
-inventing its own way in. Designed, unbuilt.
+inventing its own way in. Designed; the first piece, composing the system
+prompt once per conversation, is built.
 
 ## Why one idea
 
@@ -70,8 +71,14 @@ those two moments nothing a contributor says is re-asked: no contribution is
 recomputed per message, no eager run repeats per turn, and the prefix a
 provider caches is the same on every round of every turn of the conversation.
 
-That is a change from today, where the system prompt is rebuilt from the agent
-and its skills on every turn. What follows from it, deliberately:
+Built: `session_prompts` keeps a conversation's prompt, the model it names and
+the skills it was composed from (`worker::kept_prompt`). A turn sends the kept
+one; a compaction, or a different model, composes it again. The skill versions
+each turn recorded in `turn_skills` are the kept ones, so a conversation still
+on an older version says so. Gates are the exception, read from live versions
+every turn: a tightened gate reaches a running conversation at once, and its
+prompt may describe a call the gate now refuses, which the refusal explains.
+What follows from it, deliberately:
 
 - **An edit reaches a conversation at its next compaction**, not its next
   message. A skill published, an agent's prompt edited, a person's voice

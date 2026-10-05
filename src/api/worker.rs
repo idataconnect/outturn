@@ -1697,20 +1697,16 @@ impl Worker {
         // settings are: the guest is handed prose and never learns which of it
         // the operator wrote, which the workspace added, or that either could
         // have been otherwise.
-        let skills = self
+        //
+        // These are the skills as they stand now. Gates are read from them on
+        // every turn, so tightening one reaches a running conversation at once;
+        // the prose a conversation was given is kept from its first turn and
+        // composed again only at compaction -- see `kept_prompt`.
+        let live_skills = self
             .skills
             .resolve_for_agent(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
-
-        // Written down before the turn runs, against the reply it will fill in.
-        // What was composed is a fact about this turn whether or not it goes on
-        // to succeed, and a failed turn is exactly the one an eval wants to be
-        // able to look at afterwards.
-        self.skills
-            .record_turn(placeholder.message.id, &skills)
-            .await
-            .map_err(|e| anyhow::anyhow!("recording skills: {e}"))?;
 
         // Resolved once: the prompt has to name the same model the request asks
         // for, or the agent is told one thing and served by another.
@@ -1726,7 +1722,7 @@ impl Worker {
         let gates = assemble_gates(
             &self.pool,
             payload.workspace_id,
-            &skills,
+            &live_skills,
             &egress,
             settings.approve_new_hosts,
         )
@@ -1764,11 +1760,115 @@ impl Worker {
         let gates = crate::egress::gate::Gates::of(gates).with_grants(granted.clone());
         let gate_commitment = gates.root(payload.workspace_id);
 
-        let system_prompt = super::skill::compose_for_turn(&agent.system_prompt, &skills, &model);
         let prompt_text = history
             .iter()
             .find(|m| m.id == payload.message_id)
             .map(|m| m.content.clone());
+
+        // What the system prompt would be if it were composed now. Used when the
+        // conversation has none kept, when its model changed, and when it
+        // compacts; otherwise the kept one is sent, byte for byte, so the
+        // provider's cache of it keeps hitting.
+        let fresh_prompt =
+            super::skill::compose_for_turn(&agent.system_prompt, &live_skills, &model);
+        let kept = self.kept_prompt(payload.session_id, &model).await?;
+
+        // Sources come from the unmarked projection: `marked` inserts its one
+        // entry immediately before the final message, which is past anything a
+        // summary cuts at, so the indices a cut uses mean the same in both.
+        let (projected, sources) = projected_with_sources(&history);
+        let projected = answered(projected, &gates, &granted);
+        let projected = marked(projected, restarting_from.as_ref());
+
+        // Over budget is where compaction begins. A summary is tried first
+        // because it loses less: the early turns become a paragraph rather than
+        // disappearing. It is a model call the user did not ask for, so it
+        // happens only when the alternative is losing the messages outright.
+        //
+        // Written against the prompt as it would be composed now, because
+        // compacting is when the conversation takes that prompt up: the summary
+        // has to know what the agent is being told from here on.
+        let summary = self
+            .summarised(
+                &projected,
+                &sources,
+                &fresh_prompt,
+                super::chat::trim::room_for_conversation(settings.context_budget, &fresh_prompt),
+                payload.session_id,
+                payload.workspace_id,
+                payload.agent_id,
+                &model,
+            )
+            .await;
+        let compacted = summary.is_some();
+        let projected = summary.unwrap_or(projected);
+
+        let (skills, system_prompt) = match kept {
+            Some(kept) if !compacted => kept,
+            _ => {
+                self.keep_prompt(payload.session_id, &model, &fresh_prompt, &live_skills)
+                    .await?;
+                (live_skills, fresh_prompt)
+            }
+        };
+
+        // Written down before the turn runs, against the reply it will fill in:
+        // the versions this turn was actually given, which in a long
+        // conversation may be older than what is published. What was composed is
+        // a fact about this turn whether or not it goes on to succeed, and a
+        // failed turn is exactly the one an eval wants to be able to look at
+        // afterwards.
+        self.skills
+            .record_turn(placeholder.message.id, &skills)
+            .await
+            .map_err(|e| anyhow::anyhow!("recording skills: {e}"))?;
+
+        let conversation = {
+            // What the conversation may actually have. The system prompt is
+            // sent on every round too and nothing can trim it, so it is spent
+            // before any of this -- see `trim::room_for_conversation`.
+            let room =
+                super::chat::trim::room_for_conversation(settings.context_budget, &system_prompt);
+
+            // The floor under compaction. Whatever a summary did not
+            // save, this drops -- and when there is no model to ask, or
+            // the summary itself would not fit, this is the whole of what
+            // happens.
+            let (projected, trimmed) = super::chat::trim::to_fit(projected, room);
+            if !trimmed.is_empty() {
+                // Said out loud: a turn that quietly lost half its history
+                // is one nobody can explain afterwards, and these numbers
+                // are what say whether the budget is set anywhere near
+                // right.
+                tracing::info!(
+                    session_id = %payload.session_id,
+                    workspace_id = %payload.workspace_id,
+                    results_dropped = trimmed.results_dropped,
+                    messages_dropped = trimmed.messages_dropped,
+                    was = trimmed.was,
+                    now = trimmed.now,
+                    budget = settings.context_budget,
+                    // Both, because the difference is the whole point:
+                    // a reader wondering why a generous budget trimmed
+                    // anything is looking at the instructions.
+                    room,
+                    instructions = system_prompt.len(),
+                    "conversation trimmed to fit"
+                );
+            }
+            // Last, after compaction and the trim: repetition is how this
+            // turn asks, not part of the conversation, so no summary is
+            // written from it and no budget is spent cutting it.
+            let projected = if settings.repeat_prompt {
+                repeated(projected, prompt_text.as_deref())
+            } else {
+                projected
+            };
+            projected
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?
+        };
 
         Ok(Prepared::Run(Box::new(
             crate::runtime::router::ExecuteRequest {
@@ -1778,82 +1878,7 @@ impl Worker {
                 write_scopes: settings.write_scopes,
                 read_scopes: settings.read_scopes,
                 skill_files: super::skill::objects_for_turn(&skills),
-                conversation: {
-                    // Sources come from the unmarked projection: `marked` inserts
-                    // its one entry immediately before the final message, which is
-                    // past anything a summary cuts at, so the indices a cut uses
-                    // mean the same in both.
-                    let (projected, sources) = projected_with_sources(&history);
-                    let projected = answered(projected, &gates, &granted);
-                    let projected = marked(projected, restarting_from.as_ref());
-
-                    // What the conversation may actually have. The system
-                    // prompt is sent on every round too and nothing can trim
-                    // it, so it is spent before any of this -- see
-                    // `trim::room_for_conversation`.
-                    let room = super::chat::trim::room_for_conversation(
-                        settings.context_budget,
-                        &system_prompt,
-                    );
-
-                    // Over budget is where compaction begins. A summary is tried
-                    // first because it loses less: the early turns become a
-                    // paragraph rather than disappearing. It is a model call the
-                    // user did not ask for, so it happens only when the
-                    // alternative is losing the messages outright.
-                    let projected = self
-                        .summarised(
-                            &projected,
-                            &sources,
-                            &system_prompt,
-                            room,
-                            payload.session_id,
-                            payload.workspace_id,
-                            payload.agent_id,
-                            &model,
-                        )
-                        .await
-                        .unwrap_or(projected);
-
-                    // Then the floor underneath it. Whatever a summary did not
-                    // save, this drops -- and when there is no model to ask, or
-                    // the summary itself would not fit, this is the whole of what
-                    // happens.
-                    let (projected, trimmed) = super::chat::trim::to_fit(projected, room);
-                    if !trimmed.is_empty() {
-                        // Said out loud: a turn that quietly lost half its history
-                        // is one nobody can explain afterwards, and these numbers
-                        // are what say whether the budget is set anywhere near
-                        // right.
-                        tracing::info!(
-                            session_id = %payload.session_id,
-                            workspace_id = %payload.workspace_id,
-                            results_dropped = trimmed.results_dropped,
-                            messages_dropped = trimmed.messages_dropped,
-                            was = trimmed.was,
-                            now = trimmed.now,
-                            budget = settings.context_budget,
-                            // Both, because the difference is the whole point:
-                            // a reader wondering why a generous budget trimmed
-                            // anything is looking at the instructions.
-                            room,
-                            instructions = system_prompt.len(),
-                            "conversation trimmed to fit"
-                        );
-                    }
-                    // Last, after compaction and the trim: repetition is how this
-                    // turn asks, not part of the conversation, so no summary is
-                    // written from it and no budget is spent cutting it.
-                    let projected = if settings.repeat_prompt {
-                        repeated(projected, prompt_text.as_deref())
-                    } else {
-                        projected
-                    };
-                    projected
-                        .into_iter()
-                        .map(serde_json::from_value)
-                        .collect::<Result<_, _>>()?
-                },
+                conversation,
                 // Composed with the model that will serve this turn, so an agent
                 // asked what it is has something true to read rather than a gap to
                 // fill.
@@ -1871,6 +1896,65 @@ impl Worker {
                 gates,
             },
         )))
+    }
+
+    /// The system prompt this conversation was given, and the skills it was
+    /// composed from -- unless it has none yet, or was composed for another
+    /// model, in which case it is composed again.
+    ///
+    /// Kept rather than rebuilt per turn so every round of every turn sends the
+    /// same prefix, which is what a provider's prompt cache keys on. An edit to
+    /// the agent or a skill reaches a conversation at its next compaction. A
+    /// kept set that no longer reads -- a shape changed by a deploy -- is
+    /// composed again rather than failing the turn.
+    async fn kept_prompt(
+        &self,
+        session_id: Uuid,
+        model: &str,
+    ) -> anyhow::Result<Option<(Vec<super::skill::ResolvedSkill>, String)>> {
+        let row =
+            sqlx::query("select model, prompt, skills from session_prompts where session_id = $1")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(row) = row else { return Ok(None) };
+        use sqlx::Row as _;
+        if row.get::<String, _>("model") != model {
+            return Ok(None);
+        }
+        let skills = match serde_json::from_value(row.get("skills")) {
+            Ok(skills) => skills,
+            Err(e) => {
+                tracing::warn!(%session_id, error = %e, "a kept system prompt no longer reads; composing it again");
+                return Ok(None);
+            }
+        };
+        Ok(Some((skills, row.get("prompt"))))
+    }
+
+    /// Keeps what a conversation's system prompt was composed from, replacing
+    /// whatever it had.
+    async fn keep_prompt(
+        &self,
+        session_id: Uuid,
+        model: &str,
+        prompt: &str,
+        skills: &[super::skill::ResolvedSkill],
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "insert into session_prompts (session_id, model, prompt, skills) \
+             values ($1, $2, $3, $4) \
+             on conflict (session_id) do update \
+             set model = excluded.model, prompt = excluded.prompt, \
+                 skills = excluded.skills, composed_at = now()",
+        )
+        .bind(session_id)
+        .bind(model)
+        .bind(prompt)
+        .bind(serde_json::to_value(skills)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Replaces the early part of a conversation with a summary of it, when it
