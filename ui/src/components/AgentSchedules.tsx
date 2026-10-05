@@ -260,7 +260,7 @@ export default function AgentSchedules({ agentId }: { agentId: string }) {
 
       {rows.length === 0 && !draft && (
         <p className="text-sm text-surface-500">
-          None yet. A schedule might summarise yesterday's work each morning, or check
+          None yet. A schedule might summarize yesterday's work each morning, or check
           something overnight.
         </p>
       )}
@@ -371,7 +371,7 @@ export default function AgentSchedules({ agentId }: { agentId: string }) {
               className={`${field} min-h-24`}
               value={draft.prompt}
               onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
-              placeholder="Summarise yesterday's bookings and note anything unusual."
+              placeholder="Summarize yesterday's bookings and note anything unusual."
             />
             <p className="mt-1 text-xs text-surface-500">
               Stored as the first message of a new conversation each time it runs. It is shown
