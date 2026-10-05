@@ -32,10 +32,14 @@ export default function SkillConnections({
   hosts,
   skillName,
   workspaceId,
+  testPath,
 }: {
   hosts: string[]
   skillName: string
   workspaceId: string
+  /** A path this skill's key is for, to test with. A generated skill offers
+   *  one of its own reads; the root of an API usually answers anybody. */
+  testPath?: string
 }) {
   const [rules, setRules] = useState<EgressRule[] | null>(null)
   const [credentials, setCredentials] = useState<Credential[]>([])
@@ -83,12 +87,15 @@ export default function SkillConnections({
       <ul className="mt-3 space-y-3">
         {shown.map((rule) => (
           <Connection
-            key={rule.id}
+            // Keyed on the suggestion too, so one that arrives after the list
+            // starts the test path there rather than empty.
+            key={`${rule.id}:${testPath ?? ''}`}
             rule={rule}
             credential={credentials.find((c) => c.id === rule.credential) ?? null}
             name={`${skillName} -- ${rule.host}`}
             workspaceId={workspaceId}
             onChanged={load}
+            testPath={testPath}
           />
         ))}
       </ul>
@@ -97,12 +104,31 @@ export default function SkillConnections({
 }
 
 /** One host's key: connect it, test it, replace it, take it off. */
+/** What a test proved, in words. Only a refusal without the key beside an
+ *  answer with it says the key works; a path that answers anybody says nothing. */
+function describeTest(t: Tested): string {
+  switch (t.verdict) {
+    case 'works':
+      return `Refused without the key (${t.without_key}) and answered with it (${t.status}): the key works.`
+    case 'not_needed':
+      return `This path answers without the key too (${t.status}), so it says nothing about the key. Test one the key is needed for.`
+    case 'refused':
+      return httpFailure(JSON.stringify({ status: t.status })) ?? `The server refused the key (${t.status}).`
+    default:
+      return (
+        (httpFailure(JSON.stringify({ status: t.status })) ?? `The server answered ${t.status}.`) +
+        (t.without_key !== null ? ` Without the key it answered ${t.without_key}.` : '')
+      )
+  }
+}
+
 export function Connection({
   rule,
   credential,
   name,
   workspaceId,
   onChanged,
+  testPath,
 }: {
   rule: EgressRule
   credential: Credential | null
@@ -110,6 +136,7 @@ export function Connection({
   name: string
   workspaceId: string
   onChanged: () => Promise<void>
+  testPath?: string
 }) {
   const connected = rule.credential !== null
   // Closed until asked for: plenty of hosts take no key at all, and a form
@@ -117,7 +144,7 @@ export function Connection({
   const [editing, setEditing] = useState(false)
   const [header, setHeader] = useState(rule.header ?? 'authorization')
   const [secret, setSecret] = useState('')
-  const [path, setPath] = useState('/')
+  const [path, setPath] = useState(testPath ?? '')
   const [busy, setBusy] = useState(false)
   const [tested, setTested] = useState<Tested | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -247,13 +274,14 @@ export function Connection({
                 aria-label="Test path"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
+                placeholder="a path the key is needed for, such as /api/items"
                 className="flex-1 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
               />
             </label>
             <button
               type="button"
               onClick={() => void test()}
-              disabled={busy}
+              disabled={busy || !path.trim()}
               className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
             >
               Test
@@ -262,19 +290,20 @@ export function Connection({
           {tested && (
             <p
               className={`flex items-center gap-1.5 text-xs ${
-                tested.ok ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'
+                tested.verdict === 'works'
+                  ? 'text-green-700 dark:text-green-400'
+                  : tested.verdict === 'refused'
+                    ? 'text-red-700 dark:text-red-400'
+                    : 'text-amber-700 dark:text-amber-400'
               }`}
               role="status"
             >
-              {tested.ok ? (
+              {tested.verdict === 'works' ? (
                 <CheckCircle2 size={12} aria-hidden />
               ) : (
                 <TriangleAlert size={12} aria-hidden />
               )}
-              {tested.ok
-                ? `The server answered ${tested.status}: the key works.`
-                : (httpFailure(JSON.stringify({ status: tested.status })) ??
-                  `The server answered ${tested.status}.`)}
+              {describeTest(tested)}
               {tested.fingerprint && (
                 <span
                   className="ml-1 font-mono text-surface-500 dark:text-surface-400"

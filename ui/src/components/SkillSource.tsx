@@ -36,6 +36,7 @@ export default function SkillSource({
   editable,
   onDerived,
   onPublished,
+  onOutline,
 }: {
   skillId: string
   /** Whether this person may change the operator's skills. */
@@ -44,6 +45,9 @@ export default function SkillSource({
    *  edit what would be overwritten. */
   onDerived: (derived: boolean) => void
   onPublished: () => void
+  /** Told what the specification offers, for whatever else on the page can
+   *  use it -- a path to test the key with, so far. */
+  onOutline?: (outline: Source['outline'], baseUrl: string | null) => void
 }) {
   const [source, setSource] = useState<Source | null>(null)
   const [proposal, setProposal] = useState<Regenerated | null>(null)
@@ -61,6 +65,7 @@ export default function SkillSource({
     const s = await getSource(skillId)
     setSource(s)
     onDerived(s !== null)
+    onOutline?.(s?.outline ?? null, s?.base_url ?? null)
   }
 
   useEffect(() => {

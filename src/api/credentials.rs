@@ -326,15 +326,46 @@ pub struct TestCall {
 }
 
 /// What the host said to one GET made with the credential.
+/// What a test proved about the key, from asking twice: once with it and once
+/// without. A 200 alone proves nothing -- plenty of paths answer anybody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Refused without the key and answered with it: the key is what let it in.
+    Works,
+    /// Answered without the key too, so this path says nothing about it.
+    NotNeeded,
+    /// Refused with the key.
+    Refused,
+    /// Anything else: an error, a redirect, or a path that does not exist.
+    Unclear,
+}
+
+/// What the host said to one GET made with the credential, and to the same GET
+/// made without it.
 #[derive(Debug, serde::Serialize)]
 pub struct Tested {
     pub url: String,
-    /// The host's own status: 200 means the key worked, 401 that it did not.
+    /// The host's status with the key attached.
     pub status: u16,
-    pub ok: bool,
+    /// The host's status to the same request without the key, when it could
+    /// be asked.
+    pub without_key: Option<u16>,
+    pub verdict: Verdict,
     /// The gateway's fingerprint of the key it sent. The same key always shows
     /// the same one; a different one means the key is not the one it was.
     pub fingerprint: Option<String>,
+}
+
+fn verdict(with_key: u16, without_key: Option<u16>) -> Verdict {
+    let refused = |s: u16| s == 401 || s == 403;
+    let fine = |s: u16| (200..300).contains(&s);
+    match (with_key, without_key) {
+        (k, _) if refused(k) => Verdict::Refused,
+        (k, Some(b)) if fine(k) && refused(b) => Verdict::Works,
+        (k, Some(b)) if fine(k) && fine(b) => Verdict::NotNeeded,
+        _ => Verdict::Unclear,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -344,9 +375,9 @@ struct Fetched {
     credential_fingerprint: Option<String>,
 }
 
-/// Makes one GET through the gateway with the credential attached, exactly as
-/// a turn would -- the same rule, the same commitment, the same checks -- and
-/// says what the host answered.
+/// Makes a GET through the gateway with the credential attached, exactly as a
+/// turn would -- the same rule, the same commitment, the same checks -- and the
+/// same GET without it, and says what the pair proves about the key.
 ///
 /// So a wrong key is a red 401 here, while somebody is setting it up, rather
 /// than an agent apologizing for it later. Only the status comes back: the
@@ -359,7 +390,9 @@ pub async fn test(
     Json(input): Json<TestCall>,
 ) -> Result<Json<Tested>, ApiError> {
     let claims = authorize(&state, &headers, Authority::CredentialsWrite).await?;
-    let path = input.path.unwrap_or_else(|| "/".into());
+    // No default: the root of an API usually answers anybody, so testing it
+    // proves nothing about a key. The caller names a path the key is for.
+    let path = input.path.unwrap_or_default();
     if !path.starts_with('/') || path.starts_with("//") {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -384,6 +417,35 @@ pub async fn test(
             "no egress rule sends this credential yet, so there is nothing to test".to_string(),
         ))?;
     let url = format!("https://{}{path}", rule.host);
+    // The same request with the credential taken off the rule, which is the
+    // control: what the host says to somebody without the key.
+    let mut bare = rule.clone();
+    bare.credential = None;
+    bare.credential_env = None;
+    bare.header = None;
+
+    let keyed = fetch(&state, &claims, &gateway, &url, rule).await?;
+    let without_key = fetch(&state, &claims, &gateway, &url, bare)
+        .await
+        .ok()
+        .map(|f| f.status);
+    Ok(Json(Tested {
+        verdict: verdict(keyed.status, without_key),
+        url,
+        status: keyed.status,
+        without_key,
+        fingerprint: keyed.credential_fingerprint,
+    }))
+}
+
+/// One GET through the gateway under exactly one rule, as a turn would make it.
+async fn fetch(
+    state: &ApiState,
+    claims: &crate::auth::SessionClaims,
+    gateway: &str,
+    url: &str,
+    rule: crate::runtime::egress::EgressRule,
+) -> Result<Fetched, ApiError> {
     let rules = vec![rule];
     let gates = crate::egress::gate::Gates::none();
     let token = state
@@ -417,16 +479,43 @@ pub async fn test(
         let detail = response.text().await.unwrap_or_default();
         return Err((StatusCode::UNPROCESSABLE_ENTITY, detail));
     }
-    let fetched: Fetched = response.json().await.map_err(|e| {
+    response.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("the gateway's answer was unreadable: {e}"),
         )
-    })?;
-    Ok(Json(Tested {
-        url,
-        status: fetched.status,
-        ok: (200..300).contains(&fetched.status),
-        fingerprint: fetched.credential_fingerprint,
-    }))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Verdict, verdict};
+
+    /// Only a refusal without the key and an answer with it proves the key.
+    #[test]
+    fn a_key_works_only_when_the_same_request_without_it_is_refused() {
+        assert_eq!(verdict(200, Some(401)), Verdict::Works);
+        assert_eq!(verdict(204, Some(403)), Verdict::Works);
+    }
+
+    /// The case that used to read as success: a path that answers anybody.
+    #[test]
+    fn a_path_that_answers_without_the_key_says_nothing_about_it() {
+        assert_eq!(verdict(200, Some(200)), Verdict::NotNeeded);
+    }
+
+    #[test]
+    fn a_refusal_with_the_key_is_a_refusal_whatever_the_control_said() {
+        assert_eq!(verdict(401, Some(401)), Verdict::Refused);
+        assert_eq!(verdict(403, None), Verdict::Refused);
+    }
+
+    /// A success with no control to compare it against is not proof either.
+    #[test]
+    fn anything_else_is_unclear() {
+        assert_eq!(verdict(200, None), Verdict::Unclear);
+        assert_eq!(verdict(404, Some(404)), Verdict::Unclear);
+        assert_eq!(verdict(500, Some(401)), Verdict::Unclear);
+        assert_eq!(verdict(200, Some(404)), Verdict::Unclear);
+    }
 }

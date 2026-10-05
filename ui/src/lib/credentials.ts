@@ -23,10 +23,16 @@ export type Credential = {
   revoked_at: string | null
 }
 
-/** What one test GET came back with. `fingerprint` names the key the gateway
- *  sent, computed by the gateway alone: the same key always shows the same
- *  one, so a key swapped underneath its owner is seen. */
-export type Tested = { url: string; status: number; ok: boolean; fingerprint: string | null }
+/** What a test proved about a key, from the same GET made with it and without.
+ *  `fingerprint` names the key the gateway sent, computed by the gateway
+ *  alone: the same key always shows the same one. */
+export type Tested = {
+  url: string
+  status: number
+  without_key: number | null
+  verdict: 'works' | 'not_needed' | 'refused' | 'unclear'
+  fingerprint: string | null
+}
 
 export const listRules = () => allPages<EgressRule>('/v1/egress-rules')
 export const listCredentials = () => allPages<Credential>('/v1/credentials')
