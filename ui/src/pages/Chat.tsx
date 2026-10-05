@@ -524,6 +524,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
         )}
         {active && current && (
           <PromptBanner
+            key={active}
             sessionId={active}
             agentId={current.agent_id}
             compacting={compacting}
