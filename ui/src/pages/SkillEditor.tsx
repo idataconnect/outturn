@@ -17,6 +17,7 @@ import {
   readVersionFile,
   versionDrafts,
   retireSkill,
+  deleteSkill,
   slugify,
   updateSkill,
   type DraftFile,
@@ -292,6 +293,16 @@ export default function SkillEditor() {
       setSkill(await retireSkill(skill.id, retiring, operators))
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to retire')
+    }
+  }
+
+  async function onDelete() {
+    if (!skill || !window.confirm(`Delete ${skill.name} for good? This cannot be undone.`)) return
+    try {
+      await deleteSkill(skill.id, operators)
+      navigate('/skills')
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to delete')
     }
   }
 
@@ -582,6 +593,15 @@ export default function SkillEditor() {
                 className="ml-auto px-3 py-2 rounded-md text-sm text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800"
               >
                 {skill?.retired_at ? 'Reactivate' : 'Retire'}
+              </button>
+            )}
+            {!creating && editable && skill?.retired_at && (
+              <button
+                type="button"
+                onClick={() => void onDelete()}
+                className="px-3 py-2 rounded-md text-sm text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
+              >
+                Delete
               </button>
             )}
           </div>

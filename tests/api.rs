@@ -9964,3 +9964,165 @@ async fn a_derived_skill_keeps_its_annotations_across_a_new_specification() {
     let removed = regenerate(serde_json::json!({"publish": true, "remove_gates": true})).await;
     assert_eq!(removed["version"]["ordinal"], 4, "{removed}");
 }
+
+/// A skill generated before specifications were kept, then gated by hand, keeps
+/// its gate when it is adopted: the rule becomes an annotation rather than
+/// being regenerated away. And a later base_url sent alone keeps the header.
+#[tokio::test]
+async fn adopting_a_hand_gated_skill_keeps_its_gate_and_its_header() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let gate = "approval:\n  requires: invoice\n  matches: POST /invoices\n  binds: [customer_id]";
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            &serde_json::json!({"slug": "books", "name": "Books", "body": "Books.",
+                "hosts": ["books.example.com"],
+                "files": [{"path": "create_invoice.md",
+                    "content": format!("---\n{gate}\n---\n\n# create_invoice\n")}]})
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let spec = serde_json::json!({"openapi": "3.0.0", "info": {"title": "Books", "version": "1"},
+        "paths": {"/invoices": {"post": {"operationId": "createInvoice", "summary": "Create",
+            "responses": {"201": {"description": "ok"}}}}}});
+    let regenerate = |r: serde_json::Value| {
+        let h = &h;
+        let operator = &operator;
+        let id = id.clone();
+        async move {
+            let (status, body) = h
+                .post(
+                    &format!("/v1/platform/skills/{id}/regenerate"),
+                    Some(operator),
+                    &r.to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()
+        }
+    };
+    let adopted = regenerate(
+        serde_json::json!({"spec": spec, "base_url": "https://books.example.com",
+        "auth_header": "Authorization", "publish": true}),
+    )
+    .await;
+    assert_eq!(adopted["lost_gates"], serde_json::json!([]), "{adopted}");
+    assert_eq!(adopted["version"]["ordinal"], 2, "{adopted}");
+
+    let source = || {
+        let h = &h;
+        let operator = operator.clone();
+        let id = id.clone();
+        async move {
+            let (_, body) = h
+                .get(&format!("/v1/skills/{id}/source"), Some(&operator))
+                .await;
+            serde_json::from_str::<Value>(&body).unwrap()
+        }
+    };
+    let kept = source().await;
+    let annotations = kept["annotations"].as_array().unwrap();
+    assert_eq!(annotations.len(), 1, "{kept}");
+    assert_eq!(annotations[0]["target"], "create_invoice");
+    assert_eq!(annotations[0]["value"], gate);
+
+    // The base_url again, without the header: the stored one stays.
+    regenerate(serde_json::json!({"spec": spec, "base_url": "https://books.example.com/"})).await;
+    assert_eq!(source().await["auth_header"], "Authorization");
+}
+
+/// An operator's skill nothing has used can be deleted; one given to an agent
+/// is kept, since deleting it would quietly unbind it.
+#[tokio::test]
+async fn an_unused_platform_skill_can_be_deleted_and_a_bound_one_cannot() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let make = |slug: &'static str| {
+        let h = &h;
+        let operator = &operator;
+        async move {
+            let (status, body) = h
+                .post(
+                    "/v1/platform/skills",
+                    Some(operator),
+                    &serde_json::json!({"slug": slug, "name": slug, "body": "x"}).to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let delete = |id: String, token: String| {
+        let h = &h;
+        async move {
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/platform/skills/{id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request");
+            h.send(req).await
+        }
+    };
+
+    let unused = make("unused").await;
+    let (status, _) = delete(unused.clone(), admin.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "only the operator");
+    let (status, body) = delete(unused.clone(), operator.clone()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _) = delete(unused, operator.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let bound = make("bound").await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"Desk","slug":"desk"}"#,
+        )
+        .await;
+    let agent_id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{bound}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = delete(bound, operator).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("retire it instead"), "{body}");
+}

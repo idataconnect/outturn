@@ -734,6 +734,21 @@ pub async fn add_platform_version(
 /// Withdrawing an operator's skill leaves every workspace already using it
 /// working, which is the point of retiring rather than deleting: a delete would
 /// be refused anyway by any override standing on it.
+/// Deletes one of the operator's skills that nothing has used: never given to
+/// an agent, never run in a turn. Anything else is retired, which keeps its
+/// history.
+pub async fn delete_platform_skill(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    let workspace = as_operator(&claims)?;
+    state.skills.delete(workspace, id).await?;
+    tracing::info!(actor = %claims.subject, skill_id = %id, "platform skill deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn retire_platform_skill(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

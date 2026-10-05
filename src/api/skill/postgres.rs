@@ -811,14 +811,37 @@ impl SkillStore for PostgresSkillStore {
     }
 
     async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), SkillError> {
-        let done = sqlx::query("delete from skills where workspace_id = $1 and id = $2")
+        // Bindings and turn history cascade from a skill, so a plain delete
+        // would quietly take a skill away from agents using it and erase which
+        // turns ran with it. Either is a reason to retire it instead.
+        let done = sqlx::query(
+            "delete from skills s where s.workspace_id = $1 and s.id = $2 \
+             and not exists (select 1 from agent_skills a where a.skill_id = s.id) \
+             and not exists (select 1 from turn_skills t where t.skill_id = s.id)",
+        )
+        .bind(workspace_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_write_error(e, ""))?;
+        if done.rows_affected() == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "select exists (select 1 from skills where workspace_id = $1 and id = $2)",
+            )
             .bind(workspace_id)
             .bind(id)
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await
-            .map_err(|e| map_write_error(e, ""))?;
-        if done.rows_affected() == 0 {
-            return Err(SkillError::NotFound);
+            .map_err(internal)?;
+            return Err(if exists {
+                SkillError::Invalid(
+                    "this skill is given to an agent or has run in a turn, so it is kept; \
+                     retire it instead"
+                        .into(),
+                )
+            } else {
+                SkillError::NotFound
+            });
         }
         Ok(())
     }
