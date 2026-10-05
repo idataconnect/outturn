@@ -72,7 +72,7 @@ So compaction runs with hysteresis. When a session crosses its budget it is cut
 to a mark well below it, in one step, and then left alone until it crosses
 again. Each compaction costs one miss rather than one per turn, and the
 compacted-history breakpoint stays good between them. The order of sacrifice
-in AGENTS.md is unchanged; it is the batching that is new.
+in [compaction.md](compaction.md) is unchanged; it is the batching that is new.
 
 Summarizing completed turns' tool results fits the same rule. Done once, when
 the turn has finished, it is a single miss, after which every turn caches and

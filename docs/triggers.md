@@ -63,7 +63,7 @@ A shared session is the wrong fix for "the agent should remember last week".
 What that wants is something durable and narrow, and the shape of it is not
 settled -- an agent writing notes for its future self is a judgment about what
 mattered, which is nearer to carry-over than to user-declared memory, and
-AGENTS.md is explicit that those must not share a store. It is also, as much as
+[compaction.md](compaction.md) is explicit that those must not share a store. It is also, as much as
 anything, an evaluation problem: knowing what was worth keeping means knowing
 what went wrong without it. Left out of this design on purpose.
 
@@ -89,7 +89,7 @@ Three shapes, and they fail differently:
 - **A cycle**: an agent's action causes an event that triggers the agent.
 
 There is no per-workspace fairness in the queue, so one workspace's runaway is
-everyone's. That is stated in AGENTS.md as an accepted risk for human traffic,
+everyone's. That is stated in [design-notes.md](design-notes.md#direction) as an accepted risk for human traffic,
 where a burst is bounded by how fast people type. A trigger is not bounded by
 anything.
 

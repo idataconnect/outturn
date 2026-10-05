@@ -566,7 +566,7 @@ weekly in a fresh session each time cannot learn anything, and the fix is not a
 long-lived session. What it wants is narrow and durable, and the shape is
 unsettled: an agent writing notes for its future self is a judgment about what
 mattered, which is nearer compaction carry-over than user-declared memory, and
-AGENTS.md is explicit that those must not share a store. It is also partly an
+[compaction.md](compaction.md) is explicit that those must not share a store. It is also partly an
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
 
@@ -662,7 +662,7 @@ somebody reads in one sitting.
 
 Recorded so their absence is deliberate.
 
-**Compaction carry-over.** Designed in AGENTS.md under Compaction. Independent
+**Compaction carry-over.** Designed in [compaction.md](compaction.md). Independent
 of everything here, and the trim beneath it already guarantees a turn never
 fails for context.
 
@@ -673,5 +673,5 @@ for does not need one. The row-level authorization it would require is not on
 this path.
 
 **Redis caching, OpenTelemetry, per-workspace usage attribution, workflows as
-scripted tasks in sub-sessions.** AGENTS.md lists these as intended. None
+scripted tasks in sub-sessions.** [design-notes.md](design-notes.md#direction) lists these as intended. None
 blocks anything above.

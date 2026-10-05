@@ -21,7 +21,7 @@ unwritten rules:
 Each of those answers the same questions differently or not at all: who may
 add it, what it may override, how much of the budget it may spend, whether it
 is the same for everybody on that agent or different per person, which turns
-it reaches, and how anybody later knows it was there. AGENTS.md already found
+it reaches, and how anybody later knows it was there. [compaction.md](compaction.md) already found
 the cost of not asking -- the system prompt was not counted against
 `context_budget` until ten long skills overflowed a turn with nothing to say
 why. A contributor is the answer to all of those questions, asked once.

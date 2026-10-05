@@ -122,7 +122,7 @@ export function niceMax(value: number): number {
  * The ledger's column is a closed vocabulary -- `reported`, `reported_partial`,
  * `estimated`, `unknown` -- constrained in the schema and enumerated in Rust.
  * This is a fourth place it is written down, which is exactly the hazard
- * AGENTS.md describes: a fifth value added to the constraint would be counted
+ * docs/invariants.md describes: a fifth value added to the constraint would be counted
  * here as measured by default, silently, which is the one thing the column
  * exists to prevent.
  *
@@ -190,7 +190,7 @@ export const CACHE_READ = { key: 'cache_read_tokens', label: 'Cache read' } as c
  * The one list anything covering *all* of them reads -- the page's total, and
  * the table that stands in for this chart. They were written out separately
  * once and the table lost a column: it claimed to carry every figure the chart
- * encodes while silently omitting cache writes, which is the failure AGENTS.md
+ * encodes while silently omitting cache writes, which is the failure docs/invariants.md
  * describes under "a job state is enumerated in more places than the schema".
  * A sixth kind now reaches all three by being added here.
  */
