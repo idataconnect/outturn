@@ -185,6 +185,9 @@ async fn main() {
     // returned to the queue by this rather than by the pod that vanished.
     Arc::clone(&worker).spawn_reaper(health.shutdown_signal());
 
+    // Compactions somebody asked for, queued behind the session's turns.
+    outturn::api::compact::spawn(pool.clone(), Arc::clone(&worker), health.shutdown_signal());
+
     // Turns that start because the clock said so. Runs in this tier rather
     // than the runtime, because it creates work rather than doing it -- and it
     // is safe in more than one pod: a due schedule is taken with `for update

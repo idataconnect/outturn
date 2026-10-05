@@ -71,6 +71,7 @@ vi.mock('../components/Thread', () => ({
   },
 }))
 vi.mock('../components/SidePane', () => ({ default: () => <div>pane</div> }))
+vi.mock('../components/PromptBanner', () => ({ default: () => null }))
 
 const signedIn: SessionState = {
   status: 'authenticated',

@@ -4,6 +4,7 @@ pub mod agent;
 mod agents;
 pub mod approvals;
 pub mod chat;
+pub mod compact;
 mod credentials;
 pub mod egress;
 mod events;

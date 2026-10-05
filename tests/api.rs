@@ -10247,6 +10247,73 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
     assert!(fresh.contains("Say two."), "{fresh}");
     assert_ne!(v2, v1);
 
+    // The running conversation says it is behind, and which skill.
+    let (_, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{running}/prompt"),
+            Some(&admin),
+        )
+        .await;
+    let status = json(&body);
+    assert_eq!(status["current"], false, "{status}");
+    assert_eq!(status["skills"][0]["kept"], 1, "{status}");
+    assert_eq!(status["skills"][0]["live"], 2, "{status}");
+
+    // Compacting on request takes the new version up. Run the way the API
+    // runs it: queued, then claimed by its own loop.
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-sessions/{running}/compact"),
+            Some(&admin),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let worker = outturn::api::worker::Worker {
+        pool: h.db.pool.clone(),
+        agents: h.agents.clone(),
+        skills: h.skills.clone(),
+        chat: Arc::new(PostgresChatStore::new(h.db.pool.clone())),
+        usage: Arc::new(outturn::api::usage::PostgresUsageStore::new(
+            h.db.pool.clone(),
+        )),
+        settings: Arc::new(outturn::api::settings::PostgresSettingsStore::new(
+            h.db.pool.clone(),
+        )),
+        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+            h.db.pool.clone(),
+        )),
+        minter: None,
+        gateway_url: None,
+    };
+    let claimed = outturn::jobs::claim(
+        &h.db.pool,
+        &[outturn::api::compact::COMPACT],
+        1,
+        outturn::jobs::DEFAULT_LEASE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(claimed.len(), 1);
+    worker
+        .compact(acme, running.parse().unwrap())
+        .await
+        .expect("compact");
+    let job = &claimed[0].job;
+    outturn::jobs::complete(&h.db.pool, job.id, job.lease_token)
+        .await
+        .unwrap();
+    let (_, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{running}/prompt"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(json(&body)["current"], true, "{body}");
+    let (after, version) = turn(running.clone()).await;
+    assert!(after.contains("Say two."), "{after}");
+    assert_eq!(version, v2);
+
     // Another model composes again: the preamble names it.
     let req = Request::builder()
         .method("PATCH")

@@ -592,6 +592,11 @@ export function useChatRuntime(
    *  otherwise would leave the composer offering to stop something already
    *  stopping. */
   const [stopping, setStopping] = useState(false)
+  /** A summary is being written, between `chat.compacting` and
+   *  `chat.compacted`. */
+  const [compacting, setCompacting] = useState(false)
+  /** Compactions seen, so what depends on the kept prompt can ask again. */
+  const [compactions, setCompactions] = useState(0)
   const [error, setError] = useState<string | null>(null)
   /** Why this conversation is not running, when something is holding it.
    *  Separate from `error` because a hold is not a failure: the turn was not
@@ -724,6 +729,18 @@ export function useChatRuntime(
               .filter((e) => e.kind === 'chat.message')
               .map((e) => e.payload as Message),
           )
+
+          // Compacting, and compacted. The summary is stored without an event
+          // of its own, so the transcript is read again once it lands. The
+          // snapshot carries its own cursor and already holds everything this
+          // batch says, so the rest of the batch is skipped, not replayed.
+          if (result.events.some((e) => e.kind === 'chat.compacting')) setCompacting(true)
+          if (result.events.some((e) => e.kind === 'chat.compacted')) {
+            setCompacting(false)
+            setCompactions((n) => n + 1)
+            cursor = await reload()
+            continue
+          }
 
           // Asleep, and awake again. The note it wakes to is the one thing both
           // ways of waking write, so it is what clears the banner -- in every
@@ -1345,7 +1362,29 @@ export function useChatRuntime(
   })
 
   return useMemo(
-    () => ({ runtime, error, held, isRunning, stopping, retry, clearHeld, dismissError }),
-    [runtime, error, held, isRunning, stopping, retry, clearHeld, dismissError],
+    () => ({
+      runtime,
+      error,
+      held,
+      isRunning,
+      stopping,
+      compacting,
+      compactions,
+      retry,
+      clearHeld,
+      dismissError,
+    }),
+    [
+      runtime,
+      error,
+      held,
+      isRunning,
+      stopping,
+      compacting,
+      compactions,
+      retry,
+      clearHeld,
+      dismissError,
+    ],
   )
 }

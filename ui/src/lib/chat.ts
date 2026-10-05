@@ -267,6 +267,10 @@ export type ChatEvent =
       kind: 'chat.requeued'
       payload: { message_id: string; job_id: string }
     }
+  /** A summary of the conversation is being written; `chat.compacted` follows,
+   *  saying whether one was. The system prompt is composed again either way. */
+  | { id: string; kind: 'chat.compacting'; payload: Record<string, never> }
+  | { id: string; kind: 'chat.compacted'; payload: { summarised: boolean } }
   /** The session was named, by a person or by the namer after its first turn. */
   | { id: string; kind: 'session.renamed'; payload: { title: string } }
 
@@ -386,6 +390,24 @@ export type Cancelled = {
  */
 export const cancelTurn = (sessionId: string) =>
   api<Cancelled>(`/v1/agent-sessions/${sessionId}/cancel`, { method: 'POST' })
+
+/** A skill whose version moved on since the conversation's prompt was
+ *  composed. `kept` is null for one added since, `live` for one removed. */
+export type StaleSkill = { name: string; kept: number | null; live: number | null }
+
+/** Whether a conversation's kept system prompt is what would be composed now. */
+export type PromptStatus = {
+  composed_at: string | null
+  current: boolean
+  skills: StaleSkill[]
+}
+
+export const getPromptStatus = (sessionId: string) =>
+  api<PromptStatus>(`/v1/agent-sessions/${sessionId}/prompt`)
+
+/** Queues a compaction, which composes the prompt again from what is live. */
+export const compactSession = (sessionId: string) =>
+  api<void>(`/v1/agent-sessions/${sessionId}/compact`, { method: 'POST' })
 
 /**
  * Ends the agent's sleep now.
