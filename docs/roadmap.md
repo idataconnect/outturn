@@ -599,6 +599,26 @@ it, the tool answers as today. Waits for a skill that needs it; it changes the
 agent component, so the committed `agent_default.wasm` and its bindings are
 rebuilt with it.
 
+### Terms: third-party models
+
+Not code. Customers should be told that the models their agents use belong
+to someone else, whose terms apply too -- and outturn has a wrinkle a generic
+clause misses: a workspace may use the operator's provider keys or bring its
+own ([routing.md](routing.md)), and the clause has to cover both. Linked from
+the site and from workspace sign-up, and read by a lawyer before it is relied
+on. The wording to start from, as agreed:
+
+> **Third-party AI models.** Agents on this platform use AI models provided by
+> third parties such as Anthropic, Google and OpenAI. Your use of those models
+> through the platform is subject to the provider's terms and usage policies,
+> as well as ours. Where you connect your own provider account or key, your
+> agreement with that provider governs that use directly. We may suspend
+> activity that would breach a provider's policies.
+
+Each provider's usage policy is linked by name rather than paraphrased, since
+those change. The last sentence is the one the platform can already keep: a
+workspace can be held ([inhibitors.md](inhibitors.md)).
+
 ## Known costs, left until they matter
 
 Found by a read-only audit of what each list query loads, and narrowed since;
