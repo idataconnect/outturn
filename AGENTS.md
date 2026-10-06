@@ -259,4 +259,5 @@ are near before changing it.
   [personalities.md](docs/personalities.md),
   [admin-agent.md](docs/admin-agent.md).
 - Storage and search: [storage.md](docs/storage.md),
+  [streaming-storage.md](docs/streaming-storage.md),
   [session-search.md](docs/session-search.md), [vision.md](docs/vision.md).
