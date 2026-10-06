@@ -640,6 +640,53 @@ async fn the_host_refuses_past_the_limit_whatever_the_guest_intends() {
     );
 }
 
+/// A guest that runs out of fuel is told apart from one that merely failed.
+///
+/// The difference decides whether the turn is retried. Fuel is spent by
+/// executing the guest, so the same input runs out again -- and a retry pays
+/// once more for every model call made before the trap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn running_out_of_fuel_is_recognized_as_such() {
+    let gateway = FakeGateway::start(Behavior::Reply("unused".into())).await;
+
+    let mut options = options(&gateway, None);
+    options.fuel = 1_000;
+    let error = runner()
+        .run(&component(), user("hello"), String::new(), options)
+        .await
+        .expect_err("a thousand units of fuel is not enough to start a turn");
+
+    assert!(
+        error.out_of_fuel(),
+        "a fuel trap read as an ordinary failure, so it would be retried: {error}"
+    );
+}
+
+/// And a failure that is not fuel is not mistaken for it, so it is retried.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ordinary_failure_is_not_taken_for_running_out_of_fuel() {
+    let gateway = FakeGateway::start(Behavior::Status(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "broken".into(),
+    ))
+    .await;
+
+    let error = runner()
+        .run(
+            &component(),
+            user("hello"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect_err("a failing gateway fails the turn");
+
+    assert!(
+        !error.out_of_fuel(),
+        "a provider failure read as a fuel trap, so it would never be retried: {error}"
+    );
+}
+
 /// Tool calls from a truncated reply are refused, not executed.
 ///
 /// A "length" finish means the output was cut off at the token limit, so the
@@ -1736,10 +1783,7 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
         .await
         .expect("seed");
     store
-        .write(
-            &scope::resolve(&space, "session/notes.txt").unwrap(),
-            b"y",
-        )
+        .write(&scope::resolve(&space, "session/notes.txt").unwrap(), b"y")
         .await
         .expect("seed");
 
@@ -2348,17 +2392,29 @@ async fn render_pdf_stores_a_pdf_at_the_path_named() {
     };
 
     runner()
-        .run(&component(), user("Make the report."), String::new(), options)
+        .run(
+            &component(),
+            user("Make the report."),
+            String::new(),
+            options,
+        )
         .await
         .expect("run");
 
     let pdf = store
-        .read(&scope::resolve(&space, "session/report.pdf").unwrap(), 0, u32::MAX)
+        .read(
+            &scope::resolve(&space, "session/report.pdf").unwrap(),
+            0,
+            u32::MAX,
+        )
         .await
         .expect("the PDF was stored");
     assert!(pdf.starts_with(b"%PDF"), "not a PDF");
     let result = first_tool_result(&gateway);
-    assert!(result.contains(&format!("\"bytes\":{}", pdf.len())), "{result}");
+    assert!(
+        result.contains(&format!("\"bytes\":{}", pdf.len())),
+        "{result}"
+    );
 }
 
 /// A model can store a small binary file byte for byte.
@@ -2388,7 +2444,11 @@ async fn write_object_stores_base64_as_the_bytes_it_encodes() {
         .expect("run");
 
     let stored = store
-        .read(&scope::resolve(&space, "session/icon.bin").unwrap(), 0, u32::MAX)
+        .read(
+            &scope::resolve(&space, "session/icon.bin").unwrap(),
+            0,
+            u32::MAX,
+        )
         .await
         .expect("stored");
     assert_eq!(stored, b"\x89PNG\r\n\x1a\n\0");
@@ -2402,7 +2462,8 @@ async fn create_archive_streams_its_inputs_into_one_zip() {
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "create_archive".into(),
-        arguments: r#"{"prefix":"session/in/","path":"session/out.zip","action":"Archiving"}"#.into(),
+        arguments: r#"{"prefix":"session/in/","path":"session/out.zip","action":"Archiving"}"#
+            .into(),
         reply: "Archived.".into(),
     })
     .await;
@@ -2413,7 +2474,10 @@ async fn create_archive_streams_its_inputs_into_one_zip() {
         agent_id: options.agent_id,
         session_id: options.session_id,
     };
-    for (name, body) in [("session/in/a.txt", &b"alpha"[..]), ("session/in/sub/b.bin", &[0u8, 1, 2][..])] {
+    for (name, body) in [
+        ("session/in/a.txt", &b"alpha"[..]),
+        ("session/in/sub/b.bin", &[0u8, 1, 2][..]),
+    ] {
         store
             .write(&scope::resolve(&space, name).unwrap(), body)
             .await
@@ -2426,7 +2490,11 @@ async fn create_archive_streams_its_inputs_into_one_zip() {
         .expect("run");
 
     let zip = store
-        .read(&scope::resolve(&space, "session/out.zip").unwrap(), 0, u32::MAX)
+        .read(
+            &scope::resolve(&space, "session/out.zip").unwrap(),
+            0,
+            u32::MAX,
+        )
         .await
         .expect("the archive was stored");
     assert!(zip.starts_with(b"PK\x03\x04"), "not a zip");

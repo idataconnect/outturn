@@ -21,7 +21,9 @@ async fn store() -> S3Storage {
 
 /// Not a repeating pattern, so a part sent twice or out of order shows.
 fn bytes(n: usize) -> Vec<u8> {
-    (0..n).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect()
+    (0..n)
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect()
 }
 
 async fn read_all(s: &S3Storage, path: &str) -> Vec<u8> {
