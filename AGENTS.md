@@ -46,7 +46,7 @@ scripts/dev-secrets.sh --print   # the seeded admin@outturn.local password
 ```
 
 - Build and deploy go in **one** request; a lone deploy can softlock skaffold.
-- Skaffold forwards 18080 (api), 18081 (gateway), 18082 (runtime) and 15432
+- Skaffold forwards 18080 (api), 18081 (gateway), 18082 (runtime), 19000 (minio) and 15432
   (postgres). **Never start your own `kubectl port-forward`**: it won't
   reconnect and pushes skaffold onto other ports.
 - Keep the API at `/v1` behind the proxy; a prefix breaks session refresh,
@@ -99,6 +99,7 @@ that can be caught by additional tests:
 ```bash
 TEST_DATABASE_URL='postgres://outturn:outturn-dev@localhost:15432/outturn_test' \
 GATEWAY_URL=http://localhost:18081 \
+TEST_S3_URL=http://localhost:19000 \
 cargo test --features integration-tests
 ```
 

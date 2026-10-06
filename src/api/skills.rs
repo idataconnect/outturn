@@ -36,7 +36,7 @@ async fn store_files(
     let store = storage(state)?;
     for (file, bytes) in &prepared {
         store
-            .write(&blob_key(owner, &file.sha256), 0, bytes)
+            .write(&blob_key(owner, &file.sha256), bytes)
             .await
             .map_err(storage_failed)?;
     }
@@ -327,7 +327,7 @@ pub async fn fork_skill(
                 .await
                 .map_err(storage_failed)?;
             store
-                .write(&blob_key(claims.workspace_id, &f.sha256), 0, &bytes)
+                .write(&blob_key(claims.workspace_id, &f.sha256), &bytes)
                 .await
                 .map_err(storage_failed)?;
         }

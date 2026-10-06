@@ -16,7 +16,16 @@ pub struct FileMetadata {
 pub trait StorageBackend: Send + Sync {
     async fn read(&self, path: &str, offset: u64, len: u32) -> Result<Vec<u8>, StorageError>;
 
-    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, StorageError>;
+    /// Writes a whole object, replacing whatever was there.
+    async fn write(&self, path: &str, data: &[u8]) -> Result<u64, StorageError>;
+
+    /// Opens an object to be written in pieces. Nothing appears at the path
+    /// until the writer finishes, and a writer dropped unfinished leaves
+    /// whatever was there before (see docs/streaming-storage.md).
+    async fn open_writer(&self, path: &str) -> Result<Box<dyn ObjectWriter>, StorageError>;
+
+    /// Opens an object to be read from the front, in pieces, over one request.
+    async fn open_reader(&self, path: &str) -> Result<Box<dyn ObjectReader>, StorageError>;
 
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError>;
 
@@ -48,6 +57,24 @@ pub trait StorageBackend: Send + Sync {
     }
 
     async fn delete(&self, path: &str) -> Result<(), StorageError>;
+}
+
+/// An object being written. See `StorageBackend::open_writer`.
+#[async_trait]
+pub trait ObjectWriter: Send {
+    /// Appends.
+    async fn write(&mut self, chunk: &[u8]) -> Result<(), StorageError>;
+
+    /// Completes the object and says how large it is. Only after this does
+    /// anything exist at the path.
+    async fn finish(self: Box<Self>) -> Result<u64, StorageError>;
+}
+
+/// An object being read. See `StorageBackend::open_reader`.
+#[async_trait]
+pub trait ObjectReader: Send {
+    /// Up to `max` bytes; empty once the object is exhausted.
+    async fn read(&mut self, max: usize) -> Result<Vec<u8>, StorageError>;
 }
 
 /// Why a storage call did not do what was asked.

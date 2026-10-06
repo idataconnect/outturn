@@ -270,7 +270,7 @@ pub fn spawn(
                                         serde_json::from_value::<ExtractPayload>(job.payload.clone())
                                     {
                                         let _ = storage
-                                            .write(&failed_key(&payload.key), 0, e.as_bytes())
+                                            .write(&failed_key(&payload.key), e.as_bytes())
                                             .await;
                                     }
                                 jobs::fail(
@@ -331,7 +331,7 @@ async fn run_one(
     // never be ready.
     let key = text_key(&payload.key);
     storage
-        .write(&key, 0, trimmed.as_bytes())
+        .write(&key, trimmed.as_bytes())
         .await
         .map_err(|e| format!("storing text: {e}"))?;
     Ok(trimmed.len())

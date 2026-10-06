@@ -60,6 +60,12 @@ portForward:
     resourceName: postgres
     port: 5432
     localPort: 15432
+  # For tests/storage_s3.rs, which needs a real bucket: multipart is the
+  # part of S3 that an in-memory fake cannot vouch for.
+  - resourceType: service
+    resourceName: minio
+    port: 9000
+    localPort: 19000
 
 profiles:
   # What scripts/dev.sh and scripts/dev-mac.sh deploy. The overlay is written
