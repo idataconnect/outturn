@@ -217,7 +217,9 @@ export type ChatEvent =
   | {
       id: string
       kind: 'chat.writing'
-      payload: { message_id: string; index: number; name: string }
+      /** `bytes` is how much of the call's arguments are written; zero, or
+       *  absent from an older runtime, when the call has only begun. */
+      payload: { message_id: string; index: number; name: string; bytes?: number }
     }
   /** That tool finished, with what it produced. */
   | {

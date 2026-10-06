@@ -2318,8 +2318,10 @@ async fn a_call_being_written_is_said_before_it_starts() {
     let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let writing = {
         let log = Arc::clone(&log);
-        Arc::new(move |index: u32, name: &str| {
-            log.lock().unwrap().push(format!("writing {index} {name}"));
+        Arc::new(move |index: u32, name: &str, bytes: u64| {
+            log.lock()
+                .unwrap()
+                .push(format!("writing {index} {name} {bytes}"));
         }) as outturn::runtime::component::WritingSink
     };
     let on_tool = {
@@ -2348,11 +2350,13 @@ async fn a_call_being_written_is_said_before_it_starts() {
         .await
         .expect("run");
 
-    // Arguments arrive seven bytes at a time; the name is said once, first.
+    // Arguments arrive seven bytes at a time; the name is said once, first,
+    // with nothing written yet. Progress after it is a second apart, and this
+    // call is written in less.
     assert_eq!(
         *log.lock().unwrap(),
         vec![
-            "writing 0 get_current_time".to_string(),
+            "writing 0 get_current_time 0".to_string(),
             "started get_current_time".to_string(),
         ]
     );

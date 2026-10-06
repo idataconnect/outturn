@@ -524,7 +524,20 @@ function withoutPreparing(m: Message): Message {
  * of date. Listed by name rather than inferred, since a tool that only reads a
  * file finishing says nothing changed.
  */
-const FILE_TOOLS = new Set(['write_object', 'delete_object', 'expand_archive', 'create_archive'])
+const FILE_TOOLS = new Set([
+  'write_object',
+  'delete_object',
+  'expand_archive',
+  'create_archive',
+  'render_pdf',
+])
+
+/** How much of a call has been written, as a person reads a size. */
+function writtenSoFar(bytes: number, since: number): string {
+  const size = bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(1)} KB`
+  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000))
+  return `Writing… ${size} · ${seconds}s`
+}
 
 /** Why a conversation is not running, when something is holding it. */
 type Held = {
@@ -571,6 +584,10 @@ export function useChatRuntime(
   const attachments = useRef(takeAttachments)
   const starting = useRef(fresh)
   const filesChanged = useRef(onFilesChanged)
+  // The card each call being written is drawn in, by message and the call's
+  // place in its round, and when it began -- so progress lands on the card
+  // the call began rather than drawing another.
+  const writingCards = useRef(new Map<string, { id: string; since: number }>())
   /** Which conversation is on screen now, for a send that outlives it. */
   const showing = useRef(sessionId)
   useLayoutEffect(() => {
@@ -807,10 +824,35 @@ export function useChatRuntime(
           // happening, and the thought before it kept counting through it.
           for (const event of result.events) {
             if (event.kind !== 'chat.writing') continue
-            const { message_id, name } = event.payload
+            const { message_id, index, name, bytes } = event.payload
+            const key = `${message_id}:${index}`
+            const known = writingCards.current.get(key)
+            // A call beginning is said with nothing written. Anything else is
+            // progress on a card already drawn -- unless the page was opened
+            // partway through the call, when it draws the card itself.
+            if (bytes && known) {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== message_id) return m
+                  const calls = m.metadata.tool_calls ?? []
+                  if (!calls.some((c) => c.id === known.id)) return m
+                  return {
+                    ...m,
+                    metadata: {
+                      ...m.metadata,
+                      tool_calls: calls.map((c) =>
+                        c.id === known.id ? { ...c, action: writtenSoFar(bytes, known.since) } : c,
+                      ),
+                    },
+                  }
+                }),
+              )
+              continue
+            }
             // By the event, not by `index`: the index starts again every round,
             // and one round's card is not the next round's.
             const id = `${PREPARING}${event.id}`
+            writingCards.current.set(key, { id, since: Date.now() })
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== message_id) return m

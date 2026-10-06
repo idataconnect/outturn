@@ -157,7 +157,14 @@ pub enum ExecuteEvent {
     /// The model began writing a call to `name`, the `index`th of its round.
     /// Only the name: the arguments are not whole until the round ends, and
     /// the call is reported as `Tool` when the guest starts it.
-    Writing { index: u32, name: String },
+    Writing {
+        index: u32,
+        name: String,
+        /// Bytes of arguments written so far. Absent from an older runtime,
+        /// which only ever said a call had begun.
+        #[serde(default)]
+        bytes: u64,
+    },
     /// The guest wrote an object. Reported so the tier with the database can
     /// treat it exactly as it treats an upload -- a document landing is a
     /// document to extract, whoever put it there. The runtime cannot enqueue
@@ -313,10 +320,11 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
 
     let writing: WritingSink = {
         let tx = tx.clone();
-        Arc::new(move |index: u32, name: &str| {
+        Arc::new(move |index: u32, name: &str, bytes: u64| {
             let _ = tx.send(ExecuteEvent::Writing {
                 index,
                 name: name.to_string(),
+                bytes,
             });
         })
     };
