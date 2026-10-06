@@ -16,6 +16,9 @@ static REGULAR: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
 static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
 static MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+/// Color emoji, as PNG bitmaps. Drawn for whatever the text faces lack and it
+/// has, so an emoji in a report is an emoji rather than an empty box.
+static EMOJI: &[u8] = include_bytes!("../fonts/Twemoji.ttf");
 
 // A4, in points. Letter is an inch shorter and a little wider; A4 is what
 // most of the world prints on, and either prints acceptably on the other.
@@ -43,6 +46,7 @@ enum FaceId {
     Bold,
     Italic,
     Mono,
+    Emoji,
 }
 
 /// A font and the advance of each character in it, in ems.
@@ -53,11 +57,13 @@ enum FaceId {
 struct Face {
     font: Font,
     data: &'static [u8],
+    emoji: bool,
     advances: RefCell<HashMap<char, f32>>,
+    covers: RefCell<HashMap<char, bool>>,
 }
 
 impl Face {
-    fn new(data: &'static [u8]) -> Self {
+    fn new(data: &'static [u8], emoji: bool) -> Self {
         // From the static bytes, not a copy of them: the fonts are most of
         // what this component holds, and holding them twice is most of its
         // memory.
@@ -65,43 +71,140 @@ impl Face {
         Face {
             font,
             data,
+            emoji,
             advances: RefCell::default(),
+            covers: RefCell::default(),
         }
+    }
+
+    /// An emoji font draws a sequence -- a family joined by joiners, a flag
+    /// made of two letters -- as one glyph, so adding up its characters
+    /// would count a family as seven. Every emoji in it is the same width, so
+    /// a stretch is that width times the emoji it shows.
+    fn emoji_width(&self, text: &str, size: f32) -> f32 {
+        let one = self.char_width('😀');
+        let mut count = 0;
+        let mut after_joiner = false;
+        let mut pending_flag = false;
+        for c in text.chars() {
+            let regional = ('\u{1F1E6}'..='\u{1F1FF}').contains(&c);
+            if regional {
+                // Two regional indicators are one flag.
+                if !pending_flag {
+                    count += 1;
+                }
+                pending_flag = !pending_flag;
+            } else if !joins(c) && !after_joiner {
+                count += 1;
+                pending_flag = false;
+            }
+            after_joiner = c == '\u{200D}';
+        }
+        count as f32 * one * size
+    }
+
+    /// One character's advance, in ems.
+    fn char_width(&self, c: char) -> f32 {
+        *self.advances.borrow_mut().entry(c).or_insert_with(|| {
+            let font = skrifa::FontRef::new(self.data).expect("bundled font");
+            let upem = font.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+            let glyph = font.charmap().map(c).unwrap_or_default();
+            font.glyph_metrics(Size::unscaled(), LocationRef::default())
+                .advance_width(glyph)
+                .unwrap_or(0.0)
+                / upem
+        })
+    }
+
+    fn has(&self, c: char) -> bool {
+        *self.covers.borrow_mut().entry(c).or_insert_with(|| {
+            skrifa::FontRef::new(self.data)
+                .map(|f| f.charmap().map(c).is_some())
+                .unwrap_or(false)
+        })
     }
 
     fn width(&self, text: &str, size: f32) -> f32 {
-        let mut cache = self.advances.borrow_mut();
-        let mut em = 0.0;
-        for c in text.chars() {
-            em += *cache.entry(c).or_insert_with(|| {
-                let font = skrifa::FontRef::new(self.data).expect("bundled font");
-                let upem = font.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
-                let glyph = font.charmap().map(c).unwrap_or_default();
-                font.glyph_metrics(Size::unscaled(), LocationRef::default())
-                    .advance_width(glyph)
-                    .unwrap_or(0.0)
-                    / upem
-            });
+        if self.emoji {
+            return self.emoji_width(text, size);
         }
-        em * size
+        text.chars().map(|c| self.char_width(c)).sum::<f32>() * size
     }
 }
 
-struct Faces([Face; 4]);
+struct Faces([Face; 5]);
 
 impl Faces {
     fn new() -> Self {
         Faces([
-            Face::new(REGULAR),
-            Face::new(BOLD),
-            Face::new(ITALIC),
-            Face::new(MONO),
+            Face::new(REGULAR, false),
+            Face::new(BOLD, false),
+            Face::new(ITALIC, false),
+            Face::new(MONO, false),
+            Face::new(EMOJI, true),
         ])
     }
 
     fn get(&self, id: FaceId) -> &Face {
         &self.0[id as usize]
     }
+
+    /// A space beside text in `face`. The emoji font has none of its own, so
+    /// a space next to an emoji is the body text's.
+    fn space(&self, face: FaceId, size: f32) -> f32 {
+        let face = if face == FaceId::Emoji { FaceId::Regular } else { face };
+        self.get(face).width(" ", size)
+    }
+
+    /// Splits text into stretches each drawn in one face: `primary` where it
+    /// has the character, the emoji face where it does not and that does.
+    ///
+    /// What joins an emoji to the next -- a zero-width joiner, a variation
+    /// selector, a skin tone, a keycap -- stays with the emoji before it, so
+    /// a family or a flag is one stretch the emoji font can shape as one. A
+    /// character followed by the emoji variation selector asks to be an
+    /// emoji, and is one where the emoji face has it, even if the text face
+    /// does too: "1️⃣", "❤️".
+    fn segments<'t>(&self, text: &'t str, primary: FaceId) -> Vec<(FaceId, &'t str)> {
+        let main = self.get(primary);
+        let emoji = self.get(FaceId::Emoji);
+        let mut out: Vec<(FaceId, &'t str)> = Vec::new();
+        let mut start = 0;
+        let mut current: Option<FaceId> = None;
+        let mut chars = text.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            let next = chars.peek().map(|(_, n)| *n);
+            let face = if joins(c) && current == Some(FaceId::Emoji) {
+                FaceId::Emoji
+            } else if next == Some('\u{FE0F}') && emoji.has(c) {
+                FaceId::Emoji
+            } else if main.has(c) || !emoji.has(c) {
+                primary
+            } else {
+                FaceId::Emoji
+            };
+            if current.is_some_and(|f| f != face) {
+                out.push((current.unwrap(), &text[start..i]));
+                start = i;
+            }
+            current = Some(face);
+        }
+        if let Some(f) = current {
+            out.push((f, &text[start..]));
+        }
+        out
+    }
+}
+
+/// Whether a character modifies the one before it rather than standing alone.
+fn joins(c: char) -> bool {
+    matches!(c,
+        '\u{200D}'                      // zero-width joiner
+        | '\u{FE00}'..='\u{FE0F}'       // variation selectors
+        | '\u{1F3FB}'..='\u{1F3FF}'     // skin tones
+        | '\u{20E3}'                    // combining keycap
+        | '\u{E0020}'..='\u{E007F}'     // tag sequences, as in subdivision flags
+    ) || ('\u{1F1E6}'..='\u{1F1FF}').contains(&c) // regional indicators, paired into flags
 }
 
 /// One thing drawn on a page. Laid out first and painted after, so that page
@@ -196,7 +299,18 @@ struct Placed {
 
 /// Breaks runs into lines no wider than `measure`.
 fn wrap(faces: &Faces, runs: &[Run], size: f32, measure: f32) -> Vec<Vec<Placed>> {
-    let pieces = pieces(runs);
+    let runs: Vec<Run> = runs
+        .iter()
+        .flat_map(|r| {
+            faces.segments(&r.text, r.face).into_iter().map(|(face, text)| Run {
+                text: text.to_string(),
+                face,
+                color: r.color,
+                link: r.link.clone(),
+            })
+        })
+        .collect();
+    let pieces = pieces(&runs);
 
     // Words: a breakable piece and the unbreakable ones after it.
     let mut words: Vec<(bool, Vec<&Piece>)> = Vec::new();
@@ -221,7 +335,7 @@ fn wrap(faces: &Faces, runs: &[Run], size: f32, measure: f32) -> Vec<Vec<Placed>
         // run puts there itself when the two are drawn as one, and the
         // narrower choice before code, whose spaces are as wide as its letters.
         let before = lines.last().unwrap().last().map_or(word[0].run.face, |p| p.face);
-        let space = faces.get(before).width(" ", size);
+        let space = faces.space(before, size);
         let gap = if line_empty { 0.0 } else { space };
 
         if forced || (!line_empty && x + gap + width > measure) {
@@ -308,7 +422,7 @@ fn merge(faces: &Faces, line: &[Placed], size: f32) -> Vec<Placed> {
             && last.link == p.link
         {
             let gap = p.dx - (last.dx + last.width);
-            let space = faces.get(last.face).width(" ", size);
+            let space = faces.space(last.face, size);
             let joiner = if gap.abs() < 0.01 {
                 Some("")
             } else if (gap - space).abs() < 0.01 {
@@ -496,14 +610,19 @@ impl<'f, 's> Pages<'f, 's> {
                 color: SHADE,
             });
             self.quote_bars(frame, top, leading);
-            self.ops().push(Op::Text {
-                x: frame.x,
-                y: top + size * 1.1,
-                face: FaceId::Mono,
-                size,
-                color: INK,
-                text: line,
-            });
+            let mut x = frame.x;
+            for (face, text) in self.faces.segments(&line, FaceId::Mono) {
+                let w = self.faces.get(face).width(text, size);
+                self.ops().push(Op::Text {
+                    x,
+                    y: top + size * 1.1,
+                    face,
+                    size,
+                    color: INK,
+                    text: text.to_string(),
+                });
+                x += w;
+            }
             self.y += leading;
         }
     }
@@ -757,7 +876,7 @@ fn lay_out(
                 // A heading alone at the foot of a page belongs on the next.
                 pages.room_for(size * LEADING + BODY * LEADING * 2.0);
                 for r in runs.iter_mut() {
-                    if r.face != FaceId::Mono {
+                    if r.face == FaceId::Regular || r.face == FaceId::Italic {
                         r.face = FaceId::Bold;
                     }
                 }
@@ -898,7 +1017,9 @@ fn lay_out(
                     let mut cell = std::mem::take(&mut runs);
                     if *header {
                         for r in &mut cell {
-                            r.face = FaceId::Bold;
+                            if r.face == FaceId::Regular || r.face == FaceId::Italic {
+                                r.face = FaceId::Bold;
+                            }
                         }
                     }
                     cells.push(cell);
@@ -1155,5 +1276,33 @@ mod tests {
         let mut second = Vec::new();
         lay_out(&md, &faces, &mut |ops| second.push(ops.len()));
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn emoji_fall_back_to_the_emoji_face_and_text_does_not() {
+        let faces = Faces::new();
+        let segs = faces.segments("Fog ahead 🌫️ then sun ☀️!", FaceId::Regular);
+        let emoji: Vec<&str> = segs
+            .iter()
+            .filter(|(f, _)| *f == FaceId::Emoji)
+            .map(|(_, t)| *t)
+            .collect();
+        assert_eq!(emoji, ["🌫️", "☀️"]);
+        assert!(segs.iter().any(|(f, t)| *f == FaceId::Regular && t.contains("Fog ahead")));
+    }
+
+    #[test]
+    fn a_joined_emoji_stays_one_stretch() {
+        let faces = Faces::new();
+        // A family: four people and three joiners.
+        let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+        let segs = faces.segments(family, FaceId::Regular);
+        assert_eq!(segs, [(FaceId::Emoji, family)]);
+    }
+
+    #[test]
+    fn a_document_with_emoji_renders() {
+        let pdf = render("# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n").expect("rendered");
+        assert!(pdf.starts_with(b"%PDF"));
     }
 }

@@ -29,9 +29,10 @@ static RENDERER: &[u8] = include_bytes!("../../assets/pdf_renderer.wasm");
 
 /// Linear memory a render may grow to.
 ///
-/// Markdown at `MAX_MARKDOWN_BYTES` peaks at 10.5 MiB, most of it the fonts:
-/// pages are drawn as they are laid out and dropped, so what grows with a
-/// document is only the PDF being written. Three times that, for headroom.
+/// Markdown at `MAX_MARKDOWN_BYTES` peaks at 14.1 MiB with emoji throughout,
+/// most of it the fonts: pages are drawn as they are laid out and dropped, so
+/// what grows with a document is only the PDF being written. More than twice
+/// that, for headroom.
 pub const MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// What a render is charged to admission while it runs: its cap, and the
@@ -42,11 +43,12 @@ pub const CHARGE_BYTES: u64 = (MEMORY_LIMIT as u64) * 3 / 2;
 /// Instructions a render may spend.
 ///
 /// A runaway guard, not a budget. Markdown at `MAX_MARKDOWN_BYTES` -- a
-/// megabyte of PDF, several hundred pages -- spends 33 billion and a few
-/// seconds; this is three times that, so no document the cap admits comes
-/// near it, and a renderer stuck in a loop is still stopped within seconds. A budget a customer feels
+/// megabyte of PDF, several hundred pages, with emoji throughout -- spends 50
+/// billion and a few seconds; this is three times that, so no document the
+/// cap admits comes near it, and a renderer stuck in a loop is still stopped
+/// within seconds. A budget a customer feels
 /// belongs in spend controls, priced, rather than here.
-pub const FUEL: u64 = 100_000_000_000;
+pub const FUEL: u64 = 150_000_000_000;
 
 /// The most markdown a render accepts. Already several hundred pages; past
 /// it the cost of laying out is better spent asking whether one document is
@@ -288,8 +290,10 @@ mod tests {
     /// together.
     #[tokio::test]
     async fn a_document_at_the_size_cap_renders_within_its_limits() {
-        let para = "Spend rose over the quarter, mostly in three workspaces, \
-                    and cached tokens make the totals look smaller than the work. "
+        // Emoji throughout, since each one is a bitmap the renderer decodes
+        // and embeds, and the case most likely to grow with the document.
+        let para = "Spend rose 📈 over the quarter, mostly in three workspaces 🏢, \
+                    and cached tokens 🪙 make the totals look smaller than the work. "
             .repeat(6);
         let mut md = String::from("# Report\n\n");
         let mut n = 0;
