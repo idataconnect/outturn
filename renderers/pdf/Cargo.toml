@@ -2,11 +2,12 @@
 name = "outturn-renderer-pdf"
 version = "0.1.0"
 edition = "2024"
-description = "Renders markdown as a PDF, inside a sandbox of its own"
+description = "Renders markdown as a PDF, as a service of its own"
 license = "Apache-2.0"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+[[bin]]
+name = "outturn-renderer"
+path = "src/main.rs"
 
 [dependencies]
 # The PDF writer Typst uses, without the typesetting engine above it: font
@@ -17,12 +18,16 @@ krilla = { version = "0.8.2", default-features = false, features = ["simple-text
 pulldown-cmark = { version = "0.13.4", default-features = false }
 # Advance widths for line breaking. The version krilla itself depends on.
 skrifa = "0.42.0"
-# Matched to the default agent's, which is matched to what cargo-component
-# generates.
-wit-bindgen-rt = "0.44"
+# The service. Versions as the main crate's, so the two move together.
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [profile.release]
-opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

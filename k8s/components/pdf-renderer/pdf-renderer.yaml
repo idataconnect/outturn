@@ -1,0 +1,92 @@
+# The PDF renderer: markdown in, PDF out, for agents' `render_pdf`.
+#
+# Optional, as Tika is. Its fonts and layout are an image of their own, and a
+# deployment that never makes a PDF runs none of it -- the runtime asks this
+# service, and says rendering is not available where it is not deployed.
+#
+# It holds nothing and calls nothing. No database, no credentials, no bucket:
+# the runtime sends markdown and stores what comes back. So the most a request
+# can do here is spend this pod's time, which the service bounds by input size,
+# renders at once and a time limit (renderers/pdf/src/service.rs).
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-pdf-renderer
+spec:
+  selector:
+    app: outturn-pdf-renderer
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-pdf-renderer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outturn-pdf-renderer
+  template:
+    metadata:
+      labels:
+        app: outturn-pdf-renderer
+    spec:
+      containers:
+        - name: pdf-renderer
+          image: outturn-pdf-renderer
+          ports:
+            - containerPort: 8090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            periodSeconds: 10
+          # Two renders at once; the largest input peaks near 14 MB and a few
+          # seconds of one core. The limit is there for a document nobody
+          # measured, not for the ones that were.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: "2"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+---
+# Reached by the runtime and nothing else, and reaching nothing at all: it has
+# no reason to open a connection, so a renderer turned by a hostile document
+# has nowhere to send what it read.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-pdf-renderer
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-pdf-renderer
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress: []

@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - pdf-renderer.yaml
+
+# Where the runtime sends markdown, and the path that lets it: the runtime's
+# egress is closed to everything but the API, the gateway and storage, so the
+# service and the opening arrive together or not at all.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-runtime
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OUTTURN_PDF_RENDERER_URL
+          value: "http://outturn-pdf-renderer:8090"
+  - target:
+      kind: NetworkPolicy
+      name: outturn-runtime-egress
+    patch: |
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - podSelector:
+                matchLabels:
+                  app: outturn-pdf-renderer
+          ports:
+            - protocol: TCP
+              port: 8090

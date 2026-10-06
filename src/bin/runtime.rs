@@ -156,15 +156,6 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // The renderer is compiled into this binary, so failing to compile it is
-    // a build that is broken, not a turn that is unlucky -- found here rather
-    // than by the first agent asked for a PDF. Compiling it now also means
-    // that agent does not wait for it.
-    if let Err(e) = state.runner.warm_renderer().await {
-        tracing::error!(error = %e, "the PDF renderer cannot be used; refusing to take work");
-        std::process::exit(1);
-    }
-
     // Everything a turn needs is in place: storage answered, the component
     // links, the puller is asking. Now the pod is ready.
     health.set_ready(true);

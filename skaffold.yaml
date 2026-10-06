@@ -37,6 +37,10 @@ build:
       docker:
         dockerfile: Dockerfile
         target: hollowbrook
+    - image: outturn-pdf-renderer
+      docker:
+        dockerfile: Dockerfile
+        target: pdf-renderer
 
 manifests:
   kustomize:

@@ -90,6 +90,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
         admission: None,
+        renderer_url: None,
         // Nothing reachable unless a test says so, which is the default a
         // workspace gets.
         egress: Vec::new(),
@@ -2411,20 +2412,43 @@ fn first_tool_result(gateway: &FakeGateway) -> String {
         .to_string()
 }
 
-/// A PDF asked for by name is made by the host and stored where the agent said.
+/// A stand-in for the renderer service: answers every render with the same
+/// small PDF-shaped bytes, and remembers the markdown it was sent.
+async fn fake_renderer() -> (String, Arc<Mutex<Vec<String>>>) {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let app = axum::Router::new().route(
+        "/v1/render/pdf",
+        axum::routing::post({
+            let seen = Arc::clone(&seen);
+            move |body: String| async move {
+                seen.lock().unwrap().push(body);
+                b"%PDF-1.7 rendered".to_vec()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, seen)
+}
+
+/// A PDF asked for by name is made by the renderer and stored where the agent
+/// said, without passing through the guest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn render_pdf_stores_a_pdf_at_the_path_named() {
+async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
     use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
 
+    let (renderer, seen) = fake_renderer().await;
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "render_pdf".into(),
-        arguments: r##"{"path":"session/report.pdf","markdown":"# Aging\n\n| Client | 90+ days |\n|---|--:|\n| Acme | 1,200.00 |\n","action":"Making the report"}"##.into(),
+        arguments: r##"{"path":"session/report.pdf","markdown":"# Aging\n\nAcme owes 1,200.00\n","action":"Making the report"}"##.into(),
         reply: "Done.".into(),
     })
     .await;
     let mut options = options(&gateway, None);
     options.storage = Some(store.clone());
+    options.renderer_url = Some(renderer);
     let space = scope::Space {
         workspace_id: options.workspace_id,
         agent_id: options.agent_id,
@@ -2441,6 +2465,7 @@ async fn render_pdf_stores_a_pdf_at_the_path_named() {
         .await
         .expect("run");
 
+    assert_eq!(*seen.lock().unwrap(), ["# Aging\n\nAcme owes 1,200.00\n"]);
     let pdf = store
         .read(
             &scope::resolve(&space, "session/report.pdf").unwrap(),
@@ -2449,12 +2474,36 @@ async fn render_pdf_stores_a_pdf_at_the_path_named() {
         )
         .await
         .expect("the PDF was stored");
-    assert!(pdf.starts_with(b"%PDF"), "not a PDF");
+    assert_eq!(pdf, b"%PDF-1.7 rendered");
     let result = first_tool_result(&gateway);
     assert!(
         result.contains(&format!("\"bytes\":{}", pdf.len())),
         "{result}"
     );
+}
+
+/// Where no renderer is deployed, the agent is told so plainly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_pdf_without_a_renderer_says_it_is_not_available() {
+    use outturn::runtime::storage::MemoryStorage;
+
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "render_pdf".into(),
+        arguments: r##"{"path":"session/report.pdf","markdown":"# Hi","action":"Making it"}"##
+            .into(),
+        reply: "Oh.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(Arc::new(MemoryStorage::new()));
+
+    runner()
+        .run(&component(), user("Make it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let result = first_tool_result(&gateway);
+    assert!(result.contains("not available here"), "{result}");
 }
 
 /// A model can store a small binary file byte for byte.

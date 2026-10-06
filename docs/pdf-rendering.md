@@ -1,12 +1,13 @@
 # PDF rendering
 
-How an agent makes a PDF, why it is a component of its own rather than part of
-the agent, and where it goes next. Built.
+How an agent makes a PDF, why the renderer is a service of its own, and where
+it goes next. Built.
 
 ## What exists
 
-An agent calls `render_pdf` with markdown and a path. The host renders it and
-stores the result; the document never passes through the guest. Headings,
+An agent calls `render_pdf` with markdown and a path. The runtime sends the
+markdown to the renderer service, stores the PDF that comes back, and tells
+the agent the path and size; the document never passes through the guest. Headings,
 paragraphs, bold, italic, inline code, links (clickable), ordered, unordered
 and task lists, block quotes, code blocks, rules and tables with column
 alignment are laid out on A4 with page numbers, and the first top-level
@@ -14,10 +15,10 @@ heading becomes the document's title. Images are not drawn yet and appear as
 their alt text.
 
 The renderer is `renderers/pdf`: markdown parsed by `pulldown-cmark`, laid out
-by a flow layout written here, and written by
+by a flow layout written here, and written out by
 [krilla](https://github.com/LaurenzV/krilla) -- the PDF writer under Typst,
 without the typesetting engine above it, which is what gets font subsetting
-and embedding right. Four DejaVu faces are compiled in (regular, bold,
+and embedding right. Four DejaVu faces are built in (regular, bold,
 oblique, mono). They cover Latin, Greek and Cyrillic and a good deal else, but
 not CJK; a document in a script the fonts lack renders its missing glyphs as
 boxes.
@@ -31,37 +32,42 @@ after the first real document an agent made ended in three empty boxes: a
 model reaches for emoji without being asked, and a box where one should be
 reads as broken. Attribution for both font families is in `NOTICE`.
 
-## Why a component of its own
+## Why a service of its own
 
-Every turn's guest is capped at 128 MiB, and admission charges each turn a
-flat 100 MiB while allowing eight at once on a 512 Mi pod. That only works
-because a guest sits well below its cap. A PDF library linked into the agent
-would make every agent larger, and a guest that actually rendered would spend
-the headroom the flat charge is counting on.
+It began inside the runtime, as a WASM component the host instantiated per
+call with its own memory cap and fuel. That made every runtime pay for it --
+a 9 MB component in every image, compiled at every pod's startup and resident
+in pods sized for turns -- whether or not the deployment ever made a PDF. And
+once the renderer was out of the agent's sandbox, the sandbox around it was
+guarding very little: it holds no credentials and reaches nothing, so there was
+nothing for WASM to protect but the pod's own time.
 
-So the renderer is instantiated by the host per call, in a store of its own:
+So it is a service, deployed as Tika is: an optional component
+(`k8s/components/pdf-renderer`, `scripts/dev.sh --with pdf-renderer`) with its
+own image, found through `OUTTURN_PDF_RENDERER_URL` on the runtime. Unset, no
+call is made and `render_pdf` answers that rendering is not available here. The
+runtime image carries none of it.
+
+The service holds nothing and calls nothing -- no database, no credentials, no
+bucket, and a network policy with no egress. Its only exposure is time, which
+it bounds per pod:
 
 | | Value | Why |
 |---|---|---|
-| Memory cap | 32 MiB | The largest input peaks at 14.1 MiB, emoji throughout |
-| Fuel | 150 G, its own | The largest input spends 50 G. A runaway guard, not a budget |
-| Markdown | 2 MiB at most | Several hundred pages; refused before rendering past it |
-| At once, per pod | 2 | Rendering is all CPU |
+| Markdown | 2 MiB at most | Several hundred pages; refused before it is rendered |
+| At once | 2 | Rendering is all CPU; a third is told the renderer is busy |
+| Time | 30 s per render | The largest input takes about 4 s |
+| Pod | 256 Mi, 2 CPU | The largest input peaks near 14 MB |
 
-While a render runs it is charged to admission (`try_charge`) for its cap and
-the document it hands back. Refused when the pod is short of memory -- unless
-the turn is the only one on the pod -- and the refusal is an ordinary tool
-error the agent can wait out, not a failed turn. A trap inside the renderer is
-the same: "too large or too complex to render", and the turn carries on.
+The time limit bounds how long a caller waits, not the work: a render already
+running cannot be stopped from outside its thread, so a pathological one keeps
+its slot until it is done. The size cap is what bounds how long that is. What
+WASM gave that this does not -- a cap on each render's memory rather than the
+pod's -- was not worth carrying for that.
 
-The renderer imports nothing the host gives meaning to. It is built for
-wasip2, so the standard library links WASI, and the host gives it a context
-with no directories, environment or network. Fonts are compiled in and the
-document is the return value. A compromised renderer can return bad bytes.
-
-It is compiled the first time it is wanted, and a runtime compiles it at
-startup before it reports ready: a renderer that cannot be used is a broken
-build, found there rather than by the first agent to ask.
+Every refusal is a sentence the agent can act on -- too large, busy, too slow,
+not available here -- returned as an ordinary tool error, and the turn carries
+on.
 
 ## Two passes
 
@@ -78,8 +84,8 @@ page around it is already written; that is why their "Page x of y" so often
 sat oddly. Two passes measure the real string.
 
 Within a line, words that share a style are drawn as one piece, spaces
-included. Each draw shapes its text afresh, and drawing word by word is what
-first took the largest input past its fuel.
+included. Each draw shapes its text afresh, and drawing word by word made the
+largest input several times slower.
 
 What still grows with the document is the PDF itself: krilla holds what it has
 written and subsets fonts at the end, when it knows every glyph used. About
@@ -91,24 +97,24 @@ subsetting done here, and nothing the cap admits needs it yet.
 ## Where it goes next
 
 **Queued rendering.** Large or many documents -- a month-end run of a few
-hundred reports -- belong on workers of their own, pulling render jobs as
-runtimes pull turns, and waking the session when the file is there, as
-`sleep` and `set-timer` do. The workers scale on their own queue, hold no turn
-memory, and can afford a far larger cap: that is where Typst, or the streaming
-writer above, would live. It costs a queue wait, and a woken turn may find the
-provider's prompt cache cold. Not a model round: rendering in place is
+hundred reports -- are better as jobs than as calls an agent waits on: queued,
+rendered by the same service, and the session woken when the file is there, as
+`sleep` and `set-timer` do. It costs a queue wait, and a woken turn may find
+the provider's prompt cache cold. Not a model round: rendering in place is
 followed by one too.
 
 `render-pdf` is a host import, so the swap is the host's decision per call:
 render now and return the file, or queue it and tell the guest when it will be
 woken. A guest's code does not change.
 
-**Compute in the ledger.** The host knows exactly what each render spent --
-`Rendered::fuel` -- and records it nowhere, which is true of a turn's own fuel
-too. See the roadmap. Fuel is the right unit to meter (deterministic, counted
-outside anything the guest can address) and the wrong one to budget: a
-customer meets a price, and the per-call figure above stays a runaway guard.
+**A better default look.** A document looks professional because its design
+is good, not because its source language is rich: given more to write, a model
+mostly writes the same headings and tables. So the next gain is in the
+renderer -- typography, a title block and running header, and a few named
+themes a model chooses between -- with an accent color and inline color for
+the figure that has to stand out. Every model gets the same good output,
+because the design lives here rather than in the prompt.
 
-**Images.** Read from storage by path, decoded inside the renderer, each
-capped in pixels before it is decoded -- a decoded image is the one thing that
-could change the memory picture above.
+**Images.** Read from storage by the runtime and sent with the markdown,
+decoded in the renderer, each capped in pixels before it is decoded -- a
+decoded image is the one thing that could change the memory picture above.

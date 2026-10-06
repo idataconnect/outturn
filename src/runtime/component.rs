@@ -401,9 +401,10 @@ pub struct AgentHost {
     /// being granted and killing the pod.
     limits: wasmtime::StoreLimits,
     /// Asked before this turn holds memory beyond its flat charge -- an open
-    /// writer, a render. Absent charges nothing, which is what a test wants.
+    /// writer. Absent charges nothing, which is what a test wants.
     admission: Option<Arc<crate::runtime::admission::Admission>>,
-    renderer: Option<Arc<crate::runtime::render::LazyRenderer>>,
+    /// Where the PDF renderer listens. None where none is deployed.
+    renderer_url: Option<String>,
     open_writers: usize,
     /// Whether a round's reply came back unusable. See `HeldError`.
     malformed_reply: bool,
@@ -428,7 +429,7 @@ pub const GUEST_MEMORY_LIMIT: usize = 128 * 1024 * 1024;
 ///
 /// Small next to the turn's total, large next to the cost of a yield: on the
 /// order of a millisecond of work.
-pub(crate) const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
+const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
 impl AgentHost {
     /// Turns a storage failure into what the guest is told, and decides who
@@ -1346,25 +1347,9 @@ impl outturn::agent::host::Host for AgentHost {
     ) -> Result<ObjectInfo, String> {
         self.may_write(&destination)?;
         let (storage, resolved) = self.object_at(&destination)?;
-        let Some(renderer) = self.renderer.clone() else {
-            return Err("PDF rendering is not available here".to_string());
-        };
-        let renderer = renderer.get().await?;
-        let pdf = {
-            // Held until the document has been copied out of the renderer's
-            // store, which is the whole of the memory a render uses.
-            let _charge = self.charge(crate::runtime::render::CHARGE_BYTES, "render a PDF")?;
-            let done = renderer.render(&markdown).await?;
-            tracing::info!(
-                session_id = %self.session_id,
-                fuel = done.fuel,
-                peak_memory = done.peak_memory,
-                markdown_bytes = markdown.len(),
-                pdf_bytes = done.pdf.len(),
-                "rendered a PDF"
-            );
-            done.pdf
-        };
+        let pdf =
+            crate::runtime::render::render(&self.http, self.renderer_url.as_deref(), markdown)
+                .await?;
         let size = storage
             .write(&resolved, &pdf)
             .await
@@ -2071,7 +2056,6 @@ pub struct Finished {
 
 pub struct AgentRunner {
     engine: Engine,
-    renderer: Arc<crate::runtime::render::LazyRenderer>,
     /// Built once. A linker describes what the host offers, which does not
     /// vary by turn, by guest, or by workspace.
     linker: Linker<AgentHost>,
@@ -2137,6 +2121,9 @@ pub struct RunOptions {
     /// Charged for what the turn holds beyond its flat charge. None charges
     /// nothing.
     pub admission: Option<Arc<crate::runtime::admission::Admission>>,
+    /// Where the PDF renderer listens. None where none is deployed, and
+    /// `render-pdf` says so.
+    pub renderer_url: Option<String>,
 }
 
 impl AgentRunner {
@@ -2154,11 +2141,8 @@ impl AgentRunner {
         // host implementations live on.
         AgentWorld::add_to_linker::<_, HostData>(&mut linker, |state: &mut AgentHost| state)?;
 
-        let renderer = crate::runtime::render::LazyRenderer::new(&engine);
-
         Ok(Self {
             engine,
-            renderer,
             linker,
             compiled: CompiledCache::new(),
         })
@@ -2179,12 +2163,6 @@ impl AgentRunner {
             );
             Ok(component)
         })
-    }
-
-    /// Compiles the PDF renderer ahead of the first turn that wants it, and
-    /// says whether it can be used.
-    pub async fn warm_renderer(&self) -> Result<(), String> {
-        self.renderer.warm().await
     }
 
     /// Checks that this host can link this component, before taking any work.
@@ -2301,7 +2279,7 @@ impl AgentRunner {
                 .tables(64)
                 .build(),
             admission: options.admission,
-            renderer: Some(Arc::clone(&self.renderer)),
+            renderer_url: options.renderer_url,
             open_writers: 0,
             malformed_reply: false,
             timezone: options.timezone.as_deref().and_then(|tz| {
@@ -2340,8 +2318,8 @@ impl AgentRunner {
 
         // Logged however the turn ended, a trap included: what a turn burns
         // is wanted before the ledger records it, to see what turns cost.
-        // Excludes host work done for the guest, and any render, which logs
-        // its own.
+        // Excludes host work done for the guest, a render included: the
+        // renderer is a service, and logs its own time.
         tracing::info!(
             session_id = %store.data().session_id,
             fuel = options.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
