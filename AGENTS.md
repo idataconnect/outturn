@@ -261,4 +261,5 @@ are near before changing it.
   [admin-agent.md](docs/admin-agent.md).
 - Storage and search: [storage.md](docs/storage.md),
   [streaming-storage.md](docs/streaming-storage.md),
+  [pdf-rendering.md](docs/pdf-rendering.md),
   [session-search.md](docs/session-search.md), [vision.md](docs/vision.md).

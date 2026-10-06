@@ -1,7 +1,7 @@
 # Streaming storage
 
 How a guest writes and reads objects of any size without either tier holding
-the whole thing. A design; nothing here is built yet.
+the whole thing. Built.
 
 ## Why
 
@@ -134,9 +134,10 @@ output tokens.
 
 Anything larger is not something a model should be emitting at all. It comes
 from code -- a renderer, an export, an archive -- and that code uses writers
-directly. Rendering a PDF is the first such case: the model writes markdown,
-the host renders it, and the result goes to storage through a writer without
-passing through the guest. See the PDF rendering design when it lands.
+directly. `create_archive` is the first: it reads each input through a reader
+and writes the zip through a writer as it is built, so neither the inputs nor
+the archive is ever whole in the guest. A PDF is made and stored by the host
+and never reaches the guest at all ([pdf-rendering.md](pdf-rendering.md)).
 
 ## Not covered
 

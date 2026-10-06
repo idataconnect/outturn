@@ -634,6 +634,21 @@ Each provider's usage policy is linked by name rather than paraphrased, since
 those change. The last sentence is the one the platform can already keep: a
 workspace can be held ([inhibitors.md](inhibitors.md)).
 
+**Compute in the usage ledger.** The ledger records tokens for every model
+call and nothing about compute. A turn is given `FUEL_PER_TURN` and a render
+its own `FUEL`, and how much either spent is read nowhere -- so a guest that
+burns most of its budget on every turn costs CPU that reaches no bill. Fuel is
+the unit: deterministic across pods, counted outside the guest's memory, and
+read with one subtraction however the guest ended. Wanted: a sibling table to
+`usage_ledger` keyed per turn and per render, with the same dimensions, and
+the figure carried back from the runtime with the turn's result. Two things to
+settle first. Host-side work done on a guest's behalf burns no guest fuel,
+so this meters the guest's share only. And it would be the first ledger figure
+the runtime vouches for rather than the gateway, which belongs in
+"What a compromised runtime still reaches" in invariants.md. Budgets a
+customer feels stay in spend controls, priced; per-turn fuel stays a runaway
+guard. See [pdf-rendering.md](pdf-rendering.md).
+
 ## Known costs, left until they matter
 
 Found by a read-only audit of what each list query loads, and narrowed since;
