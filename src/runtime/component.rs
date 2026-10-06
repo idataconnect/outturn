@@ -616,6 +616,29 @@ impl<E: Into<anyhow::Error>> From<E> for HeldError {
     }
 }
 
+/// What a turn that ran out of fuel says, in place of wasmtime's trap text.
+///
+/// Read by whoever has the conversation open, who did not choose the limit
+/// and cannot act on a stack of wasm frames.
+pub const OUT_OF_FUEL: &str = "this turn ran past its compute limit";
+
+impl HeldError {
+    /// Whether the guest ran out of fuel.
+    ///
+    /// The one failure a retry is sure to repeat: fuel is spent by executing
+    /// the guest, and the same input executes the same way. Searched for down
+    /// the chain rather than at the top, because a trap may arrive wrapped in
+    /// whatever context the host call that noticed it added.
+    pub fn out_of_fuel(&self) -> bool {
+        self.error.chain().any(|e| {
+            matches!(
+                e.downcast_ref::<wasmtime::Trap>(),
+                Some(wasmtime::Trap::OutOfFuel)
+            )
+        })
+    }
+}
+
 impl std::fmt::Display for HeldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.error.fmt(f)
@@ -678,7 +701,10 @@ impl outturn::agent::host::HostObjectWriter for AgentHost {
 
     /// A writer the guest let go of unfinished. Dropping it abandons the
     /// upload, and whatever was at the path stays.
-    async fn drop(&mut self, writer: wasmtime::component::Resource<WriterState>) -> wasmtime::Result<()> {
+    async fn drop(
+        &mut self,
+        writer: wasmtime::component::Resource<WriterState>,
+    ) -> wasmtime::Result<()> {
         self.table.delete(writer)?;
         self.open_writers = self.open_writers.saturating_sub(1);
         Ok(())
@@ -698,7 +724,10 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
         }
     }
 
-    async fn drop(&mut self, reader: wasmtime::component::Resource<ReaderState>) -> wasmtime::Result<()> {
+    async fn drop(
+        &mut self,
+        reader: wasmtime::component::Resource<ReaderState>,
+    ) -> wasmtime::Result<()> {
         self.table.delete(reader)?;
         Ok(())
     }
@@ -1282,7 +1311,11 @@ impl outturn::agent::host::Host for AgentHost {
             .map_err(|e| e.to_string())
     }
 
-    async fn render_pdf(&mut self, markdown: String, destination: String) -> Result<ObjectInfo, String> {
+    async fn render_pdf(
+        &mut self,
+        markdown: String,
+        destination: String,
+    ) -> Result<ObjectInfo, String> {
         self.may_write(&destination)?;
         let (storage, resolved) = self.object_at(&destination)?;
         let Some(renderer) = self.renderer.clone() else {

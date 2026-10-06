@@ -708,6 +708,14 @@ pub(super) struct TurnOutcome {
 #[error("the lease on this turn lapsed while it was being reported")]
 pub struct LeaseLost;
 
+/// A turn that failed in a way another attempt would repeat.
+///
+/// Its own type so the failure path can tell it from the ordinary kind, which
+/// is retried. The message is the runtime's, meant for the transcript.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct FailedForGood(String);
+
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
@@ -1219,7 +1227,11 @@ impl Worker {
                             provider,
                         });
                     }
-                    Ok(ExecuteEvent::Failed { message, held }) => {
+                    Ok(ExecuteEvent::Failed {
+                        message,
+                        held,
+                        terminal,
+                    }) => {
                         // A turn a hold cut and that then failed is a stop
                         // first and a failure second. Latched before the bail,
                         // because the bail is what retries it -- and a retry
@@ -1235,6 +1247,9 @@ impl Worker {
                                 reason = %reason,
                                 "a hold cut this turn before it failed; the session is stopped"
                             );
+                        }
+                        if terminal {
+                            return Err(FailedForGood(message).into());
                         }
                         anyhow::bail!("guest failed: {message}")
                     }
@@ -2646,7 +2661,11 @@ impl Worker {
                 if !still_ours {
                     return Err(LeaseLost.into());
                 }
-                if job.attempts >= job.max_attempts {
+                // Given up on now rather than after the attempts run out: the
+                // next attempt would fail the same way, after paying again for
+                // every model call this one made on the way there.
+                let for_good = e.downcast_ref::<FailedForGood>().is_some();
+                if for_good || job.attempts >= job.max_attempts {
                     self.abandon_payload(&payload, &e.to_string()).await;
                 } else {
                     let _ = events::append(
@@ -2658,15 +2677,19 @@ impl Worker {
                     )
                     .await;
                 }
-                match jobs::fail(
-                    &self.pool,
-                    job_id,
-                    &e.to_string(),
-                    Duration::from_secs(5),
-                    lease_token,
-                )
-                .await
-                {
+                let failed = if for_good {
+                    jobs::fail_for_good(&self.pool, job_id, &e.to_string(), lease_token).await
+                } else {
+                    jobs::fail(
+                        &self.pool,
+                        job_id,
+                        &e.to_string(),
+                        Duration::from_secs(5),
+                        lease_token,
+                    )
+                    .await
+                };
+                match failed {
                     Ok(()) => {}
                     // Lost between the check above and here.
                     Err(jobs::JobError::NotFound) => return Err(LeaseLost.into()),

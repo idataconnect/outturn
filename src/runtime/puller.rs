@@ -361,6 +361,7 @@ impl Puller {
                 let _ = tx.send(ExecuteEvent::Failed {
                     message: "no model: the turn names none".into(),
                     held: None,
+                    terminal: false,
                 });
                 return;
             }
@@ -377,9 +378,15 @@ impl Puller {
                     held: done.held,
                     awaiting_approval: done.awaiting_approval,
                 }),
+                Err(e) if e.out_of_fuel() => tx.send(ExecuteEvent::Failed {
+                    message: super::component::OUT_OF_FUEL.into(),
+                    held: e.held,
+                    terminal: true,
+                }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
                     held: e.held,
+                    terminal: false,
                 }),
             };
         });

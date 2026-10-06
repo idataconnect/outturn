@@ -503,7 +503,9 @@ mod tests {
     fn the_only_turn_is_never_refused_a_charge() {
         let a = with_memory(4, 100, Some(10));
         let _only = a.try_admit().expect("admitted");
-        let _charge = a.try_charge(1_000_000).expect("an idle pod refused its own turn");
+        let _charge = a
+            .try_charge(1_000_000)
+            .expect("an idle pod refused its own turn");
     }
 
     #[test]
@@ -512,6 +514,8 @@ mod tests {
         let _first = a.try_admit().expect("admitted");
         let _second = a.try_admit().expect("admitted");
         drop(a.try_charge(800).expect("room for it"));
-        let _again = a.try_charge(800).expect("the first charge was never returned");
+        let _again = a
+            .try_charge(800)
+            .expect("the first charge was never returned");
     }
 }
