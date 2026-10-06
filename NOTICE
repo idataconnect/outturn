@@ -2,3 +2,18 @@ outturn
 Copyright 2026 i Data Connect!
 
 Licensed under the Apache License, Version 2.0. See LICENSE for the terms.
+
+This product includes fonts compiled into the PDF renderer
+(renderers/pdf/fonts, embedded in the runtime binary):
+
+DejaVu Sans, DejaVu Sans Bold, DejaVu Sans Oblique and DejaVu Sans Mono.
+Copyright (c) 2003 Bitstream, Inc. All Rights Reserved. Bitstream Vera is a
+trademark of Bitstream, Inc. DejaVu changes are in the public domain.
+Glyphs imported from Arev fonts are copyright (c) 2006 Tavmjong Bah.
+See renderers/pdf/fonts/LICENSE-DejaVu for the terms.
+
+Twemoji, built as a color font by https://github.com/jdecked/twemoji.
+Copyright Twitter, Inc. and other contributors.
+Graphics licensed under CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
+(see renderers/pdf/fonts/LICENSE-Twemoji-graphics).
+The font build is licensed under the Apache License, Version 2.0 (see LICENSE).

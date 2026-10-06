@@ -18,9 +18,18 @@ by a flow layout written here, and written by
 [krilla](https://github.com/LaurenzV/krilla) -- the PDF writer under Typst,
 without the typesetting engine above it, which is what gets font subsetting
 and embedding right. Four DejaVu faces are compiled in (regular, bold,
-oblique, mono). It covers Latin, Greek and Cyrillic and a good deal else, but
+oblique, mono). They cover Latin, Greek and Cyrillic and a good deal else, but
 not CJK; a document in a script the fonts lack renders its missing glyphs as
 boxes.
+
+Emoji are drawn in color from Twemoji, a fifth face that takes any character
+the text faces lack and it has -- or one followed by the emoji variation
+selector, which asks to be an emoji. Joiners, skin tones, keycaps and flag
+pairs stay with the emoji they modify, so a family or a flag is shaped as the
+one glyph it is. Its glyphs are PNG bitmaps, embedded as images. It was added
+after the first real document an agent made ended in three empty boxes: a
+model reaches for emoji without being asked, and a box where one should be
+reads as broken. Attribution for both font families is in `NOTICE`.
 
 ## Why a component of its own
 
@@ -34,8 +43,8 @@ So the renderer is instantiated by the host per call, in a store of its own:
 
 | | Value | Why |
 |---|---|---|
-| Memory cap | 32 MiB | The largest input peaks at 10.5 MiB |
-| Fuel | 100 G, its own | The largest input spends 33 G. A runaway guard, not a budget |
+| Memory cap | 32 MiB | The largest input peaks at 14.1 MiB, emoji throughout |
+| Fuel | 150 G, its own | The largest input spends 50 G. A runaway guard, not a budget |
 | Markdown | 2 MiB at most | Several hundred pages; refused before rendering past it |
 | At once, per pod | 2 | Rendering is all CPU |
 

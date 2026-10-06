@@ -11,8 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # The PDF writer Typst uses, without the typesetting engine above it: font
 # subsetting and embedding, which is the part a hand-rolled writer gets wrong.
-# No raster images until images are designed for -- see docs/pdf-rendering.md.
-krilla = { version = "0.8.2", default-features = false, features = ["simple-text"] }
+# raster-images for the emoji font, whose glyphs are PNG bitmaps: without it
+# krilla draws them as nothing.
+krilla = { version = "0.8.2", default-features = false, features = ["simple-text", "raster-images"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 # Advance widths for line breaking. The version krilla itself depends on.
 skrifa = "0.42.0"
