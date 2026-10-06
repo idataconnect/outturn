@@ -170,8 +170,8 @@ export default function SkillImport() {
                 </button>
               </div>
               <span className={hint}>
-                Fetched by the gateway, without credentials. A specification behind a login is
-                downloaded and uploaded instead.
+                Fetched by the gateway, without credentials. A specification behind a login must
+                be fetched manually and uploaded using the button above.
               </span>
             </label>
           </form>
