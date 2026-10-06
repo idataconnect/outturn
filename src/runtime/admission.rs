@@ -287,6 +287,47 @@ impl Admission {
             reserved: Arc::clone(&self.reserved),
         })
     }
+
+    /// Charges a turn already running for something it is about to hold on
+    /// top of its flat charge -- an upload's buffer, a renderer's store -- for
+    /// as long as the returned guard lives.
+    ///
+    /// The test is `try_admit`'s, and so is the exception: the only turn on a
+    /// pod is never refused, because no other turn is there to be squeezed
+    /// and refusing would only fail the work. A refusal is for the caller to
+    /// report to its guest, not a reason to fail the turn.
+    pub fn try_charge(&self, bytes: u64) -> Result<Charge, Refusal> {
+        if self.in_flight() > 1
+            && let Some(available) = self.memory.available_bytes()
+        {
+            let free = available.saturating_sub(self.reserved.load(Ordering::SeqCst));
+            if free < self.reserve_bytes + bytes {
+                return Err(Refusal::LowMemory {
+                    available: free,
+                    reserve: self.reserve_bytes + bytes,
+                });
+            }
+        }
+        self.reserved.fetch_add(bytes, Ordering::SeqCst);
+        Ok(Charge {
+            bytes,
+            reserved: Arc::clone(&self.reserved),
+        })
+    }
+}
+
+/// Memory a running turn holds beyond its admission charge. Dropping it
+/// gives the bytes back.
+#[derive(Debug)]
+pub struct Charge {
+    bytes: u64,
+    reserved: Arc<AtomicU64>,
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.reserved.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -447,5 +488,30 @@ mod tests {
             a.try_admit().is_ok(),
             "the charge for a finished turn was never given back"
         );
+    }
+
+    #[test]
+    fn a_charge_is_refused_when_it_would_squeeze_other_turns() {
+        let a = with_memory(4, 100, Some(1_000));
+        let _first = a.try_admit().expect("admitted");
+        let _second = a.try_admit().expect("admitted");
+        let _fits = a.try_charge(800).expect("room for it");
+        assert!(matches!(a.try_charge(800), Err(Refusal::LowMemory { .. })));
+    }
+
+    #[test]
+    fn the_only_turn_is_never_refused_a_charge() {
+        let a = with_memory(4, 100, Some(10));
+        let _only = a.try_admit().expect("admitted");
+        let _charge = a.try_charge(1_000_000).expect("an idle pod refused its own turn");
+    }
+
+    #[test]
+    fn a_charge_comes_back_when_dropped() {
+        let a = with_memory(4, 100, Some(1_000));
+        let _first = a.try_admit().expect("admitted");
+        let _second = a.try_admit().expect("admitted");
+        drop(a.try_charge(800).expect("room for it"));
+        let _again = a.try_charge(800).expect("the first charge was never returned");
     }
 }
