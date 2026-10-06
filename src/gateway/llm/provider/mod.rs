@@ -123,6 +123,21 @@ impl ProviderError {
         }
     }
 
+    /// Whether the model wrote a reply its server could not turn into a tool
+    /// call -- in practice, arguments cut off mid-string when a model loops
+    /// until it runs out of room.
+    ///
+    /// Recognized from what llama.cpp's server says, the one that reports it
+    /// this way; a provider that says nothing about it is simply never this.
+    /// Worth telling apart because it is not the provider failing: the
+    /// request was taken and answered, at length, and the answer is unusable.
+    pub fn is_malformed_reply(&self) -> bool {
+        match self {
+            Self::Upstream { detail, .. } => detail.contains("Failed to parse tool call arguments"),
+            _ => false,
+        }
+    }
+
     /// Builds the error for a response that failed, reading the status from
     /// the response rather than back out of the text.
     ///
@@ -156,7 +171,28 @@ impl std::fmt::Display for ProviderError {
         match self {
             Self::Unavailable => write!(f, "provider unavailable"),
             Self::RateLimited => write!(f, "rate limited"),
-            Self::Upstream { detail, .. } => write!(f, "upstream error: {detail}"),
+            Self::Upstream { .. } if self.is_malformed_reply() => write!(
+                f,
+                "the model wrote a tool call its arguments could not be read \
+                 from, most likely cut off when the reply ran out of room"
+            ),
+            // Capped, because this is what a caller is told and a provider's
+            // error body can carry the whole of what it was sent or wrote:
+            // one held a looping seventeen-kilobyte document, shown whole as
+            // the reason a turn failed. The full body is in the gateway's
+            // log, from the Debug form.
+            Self::Upstream { detail, .. } => {
+                const SHOWN: usize = 300;
+                match detail.char_indices().nth(SHOWN) {
+                    Some((cut, _)) => write!(
+                        f,
+                        "upstream error: {}… ({} more bytes in the gateway log)",
+                        &detail[..cut],
+                        detail.len() - cut
+                    ),
+                    None => write!(f, "upstream error: {detail}"),
+                }
+            }
             Self::Translation(e) => write!(f, "translation error: {e}"),
         }
     }
@@ -243,4 +279,38 @@ where
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upstream(detail: &str) -> ProviderError {
+        ProviderError::Upstream {
+            status: Some(500),
+            detail: detail.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_long_upstream_error_is_cut_short_for_the_caller() {
+        let shown = upstream(&"karl ".repeat(4000)).to_string();
+        assert!(shown.len() < 450, "{} bytes shown", shown.len());
+        assert!(shown.contains("more bytes in the gateway log"), "{shown}");
+    }
+
+    #[test]
+    fn a_short_upstream_error_is_shown_whole() {
+        assert_eq!(upstream("500: bad").to_string(), "upstream error: 500: bad");
+    }
+
+    #[test]
+    fn a_tool_call_that_would_not_parse_is_a_malformed_reply() {
+        let e = upstream(
+            r#"500: {"error":{"code":500,"message":"Failed to parse tool call arguments as JSON: ..."}}"#,
+        );
+        assert!(e.is_malformed_reply());
+        assert!(e.to_string().contains("cut off"), "{e}");
+        assert!(!upstream("500: out of memory").is_malformed_reply());
+    }
 }

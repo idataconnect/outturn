@@ -209,6 +209,42 @@ async fn a_gateway_failure_surfaces_as_an_error() {
     );
 }
 
+/// A reply the model wrote and nobody can use is told apart from an outage,
+/// so the turn can be failed for good rather than retried into another loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_reply_is_marked_and_an_outage_is_not() {
+    let malformed = FakeGateway::start(Behavior::MalformedReply).await;
+    let error = runner()
+        .run(
+            &component(),
+            user("hello"),
+            String::new(),
+            options(&malformed, None),
+        )
+        .await
+        .expect_err("a malformed reply is a failure");
+    assert!(error.malformed_reply, "not marked: {error}");
+
+    let down = FakeGateway::start(Behavior::Status(
+        StatusCode::BAD_GATEWAY,
+        "no provider could stream: provider unavailable".into(),
+    ))
+    .await;
+    let error = runner()
+        .run(
+            &component(),
+            user("hello"),
+            String::new(),
+            options(&down, None),
+        )
+        .await
+        .expect_err("an outage is a failure");
+    assert!(
+        !error.malformed_reply,
+        "an outage was marked as a malformed reply"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_stream_returns_what_arrived() {
     // An upstream that drops mid-generation: the caller should keep the text
