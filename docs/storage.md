@@ -149,3 +149,6 @@ Promotion of a file from session scope to something longer-lived, retention
 configured per workspace, and the sweeper. Overflow from a tool result too large to show -- written
 to session scope so the model can go and read it rather than losing it -- is
 the next thing that will want the session scope that now exists.
+
+Writing and reading objects in streams rather than whole, so a guest can
+produce binaries of any size: [streaming-storage.md](streaming-storage.md).
