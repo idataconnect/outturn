@@ -150,21 +150,7 @@ impl S3Storage {
             ..Default::default()
         };
         let session = super::scope::Scope::Session.bucket_prefix().to_string();
-        let rules = vec![
-            // Parts of an upload no writer completed or aborted -- a pod that
-            // died mid-write. Invisible, but stored and billed until removed.
-            LifecycleRule {
-                id: Some("abort-abandoned-uploads".into()),
-                status: "Enabled".into(),
-                filter: Some(LifecycleFilter {
-                    prefix: Some(String::new()),
-                    ..Default::default()
-                }),
-                abort_incomplete_multipart_upload: Some(AbortIncompleteMultipartUpload {
-                    days_after_initiation: Some(1),
-                }),
-                ..Default::default()
-            },
+        let sweeps = vec![
             sweep("sweep-session-files", session.clone()),
             // The text read out of session documents lives under its own
             // prefix and would otherwise outlive what it was read from.
@@ -173,11 +159,46 @@ impl S3Storage {
                 crate::api::extract::text_key(&session),
             ),
         ];
-        self.bucket
+        // Parts of an upload no writer completed or aborted -- a pod that died
+        // mid-write. Invisible, but stored and billed until removed.
+        let abandoned = LifecycleRule {
+            id: Some("abort-abandoned-uploads".into()),
+            status: "Enabled".into(),
+            filter: Some(LifecycleFilter {
+                prefix: Some(String::new()),
+                ..Default::default()
+            }),
+            abort_incomplete_multipart_upload: Some(AbortIncompleteMultipartUpload {
+                days_after_initiation: Some(1),
+            }),
+            ..Default::default()
+        };
+
+        let mut rules = sweeps.clone();
+        rules.push(abandoned);
+        match self
+            .bucket
             .put_bucket_lifecycle(BucketLifecycleConfiguration::new(rules))
             .await
-            .map(|_| ())
             .map_err(classify)
+        {
+            Ok(_) => Ok(()),
+            // MinIO refuses the abort rule outright -- it expires stale
+            // uploads on its own -- and a bucket has one lifecycle document,
+            // so a refusal of that rule would cost the sweeps with it. They
+            // go in alone, and the store is left to its own cleanup.
+            Err(StorageError::Io(e)) if e.contains("InvalidArgument") => {
+                tracing::info!(
+                    "storage refused the rule for abandoned uploads; leaving those to the store"
+                );
+                self.bucket
+                    .put_bucket_lifecycle(BucketLifecycleConfiguration::new(sweeps))
+                    .await
+                    .map(|_| ())
+                    .map_err(classify)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn key(&self, path: &str) -> String {
