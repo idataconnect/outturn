@@ -250,6 +250,32 @@ pub async fn fail(
     backoff: Duration,
     token: Option<Uuid>,
 ) -> Result<(), JobError> {
+    record_failure(pool, id, error, backoff, token, false).await
+}
+
+/// Records a failure that a retry would only repeat, parking the job in
+/// `failed` whatever attempts it has left.
+///
+/// For failures decided by the work rather than by the weather: a turn that
+/// ran out of fuel runs out again on the same input, and every attempt pays
+/// again for each model call it made on the way there.
+pub async fn fail_for_good(
+    pool: &PgPool,
+    id: Uuid,
+    error: &str,
+    token: Option<Uuid>,
+) -> Result<(), JobError> {
+    record_failure(pool, id, error, Duration::ZERO, token, true).await
+}
+
+async fn record_failure(
+    pool: &PgPool,
+    id: Uuid,
+    error: &str,
+    backoff: Duration,
+    token: Option<Uuid>,
+    for_good: bool,
+) -> Result<(), JobError> {
     let result = sqlx::query(
         // A turn somebody asked to stop is never handed back to the queue,
         // whatever went wrong with it. Retrying is the ordinary answer to a
@@ -260,7 +286,7 @@ pub async fn fail(
         "update jobs set \
              state = case \
                  when cancel_requested_at is not null then 'cancelled' \
-                 when attempts >= max_attempts then 'failed' \
+                 when $5 or attempts >= max_attempts then 'failed' \
                  else 'pending' end, \
              last_error = $2, \
              leased_until = null, \
@@ -272,6 +298,7 @@ pub async fn fail(
     .bind(error)
     .bind(backoff.as_secs_f64())
     .bind(token)
+    .bind(for_good)
     .execute(pool)
     .await
     .map_err(internal)?;

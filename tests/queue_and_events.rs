@@ -2939,6 +2939,70 @@ async fn a_cancelled_turn_is_not_retried_when_it_fails() {
     );
 }
 
+/// A failure a retry would repeat parks the job at once.
+///
+/// A turn that ran out of fuel runs out again on the same input, and each
+/// attempt pays again for every model call it made first. Attempts remaining
+/// are no reason to spend them.
+#[tokio::test]
+async fn a_failure_for_good_is_not_retried() {
+    let (db, workspace_id) = setup().await;
+    let pool = &db.pool;
+
+    let job_id = jobs::enqueue(
+        pool,
+        workspace_id,
+        "chat.turn",
+        serde_json::json!({ "session_id": Uuid::now_v7() }),
+        None,
+        None,
+        jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+        .await
+        .expect("claim");
+    let job = &claimed.first().expect("a job to claim").job;
+    assert!(
+        job.attempts < job.max_attempts,
+        "the job must have attempts left for this to prove anything"
+    );
+
+    jobs::fail_for_good(
+        pool,
+        job_id,
+        "this turn ran past its compute limit",
+        job.lease_token,
+    )
+    .await
+    .expect("fail");
+
+    let (state, last_error): (String, Option<String>) =
+        sqlx::query_as("select state, last_error from jobs where id = $1")
+            .bind(job_id)
+            .fetch_one(pool)
+            .await
+            .expect("state");
+    assert_eq!(
+        state, "failed",
+        "a failure a retry would repeat was retried"
+    );
+    assert_eq!(
+        last_error.as_deref(),
+        Some("this turn ran past its compute limit")
+    );
+
+    assert!(
+        jobs::claim(pool, &["chat.turn"], 1, Duration::from_secs(60))
+            .await
+            .expect("claim")
+            .is_empty(),
+        "the job was claimable again"
+    );
+}
+
 /// The same, for the pod being lost rather than the turn failing.
 #[tokio::test]
 async fn a_cancelled_turn_is_not_revived_by_the_reaper() {
