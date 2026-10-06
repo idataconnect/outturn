@@ -254,7 +254,7 @@ pub async fn upload(
 
     let scoped = format!("{}/{path}", s.as_str());
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
-    store.write(&key, 0, &body).await.map_err(storage_failed)?;
+    store.write(&key, &body).await.map_err(storage_failed)?;
     // Whatever was read out of the previous version is wrong now.
     super::extract::invalidate(store.as_ref(), &key).await;
 

@@ -120,6 +120,10 @@ name = "api"
 required-features = ["integration-tests"]
 
 [[test]]
+name = "storage_s3"
+required-features = ["integration-tests"]
+
+[[test]]
 name = "queue_and_events"
 required-features = ["integration-tests"]
 

@@ -1096,7 +1096,7 @@ impl outturn::agent::host::Host for AgentHost {
         self.may_write(&path)?;
         let (storage, resolved) = self.object_at(&path)?;
         let written = storage
-            .write(&resolved, 0, &data)
+            .write(&resolved, &data)
             .await
             .map_err(|e| self.storage_failed("write", e))?;
         // Whatever was read out of the previous version is wrong now, and the

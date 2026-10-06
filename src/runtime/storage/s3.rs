@@ -4,7 +4,7 @@ use s3::{Bucket, Region};
 
 use s3::error::S3Error;
 
-use super::{FileMetadata, StorageBackend, StorageError};
+use super::{FileMetadata, ObjectReader, ObjectWriter, StorageBackend, StorageError};
 
 /// Reads the `<Code>` out of an S3 error document.
 fn s3_error_code(body: &str) -> Option<&str> {
@@ -133,7 +133,8 @@ impl S3Storage {
     /// missing sweep is a growing bill rather than a broken agent.
     pub async fn ensure_session_lifecycle(&self, days: u32) -> Result<(), StorageError> {
         use s3::serde_types::{
-            BucketLifecycleConfiguration, Expiration, LifecycleFilter, LifecycleRule,
+            AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, Expiration,
+            LifecycleFilter, LifecycleRule,
         };
         let sweep = |id: &str, prefix: String| LifecycleRule {
             id: Some(id.into()),
@@ -150,6 +151,20 @@ impl S3Storage {
         };
         let session = super::scope::Scope::Session.bucket_prefix().to_string();
         let rules = vec![
+            // Parts of an upload no writer completed or aborted -- a pod that
+            // died mid-write. Invisible, but stored and billed until removed.
+            LifecycleRule {
+                id: Some("abort-abandoned-uploads".into()),
+                status: "Enabled".into(),
+                filter: Some(LifecycleFilter {
+                    prefix: Some(String::new()),
+                    ..Default::default()
+                }),
+                abort_incomplete_multipart_upload: Some(AbortIncompleteMultipartUpload {
+                    days_after_initiation: Some(1),
+                }),
+                ..Default::default()
+            },
             sweep("sweep-session-files", session.clone()),
             // The text read out of session documents lives under its own
             // prefix and would otherwise outlive what it was read from.
@@ -200,33 +215,33 @@ impl StorageBackend for S3Storage {
         Ok(response.to_vec())
     }
 
-    async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u64, StorageError> {
+    async fn write(&self, path: &str, data: &[u8]) -> Result<u64, StorageError> {
         let key = self.key(path);
-
-        if offset != 0 {
-            // Only absence means "start from nothing". Any other refusal is
-            // one that would have the bytes below overwrite an object this
-            // caller was not allowed to read.
-            let existing = match self.bucket.get_object(&key).await {
-                Ok(resp) => resp.to_vec(),
-                Err(e) => match classify(e) {
-                    StorageError::NotFound => vec![],
-                    other => return Err(other),
-                },
-            };
-            let start = offset as usize;
-            let needed = start + data.len();
-            let mut buf = existing;
-            if buf.len() < needed {
-                buf.resize(needed, 0);
-            }
-            buf[start..start + data.len()].copy_from_slice(data);
-            self.bucket.put_object(&key, &buf).await.map_err(classify)?;
-        } else {
-            self.bucket.put_object(&key, data).await.map_err(classify)?;
-        }
-
+        self.bucket.put_object(&key, data).await.map_err(classify)?;
         Ok(data.len() as u64)
+    }
+
+    async fn open_writer(&self, path: &str) -> Result<Box<dyn ObjectWriter>, StorageError> {
+        Ok(Box::new(S3Writer {
+            bucket: self.bucket.clone(),
+            key: self.key(path),
+            buf: Vec::new(),
+            upload_id: None,
+            parts: Vec::new(),
+            size: 0,
+        }))
+    }
+
+    async fn open_reader(&self, path: &str) -> Result<Box<dyn ObjectReader>, StorageError> {
+        let response = self
+            .bucket
+            .get_object_stream(self.key(path))
+            .await
+            .map_err(classify)?;
+        Ok(Box::new(S3Reader {
+            stream: response.bytes,
+            pending: bytes::Bytes::new(),
+        }))
     }
 
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {
@@ -321,5 +336,135 @@ impl StorageBackend for S3Storage {
         let key = self.key(path);
         self.bucket.delete_object(&key).await.map_err(classify)?;
         Ok(())
+    }
+}
+
+/// How much a writer holds before it sends a part.
+///
+/// S3's floor for every part but the last. Larger would mean fewer requests
+/// for a large object, and more held per writer for every object; this is the
+/// figure admission charges an open writer, so it stays at the floor.
+pub const PART_BYTES: usize = 5 * 1024 * 1024;
+
+const OCTET_STREAM: &str = "application/octet-stream";
+
+/// A multipart upload, started only once there is more than one part's worth.
+///
+/// An object smaller than a part goes up whole with `put_object` when the
+/// writer finishes: one request rather than three, and no upload to abort.
+struct S3Writer {
+    bucket: Box<Bucket>,
+    key: String,
+    buf: Vec<u8>,
+    upload_id: Option<String>,
+    parts: Vec<s3::serde_types::Part>,
+    size: u64,
+}
+
+impl S3Writer {
+    async fn send_part(&mut self, part: Vec<u8>) -> Result<(), StorageError> {
+        let upload_id = match &self.upload_id {
+            Some(id) => id.clone(),
+            None => {
+                let started = self
+                    .bucket
+                    .initiate_multipart_upload(&self.key, OCTET_STREAM)
+                    .await
+                    .map_err(classify)?;
+                self.upload_id = Some(started.upload_id.clone());
+                started.upload_id
+            }
+        };
+        let number = self.parts.len() as u32 + 1;
+        let sent = self
+            .bucket
+            .put_multipart_chunk(part, &self.key, number, &upload_id, OCTET_STREAM)
+            .await
+            .map_err(classify)?;
+        self.parts.push(sent);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ObjectWriter for S3Writer {
+    async fn write(&mut self, chunk: &[u8]) -> Result<(), StorageError> {
+        self.buf.extend_from_slice(chunk);
+        self.size += chunk.len() as u64;
+        while self.buf.len() >= PART_BYTES {
+            let rest = self.buf.split_off(PART_BYTES);
+            let part = std::mem::replace(&mut self.buf, rest);
+            self.send_part(part).await?;
+        }
+        Ok(())
+    }
+
+    async fn finish(mut self: Box<Self>) -> Result<u64, StorageError> {
+        let Some(upload_id) = self.upload_id.clone() else {
+            let buf = std::mem::take(&mut self.buf);
+            self.bucket
+                .put_object(&self.key, &buf)
+                .await
+                .map_err(classify)?;
+            return Ok(self.size);
+        };
+        if !self.buf.is_empty() {
+            let last = std::mem::take(&mut self.buf);
+            self.send_part(last).await?;
+        }
+        let parts = std::mem::take(&mut self.parts);
+        self.bucket
+            .complete_multipart_upload(&self.key, &upload_id, parts)
+            .await
+            .map_err(classify)?;
+        // Completed, so there is nothing for Drop to abort.
+        self.upload_id = None;
+        Ok(self.size)
+    }
+}
+
+impl Drop for S3Writer {
+    /// Abandons an upload that never completed.
+    ///
+    /// The parts are invisible -- no object exists until completion -- but
+    /// they are stored and billed until somebody aborts them. Spawned because
+    /// a drop cannot wait, and best effort because the bucket's lifecycle
+    /// rule catches whatever this misses.
+    fn drop(&mut self) {
+        let Some(upload_id) = self.upload_id.take() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let bucket = self.bucket.clone();
+        let key = std::mem::take(&mut self.key);
+        handle.spawn(async move {
+            if let Err(e) = bucket.abort_upload(&key, &upload_id).await {
+                tracing::debug!(error = %e, "could not abort an abandoned upload");
+            }
+        });
+    }
+}
+
+struct S3Reader {
+    stream: s3::request::DataStream,
+    /// What the last chunk from the network held beyond what was asked for.
+    pending: bytes::Bytes,
+}
+
+#[async_trait]
+impl ObjectReader for S3Reader {
+    async fn read(&mut self, max: usize) -> Result<Vec<u8>, StorageError> {
+        use futures::StreamExt;
+        while self.pending.is_empty() {
+            match self.stream.next().await {
+                Some(Ok(chunk)) => self.pending = chunk,
+                Some(Err(e)) => return Err(classify(e)),
+                None => return Ok(Vec::new()),
+            }
+        }
+        let n = max.min(self.pending.len());
+        Ok(self.pending.split_to(n).to_vec())
     }
 }

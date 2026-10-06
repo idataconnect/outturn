@@ -144,7 +144,7 @@ async fn store_revision(
 ) -> Result<Uuid, ApiError> {
     let sha = hex::encode(Sha256::digest(spec));
     storage(state)?
-        .write(&blob_key(owner, &sha), 0, spec)
+        .write(&blob_key(owner, &sha), spec)
         .await
         .map_err(storage_failed)?;
     let id = Uuid::now_v7();

@@ -979,7 +979,6 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
     store
         .write(
             &scope::resolve(&theirs, "workspace/secrets.txt").unwrap(),
-            0,
             b"not yours",
         )
         .await
@@ -1158,7 +1157,7 @@ async fn deleting_removes_the_object_rather_than_emptying_it() {
     };
     let key = scope::resolve(&space, "session/recipe.pdf").unwrap();
     store
-        .write(&key, 0, b"%PDF-1.4 banana bread")
+        .write(&key, b"%PDF-1.4 banana bread")
         .await
         .expect("seed");
 
@@ -1211,7 +1210,7 @@ async fn deleting_outside_the_allowed_scopes_is_refused() {
         session_id: options.session_id,
     };
     let key = scope::resolve(&space, "workspace/pricing.csv").unwrap();
-    store.write(&key, 0, b"not cheap").await.expect("seed");
+    store.write(&key, b"not cheap").await.expect("seed");
 
     runner()
         .run(
@@ -1306,7 +1305,6 @@ async fn a_large_file_is_read_from_both_ends() {
     store
         .write(
             &scope::resolve(&space, "session/app.log").unwrap(),
-            0,
             log.as_bytes(),
         )
         .await
@@ -1529,7 +1527,6 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
     store
         .write(
             &scope::resolve(&space, "session/doc.txt").unwrap(),
-            0,
             doc.as_bytes(),
         )
         .await
@@ -1605,7 +1602,6 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
     store
         .write(
             &scope::resolve(&space, "session/bundle.min.js").unwrap(),
-            0,
             minified.as_bytes(),
         )
         .await
@@ -1668,7 +1664,6 @@ async fn a_scope_it_may_not_read_is_refused() {
     store
         .write(
             &scope::resolve(&space, "workspace/salaries.csv").unwrap(),
-            0,
             b"secret",
         )
         .await
@@ -1733,7 +1728,6 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
     store
         .write(
             &scope::resolve(&space, "workspace/severance.csv").unwrap(),
-            0,
             b"x",
         )
         .await
@@ -1741,7 +1735,6 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
     store
         .write(
             &scope::resolve(&space, "session/notes.txt").unwrap(),
-            0,
             b"y",
         )
         .await
@@ -1805,7 +1798,6 @@ async fn listing_a_scope_it_may_not_read_is_refused() {
     store
         .write(
             &scope::resolve(&space, "workspace/severance.csv").unwrap(),
-            0,
             b"x",
         )
         .await
@@ -2098,7 +2090,6 @@ async fn with_skill_file(
     store
         .write(
             &scope::skill_blob_key(operator, "abc123"),
-            0,
             b"POST /bookings",
         )
         .await
