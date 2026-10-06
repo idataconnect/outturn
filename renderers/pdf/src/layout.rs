@@ -107,7 +107,9 @@ impl Face {
     fn char_width(&self, c: char) -> f32 {
         *self.advances.borrow_mut().entry(c).or_insert_with(|| {
             let font = skrifa::FontRef::new(self.data).expect("bundled font");
-            let upem = font.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+            let upem = font
+                .metrics(Size::unscaled(), LocationRef::default())
+                .units_per_em as f32;
             let glyph = font.charmap().map(c).unwrap_or_default();
             font.glyph_metrics(Size::unscaled(), LocationRef::default())
                 .advance_width(glyph)
@@ -152,7 +154,11 @@ impl Faces {
     /// A space beside text in `face`. The emoji font has none of its own, so
     /// a space next to an emoji is the body text's.
     fn space(&self, face: FaceId, size: f32) -> f32 {
-        let face = if face == FaceId::Emoji { FaceId::Regular } else { face };
+        let face = if face == FaceId::Emoji {
+            FaceId::Regular
+        } else {
+            face
+        };
         self.get(face).width(" ", size)
     }
 
@@ -302,12 +308,15 @@ fn wrap(faces: &Faces, runs: &[Run], size: f32, measure: f32) -> Vec<Vec<Placed>
     let runs: Vec<Run> = runs
         .iter()
         .flat_map(|r| {
-            faces.segments(&r.text, r.face).into_iter().map(|(face, text)| Run {
-                text: text.to_string(),
-                face,
-                color: r.color,
-                link: r.link.clone(),
-            })
+            faces
+                .segments(&r.text, r.face)
+                .into_iter()
+                .map(|(face, text)| Run {
+                    text: text.to_string(),
+                    face,
+                    color: r.color,
+                    link: r.link.clone(),
+                })
         })
         .collect();
     let pieces = pieces(&runs);
@@ -334,7 +343,11 @@ fn wrap(faces: &Faces, runs: &[Run], size: f32, measure: f32) -> Vec<Vec<Placed>
         // The space in the face of the word before it: the space that word's
         // run puts there itself when the two are drawn as one, and the
         // narrower choice before code, whose spaces are as wide as its letters.
-        let before = lines.last().unwrap().last().map_or(word[0].run.face, |p| p.face);
+        let before = lines
+            .last()
+            .unwrap()
+            .last()
+            .map_or(word[0].run.face, |p| p.face);
         let space = faces.space(before, size);
         let gap = if line_empty { 0.0 } else { space };
 
@@ -668,10 +681,7 @@ impl<'f, 's> Pages<'f, 's> {
         } else {
             let floor = frame.measure / columns as f32 / 2.0;
             let spare = frame.measure - floor * columns as f32;
-            natural
-                .iter()
-                .map(|n| floor + spare * n / total)
-                .collect()
+            natural.iter().map(|n| floor + spare * n / total).collect()
         };
 
         for (header, cells) in rows {
@@ -828,7 +838,8 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
     if let Some(e) = failed {
         return Err(e);
     }
-    doc.finish().map_err(|e| format!("the PDF could not be written: {e:?}"))
+    doc.finish()
+        .map_err(|e| format!("the PDF could not be written: {e:?}"))
 }
 
 /// Lays out a document, handing each page to `finished` as it is completed.
@@ -891,7 +902,8 @@ fn lay_out(
         runs.clear();
     };
 
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     for event in Parser::new_ext(markdown, options) {
         let quoted = stack.iter().any(|c| matches!(c, Container::Quote));
         match event {
@@ -1288,7 +1300,10 @@ mod tests {
             .map(|(_, t)| *t)
             .collect();
         assert_eq!(emoji, ["🌫️", "☀️"]);
-        assert!(segs.iter().any(|(f, t)| *f == FaceId::Regular && t.contains("Fog ahead")));
+        assert!(
+            segs.iter()
+                .any(|(f, t)| *f == FaceId::Regular && t.contains("Fog ahead"))
+        );
     }
 
     #[test]
@@ -1302,7 +1317,10 @@ mod tests {
 
     #[test]
     fn a_document_with_emoji_renders() {
-        let pdf = render("# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n").expect("rendered");
+        let pdf = render(
+            "# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n",
+        )
+        .expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));
     }
 }

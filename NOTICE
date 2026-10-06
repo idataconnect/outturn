@@ -3,8 +3,8 @@ Copyright 2026 i Data Connect!
 
 Licensed under the Apache License, Version 2.0. See LICENSE for the terms.
 
-This product includes fonts compiled into the PDF renderer
-(renderers/pdf/fonts, embedded in the runtime binary):
+This product includes fonts built into the PDF renderer service
+(renderers/pdf/fonts):
 
 DejaVu Sans, DejaVu Sans Bold, DejaVu Sans Oblique and DejaVu Sans Mono.
 Copyright (c) 2003 Bitstream, Inc. All Rights Reserved. Bitstream Vera is a

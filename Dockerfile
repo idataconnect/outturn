@@ -24,9 +24,6 @@ COPY wit/ wit/
 # The agent component the runtime executes. Committed as a build artifact so
 # the image does not need the wasm toolchain.
 COPY assets/agent_default.wasm /agent_default.wasm
-# The PDF renderer, for the same reason -- compiled into the runtime binary
-# with include_bytes!, so it is needed where the build runs, not in the image.
-COPY assets/pdf_renderer.wasm assets/pdf_renderer.wasm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release --bin api --bin gateway --bin runtime --bin mockllm --bin hollowbrook && \
@@ -73,3 +70,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=builder /usr/local/bin/hollowbrook /usr/local/bin/hollowbrook
 EXPOSE 8084
 ENTRYPOINT ["hollowbrook"]
+
+# The PDF renderer, deployed only where an operator wants PDFs
+# (k8s/components/pdf-renderer). A crate of its own, so its fonts and layout
+# are in this image and in no other.
+FROM rust:1 AS renderer-builder
+WORKDIR /app
+COPY renderers/pdf/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin outturn-renderer && \
+    cp /app/target/release/outturn-renderer /usr/local/bin/outturn-renderer
+
+FROM debian:trixie-slim AS pdf-renderer
+COPY --from=renderer-builder /usr/local/bin/outturn-renderer /usr/local/bin/outturn-renderer
+ENV LISTEN_ADDR=0.0.0.0:8090
+EXPOSE 8090
+USER 65534:65534
+ENTRYPOINT ["outturn-renderer"]

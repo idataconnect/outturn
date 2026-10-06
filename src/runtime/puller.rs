@@ -349,6 +349,7 @@ impl Puller {
             skill_files: request.skill_files,
             idle_timeout: self.idle_timeout,
             admission: Some(Arc::clone(&self.admission)),
+            renderer_url: crate::runtime::render::url_from_env(),
             egress: request.egress,
         };
 
