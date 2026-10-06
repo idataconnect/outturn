@@ -120,7 +120,10 @@ address vetting, and the gateway calls it.
 **The agent interface has generated files committed beside it.** Change
 `wit/agent.wit` and `assets/agent_default.wasm` and `agents/default/src/bindings.rs`
 must be rebuilt with it, or every turn fails in the linker with a mismatch a
-file comparison catches first -- which `artifact_guard` does. The toolchain and
+file comparison catches first -- which `artifact_guard` does. `wit/renderer.wit`
+is the same with `assets/pdf_renderer.wasm` and `renderers/pdf/src/bindings.rs`,
+guarded the same way; a renderer that does not link stops the runtime at
+startup rather than failing the first PDF. The toolchain and
 the exact flags are in the README; the flags are what reproduce the committed
 files byte for byte, so do not change them casually.
 

@@ -160,12 +160,26 @@ rustup target add wasm32-wasip2
 rustup component add llvm-tools          # rust-lld needs libLLVM to link a component
 cargo install wit-bindgen-cli --version 0.41.0
 
-wit-bindgen rust wit/ --out-dir agents/default/src --runtime-path wit_bindgen_rt --format
+wit-bindgen rust wit/ --world agent-world --out-dir agents/default/src --runtime-path wit_bindgen_rt --format
 mv agents/default/src/agent_world.rs agents/default/src/bindings.rs
 (cd agents/default && cargo build --release --target wasm32-wasip2)
 cp agents/default/target/wasm32-wasip2/release/outturn_agent_default.wasm assets/agent_default.wasm
 cp wit/agent.wit assets/agent_default.wit
 ```
+
+The PDF renderer is the same arrangement for `wit/renderer.wit`, and is built
+into the runtime binary rather than shipped beside it:
+
+```bash
+wit-bindgen rust wit/ --world pdf-renderer --out-dir renderers/pdf/src --runtime-path wit_bindgen_rt --format
+mv renderers/pdf/src/pdf_renderer.rs renderers/pdf/src/bindings.rs
+(cd renderers/pdf && cargo build --release --target wasm32-wasip2)
+cp renderers/pdf/target/wasm32-wasip2/release/outturn_renderer_pdf.wasm assets/pdf_renderer.wasm
+cp wit/renderer.wit assets/pdf_renderer.wit
+```
+
+`--world` is needed now that `wit/` holds two worlds; without it the tool
+cannot tell which one is meant.
 
 The bindgen flags are not a guess and should not be changed casually: they are
 what reproduces the committed file byte for byte. A cheap way to confirm before
