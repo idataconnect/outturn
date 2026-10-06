@@ -1326,7 +1326,16 @@ impl outturn::agent::host::Host for AgentHost {
             // Held until the document has been copied out of the renderer's
             // store, which is the whole of the memory a render uses.
             let _charge = self.charge(crate::runtime::render::CHARGE_BYTES, "render a PDF")?;
-            renderer.render(&markdown).await?.pdf
+            let done = renderer.render(&markdown).await?;
+            tracing::info!(
+                session_id = %self.session_id,
+                fuel = done.fuel,
+                peak_memory = done.peak_memory,
+                markdown_bytes = markdown.len(),
+                pdf_bytes = done.pdf.len(),
+                "rendered a PDF"
+            );
+            done.pdf
         };
         let size = storage
             .write(&resolved, &pdf)
@@ -2279,6 +2288,17 @@ impl AgentRunner {
             .outturn_agent_agent()
             .call_run(&mut store, &conversation, &system_prompt)
             .await;
+
+        // Logged however the turn ended, a trap included: what a turn burns
+        // is wanted before the ledger records it, to see what turns cost.
+        // Excludes host work done for the guest, and any render, which logs
+        // its own.
+        tracing::info!(
+            session_id = %store.data().session_id,
+            fuel = options.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
+            ok = matches!(outcome, Ok(Ok(_))),
+            "turn finished"
+        );
 
         let reply = match outcome {
             Ok(Ok(reply)) => reply,
