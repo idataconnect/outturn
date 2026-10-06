@@ -544,8 +544,8 @@ async fn chat_completions_stream(
     State(state): State<Arc<GatewayState>>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<Response, (StatusCode, String)> {
-    let claims = authenticate(&state, &headers)?;
+) -> Result<Response, Response> {
+    let claims = authenticate(&state, &headers).map_err(IntoResponse::into_response)?;
 
     tracing::debug!(
         session_id = %claims.subject,
@@ -743,7 +743,8 @@ async fn chat_completions_stream(
                 ));
             }
             Err(e) => {
-                tracing::warn!(provider = ?provider.provider(), error = %e, "stream failed");
+                // The Debug form, whole: what a caller is shown is capped.
+                tracing::warn!(provider = ?provider.provider(), error = ?e, "stream failed");
                 state.observe(provider, caller, Err(&e)).await;
                 let fatal = e.is_client_error();
                 last_error = Some(e);
@@ -759,14 +760,35 @@ async fn chat_completions_stream(
     // could stream" is true of a misconfigured route, an outage and a
     // malformed request alike, and an operator reading it learns none of them
     // -- the reason was in the gateway's log and nowhere a caller could see.
-    Err((
-        StatusCode::BAD_GATEWAY,
-        match last_error {
-            Some(e) => format!("no provider could stream: {e}"),
-            None => "no provider could stream".into(),
-        },
-    ))
+    //
+    // A reply the model wrote but nobody can use is marked as such, so the
+    // runtime can tell it from a provider that is down: retrying an outage
+    // may work, but retrying a model that looped repeats the minutes it
+    // spent looping.
+    let malformed = last_error.as_ref().is_some_and(|e| e.is_malformed_reply());
+    let message = match last_error {
+        Some(e) => format!("no provider could stream: {e}"),
+        None => "no provider could stream".into(),
+    };
+    if malformed {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            [(
+                axum::http::HeaderName::from_static(FAILURE_HEADER),
+                MALFORMED_REPLY,
+            )],
+            message,
+        )
+            .into_response());
+    }
+    Err((StatusCode::BAD_GATEWAY, message).into_response())
 }
+
+/// Names what kind of failure a 502 from the streaming route is, where it is
+/// one the caller should treat differently from the provider being down.
+pub const FAILURE_HEADER: &str = "x-outturn-failure";
+/// The model answered, and its answer was unusable. See `is_malformed_reply`.
+pub const MALFORMED_REPLY: &str = "malformed-reply";
 
 pub fn routes(state: Arc<GatewayState>) -> Router {
     Router::new()

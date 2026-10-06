@@ -405,6 +405,8 @@ pub struct AgentHost {
     admission: Option<Arc<crate::runtime::admission::Admission>>,
     renderer: Option<Arc<crate::runtime::render::LazyRenderer>>,
     open_writers: usize,
+    /// Whether a round's reply came back unusable. See `HeldError`.
+    malformed_reply: bool,
 }
 
 /// What separates the text of one model round from the next in a reply.
@@ -604,11 +606,19 @@ pub struct HeldError {
     /// Why a hold cut this turn, where one did.
     pub held: Option<String>,
     pub error: anyhow::Error,
+    /// Whether a model reply that could not be used is what ended it. Read
+    /// from the host rather than from the error: the failure reaches the
+    /// guest as a string, and the guest's error is what the turn returns.
+    pub malformed_reply: bool,
 }
 
 impl HeldError {
     fn new(held: Option<String>, error: anyhow::Error) -> Self {
-        Self { held, error }
+        Self {
+            held,
+            error,
+            malformed_reply: false,
+        }
     }
 }
 
@@ -616,10 +626,7 @@ impl<E: Into<anyhow::Error>> From<E> for HeldError {
     /// For the failures that happen before a guest exists to be held --
     /// instantiating, fuel, the component itself. Nothing had cut them.
     fn from(error: E) -> Self {
-        Self {
-            held: None,
-            error: error.into(),
-        }
+        Self::new(None, error.into())
     }
 }
 
@@ -628,6 +635,17 @@ impl<E: Into<anyhow::Error>> From<E> for HeldError {
 /// Read by whoever has the conversation open, who did not choose the limit
 /// and cannot act on a stack of wasm frames.
 pub const OUT_OF_FUEL: &str = "this turn ran past its compute limit";
+
+/// What a turn ended by a malformed reply says.
+pub const MALFORMED: &str = "the model's reply was cut off partway through a tool call, \
+     so there was nothing it asked for that could be run. Asking again often works; \
+     asking for something shorter works more often";
+
+/// The model answered with a tool call nobody can read. See the gateway's
+/// `is_malformed_reply`.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct MalformedReply(String);
 
 impl HeldError {
     /// Whether the guest ran out of fuel.
@@ -876,7 +894,10 @@ impl outturn::agent::host::Host for AgentHost {
             self.writing.as_ref(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            self.malformed_reply |= e.downcast_ref::<MalformedReply>().is_some();
+            e.to_string()
+        })?;
 
         if completion
             .parts
@@ -1639,7 +1660,14 @@ async fn stream_completion(
 
     if !response.status().is_success() {
         let status = response.status();
+        let malformed = response
+            .headers()
+            .get(crate::gateway::FAILURE_HEADER)
+            .is_some_and(|v| v == crate::gateway::MALFORMED_REPLY);
         let detail = response.text().await.unwrap_or_default();
+        if malformed {
+            return Err(MalformedReply(detail).into());
+        }
         anyhow::bail!("gateway returned {status}: {detail}");
     }
 
@@ -2275,6 +2303,7 @@ impl AgentRunner {
             admission: options.admission,
             renderer: Some(Arc::clone(&self.renderer)),
             open_writers: 0,
+            malformed_reply: false,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
@@ -2323,10 +2352,13 @@ impl AgentRunner {
         let reply = match outcome {
             Ok(Ok(reply)) => reply,
             Ok(Err(e)) => {
-                return Err(HeldError::new(
-                    store.data().held.clone(),
-                    anyhow::anyhow!("guest returned an error: {e}"),
-                ));
+                return Err(HeldError {
+                    malformed_reply: store.data().malformed_reply,
+                    ..HeldError::new(
+                        store.data().held.clone(),
+                        anyhow::anyhow!("guest returned an error: {e}"),
+                    )
+                });
             }
             Err(e) => return Err(HeldError::new(store.data().held.clone(), e.into())),
         };

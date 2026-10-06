@@ -31,6 +31,9 @@ pub enum Behavior {
     TruncateAfter { text: String, chunks: usize },
     /// Fail the request outright.
     Status(StatusCode, String),
+    /// Fail as the gateway does when the model's reply could not be used:
+    /// a 502 marked as a malformed reply.
+    MalformedReply,
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
     /// Ask for a tool, and report a message the user sent mid-turn, then
@@ -368,6 +371,7 @@ async fn completions_stream(
             ndjson(lines)
         }
         Behavior::Status(code, message) => (code, message).into_response(),
+        Behavior::MalformedReply => malformed_reply(),
 
         Behavior::Hang => {
             // Never resolves; the caller must impose its own deadline.
@@ -413,6 +417,7 @@ async fn completions(
         Behavior::TextThenSteer { reply, .. } => reply,
         Behavior::TruncateAfter { text, .. } => text,
         Behavior::Status(code, message) => return (code, message).into_response(),
+        Behavior::MalformedReply => return malformed_reply(),
         Behavior::Hang => {
             std::future::pending::<()>().await;
             unreachable!()
@@ -443,6 +448,15 @@ fn ndjson(lines: Vec<String>) -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
         Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+fn malformed_reply() -> axum::response::Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        [(outturn::gateway::FAILURE_HEADER, outturn::gateway::MALFORMED_REPLY)],
+        "no provider could stream: the model wrote a tool call its arguments could not be read from",
     )
         .into_response()
 }

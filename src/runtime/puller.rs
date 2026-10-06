@@ -383,6 +383,15 @@ impl Puller {
                     held: e.held,
                     terminal: true,
                 }),
+                // Not retried either. A model that looped until it ran out of
+                // room may well loop again on the same conversation, and each
+                // try is minutes of generation paid for; a person asking again
+                // decides whether that is worth it.
+                Err(e) if e.malformed_reply => tx.send(ExecuteEvent::Failed {
+                    message: super::component::MALFORMED.into(),
+                    held: e.held,
+                    terminal: true,
+                }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
                     held: e.held,
