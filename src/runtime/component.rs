@@ -1137,7 +1137,7 @@ impl outturn::agent::host::Host for AgentHost {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("could not reach a model that can see: {e}"))?;
+            .map_err(|e| format!("could not reach a vision model: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -1146,7 +1146,7 @@ impl outturn::agent::host::Host for AgentHost {
             // route configured lands here, and the agent should say so instead
             // of guessing at the picture.
             return Err(format!(
-                "a model that can see was not available ({status}): {}",
+                "a vision model was not available ({status}): {}",
                 detail.chars().take(200).collect::<String>()
             ));
         }
