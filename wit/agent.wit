@@ -163,7 +163,58 @@ interface host {
     stat-object: func(path: string) -> result<object-info, string>;
 
     /// Writes an object, replacing anything already there.
+    ///
+    /// Whole, so for what a guest already holds whole. Anything it produces
+    /// in pieces -- an archive, an export -- belongs in a writer, which never
+    /// asks either side to hold all of it.
     write-object: func(path: string, data: list<u8>) -> result<u64, string>;
+
+    /// An object being written, a piece at a time.
+    ///
+    /// Nothing exists at the path until `finish`. A writer dropped without
+    /// finishing -- by the guest, a trap, the turn ending -- leaves whatever
+    /// was there before, so a reader never sees half a file and a failed
+    /// write is never mistaken for a short one.
+    resource object-writer {
+        /// Appends. The host holds at most a few megabytes of what has been
+        /// written and sends the rest on, so pieces can be any size the
+        /// guest finds convenient.
+        write: func(chunk: list<u8>) -> result<_, string>;
+
+        /// Completes the object and says what was stored. Takes the writer:
+        /// a finished object is not written to again.
+        finish: static func(writer: object-writer) -> result<object-info, string>;
+    }
+
+    /// Opens a writer, under the same scopes and refusals as `write-object`.
+    ///
+    /// Refused while the pod is short of memory -- each open writer holds a
+    /// buffer the host has to find room for -- and past a few open at once.
+    /// Either refusal is worth waiting out and trying again.
+    open-writer: func(path: string) -> result<object-writer, string>;
+
+    /// An object being read from the front, as stored.
+    resource object-reader {
+        /// Up to `len` bytes, and fewer near the end. Empty once there is
+        /// nothing left.
+        read: func(len: u32) -> result<list<u8>, string>;
+    }
+
+    /// Opens a reader on an object's bytes, under the same scopes and
+    /// refusals as `read-bytes`. One request to storage however many reads
+    /// follow, which a loop over ranged reads is not.
+    open-reader: func(path: string) -> result<object-reader, string>;
+
+    /// Renders markdown as a PDF and stores it at `destination`.
+    ///
+    /// The document is made and written by the host and never passes through
+    /// the guest: it would only be copied back out again, and linear memory
+    /// is the scarcer of the two. Headings, paragraphs, emphasis, links,
+    /// lists, block quotes, code and tables are laid out; images are not yet,
+    /// and appear as their alt text.
+    ///
+    /// Refused while the pod is short of memory, which is worth waiting out.
+    render-pdf: func(markdown: string, destination: string) -> result<object-info, string>;
 
     /// Removes an object.
     ///

@@ -348,6 +348,7 @@ impl Puller {
             },
             skill_files: request.skill_files,
             idle_timeout: self.idle_timeout,
+            admission: Some(Arc::clone(&self.admission)),
             egress: request.egress,
         };
 

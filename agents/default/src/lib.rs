@@ -37,6 +37,7 @@ const EXPAND_ARCHIVE: &str = "expand_archive";
 /// The model's name for asking what is in an image.
 const DESCRIBE_IMAGE: &str = "describe_image";
 const CREATE_ARCHIVE: &str = "create_archive";
+const RENDER_PDF: &str = "render_pdf";
 
 /// The model's names for waiting. Two tools rather than one with a flag, because
 /// the choice is one the model reasons about: whether the conversation should
@@ -139,7 +140,7 @@ fn all_tools() -> Vec<ToolDefinition> {
                       workspace. Some scopes may be read-only for this agent, and \
                       the error will say so and where to write instead."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/summary.md"},"content":{"type":"string","description":"The complete new contents."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","content","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/summary.md"},"content":{"type":"string","description":"The complete new contents, as text."},"content_base64":{"type":"string","description":"Instead of content, for a small binary file: its bytes in base64. Up to 1 MB decoded."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Saving the summary."}},"required":["path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -188,6 +189,18 @@ fn all_tools() -> Vec<ToolDefinition> {
                       them yourself if the archive is meant to replace them."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"prefix":{"type":"string","description":"Scoped folder to archive, e.g. workspace/invoices/2025/, or one file, e.g. session/main.pdf"},"path":{"type":"string","description":"Scoped path for the archive, e.g. workspace/archive/invoices-2025.zip"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Archiving 2025's invoices."}},"required":["prefix","path","action"]}"#
+            .to_string(),
+    },
+    ToolDefinition {
+        name: RENDER_PDF.to_string(),
+        description: "Make a PDF from markdown and save it. Headings, \
+                      paragraphs, bold, italic, links, lists, task lists, \
+                      block quotes, code blocks and tables are laid out on \
+                      A4 pages with page numbers; images are not drawn yet \
+                      and appear as their alt text. The first top-level \
+                      heading becomes the document's title."
+            .to_string(),
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path for the PDF, e.g. session/report.pdf"},"markdown":{"type":"string","description":"The whole document, in markdown."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Making the quarterly report."}},"required":["path","markdown","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -890,10 +903,54 @@ fn read_object(args: &serde_json::Value) -> String {
     .to_string()
 }
 
+/// The most `content_base64` may decode to.
+///
+/// Base64 in a tool call is the dearest way there is to move bytes -- every
+/// one is generated as output tokens -- so this is for an icon or a small
+/// file a model made itself. Anything larger comes from code, which has
+/// writers.
+const MAX_BASE64_BYTES: usize = 1024 * 1024;
+
 fn write_object(args: &serde_json::Value) -> String {
     let path = arg(args, "path");
-    match host::write_object(path, arg(args, "content").as_bytes()) {
+    let bytes = match content_bytes(args) {
+        Ok(b) => b,
+        Err(e) => return serde_json::json!({ "path": path, "error": e }).to_string(),
+    };
+    match host::write_object(path, &bytes) {
         Ok(written) => serde_json::json!({ "path": path, "bytes": written }).to_string(),
+        Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
+    }
+}
+
+/// What `write_object` was asked to store: text, or bytes in base64.
+fn content_bytes(args: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let encoded = args.get("content_base64").and_then(|v| v.as_str());
+    let text = args.get("content").and_then(|v| v.as_str());
+    match (text, encoded) {
+        (Some(_), Some(_)) => Err("give content or content_base64, not both".to_string()),
+        (_, Some(encoded)) => {
+            use base64::Engine;
+            // Whitespace is how a model wraps a long string; it is not data.
+            let compact: String = encoded.chars().filter(|c| !c.is_whitespace()).collect();
+            if compact.len() / 4 * 3 > MAX_BASE64_BYTES + 2 {
+                return Err(format!(
+                    "content_base64 decodes to more than {MAX_BASE64_BYTES} bytes, \
+                     which is more than a tool call should carry"
+                ));
+            }
+            base64::engine::general_purpose::STANDARD
+                .decode(compact.as_bytes())
+                .map_err(|e| format!("content_base64 is not valid base64: {e}"))
+        }
+        (text, None) => Ok(text.unwrap_or("").as_bytes().to_vec()),
+    }
+}
+
+fn render_pdf(args: &serde_json::Value) -> String {
+    let path = arg(args, "path");
+    match host::render_pdf(arg(args, "markdown"), path) {
+        Ok(info) => serde_json::json!({ "path": info.path, "bytes": info.size }).to_string(),
         Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
     }
 }
@@ -1126,6 +1183,7 @@ fn run_tool(
         DESCRIBE_IMAGE => describe_image(&args),
         EXPAND_ARCHIVE => expand_archive(&args),
         CREATE_ARCHIVE => create_archive(&args),
+        RENDER_PDF => render_pdf(&args),
         SLEEP => sleep(&args),
         TIMER => set_timer(&args),
         LIST_TIMERS => list_timers(),

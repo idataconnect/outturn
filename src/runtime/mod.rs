@@ -3,6 +3,7 @@ pub mod component;
 pub mod egress;
 pub mod fetch;
 pub mod puller;
+pub mod render;
 pub mod router;
 pub mod storage;
 pub mod vision;

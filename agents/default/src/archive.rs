@@ -11,7 +11,7 @@
 //! tested against memory; the host glue at the bottom is the only part that
 //! knows where bytes come from.
 
-use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 
 use crate::bindings::outturn::agent::host;
 
@@ -23,9 +23,9 @@ pub const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
 /// Written to storage across one expansion. Entries are written one at a
 /// time, so memory does not bound this -- storage does.
 pub const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
-/// An archive is assembled whole before it is written, since `write-object`
-/// takes an object and not a stream. Bounded by what fits beside the inputs.
-pub const MAX_ARCHIVE_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+/// How much of an archive is gathered before it is handed to the host. The
+/// zip writer emits many small pieces; each is a call across the boundary.
+const WRITE_BUFFER: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct Expanded {
@@ -66,7 +66,7 @@ where
 
     let mut out = Expanded::default();
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| format!("entry {i}: {e}"))?;
+        let entry = zip.by_index(i).map_err(|e| format!("entry {i}: {e}"))?;
         if entry.is_dir() {
             continue;
         }
@@ -113,37 +113,37 @@ where
     Ok(out)
 }
 
-/// Builds an archive from `(relative name, bytes)` pairs.
-pub fn create_into<I>(entries: I) -> Result<Vec<u8>, String>
+/// Builds an archive into `out` from `(relative name, contents)` pairs, and
+/// says how many went in.
+///
+/// Written as it goes: no entry and no archive is ever whole in memory, so
+/// how much can be archived is bounded by storage rather than by the sandbox.
+/// An input that cannot be opened fails the archive rather than leaving it
+/// silently short.
+pub fn create_into<W, I, R>(out: W, entries: I) -> Result<usize, String>
 where
-    I: IntoIterator<Item = (String, Vec<u8>)>,
+    W: Write,
+    I: IntoIterator<Item = Result<(String, R), String>>,
+    R: Read,
 {
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = zip::ZipWriter::new_stream(out);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
-    let mut total = 0u64;
     let mut count = 0usize;
-    for (name, data) in entries {
+    for entry in entries {
+        let (name, mut data) = entry?;
         count += 1;
         if count > MAX_ENTRIES {
             return Err(format!("more than {MAX_ENTRIES} files; not archived"));
         }
-        total += data.len() as u64;
-        if total > MAX_ARCHIVE_INPUT_BYTES {
-            return Err(format!(
-                "inputs pass {MAX_ARCHIVE_INPUT_BYTES} bytes; an archive is assembled in memory and this is more than fits"
-            ));
-        }
         writer.start_file(name.as_str(), options).map_err(|e| format!("{name}: {e}"))?;
-        writer.write_all(&data).map_err(|e| format!("{name}: {e}"))?;
+        io::copy(&mut data, &mut writer).map_err(|e| format!("{name}: {e}"))?;
     }
     if count == 0 {
         return Err("nothing to archive".to_string());
     }
-    Ok(writer
-        .finish()
-        .map_err(|e| format!("finishing archive: {e}"))?
-        .into_inner())
+    writer.finish().map_err(|e| format!("finishing archive: {e}"))?;
+    Ok(count)
 }
 
 // Host glue -----------------------------------------------------------------
@@ -190,23 +190,28 @@ impl Seek for Remote {
     }
 }
 
-/// The object as stored, whole. Windowed rather than in one call so the size
-/// is not needed up front and a document is not mistaken for its text.
-fn read_all_bytes(path: &str) -> Result<Vec<u8>, String> {
-    const WINDOW: u32 = 4 * 1024 * 1024;
-    let mut out = Vec::new();
-    let mut offset = 0u64;
-    loop {
-        let chunk = host::read_bytes(path, offset, WINDOW)?;
-        let n = chunk.len();
-        out.extend(chunk);
-        offset += n as u64;
-        if out.len() as u64 > MAX_ENTRY_BYTES {
-            return Err(format!("{path} is larger than an archive entry may be"));
-        }
-        if n < WINDOW as usize {
-            return Ok(out);
-        }
+/// A stored object, read from the front over one request.
+struct Stream(host::ObjectReader);
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let got = self.0.read(buf.len().min(u32::MAX as usize) as u32).map_err(io::Error::other)?;
+        buf[..got.len()].copy_from_slice(&got);
+        Ok(got.len())
+    }
+}
+
+/// An object being written, a piece at a time.
+struct Upload(host::ObjectWriter);
+
+impl Write for Upload {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf).map_err(io::Error::other)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -258,21 +263,30 @@ pub fn create(prefix: &str, archive: &str) -> Result<(usize, u64), String> {
     };
     let (prefix, found) = resolve_inputs(asked, &listed, &under);
 
-    let mut entries = Vec::with_capacity(found.len());
-    for path in &found {
+    let inputs: Vec<(String, &String)> = found
+        .iter()
         // Not the archive itself, should it be written under its own inputs.
-        if path == archive {
-            continue;
-        }
-        let name = path.strip_prefix(&prefix).unwrap_or(path).to_string();
-        entries.push((name, read_all_bytes(path)?));
-    }
-    if entries.is_empty() {
+        .filter(|path| *path != archive)
+        .map(|path| (path.strip_prefix(&prefix).unwrap_or(path).to_string(), path))
+        .collect();
+    if inputs.is_empty() {
         return Err(format!("nothing is stored under {asked}; nothing to archive"));
     }
-    let count = entries.len();
-    let bytes = create_into(entries)?;
-    let written = host::write_object(archive, &bytes)?;
+
+    // Nothing is stored at `archive` until the writer finishes, so an input
+    // that fails partway leaves whatever was there before rather than half
+    // an archive.
+    let mut out = io::BufWriter::with_capacity(WRITE_BUFFER, Upload(host::open_writer(archive)?));
+    let count = create_into(
+        &mut out,
+        inputs.into_iter().map(|(name, path)| {
+            host::open_reader(path)
+                .map(|r| (name, io::BufReader::with_capacity(WRITE_BUFFER, Stream(r))))
+                .map_err(|e| format!("{path}: {e}"))
+        }),
+    )?;
+    let Upload(writer) = out.into_inner().map_err(|e| format!("finishing archive: {}", e.error()))?;
+    let written = host::ObjectWriter::finish(writer)?.size;
     Ok((count, written))
 }
 
@@ -280,6 +294,7 @@ pub fn create(prefix: &str, archive: &str) -> Result<(usize, u64), String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::io::Cursor;
 
     #[test]
     fn names_that_escape_are_refused_and_the_rest_are_tidied() {
@@ -296,10 +311,14 @@ mod tests {
     /// What goes in comes out, by name and by byte.
     #[test]
     fn an_archive_round_trips() {
-        let bytes = create_into(vec![
-            ("one.txt".to_string(), b"first".to_vec()),
-            ("dir/two.bin".to_string(), vec![0u8, 255, 7, 7, 7]),
-        ])
+        let mut bytes = Vec::new();
+        create_into(
+            &mut bytes,
+            vec![
+                Ok(("one.txt".to_string(), &b"first"[..])),
+                Ok(("dir/two.bin".to_string(), &[0u8, 255, 7, 7, 7][..])),
+            ],
+        )
         .expect("create");
 
         let mut got: HashMap<String, Vec<u8>> = HashMap::new();
