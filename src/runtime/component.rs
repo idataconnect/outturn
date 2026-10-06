@@ -125,14 +125,21 @@ pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
 /// its own reasoning back would answer it.
 pub type ReasoningSink = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Reports that the model has begun writing a call to a tool, with the tool's
-/// name and its place among the round's calls.
+/// Reports that the model is writing a call to a tool, with the tool's name,
+/// its place among the round's calls, and how many bytes of arguments it has
+/// written so far.
 ///
-/// Before any of its arguments, which stream for seconds and are not whole --
-/// and so not runnable, or worth showing -- until the round ends. Without this,
-/// the reader saw nothing between the model's last thought and the call
-/// starting, and a thought's clock ran on through time spent writing the call.
-pub type WritingSink = Arc<dyn Fn(u32, &str) + Send + Sync>;
+/// Said first with none, as soon as the call has a name, and then about once
+/// a second while the arguments grow. The arguments themselves are not sent:
+/// they are not whole, and so not runnable or worth showing, until the round
+/// ends. Without the first, the reader saw nothing between the model's last
+/// thought and the call starting. Without the rest, a call carrying a whole
+/// document -- minutes of writing, for a model that loops -- was a spinner
+/// that said nothing about whether anything was happening.
+pub type WritingSink = Arc<dyn Fn(u32, &str, u64) + Send + Sync>;
+
+/// How often a call being written reports how much of it there is.
+const WRITING_REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Reports a tool call as the guest starts it.
 pub type ToolSink = Arc<dyn Fn(&ToolActivity) + Send + Sync>;
@@ -1663,6 +1670,9 @@ async fn stream_completion(
     // finished -- which is what `call_slots` remembers.
     let mut parts: Vec<ContentPart> = Vec::new();
     let mut call_slots: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    // When each call last said how much of it there is.
+    let mut reported: std::collections::BTreeMap<u32, std::time::Instant> =
+        std::collections::BTreeMap::new();
     let mut finish_reason = None;
     let mut usage = None;
     // Tool calls arrive in fragments keyed by index, and the arguments are a
@@ -1793,11 +1803,21 @@ async fn stream_completion(
                         // name arrives with its first fragment, and everything
                         // after that is arguments nobody should see half of.
                         if began && let Some(sink) = writing {
-                            sink(index, &entry.name);
+                            sink(index, &entry.name, 0);
+                            reported.insert(index, std::time::Instant::now());
                         }
                     }
                     if let Some(args) = call["function"]["arguments"].as_str() {
                         entry.arguments.push_str(args);
+                        if let Some(sink) = writing
+                            && !entry.name.is_empty()
+                            && reported
+                                .get(&index)
+                                .is_none_or(|at| at.elapsed() >= WRITING_REPORT_EVERY)
+                        {
+                            sink(index, &entry.name, entry.arguments.len() as u64);
+                            reported.insert(index, std::time::Instant::now());
+                        }
                     }
                 }
             }

@@ -972,7 +972,7 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Writing { index, name }) => {
+                    Ok(ExecuteEvent::Writing { index, name, bytes }) => {
                         // Told to the reader and nothing else. Not a part: the
                         // call it announces is recorded when the guest starts
                         // it, and a transcript holding both would show every
@@ -988,6 +988,7 @@ impl Worker {
                                 "message_id": message_id,
                                 "index": index,
                                 "name": name,
+                                "bytes": bytes,
                             }),
                         )
                         .await?;
