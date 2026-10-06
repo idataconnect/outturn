@@ -15,7 +15,35 @@ wasmtime::component::bindgen!({
     world: "agent-world",
     imports: { default: async },
     exports: { default: async },
+    with: {
+        "outturn:agent/host.object-writer": WriterState,
+        "outturn:agent/host.object-reader": ReaderState,
+    },
 });
+
+/// An object a guest is writing, as the host holds it.
+pub struct WriterState {
+    inner: Box<dyn crate::runtime::storage::ObjectWriter>,
+    /// As the guest named it, for what it is told back.
+    path: String,
+    resolved: String,
+    storage: Arc<dyn crate::runtime::storage::StorageBackend>,
+    /// The part this writer may hold, charged to admission while it is open.
+    _charge: Option<crate::runtime::admission::Charge>,
+}
+
+/// An object a guest is reading, as the host holds it.
+pub struct ReaderState {
+    inner: Box<dyn crate::runtime::storage::ObjectReader>,
+}
+
+/// Writers one turn may hold open at once. Each is charged a part to
+/// admission, and a few is what any sensible piece of work needs.
+pub const MAX_OPEN_WRITERS: usize = 4;
+
+/// The most a single read from a reader returns. A guest asking for more is
+/// given this, so one call cannot fill its memory.
+pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
@@ -365,6 +393,11 @@ pub struct AgentHost {
     /// table growth; a request past it fails inside the guest rather than
     /// being granted and killing the pod.
     limits: wasmtime::StoreLimits,
+    /// Asked before this turn holds memory beyond its flat charge -- an open
+    /// writer, a render. Absent charges nothing, which is what a test wants.
+    admission: Option<Arc<crate::runtime::admission::Admission>>,
+    renderer: Option<Arc<crate::runtime::render::LazyRenderer>>,
+    open_writers: usize,
 }
 
 /// What separates the text of one model round from the next in a reply.
@@ -386,7 +419,7 @@ pub const GUEST_MEMORY_LIMIT: usize = 128 * 1024 * 1024;
 ///
 /// Small next to the turn's total, large next to the cost of a yield: on the
 /// order of a millisecond of work.
-const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
+pub(crate) const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
 impl AgentHost {
     /// Turns a storage failure into what the guest is told, and decides who
@@ -495,6 +528,41 @@ impl AgentHost {
         }
     }
 
+    /// Charges admission for memory this turn is about to hold, or says why
+    /// it cannot. Nothing to charge when there is no admission to ask.
+    fn charge(
+        &self,
+        bytes: u64,
+        what: &str,
+    ) -> Result<Option<crate::runtime::admission::Charge>, String> {
+        let Some(admission) = &self.admission else {
+            return Ok(None);
+        };
+        admission.try_charge(bytes).map(Some).map_err(|refusal| {
+            tracing::debug!(session_id = %self.session_id, %refusal, "{what} refused");
+            format!(
+                "the runtime is short of memory and cannot {what} right now; \
+                 wait a little and try again"
+            )
+        })
+    }
+
+    /// What every write does once the bytes are stored, however they got
+    /// there: whatever was read out of an older object at the path is wrong
+    /// now, and whoever is watching for writes is told -- after the bytes are
+    /// there, so whatever acts on it finds them.
+    async fn stored(
+        &mut self,
+        storage: &dyn crate::runtime::storage::StorageBackend,
+        path: &str,
+        resolved: &str,
+    ) {
+        crate::api::extract::invalidate(storage, resolved).await;
+        if let Some(sink) = &self.on_write {
+            sink(path, resolved);
+        }
+    }
+
     /// Whether this turn may write at `path`, by the scope it names.
     fn may_write(&self, path: &str) -> Result<(), String> {
         if crate::runtime::storage::scope::skill_path(path).is_some() {
@@ -571,6 +639,68 @@ impl WasiView for AgentHost {
             ctx: &mut self.wasi,
             table: &mut self.table,
         }
+    }
+}
+
+impl outturn::agent::host::HostObjectWriter for AgentHost {
+    async fn write(
+        &mut self,
+        writer: wasmtime::component::Resource<WriterState>,
+        chunk: Vec<u8>,
+    ) -> Result<(), String> {
+        let state = self.table.get_mut(&writer).map_err(|e| e.to_string())?;
+        match state.inner.write(&chunk).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(self.storage_failed("write", e)),
+        }
+    }
+
+    async fn finish(
+        &mut self,
+        writer: wasmtime::component::Resource<WriterState>,
+    ) -> Result<ObjectInfo, String> {
+        let state = self.table.delete(writer).map_err(|e| e.to_string())?;
+        self.open_writers = self.open_writers.saturating_sub(1);
+        let WriterState {
+            inner,
+            path,
+            resolved,
+            storage,
+            _charge,
+        } = state;
+        let size = inner
+            .finish()
+            .await
+            .map_err(|e| self.storage_failed("write", e))?;
+        self.stored(storage.as_ref(), &path, &resolved).await;
+        Ok(ObjectInfo { path, size })
+    }
+
+    /// A writer the guest let go of unfinished. Dropping it abandons the
+    /// upload, and whatever was at the path stays.
+    async fn drop(&mut self, writer: wasmtime::component::Resource<WriterState>) -> wasmtime::Result<()> {
+        self.table.delete(writer)?;
+        self.open_writers = self.open_writers.saturating_sub(1);
+        Ok(())
+    }
+}
+
+impl outturn::agent::host::HostObjectReader for AgentHost {
+    async fn read(
+        &mut self,
+        reader: wasmtime::component::Resource<ReaderState>,
+        len: u32,
+    ) -> Result<Vec<u8>, String> {
+        let state = self.table.get_mut(&reader).map_err(|e| e.to_string())?;
+        match state.inner.read(len.min(MAX_READ_CHUNK) as usize).await {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => Err(self.storage_failed("read", e)),
+        }
+    }
+
+    async fn drop(&mut self, reader: wasmtime::component::Resource<ReaderState>) -> wasmtime::Result<()> {
+        self.table.delete(reader)?;
+        Ok(())
     }
 }
 
@@ -1099,14 +1229,81 @@ impl outturn::agent::host::Host for AgentHost {
             .write(&resolved, &data)
             .await
             .map_err(|e| self.storage_failed("write", e))?;
-        // Whatever was read out of the previous version is wrong now, and the
-        // job that reads this one has not run yet.
-        crate::api::extract::invalidate(storage.as_ref(), &resolved).await;
-        // Said after the bytes are there, so whatever acts on it finds them.
-        if let Some(sink) = &self.on_write {
-            sink(&path, &resolved);
-        }
+        self.stored(storage.as_ref(), &path, &resolved).await;
         Ok(written)
+    }
+
+    async fn open_writer(
+        &mut self,
+        path: String,
+    ) -> Result<wasmtime::component::Resource<WriterState>, String> {
+        // Checked now rather than at finish, so a guest is refused before it
+        // spends a turn producing something it may not keep.
+        self.may_write(&path)?;
+        let (storage, resolved) = self.object_at(&path)?;
+        if self.open_writers >= MAX_OPEN_WRITERS {
+            return Err(format!(
+                "{MAX_OPEN_WRITERS} files are already being written; finish one first"
+            ));
+        }
+        let charge = self.charge(
+            crate::runtime::storage::s3::PART_BYTES as u64,
+            "open a file for writing",
+        )?;
+        let inner = storage
+            .open_writer(&resolved)
+            .await
+            .map_err(|e| self.storage_failed("write", e))?;
+        let writer = self
+            .table
+            .push(WriterState {
+                inner,
+                path,
+                resolved,
+                storage,
+                _charge: charge,
+            })
+            .map_err(|e| e.to_string())?;
+        self.open_writers += 1;
+        Ok(writer)
+    }
+
+    async fn open_reader(
+        &mut self,
+        path: String,
+    ) -> Result<wasmtime::component::Resource<ReaderState>, String> {
+        let (storage, resolved) = self.object_at(&path)?;
+        let inner = storage
+            .open_reader(&resolved)
+            .await
+            .map_err(|e| self.storage_failed("read", e))?;
+        self.table
+            .push(ReaderState { inner })
+            .map_err(|e| e.to_string())
+    }
+
+    async fn render_pdf(&mut self, markdown: String, destination: String) -> Result<ObjectInfo, String> {
+        self.may_write(&destination)?;
+        let (storage, resolved) = self.object_at(&destination)?;
+        let Some(renderer) = self.renderer.clone() else {
+            return Err("PDF rendering is not available here".to_string());
+        };
+        let renderer = renderer.get().await?;
+        let pdf = {
+            // Held until the document has been copied out of the renderer's
+            // store, which is the whole of the memory a render uses.
+            let _charge = self.charge(crate::runtime::render::CHARGE_BYTES, "render a PDF")?;
+            renderer.render(&markdown).await?.pdf
+        };
+        let size = storage
+            .write(&resolved, &pdf)
+            .await
+            .map_err(|e| self.storage_failed("write", e))?;
+        self.stored(storage.as_ref(), &destination, &resolved).await;
+        Ok(ObjectInfo {
+            path: destination,
+            size,
+        })
     }
 
     async fn delete_object(&mut self, path: String) -> Result<(), String> {
@@ -1784,6 +1981,7 @@ pub struct Finished {
 
 pub struct AgentRunner {
     engine: Engine,
+    renderer: Arc<crate::runtime::render::LazyRenderer>,
     /// Built once. A linker describes what the host offers, which does not
     /// vary by turn, by guest, or by workspace.
     linker: Linker<AgentHost>,
@@ -1846,6 +2044,9 @@ pub struct RunOptions {
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
+    /// Charged for what the turn holds beyond its flat charge. None charges
+    /// nothing.
+    pub admission: Option<Arc<crate::runtime::admission::Admission>>,
 }
 
 impl AgentRunner {
@@ -1863,8 +2064,11 @@ impl AgentRunner {
         // host implementations live on.
         AgentWorld::add_to_linker::<_, HostData>(&mut linker, |state: &mut AgentHost| state)?;
 
+        let renderer = crate::runtime::render::LazyRenderer::new(&engine);
+
         Ok(Self {
             engine,
+            renderer,
             linker,
             compiled: CompiledCache::new(),
         })
@@ -1885,6 +2089,12 @@ impl AgentRunner {
             );
             Ok(component)
         })
+    }
+
+    /// Compiles the PDF renderer ahead of the first turn that wants it, and
+    /// says whether it can be used.
+    pub async fn warm_renderer(&self) -> Result<(), String> {
+        self.renderer.warm().await
     }
 
     /// Checks that this host can link this component, before taking any work.
@@ -2000,6 +2210,9 @@ impl AgentRunner {
                 .instances(8)
                 .tables(64)
                 .build(),
+            admission: options.admission,
+            renderer: Some(Arc::clone(&self.renderer)),
+            open_writers: 0,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))

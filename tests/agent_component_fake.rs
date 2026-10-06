@@ -49,6 +49,7 @@ const ALL_TOOLS: &[&str] = &[
     "list_objects",
     "expand_archive",
     "create_archive",
+    "render_pdf",
     "fetch_url",
     "get_current_time",
 ];
@@ -88,6 +89,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         reply_id: Uuid::now_v7(),
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
+        admission: None,
         // Nothing reachable unless a test says so, which is the default a
         // workspace gets.
         egress: Vec::new(),
@@ -335,6 +337,7 @@ async fn tool_names_are_offered_up_front_and_definitions_on_request() {
         "describe_image",
         "expand_archive",
         "create_archive",
+        "render_pdf",
         "get_current_time",
     ] {
         assert!(
@@ -2309,4 +2312,131 @@ async fn a_call_being_written_is_said_before_it_starts() {
             "started get_current_time".to_string(),
         ]
     );
+}
+
+/// The tool result the model was handed after the first round's tool call.
+fn first_tool_result(gateway: &FakeGateway) -> String {
+    gateway.requests()[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string()
+}
+
+/// A PDF asked for by name is made by the host and stored where the agent said.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_pdf_stores_a_pdf_at_the_path_named() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "render_pdf".into(),
+        arguments: r##"{"path":"session/report.pdf","markdown":"# Aging\n\n| Client | 90+ days |\n|---|--:|\n| Acme | 1,200.00 |\n","action":"Making the report"}"##.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+
+    runner()
+        .run(&component(), user("Make the report."), String::new(), options)
+        .await
+        .expect("run");
+
+    let pdf = store
+        .read(&scope::resolve(&space, "session/report.pdf").unwrap(), 0, u32::MAX)
+        .await
+        .expect("the PDF was stored");
+    assert!(pdf.starts_with(b"%PDF"), "not a PDF");
+    let result = first_tool_result(&gateway);
+    assert!(result.contains(&format!("\"bytes\":{}", pdf.len())), "{result}");
+}
+
+/// A model can store a small binary file byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_object_stores_base64_as_the_bytes_it_encodes() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    // A PNG signature and a NUL: nothing that survives being taken for text.
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "write_object".into(),
+        arguments: r#"{"path":"session/icon.bin","content_base64":"iVBORw0KGgoA","action":"Saving the icon"}"#.into(),
+        reply: "Saved.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+
+    runner()
+        .run(&component(), user("Save it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let stored = store
+        .read(&scope::resolve(&space, "session/icon.bin").unwrap(), 0, u32::MAX)
+        .await
+        .expect("stored");
+    assert_eq!(stored, b"\x89PNG\r\n\x1a\n\0");
+}
+
+/// An archive is streamed from its inputs into storage, and is a zip of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_archive_streams_its_inputs_into_one_zip() {
+    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "create_archive".into(),
+        arguments: r#"{"prefix":"session/in/","path":"session/out.zip","action":"Archiving"}"#.into(),
+        reply: "Archived.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    for (name, body) in [("session/in/a.txt", &b"alpha"[..]), ("session/in/sub/b.bin", &[0u8, 1, 2][..])] {
+        store
+            .write(&scope::resolve(&space, name).unwrap(), body)
+            .await
+            .expect("seed");
+    }
+
+    runner()
+        .run(&component(), user("Archive it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let zip = store
+        .read(&scope::resolve(&space, "session/out.zip").unwrap(), 0, u32::MAX)
+        .await
+        .expect("the archive was stored");
+    assert!(zip.starts_with(b"PK\x03\x04"), "not a zip");
+    // Names are stored uncompressed in the headers.
+    for name in ["a.txt", "sub/b.bin"] {
+        assert!(
+            zip.windows(name.len()).any(|w| w == name.as_bytes()),
+            "{name} is not in the archive"
+        );
+    }
+    let result = first_tool_result(&gateway);
+    assert!(result.contains("\"entries\":2"), "{result}");
 }

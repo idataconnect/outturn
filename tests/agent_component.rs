@@ -129,6 +129,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 eager_tools: Vec::new(),
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
+                admission: None,
                 egress: Vec::new(),
                 gates: outturn::egress::gate::Gates::none(),
                 on_gated: None,

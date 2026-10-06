@@ -24,6 +24,9 @@ COPY wit/ wit/
 # The agent component the runtime executes. Committed as a build artifact so
 # the image does not need the wasm toolchain.
 COPY assets/agent_default.wasm /agent_default.wasm
+# The PDF renderer, for the same reason -- compiled into the runtime binary
+# with include_bytes!, so it is needed where the build runs, not in the image.
+COPY assets/pdf_renderer.wasm assets/pdf_renderer.wasm
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release --bin api --bin gateway --bin runtime --bin mockllm --bin hollowbrook && \
