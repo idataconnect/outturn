@@ -86,5 +86,7 @@ async fn a_reader_on_nothing_is_not_found() {
 #[tokio::test]
 async fn the_lifecycle_rules_are_accepted() {
     let s = store().await;
-    s.ensure_session_lifecycle(30).await.expect("lifecycle rules refused");
+    s.ensure_session_lifecycle(30)
+        .await
+        .expect("lifecycle rules refused");
 }
