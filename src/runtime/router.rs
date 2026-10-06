@@ -254,6 +254,12 @@ pub enum ExecuteEvent {
         /// the work the stop existed to prevent as soon as the hold is lifted.
         #[serde(default)]
         held: Option<String>,
+        /// Whether a retry would only fail the same way, spending again on
+        /// every model call made before it did.
+        ///
+        /// False from an older runtime, which is the retrying it had.
+        #[serde(default)]
+        terminal: bool,
     },
 }
 

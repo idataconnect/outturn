@@ -155,7 +155,9 @@ impl LazyRenderer {
                     .await
                     .map_err(|e| e.to_string())
                     .and_then(|r| r.map_err(|e| e.to_string()))
-                    .inspect_err(|e| tracing::error!(error = %e, "the PDF renderer did not compile"))
+                    .inspect_err(
+                        |e| tracing::error!(error = %e, "the PDF renderer did not compile"),
+                    )
                     .map_err(|_| "PDF rendering is not available here".to_string())
             })
             .await
@@ -318,7 +320,10 @@ mod tests {
     #[tokio::test]
     async fn markdown_past_the_cap_is_refused_before_rendering() {
         let r = PdfRenderer::new(&engine()).unwrap();
-        let err = r.render(&"a".repeat(MAX_MARKDOWN_BYTES + 1)).await.unwrap_err();
+        let err = r
+            .render(&"a".repeat(MAX_MARKDOWN_BYTES + 1))
+            .await
+            .unwrap_err();
         assert!(err.contains("at most"), "{err}");
     }
 }
