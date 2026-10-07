@@ -56,6 +56,15 @@ into `k8s/overlays/local/dev-secrets.env` — `scripts/dev-secrets.sh --print`
 shows it. The keys live there too, gitignored and never committed; a build
 generates them if they are missing.
 
+The seed is three variables on the API, set by `k8s/overlays/local`.
+`OUTTURN_DEV_SEED`, set to anything, creates a system admin and an `acme`
+workspace on a database with no users, and does nothing on one that has any.
+`OUTTURN_DEV_ADMIN_EMAIL` defaults to `admin@outturn.local`.
+`OUTTURN_DEV_ADMIN_PASSWORD` has no default -- an old one is in the git
+history -- so the seed refuses to run without it. Never set `OUTTURN_DEV_SEED`
+outside local development; `scripts/deploy-prod.sh` refuses a manifest that
+does.
+
 ## Models
 
 Local development runs against ollama through the OpenAI protocol
