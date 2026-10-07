@@ -108,5 +108,7 @@ nav:
           - Idempotency: idempotency.md
       - Storage and search:
           - Storage: storage.md
+          - Streaming storage: streaming-storage.md
+          - PDF rendering: pdf-rendering.md
           - Session search: session-search.md
           - Looking at an image: vision.md
