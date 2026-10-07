@@ -3,7 +3,7 @@ import { AlertTriangle, Table2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
-import { TOKEN_KINDS, compact, dayLabel, exact, measured, share } from '../lib/viz'
+import { TOKEN_KINDS, cacheHitRate, compact, dayLabel, exact, measured, share } from '../lib/viz'
 import UsageArea, { type Bucket } from '../components/UsageArea'
 import UsageRanked, { type Slice } from '../components/UsageRanked'
 import StatTile from '../components/StatTile'
@@ -148,6 +148,10 @@ export default function Dashboard() {
   // things. The API sums the same five columns for a slice's `tokens`.
   const allTokens = totals
     ? TOKEN_KINDS.reduce((sum, kind) => sum + (totals[kind.key] ?? 0), 0)
+    : 0
+  const cacheRate = totals ? cacheHitRate(totals) : null
+  const cacheInput = totals
+    ? totals.prompt_tokens + totals.cache_read_tokens + totals.cache_write_tokens
     : 0
 
   // How much of the window nobody actually measured. Shown rather than folded
@@ -319,10 +323,15 @@ export default function Dashboard() {
             <StatTile label="Model calls" value={totals!.calls} hint="one per round" />
             <StatTile label="Sessions" value={totals!.sessions} hint="conversations touched" />
             <StatTile label="Agents" value={totals!.agents} hint="that answered" />
+            {/* The window's hit rate rather than cache reads' share of all
+                tokens: that share sets context re-read against completions
+                written, and answers nothing. Whether the cache is working is
+                the question this tile is for. */}
             <StatTile
-              label="Cache reads"
-              value={totals!.cache_read_tokens}
-              hint={`${share(totals!.cache_read_tokens, allTokens)} of tokens`}
+              label="Cache hit rate"
+              value={cacheRate ?? 0}
+              display={cacheRate === null ? '—' : share(totals!.cache_read_tokens, cacheInput)}
+              hint={`${compact(totals!.cache_read_tokens)} input tokens from cache`}
             />
           </section>
 
@@ -333,7 +342,8 @@ export default function Dashboard() {
                   Tokens per day
                 </h2>
                 <p className="mt-0.5 text-xs text-surface-500 dark:text-surface-400">
-                  Stacked by kind. Point at a day for its figures.
+                  Stacked by kind, with the share of input read from cache beneath. Point at a
+                  day for its figures.
                 </p>
               </div>
               <button

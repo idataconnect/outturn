@@ -11,10 +11,13 @@ import { compact, exact } from '../lib/viz'
 export default function StatTile({
   label,
   value,
+  display,
   hint,
 }: {
   label: string
   value: number
+  /** Shown in place of the compacted value, for a figure that is not a count. */
+  display?: string
   hint?: string
 }) {
   return (
@@ -26,9 +29,9 @@ export default function StatTile({
           numbers, and tabular widths make a number like 121 look loose. */}
       <p
         className="mt-1 text-2xl font-semibold text-surface-900 dark:text-surface-100"
-        title={exact(value)}
+        title={display === undefined ? exact(value) : undefined}
       >
-        {compact(value)}
+        {display ?? compact(value)}
       </p>
       {hint && <p className="mt-0.5 text-xs text-surface-500 dark:text-surface-400">{hint}</p>}
     </div>
