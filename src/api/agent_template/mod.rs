@@ -181,8 +181,9 @@ pub enum TemplateError {
 
 #[async_trait]
 pub trait AgentTemplateStore: Send + Sync {
-    /// Every template, retired ones included, for the operator.
-    async fn list(&self) -> Result<Vec<Template>, TemplateError>;
+    /// Templates, retired ones included, for the operator: a page of them,
+    /// by id, after `after`.
+    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<Template>, TemplateError>;
     async fn get(&self, id: Uuid) -> Result<Template, TemplateError>;
     async fn create(
         &self,
@@ -198,7 +199,13 @@ pub trait AgentTemplateStore: Send + Sync {
         created_by: Option<Uuid>,
     ) -> Result<Template, TemplateError>;
     async fn update(&self, id: Uuid, input: UpdateTemplate) -> Result<Template, TemplateError>;
-    async fn versions(&self, id: Uuid) -> Result<Vec<TemplateVersion>, TemplateError>;
+    /// A page of a template's versions, newest first, older than `after`.
+    async fn versions(
+        &self,
+        id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<TemplateVersion>, TemplateError>;
 
     /// The template an agent was made from, and the version it runs: the one
     /// its workspace pinned, while the template allows pinning, else the
@@ -219,22 +226,49 @@ pub trait AgentTemplateStore: Send + Sync {
     ) -> Result<(), TemplateError>;
 
     /// The templates a workspace may see, and which it has.
-    async fn catalog(&self, workspace_id: Uuid) -> Result<Vec<CatalogEntry>, TemplateError>;
+    async fn catalog(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<CatalogEntry>, TemplateError>;
 
-    /// Makes the agents a workspace is owed -- one for each required template,
-    /// and each default one it has not removed -- and brings the names of the
-    /// agents it already has up to date. `None` does every workspace. Safe to
-    /// run again; returns how many agents were made.
-    async fn provision(&self, workspace_id: Option<Uuid>) -> Result<usize, TemplateError>;
+    /// Makes the agents workspaces are owed -- one for each required template,
+    /// and each default one a workspace has not removed -- and brings the
+    /// names of the agents they already have up to date. `None` for either
+    /// means every one. Safe to run again; returns how many agents were made.
+    ///
+    /// A workspace whose agent cannot be made is logged and passed over rather
+    /// than failing the rest: one workspace's trouble is not every other's.
+    async fn provision(
+        &self,
+        workspace_id: Option<Uuid>,
+        template_id: Option<Uuid>,
+    ) -> Result<usize, TemplateError>;
 
     /// Makes a workspace's agent from a template it chose, and forgets that it
     /// once removed it. Returns the agent's id.
     async fn install(&self, workspace_id: Uuid, template_id: Uuid) -> Result<Uuid, TemplateError>;
 
     /// Asked before a template's agent is deleted: refused for a required
-    /// template, and remembered for a default one so it is not made again.
+    /// template, and remembered for any other, so it is not made again.
     async fn removing(&self, workspace_id: Uuid, template_id: Uuid) -> Result<(), TemplateError>;
 }
+
+/// The template version an agent runs, as SQL: joined from an `agents` row
+/// aliased `a`, it yields that agent's template as `t` and the version as `v`.
+///
+/// The one statement of the rule -- the pinned version while the template
+/// allows pinning, else the newest -- for every query that needs a template
+/// agent's version: the turn's prompt and policy, its skills and its fixed
+/// settings. Written once, so a turn cannot compose one version's prompt with
+/// another's skills.
+pub const RUNNING_VERSION: &str = "join agent_templates t on t.id = a.template_id \
+     join lateral (select * from agent_template_versions tv \
+                    where tv.template_id = a.template_id \
+                      and (not t.allow_pinning or a.template_version_id is null \
+                           or tv.id = a.template_version_id) \
+                    order by tv.ordinal desc limit 1) v on true";
 
 /// The size a workspace's section of a prompt may be. A section a business
 /// writes about how it works is a few paragraphs; anything longer is trying to

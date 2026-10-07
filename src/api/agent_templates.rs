@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use uuid::Uuid;
@@ -46,9 +46,12 @@ fn as_operator(state: &ApiState, headers: &axum::http::HeaderMap) -> Result<Uuid
 pub async fn list_templates(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<Template>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<Template>>, ApiError> {
     as_operator(&state, &headers)?;
-    Ok(Json(state.templates.list().await?))
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let items = state.templates.list(query.after, limit + 1).await?;
+    Ok(Json(super::Page::from_rows(items, limit, |t| t.id)))
 }
 
 pub async fn get_template(
@@ -104,18 +107,39 @@ pub async fn list_template_versions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TemplateVersion>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<TemplateVersion>>, ApiError> {
     as_operator(&state, &headers)?;
-    Ok(Json(state.templates.versions(id).await?))
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let items = state.templates.versions(id, query.after, limit + 1).await?;
+    Ok(Json(super::Page::from_rows(items, limit, |v| v.id)))
 }
 
 /// The templates this workspace may have, and which it has.
 pub async fn catalog(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<CatalogEntry>>, ApiError> {
+    Query(query): Query<super::PageQuery>,
+) -> Result<Json<super::Page<CatalogEntry>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    Ok(Json(state.templates.catalog(claims.workspace_id).await?))
+    // Owed agents made first, so a workspace whose provisioning failed when it
+    // was created, or at a publish, gets them the next time anyone looks. One
+    // query when nothing is owed.
+    if let Err(e) = state
+        .templates
+        .provision(Some(claims.workspace_id), None)
+        .await
+    {
+        tracing::warn!(workspace_id = %claims.workspace_id, error = %e, "could not provision template agents");
+    }
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let items = state
+        .templates
+        .catalog(claims.workspace_id, query.after, limit + 1)
+        .await?;
+    Ok(Json(super::Page::from_rows(items, limit, |e| {
+        e.template_id
+    })))
 }
 
 #[derive(serde::Serialize)]

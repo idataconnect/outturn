@@ -459,8 +459,9 @@ async fn create_workspace(
     state.roles.seed_defaults(workspace.id).await?;
     // And one with none of the agents the operator gives everyone is not the
     // product it was sold as. A failure here is logged rather than failing the
-    // workspace: the next publish provisions it.
-    if let Err(e) = state.templates.provision(Some(workspace.id)).await {
+    // workspace: reading the workspace's catalog provisions it again, and the
+    // agents page reads it every time it opens.
+    if let Err(e) = state.templates.provision(Some(workspace.id), None).await {
         tracing::warn!(workspace_id = %workspace.id, error = %e, "could not provision template agents");
     }
     tracing::info!(
