@@ -82,10 +82,12 @@ describe('UsageArea', () => {
       />,
     )
 
-    // Drawn dashed, because it is the one mark that does not share the axis
-    // beside it, and the legend says so in words.
-    expect(container.querySelector('path[stroke-dasharray]')).toBeTruthy()
-    expect(screen.getByText(/cache read — own scale/i)).toBeInTheDocument()
+    // In a panel of its own, with its own axis and title, rather than laid
+    // over the stack against an axis that is not its own.
+    expect(screen.getAllByRole('img')).toHaveLength(2)
+    expect(screen.getByText('Input served from cache')).toBeInTheDocument()
+    expect(screen.queryByText(/own scale/i)).not.toBeInTheDocument()
+    expect(screen.getByText('100%')).toBeInTheDocument()
 
     // The stack keeps its own maximum, so the work is still legible: were the
     // cache reads in it, the axis would top out near a million and these bands
@@ -103,6 +105,37 @@ describe('UsageArea', () => {
     for (const span of spans) {
       expect(span).toBeGreaterThan(20)
     }
+  })
+
+  it('breaks the cache line over a day with no input rather than drawing it to 0%', () => {
+    const { container } = render(
+      <UsageArea
+        buckets={[
+          bucket('2026-09-18T00:00:00Z', { calls: 1, prompt_tokens: 100, cache_read_tokens: 100 }),
+          bucket('2026-09-19T00:00:00Z', { calls: 1, prompt_tokens: 100, cache_read_tokens: 300 }),
+          bucket('2026-09-20T00:00:00Z'),
+          bucket('2026-09-21T00:00:00Z', { calls: 1, prompt_tokens: 100, cache_read_tokens: 100 }),
+        ]}
+      />,
+    )
+    const strip = screen.getAllByRole('img')[1]
+    // The first two days are one run, drawn as a line; the lone day after the
+    // gap is a dot, not a line pulled down through the idle day between.
+    const lines = strip.querySelectorAll('g[clip-path] path')
+    expect(lines).toHaveLength(1)
+    expect(lines[0].getAttribute('d')!.split(' L ')).toHaveLength(2)
+    expect(strip.querySelectorAll('g[clip-path] circle')).toHaveLength(1)
+    expect(container.innerHTML).not.toContain('NaN')
+  })
+
+  it('leaves the cache strip out for a window with no cache reads', () => {
+    render(
+      <UsageArea
+        buckets={[bucket('2026-09-19T00:00:00Z', { calls: 1, prompt_tokens: 10, completion_tokens: 5 })]}
+      />,
+    )
+    expect(screen.getAllByRole('img')).toHaveLength(1)
+    expect(screen.queryByText('Input served from cache')).not.toBeInTheDocument()
   })
 
   it('draws a window that is nothing but cache reads rather than calling it empty', () => {

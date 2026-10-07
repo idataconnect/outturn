@@ -157,7 +157,15 @@ export function measured(source: string | null): boolean {
  * separation is real rather than cosmetic -- a cache read is context being
  * re-read, priced differently by every provider and not new work the way a
  * prompt or a completion is. So the stack carries the work, and cache reads
- * ride above it as their own line against their own maximum.
+ * get a strip of their own beneath it, as the share of input they served.
+ *
+ * That strip was once a line laid over the stack against its own maximum,
+ * confined to the upper half of the plot. Its zero then sat about where the
+ * stack topped out, so it read as a fifth band on top of the others, and the
+ * axis beside it was the stack's. A legend saying "own scale" does not undo
+ * what position says. A separate panel has its own axis and cannot be misread
+ * against another's. A rate, rather than a count, answers what a reader wants
+ * from it: whether caching is working.
  *
  * Prompt is the floor because it is the bulk and the least interesting: the
  * smaller bands sit where their movement is visible, against a flat base
@@ -183,6 +191,23 @@ export const KINDS = [
 
 /** Shown beside the stack rather than in it. See [`KINDS`]. */
 export const CACHE_READ = { key: 'cache_read_tokens', label: 'Cache read' } as const
+
+/**
+ * The share of input that was served from cache, or null where there was no
+ * input to serve.
+ *
+ * Cache reads are counted *outside* the prompt figure -- the gateway subtracts
+ * them where a provider folds them in, as Gemini does -- so the input a model
+ * actually took is all three together. Null rather than zero for a day with
+ * no input: a day nobody called a model did not miss the cache, and a line
+ * dropping to 0% across it would say it had.
+ */
+export function cacheHitRate(
+  usage: Pick<Bucket, 'prompt_tokens' | 'cache_read_tokens' | 'cache_write_tokens'>,
+): number | null {
+  const input = usage.prompt_tokens + usage.cache_read_tokens + usage.cache_write_tokens
+  return input > 0 ? usage.cache_read_tokens / input : null
+}
 
 /**
  * Every token kind, stack and cache read together.

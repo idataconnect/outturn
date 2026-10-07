@@ -3,12 +3,14 @@ import { useId, useRef, useState } from 'react'
 import {
   CACHE_READ,
   KINDS,
+  cacheHitRate,
   compact,
   dayLabel,
   dayLabelLong,
   exact,
   niceMax,
   seriesColor,
+  share,
   type Bucket,
 } from '../lib/viz'
 import { useDarkMode } from '../lib/useDarkMode'
@@ -16,11 +18,16 @@ import { useDarkMode } from '../lib/useDarkMode'
 export type { Bucket }
 
 const VIEW_W = 720
-const VIEW_H = 220
 const PAD = { top: 12, right: 12, bottom: 24, left: 48 }
+const PLOT_H = 184
+// The cache strip beneath the stack: short, because a rate between 0 and 1
+// needs less height than a count does to show its movement.
+const STRIP_TOP = 6
+const STRIP_PLOT_H = 48
 
 /**
- * Tokens per day, stacked by kind.
+ * Tokens per day, stacked by kind, with the share of input served from cache
+ * in a strip beneath.
  *
  * Drawn as SVG by hand rather than with a charting library: the app has no
  * chart dependency, and the one thing a library would buy here -- the hover
@@ -28,11 +35,13 @@ const PAD = { top: 12, right: 12, bottom: 24, left: 48 }
  *
  * The stack is a part-to-whole over time, so the bands carry categorical
  * color and the legend is always present; the tooltip carries the figures, so
- * nothing is encoded by color alone.
+ * nothing is encoded by color alone. The strip is one series with its own
+ * axis and its own title, so it needs neither a hue nor a legend entry.
  */
 export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   const dark = useDarkMode()
   const clip = useId()
+  const stripClip = useId()
   const svg = useRef<SVGSVGElement>(null)
   const [hover, setHover] = useState<number | null>(null)
 
@@ -46,13 +55,25 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   const totals = buckets.map((b) => kinds.reduce((sum, k) => sum + b[k.key], 0))
   const max = niceMax(Math.max(...totals, 1))
 
+  // Cache reads, as the share of each day's input they served. See [`KINDS`]
+  // for why they sit beneath the stack rather than in it. The strip is left
+  // out, like an empty band, for a window whose provider never reported one.
+  const hasCache = buckets.some((b) => b[CACHE_READ.key] > 0)
+  const rates = buckets.map(cacheHitRate)
+
+  // With the strip present the day labels move under it, so the two panels
+  // read as one figure over one x-axis rather than two charts that happen to
+  // be stacked.
   const plotW = VIEW_W - PAD.left - PAD.right
-  const plotH = VIEW_H - PAD.top - PAD.bottom
+  const viewH = PAD.top + PLOT_H + (hasCache ? 8 : PAD.bottom)
+  const stripViewH = STRIP_TOP + STRIP_PLOT_H + PAD.bottom
+
   // A single bucket has no width to interpolate across, so it sits in the
   // middle rather than collapsing onto the left edge.
   const x = (i: number) =>
     buckets.length === 1 ? PAD.left + plotW / 2 : PAD.left + (i / (buckets.length - 1)) * plotW
-  const y = (v: number) => PAD.top + plotH - (v / max) * plotH
+  const y = (v: number) => PAD.top + PLOT_H - (v / max) * PLOT_H
+  const stripY = (rate: number) => STRIP_TOP + (1 - rate) * STRIP_PLOT_H
 
   // Cumulative tops, band by band, so each band is drawn against the one below.
   const tops: number[][] = []
@@ -62,16 +83,16 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
     tops.push([...running])
   }
 
-  // Cache reads against their own maximum, drawn as a line in the muted ink
-  // rather than a sixth series color: it is context for the stack, not
-  // another member of it, and a hue would say they were comparable.
-  const cacheReads = buckets.map((b) => b[CACHE_READ.key])
-  const cacheMax = niceMax(Math.max(...cacheReads, 1))
-  const hasCache = cacheReads.some((v) => v > 0)
-  // Confined to the upper half of the plot so it never tangles with the stack
-  // below it. Its own scale is stated in its own label, so nothing here
-  // pretends the two share an axis.
-  const cacheY = (v: number) => PAD.top + (1 - v / cacheMax) * (plotH * 0.45)
+  // The rate line, broken wherever a day had no input rather than drawn
+  // through it: see `cacheHitRate`. A run of one day has no line to draw, so
+  // it is marked with a dot instead of vanishing.
+  const runs: number[][] = []
+  rates.forEach((rate, i) => {
+    if (rate === null) return
+    const last = runs.at(-1)
+    if (last && last.at(-1) === i - 1) last.push(i)
+    else runs.push([i])
+  })
 
   const ticks = [0, max / 2, max]
   const axis = dark ? '#3a3a35' : '#e6e6e2'
@@ -80,9 +101,11 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   const surface = dark ? '#1a1a17' : '#ffffff'
 
   // A window with nothing but cache reads is not an empty window.
-  const empty = totals.every((t) => t === 0) && !cacheReads.some((v) => v > 0)
+  const empty = totals.every((t) => t === 0) && !hasCache
 
-  function onMove(event: React.PointerEvent<SVGSVGElement>) {
+  // One hover for both panels. They share a width and a viewBox width, so the
+  // stack's box maps a pointer over either of them to the same day.
+  function onMove(event: React.PointerEvent<HTMLDivElement>) {
     const box = svg.current?.getBoundingClientRect()
     if (!box || buckets.length === 0) return
     // The SVG scales to its container, so a client x has to come back through
@@ -94,21 +117,37 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
   }
 
   const active = hover === null ? null : buckets[hover]
+  const activeRate = hover === null ? null : rates[hover]
+
+  // Only the ends of the axis are labeled: a tick under every day is
+  // unreadable at a month's width, and the tooltip names the day the reader
+  // is actually pointing at.
+  function dayLabels(bottom: number) {
+    if (buckets.length === 0) return null
+    return (
+      <>
+        <text x={PAD.left} y={bottom - 6} fontSize={11} fill={ink}>
+          {dayLabel(buckets[0].at)}
+        </text>
+        <text x={VIEW_W - PAD.right} y={bottom - 6} fontSize={11} fill={ink} textAnchor="end">
+          {dayLabel(buckets[buckets.length - 1].at)}
+        </text>
+      </>
+    )
+  }
 
   return (
-    <div className="relative">
+    <div className="relative touch-none" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
       <svg
         ref={svg}
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-        className="w-full h-auto touch-none"
+        viewBox={`0 0 ${VIEW_W} ${viewH}`}
+        className="w-full h-auto"
         role="img"
         aria-label={`Tokens per day, stacked by kind, over ${buckets.length} days. The table below carries the same figures.`}
-        onPointerMove={onMove}
-        onPointerLeave={() => setHover(null)}
       >
         <defs>
           <clipPath id={clip}>
-            <rect x={PAD.left} y={PAD.top} width={plotW} height={plotH} />
+            <rect x={PAD.left} y={PAD.top} width={plotW} height={PLOT_H} />
           </clipPath>
         </defs>
 
@@ -161,24 +200,6 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
           </g>
         )}
 
-        {/* Cache reads: dashed, muted, and labeled with their own maximum.
-            Dashed because it is the one mark on this panel that does not share
-            the axis beside it, and a reader must be able to see that at a
-            glance rather than discover it in the legend. */}
-        {hasCache && !empty && (
-          <g clipPath={`url(#${clip})`}>
-            <path
-              d={`M ${cacheReads.map((v, i) => `${x(i)},${cacheY(v)}`).join(' L ')}`}
-              fill="none"
-              stroke={ink}
-              strokeWidth={2}
-              strokeDasharray="4 3"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-          </g>
-        )}
-
         {/* The crosshair, and a marker per band at the hovered day. */}
         {active && !empty && (
           <g>
@@ -186,7 +207,7 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
               x1={x(hover!)}
               x2={x(hover!)}
               y1={PAD.top}
-              y2={PAD.top + plotH}
+              y2={PAD.top + PLOT_H}
               stroke={ink}
               strokeWidth={1}
             />
@@ -201,37 +222,15 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
                 strokeWidth={2}
               />
             ))}
-            {hasCache && (
-              <circle
-                cx={x(hover!)}
-                cy={cacheY(cacheReads[hover!])}
-                r={4}
-                fill={ink}
-                stroke={surface}
-                strokeWidth={2}
-              />
-            )}
           </g>
         )}
 
-        {/* Only the ends of the axis are labeled: a tick under every day is
-            unreadable at a month's width, and the tooltip names the day the
-            reader is actually pointing at. */}
-        {buckets.length > 0 && (
-          <>
-            <text x={PAD.left} y={VIEW_H - 6} fontSize={11} fill={ink}>
-              {dayLabel(buckets[0].at)}
-            </text>
-            <text x={VIEW_W - PAD.right} y={VIEW_H - 6} fontSize={11} fill={ink} textAnchor="end">
-              {dayLabel(buckets[buckets.length - 1].at)}
-            </text>
-          </>
-        )}
+        {!hasCache && dayLabels(viewH)}
 
         {empty && (
           <text
             x={PAD.left + plotW / 2}
-            y={PAD.top + plotH / 2}
+            y={PAD.top + PLOT_H / 2}
             textAnchor="middle"
             fontSize={12}
             fill={ink}
@@ -242,8 +241,9 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
       </svg>
 
       {/* The legend is always present for two or more bands, so identity never
-          rests on color alone. */}
-      {(kinds.length > 1 || hasCache) && (
+          rests on color alone. It names the stack only: the strip below is
+          titled where it is drawn. */}
+      {kinds.length > 1 && (
         <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
           {kinds.map((kind, band) => (
             <li
@@ -258,25 +258,95 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
               {kind.label}
             </li>
           ))}
-          {hasCache && (
-            // The separate scale is said here, in words, rather than left for
-            // the reader to infer from a line that does not match the axis.
-            <li className="flex items-center gap-1.5 text-xs text-surface-600 dark:text-surface-400">
-              <svg width="14" height="10" aria-hidden className="shrink-0">
-                <line
-                  x1="0"
-                  y1="5"
-                  x2="14"
-                  y2="5"
-                  stroke={ink}
-                  strokeWidth={2}
-                  strokeDasharray="4 3"
-                />
-              </svg>
-              Cache read — own scale, to {compact(cacheMax)}
-            </li>
-          )}
         </ul>
+      )}
+
+      {hasCache && (
+        <div className="mt-4">
+          <p className="text-xs font-medium text-surface-700 dark:text-surface-300">
+            Input served from cache
+          </p>
+          <svg
+            viewBox={`0 0 ${VIEW_W} ${stripViewH}`}
+            className="mt-1 w-full h-auto"
+            role="img"
+            aria-label={`Share of each day's input read from cache, over ${buckets.length} days. The table below carries the cache reads it is computed from.`}
+          >
+            <defs>
+              {/* Widened by the stroke so a line at 0% or 100% is not shaved
+                  to half its width by the edge it runs along. */}
+              <clipPath id={stripClip}>
+                <rect x={PAD.left - 4} y={STRIP_TOP - 4} width={plotW + 8} height={STRIP_PLOT_H + 8} />
+              </clipPath>
+            </defs>
+
+            {[0, 1].map((t) => (
+              <g key={t}>
+                <line
+                  x1={PAD.left}
+                  x2={VIEW_W - PAD.right}
+                  y1={stripY(t)}
+                  y2={stripY(t)}
+                  stroke={axis}
+                  strokeWidth={1}
+                />
+                <text
+                  x={PAD.left - 8}
+                  y={stripY(t) + 4}
+                  textAnchor="end"
+                  fontSize={11}
+                  fill={ink}
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  {t * 100}%
+                </text>
+              </g>
+            ))}
+
+            <g clipPath={`url(#${stripClip})`}>
+              {runs.map((run) =>
+                run.length === 1 ? (
+                  <circle key={run[0]} cx={x(run[0])} cy={stripY(rates[run[0]]!)} r={3} fill={ink} />
+                ) : (
+                  <path
+                    key={run[0]}
+                    d={`M ${run.map((i) => `${x(i)},${stripY(rates[i]!)}`).join(' L ')}`}
+                    fill="none"
+                    stroke={ink}
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                ),
+              )}
+            </g>
+
+            {active && (
+              <g>
+                <line
+                  x1={x(hover!)}
+                  x2={x(hover!)}
+                  y1={STRIP_TOP}
+                  y2={STRIP_TOP + STRIP_PLOT_H}
+                  stroke={ink}
+                  strokeWidth={1}
+                />
+                {activeRate !== null && (
+                  <circle
+                    cx={x(hover!)}
+                    cy={stripY(activeRate)}
+                    r={4}
+                    fill={ink}
+                    stroke={surface}
+                    strokeWidth={2}
+                  />
+                )}
+              </g>
+            )}
+
+            {dayLabels(stripViewH)}
+          </svg>
+        </div>
       )}
 
       {/* Positioned over the plot rather than following the pointer: a tooltip
@@ -316,10 +386,21 @@ export default function UsageArea({ buckets }: { buckets: Bucket[] }) {
                   {CACHE_READ.label}
                 </span>
                 <span
-                  className="ml-auto text-surface-900 dark:text-surface-100"
+                  className="ml-auto pl-3 text-surface-900 dark:text-surface-100"
                   style={{ fontVariantNumeric: 'tabular-nums' }}
                 >
                   {exact(active[CACHE_READ.key])}
+                  {activeRate !== null && (
+                    <span className="text-surface-500 dark:text-surface-400">
+                      {' '}
+                      ·{' '}
+                      {share(
+                        active.cache_read_tokens,
+                        active.prompt_tokens + active.cache_read_tokens + active.cache_write_tokens,
+                      )}{' '}
+                      of input
+                    </span>
+                  )}
                 </span>
               </li>
             )}
