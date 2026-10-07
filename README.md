@@ -5,7 +5,7 @@ own agent platform.
 
 <!-- The walkthrough: scripts/demo-video.sh records it, and GitHub plays it
      from an upload's user-attachments URL on the line below. -->
-VIDEO_URL
+https://github.com/user-attachments/assets/6536e4ad-234b-469b-abcd-19c1365ceb6b
 
 Workspaces deploy agents that serve their own customers, with isolation, usage
 attribution and security boundaries built in rather than added later. The
