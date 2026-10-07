@@ -80,6 +80,7 @@ nav:
           - Tenancy, credentials and attribution: workspaces.md
           - Authorities and roles: authorities.md
           - Settings: settings.md
+          - Agent templates: agent-templates.md
       - Models and spend:
           - Routing: routing.md
           - Usage: usage.md
