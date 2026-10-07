@@ -209,7 +209,7 @@ export default function AgentEditor() {
                 onChange={(e) => onNameChange(e.target.value)}
                 required
                 disabled={!canSave || !!template}
-                className={field}
+                className={`${field} disabled:opacity-60`}
               />
             </label>
             <label className="flex-1 min-w-44">
@@ -236,7 +236,7 @@ export default function AgentEditor() {
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
               disabled={!canSave || !!template}
-              className={field}
+              className={`${field} disabled:opacity-60`}
             />
           </label>
 
@@ -269,8 +269,8 @@ export default function AgentEditor() {
                   <span className={label}>How this business works</span>
                   <span className="block text-xs text-surface-500 dark:text-surface-400 mb-1">
                     Where this workspace does something differently from the defaults. Naming
-                    what it replaces -- &ldquo;instead of raising suspected duplicates, void
-                    them&rdquo; -- leaves the agent nothing to reconcile.
+                    what it replaces &mdash; &ldquo;instead of raising suspected duplicates, void
+                    them&rdquo; &mdash; leaves the agent nothing to reconcile.
                   </span>
                   <textarea
                     value={form.workspace_addition}

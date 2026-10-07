@@ -1,7 +1,8 @@
 # Agent templates
 
 How an operator defines an agent once and has it in every workspace that
-should have it. A design; nothing here is built yet.
+should have it. Built, apart from pinning and the settings a template fixes,
+which are marked below as not yet.
 
 ## Why
 
@@ -19,13 +20,14 @@ template reaches every one of them that has not chosen otherwise.
 
 ## What a template is
 
-A template lives in the platform workspace, as an operator's skills do, and
-holds what an agent is made of:
+A template is the operator's, as an operator's skills are -- its rows belong to
+no workspace (`agent_templates`, migration 0032) -- and holds what an agent is
+made of:
 
 - name, slug and description;
 - the system prompt, in two parts (below);
 - the skills it is given, each following or pinned as an agent's skills are;
-- settings it fixes, such as a temperature the operator certified;
+- settings it fixes, such as a temperature the operator certified (not yet);
 - its policy, and the tools offered from the first round ([below](#eager-tools));
 - three rules for the workspaces that get it: its availability, whether they
   may add to its prompt, and whether they may pin a version.
@@ -106,11 +108,12 @@ additions off for that template, and the third part is never composed. It is
 one more prompt contributor ([prompt-contributors.md](prompt-contributors.md)),
 placed after the template's own text.
 
-Skills and settings follow the same idea. A template's skills come with it; a
-workspace may give its agent more, and may not take away the template's.
-A template sits in the settings walk between the workspace and the agent, as
-[settings.md](settings.md) already plans for skills: what it fixes, the
-workspace does not override.
+Skills and settings follow the same idea. A template's skills come with it,
+composed ahead of the agent's own, and are not among the bindings a workspace
+edits, so it may give its agent more and cannot take the template's away. A
+template is to sit in the settings walk between the workspace and the agent, as
+[settings.md](settings.md) already plans for skills, so that what it fixes the
+workspace does not override; that is not built yet.
 
 ## Versions
 
@@ -124,8 +127,8 @@ process against today's agent pins it to this version, sees that a newer one
 exists, and moves when it chooses. An operator who needs every workspace on
 the current version leaves pinning off, and required templates usually will.
 
-Following is built first; pinning is designed in -- a nullable pinned version
-beside `template_id`, as `agent_skills` already has -- and built second.
+Following is built; pinning is not yet. It wants a nullable pinned version
+beside `template_id`, as `agent_skills` already has.
 
 ## Eager tools
 
@@ -146,8 +149,9 @@ deferring everything.
 
 ## Who may do what
 
-- Making, publishing and retiring templates is an operator's, under a new
-  platform authority.
+- Making, publishing and retiring templates is the operator's: a system
+  administrator, as for platform skills and platform settings
+  (`/v1/platform/agent-templates`).
 - Adding and removing a default or optional template's agent is a workspace
   admin's, as making an agent is now.
 - Writing the workspace's part of a prompt, and pinning, belong to whoever may
