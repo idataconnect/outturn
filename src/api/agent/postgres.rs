@@ -40,13 +40,14 @@ fn read_agent(row: &sqlx::postgres::PgRow) -> Agent {
         policy: row.get("policy"),
         enabled: row.get("enabled"),
         template_id: row.get("template_id"),
+        template_version_id: row.get("template_version_id"),
         workspace_addition: row.get("workspace_addition"),
     }
 }
 
 /// What every read of an agent selects, so a column added is added once.
 pub(crate) const COLUMNS: &str = "id, workspace_id, name, slug, description, system_prompt, \
-     policy, enabled, template_id, workspace_addition";
+     policy, enabled, template_id, template_version_id, workspace_addition";
 
 #[async_trait]
 impl AgentStore for PostgresAgentStore {

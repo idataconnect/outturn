@@ -81,9 +81,21 @@ pub struct Template {
     pub slug: String,
     pub availability: Availability,
     pub allow_additions: bool,
+    /// Whether a workspace may keep its agent on a version rather than follow
+    /// the newest.
+    pub allow_pinning: bool,
     pub retired: bool,
-    /// The newest version, which every agent made from it follows.
+    /// The newest version, which every agent made from it follows unless its
+    /// workspace pinned another.
     pub current: TemplateVersion,
+}
+
+/// A template as one agent runs it: the template, and the version this agent
+/// is on -- the newest, or the one its workspace pinned.
+#[derive(Debug, Clone)]
+pub struct AgentTemplate {
+    pub template: Template,
+    pub running: TemplateVersion,
 }
 
 /// What a publish says. The whole of a version, since versions are not edited.
@@ -117,6 +129,8 @@ pub struct NewTemplate {
     pub availability: Availability,
     #[serde(default = "yes")]
     pub allow_additions: bool,
+    #[serde(default)]
+    pub allow_pinning: bool,
     #[serde(flatten)]
     pub version: NewVersion,
 }
@@ -134,6 +148,7 @@ fn yes() -> bool {
 pub struct UpdateTemplate {
     pub availability: Option<Availability>,
     pub allow_additions: Option<bool>,
+    pub allow_pinning: Option<bool>,
     pub retired: Option<bool>,
 }
 
@@ -185,10 +200,23 @@ pub trait AgentTemplateStore: Send + Sync {
     async fn update(&self, id: Uuid, input: UpdateTemplate) -> Result<Template, TemplateError>;
     async fn versions(&self, id: Uuid) -> Result<Vec<TemplateVersion>, TemplateError>;
 
-    /// The version an agent made from this template runs now: the newest. A
-    /// retired template is not published to, so its agents run as they last
-    /// did. None only for a template with no versions, which cannot be made.
-    async fn current_for_turn(&self, id: Uuid) -> Result<Option<TemplateVersion>, TemplateError>;
+    /// The template an agent was made from, and the version it runs: the one
+    /// its workspace pinned, while the template allows pinning, else the
+    /// newest. None for an agent made by hand.
+    async fn for_agent(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Option<AgentTemplate>, TemplateError>;
+
+    /// Keeps a workspace's agent on one version of its template, or with
+    /// `None` lets it follow the newest again.
+    async fn pin(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+        version_id: Option<Uuid>,
+    ) -> Result<(), TemplateError>;
 
     /// The templates a workspace may see, and which it has.
     async fn catalog(&self, workspace_id: Uuid) -> Result<Vec<CatalogEntry>, TemplateError>;

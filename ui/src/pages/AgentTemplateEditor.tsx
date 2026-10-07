@@ -44,6 +44,7 @@ type Form = NewVersion & {
   slug: string
   availability: Availability
   allow_additions: boolean
+  allow_pinning: boolean
   model: string
 }
 
@@ -51,6 +52,7 @@ const EMPTY: Form = {
   slug: '',
   availability: 'optional',
   allow_additions: true,
+  allow_pinning: false,
   name: '',
   description: '',
   requirements: '',
@@ -70,6 +72,7 @@ function fromTemplate(t: Template): Form {
     slug: t.slug,
     availability: t.availability,
     allow_additions: t.allow_additions,
+    allow_pinning: t.allow_pinning,
     name: t.current.name,
     description: t.current.description,
     requirements: t.current.requirements,
@@ -182,6 +185,7 @@ export default function AgentTemplateEditor() {
           slug: form.slug,
           availability: form.availability,
           allow_additions: form.allow_additions,
+          allow_pinning: form.allow_pinning,
         })
         void navigate(paths.agentTemplate(made.id))
         return
@@ -189,11 +193,13 @@ export default function AgentTemplateEditor() {
       if (
         loaded &&
         (loaded.availability !== form.availability ||
-          loaded.allow_additions !== form.allow_additions)
+          loaded.allow_additions !== form.allow_additions ||
+          loaded.allow_pinning !== form.allow_pinning)
       ) {
         await updateTemplate(id, {
           availability: form.availability,
           allow_additions: form.allow_additions,
+          allow_pinning: form.allow_pinning,
         })
       }
       const published = await publishTemplate(id, version(form))
@@ -350,6 +356,22 @@ export default function AgentTemplateEditor() {
               Workspaces may describe how their business works
               <span className="block text-xs text-surface-500 dark:text-surface-400">
                 Off keeps the instructions exactly as written in every workspace.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={form.allow_pinning}
+              onChange={(e) => setForm({ ...form, allow_pinning: e.target.checked })}
+              className="mt-1"
+            />
+            <span className="text-sm text-surface-700 dark:text-surface-300">
+              Workspaces may stay on a version
+              <span className="block text-xs text-surface-500 dark:text-surface-400">
+                Off keeps every agent made from this on the newest version, including any that
+                stayed on an older one while it was on.
               </span>
             </span>
           </label>

@@ -10975,3 +10975,159 @@ async fn a_template_refuses_a_setting_the_catalog_would() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
     }
 }
+
+/// The prompt a template agent's turn is sent, as the runtime receives it.
+async fn turn_prompt(h: &Harness, acme: Uuid, admin: &str, agent_id: &str) -> String {
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    let session = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(admin),
+            r#"{"content":"Go."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, body) = h.post("/v1/work", Some(&h.runtime_token(acme)), "{}").await;
+    serde_json::from_str::<Value>(&body).unwrap()["system_prompt"]
+        .as_str()
+        .expect("a turn")
+        .to_string()
+}
+
+/// A workspace may keep its agent on a version while the template allows it,
+/// and every agent follows the newest again once the template stops allowing it.
+#[tokio::test]
+async fn a_pinned_agent_stays_on_its_version_while_the_template_allows() {
+    let h = harness().await;
+    let (acme, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required",
+            "allow_pinning":true,"requirements":"Version one rules.",
+            "policy":{"model":"test-model"}}"#,
+    )
+    .await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let first = t["current"]["id"].as_str().unwrap().to_string();
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        &format!("/v1/agents/{agent_id}/template-version"),
+        &admin,
+        &format!(r#"{{"version_id":"{first}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/agent-templates/{tid}/versions"),
+            Some(&operator),
+            r#"{"name":"Invoicer","requirements":"Version two rules.","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let prompt = turn_prompt(&h, acme, &admin, &agent_id).await;
+    assert!(
+        prompt.contains("Version one rules."),
+        "the pin was not kept: {prompt}"
+    );
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}"), Some(&admin)).await;
+    let view: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(view["template"]["version"], 1);
+    assert_eq!(view["template"]["latest"], 2);
+    assert_eq!(view["template"]["pinned"], true);
+
+    // The operator stops allowing pins: the agent follows the newest.
+    let (status, _) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/platform/agent-templates/{tid}"),
+        &operator,
+        r#"{"allow_pinning":false}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}"), Some(&admin)).await;
+    let view: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(view["template"]["version"], 2);
+    assert_eq!(view["template"]["pinned"], false);
+}
+
+/// Pinning is refused where the template does not allow it, and for a version
+/// of some other template.
+#[tokio::test]
+async fn a_pin_is_refused_where_it_is_not_allowed_or_not_this_templates() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let fixed = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"fixed","name":"Fixed","availability":"required"}"#,
+    )
+    .await;
+    let other = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"other","name":"Other","availability":"required","allow_pinning":true}"#,
+    )
+    .await;
+    let catalog = template_agents(&h, &admin).await;
+    let agent_of = |slug: &str| {
+        catalog.iter().find(|e| e["slug"] == slug).unwrap()["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let (status, _) = send_as(
+        &h,
+        "PUT",
+        &format!("/v1/agents/{}/template-version", agent_of("fixed")),
+        &admin,
+        &format!(
+            r#"{{"version_id":"{}"}}"#,
+            fixed["current"]["id"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "pinned where the template does not allow it"
+    );
+
+    let (status, _) = send_as(
+        &h,
+        "PUT",
+        &format!("/v1/agents/{}/template-version", agent_of("other")),
+        &admin,
+        &format!(
+            r#"{{"version_id":"{}"}}"#,
+            fixed["current"]["id"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "pinned to another template's version"
+    );
+    let _ = other;
+}

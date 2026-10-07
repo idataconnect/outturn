@@ -32,6 +32,8 @@ export type Template = {
   slug: string
   availability: Availability
   allow_additions: boolean
+  /** Whether a workspace may keep its agent on a version. */
+  allow_pinning: boolean
   retired: boolean
   /** The newest version, which every agent made from it follows. */
   current: TemplateVersion
@@ -83,7 +85,12 @@ export const listTemplates = () => api<Template[]>('/v1/platform/agent-templates
 export const getTemplate = (id: string) => api<Template>(`/v1/platform/agent-templates/${id}`)
 
 export const createTemplate = (
-  input: NewVersion & { slug: string; availability: Availability; allow_additions: boolean },
+  input: NewVersion & {
+    slug: string
+    availability: Availability
+    allow_additions: boolean
+    allow_pinning: boolean
+  },
 ) =>
   api<Template>('/v1/platform/agent-templates', {
     method: 'POST',
@@ -98,7 +105,12 @@ export const publishTemplate = (id: string, input: NewVersion) =>
 
 export const updateTemplate = (
   id: string,
-  input: Partial<{ availability: Availability; allow_additions: boolean; retired: boolean }>,
+  input: Partial<{
+    availability: Availability
+    allow_additions: boolean
+    allow_pinning: boolean
+    retired: boolean
+  }>,
 ) =>
   api<Template>(`/v1/platform/agent-templates/${id}`, {
     method: 'PATCH',
@@ -109,3 +121,16 @@ export const templateCatalog = () => api<CatalogEntry[]>('/v1/agent-templates')
 
 export const installTemplate = (id: string) =>
   api<{ agent_id: string }>(`/v1/agent-templates/${id}/install`, { method: 'POST' })
+
+/** One version of an agent's template, as its workspace chooses between them. */
+export type VersionChoice = { id: string; ordinal: number; note: string; created_at: string }
+
+export const agentTemplateVersions = (agentId: string) =>
+  api<VersionChoice[]>(`/v1/agents/${agentId}/template-versions`)
+
+/** Keeps an agent on a version, or with null follows the newest again. */
+export const pinTemplateVersion = (agentId: string, versionId: string | null) =>
+  api<void>(`/v1/agents/${agentId}/template-version`, {
+    method: 'PUT',
+    body: JSON.stringify({ version_id: versionId }),
+  })

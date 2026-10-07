@@ -127,10 +127,16 @@ pub struct AgentView {
 #[derive(Debug, serde::Serialize)]
 pub struct TemplateView {
     pub id: Uuid,
+    /// The version this agent runs.
     pub version: i32,
+    /// The newest, so a page can say when a pinned agent is behind.
+    pub latest: i32,
+    /// Whether this agent stays on `version` rather than following the newest.
+    pub pinned: bool,
     pub requirements: String,
     pub defaults: String,
     pub allow_additions: bool,
+    pub allow_pinning: bool,
 }
 
 pub async fn get_agent(
@@ -140,19 +146,20 @@ pub async fn get_agent(
 ) -> Result<Json<AgentView>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     let agent = state.agents.get(claims.workspace_id, id).await?;
-    let template = match agent.template_id {
-        Some(template_id) => {
-            let t = state.templates.get(template_id).await?;
-            Some(TemplateView {
-                id: t.id,
-                version: t.current.ordinal,
-                requirements: t.current.requirements,
-                defaults: t.current.defaults,
-                allow_additions: t.allow_additions,
-            })
-        }
-        None => None,
-    };
+    let template = state
+        .templates
+        .for_agent(claims.workspace_id, id)
+        .await?
+        .map(|made| TemplateView {
+            id: made.template.id,
+            version: made.running.ordinal,
+            latest: made.template.current.ordinal,
+            pinned: made.template.allow_pinning && agent.template_version_id.is_some(),
+            requirements: made.running.requirements,
+            defaults: made.running.defaults,
+            allow_additions: made.template.allow_additions,
+            allow_pinning: made.template.allow_pinning,
+        });
     Ok(Json(AgentView { agent, template }))
 }
 
@@ -254,4 +261,69 @@ async fn template_rules(
         }
     }
     Ok(())
+}
+
+/// One version of an agent's template, as its workspace chooses between them.
+#[derive(Debug, serde::Serialize)]
+pub struct VersionChoice {
+    pub id: Uuid,
+    pub ordinal: i32,
+    pub note: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The versions of the template an agent was made from, newest first.
+pub async fn list_template_versions(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<VersionChoice>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let agent = state.agents.get(claims.workspace_id, id).await?;
+    let Some(template_id) = agent.template_id else {
+        return Ok(Json(Vec::new()));
+    };
+    Ok(Json(
+        state
+            .templates
+            .versions(template_id)
+            .await?
+            .into_iter()
+            .map(|v| VersionChoice {
+                id: v.id,
+                ordinal: v.ordinal,
+                note: v.note,
+                created_at: v.created_at,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PinVersion {
+    /// The version to stay on, or null to follow the newest again.
+    pub version_id: Option<Uuid>,
+}
+
+/// Keeps an agent on one version of its template, where the template allows
+/// it, or lets it follow the newest again.
+pub async fn pin_template_version(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<PinVersion>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
+    state
+        .templates
+        .pin(claims.workspace_id, id, input.version_id)
+        .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        agent_id = %id,
+        version_id = ?input.version_id,
+        "agent's template version chosen"
+    );
+    Ok(StatusCode::NO_CONTENT)
 }

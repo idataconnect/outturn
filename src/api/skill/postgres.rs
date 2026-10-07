@@ -990,14 +990,18 @@ impl SkillStore for PostgresSkillStore {
                    from agent_skills b
                   where b.workspace_id = $1 and b.agent_id = $2
                  union all
-                 -- A template agent's skills, from the template's newest
-                 -- version, ahead of any the workspace bound itself. One the
+                 -- A template agent's skills, from the version it runs -- the
+                 -- one pinned while pinning is allowed, else the newest --
+                 -- ahead of any the workspace bound itself. One the
                  -- workspace also bound is the workspace's binding, which may
                  -- pin it, rather than composed twice.
                  select ts.skill_id, ts.version_id, ts.position - 100000
                    from agents a
+                   join agent_templates t on t.id = a.template_id
                    join lateral (select tv.id from agent_template_versions tv
                                   where tv.template_id = a.template_id
+                                    and (not t.allow_pinning or a.template_version_id is null
+                                         or tv.id = a.template_version_id)
                                   order by tv.ordinal desc limit 1) tv on true
                    join agent_template_skills ts on ts.template_version_id = tv.id
                   where a.workspace_id = $1 and a.id = $2

@@ -12,8 +12,8 @@ macro_rules! sql {
 }
 
 use super::{
-    AgentTemplateStore, Availability, CatalogEntry, NewTemplate, NewVersion, Template,
-    TemplateError, TemplateSkill, TemplateVersion, UpdateTemplate, validate_slug,
+    AgentTemplate, AgentTemplateStore, Availability, CatalogEntry, NewTemplate, NewVersion,
+    Template, TemplateError, TemplateSkill, TemplateVersion, UpdateTemplate, validate_slug,
 };
 use crate::api::usage::PLATFORM_WORKSPACE;
 
@@ -60,7 +60,7 @@ fn read_version(row: &PgRow) -> TemplateVersion {
 /// Every template with its newest version, filtered by `filter` on `t`.
 fn templates_query(filter: &str) -> String {
     format!(
-        "select t.id as tid, t.slug, t.availability, t.allow_additions, \
+        "select t.id as tid, t.slug, t.availability, t.allow_additions, t.allow_pinning, \
                 t.retired_at is not null as retired, {VERSION_COLUMNS} \
            from agent_templates t \
            join lateral ( \
@@ -122,6 +122,7 @@ impl PostgresAgentTemplateStore {
                 availability: Availability::parse(r.get::<String, _>("availability").as_str())
                     .unwrap_or(Availability::Optional),
                 allow_additions: r.get("allow_additions"),
+                allow_pinning: r.get("allow_pinning"),
                 retired: r.get("retired"),
                 current,
             })
@@ -304,13 +305,14 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         let id = Uuid::now_v7();
         let mut tx = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
-            "insert into agent_templates (id, slug, availability, allow_additions) \
-             values ($1, $2, $3, $4)",
+            "insert into agent_templates (id, slug, availability, allow_additions, allow_pinning) \
+             values ($1, $2, $3, $4, $5)",
         )
         .bind(id)
         .bind(&input.slug)
         .bind(input.availability.as_str())
         .bind(input.allow_additions)
+        .bind(input.allow_pinning)
         .execute(&mut *tx)
         .await
         .map_err(|e| match &e {
@@ -356,6 +358,7 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
                  retired_at = case when $4 is null then retired_at \
                                    when $4 then coalesce(retired_at, now()) \
                                    else null end, \
+                 allow_pinning = coalesce($5, allow_pinning), \
                  updated_at = now() \
              where id = $1",
         )
@@ -363,6 +366,7 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         .bind(input.availability.map(Availability::as_str))
         .bind(input.allow_additions)
         .bind(input.retired)
+        .bind(input.allow_pinning)
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -390,25 +394,97 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
             .await
     }
 
-    async fn current_for_turn(&self, id: Uuid) -> Result<Option<TemplateVersion>, TemplateError> {
-        // The newest version whether or not the template is retired: nothing
-        // is published to a retired one, so its agents run as they last did.
-        let row = sqlx::query(sql!(
-            "select {VERSION_COLUMNS} from agent_template_versions v \
-              where v.template_id = $1 order by v.ordinal desc limit 1"
-        ))
-        .bind(id)
+    async fn for_agent(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Option<AgentTemplate>, TemplateError> {
+        let row = sqlx::query(
+            "select template_id, template_version_id from agents \
+              where workspace_id = $1 and id = $2",
+        )
+        .bind(workspace_id)
+        .bind(agent_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        match row {
-            Some(row) => Ok(self
-                .with_skills(vec![read_version(&row)])
-                .await?
-                .into_iter()
-                .next()),
-            None => Ok(None),
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let Some(template_id) = row.get::<Option<Uuid>, _>("template_id") else {
+            return Ok(None);
+        };
+        let template = self.get(template_id).await?;
+        let pinned: Option<Uuid> = row.get("template_version_id");
+        let running = match pinned.filter(|_| template.allow_pinning) {
+            // The pin, while the template allows one. A template that stops
+            // allowing it brings every agent back to the newest, and the rows
+            // keep their pins for if it allows them again.
+            Some(version_id) if version_id != template.current.id => {
+                let row = sqlx::query(sql!(
+                    "select {VERSION_COLUMNS} from agent_template_versions v \
+                      where v.id = $1 and v.template_id = $2"
+                ))
+                .bind(version_id)
+                .bind(template_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+                match row {
+                    Some(row) => self.with_skills(vec![read_version(&row)]).await?.remove(0),
+                    None => template.current.clone(),
+                }
+            }
+            _ => template.current.clone(),
+        };
+        Ok(Some(AgentTemplate { template, running }))
+    }
+
+    async fn pin(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+        version_id: Option<Uuid>,
+    ) -> Result<(), TemplateError> {
+        let Some(current) = self.for_agent(workspace_id, agent_id).await? else {
+            return Err(TemplateError::Invalid(
+                "only an agent made from a template has a version to stay on".into(),
+            ));
+        };
+        if let Some(version_id) = version_id {
+            if !current.template.allow_pinning {
+                return Err(TemplateError::Refused(
+                    "the operator keeps every agent made from this template on its newest \
+                     version"
+                        .into(),
+                ));
+            }
+            let belongs: bool = sqlx::query_scalar(
+                "select exists (select 1 from agent_template_versions \
+                                 where id = $1 and template_id = $2)",
+            )
+            .bind(version_id)
+            .bind(current.template.id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(internal)?;
+            if !belongs {
+                return Err(TemplateError::Invalid(
+                    "that is not a version of this agent's template".into(),
+                ));
+            }
         }
+        sqlx::query(
+            "update agents set template_version_id = $3, updated_at = now() \
+              where workspace_id = $1 and id = $2",
+        )
+        .bind(workspace_id)
+        .bind(agent_id)
+        .bind(version_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
     }
 
     async fn catalog(&self, workspace_id: Uuid) -> Result<Vec<CatalogEntry>, TemplateError> {
