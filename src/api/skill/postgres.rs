@@ -979,7 +979,8 @@ impl SkillStore for PostgresSkillStore {
         workspace_id: Uuid,
         agent_id: Uuid,
     ) -> Result<Vec<ResolvedSkill>, SkillError> {
-        // Two passes over the same bindings: the skills themselves, then this
+        // Two passes over the same bindings -- the agent's own, and its
+        // template's where it has one: the skills themselves, then this
         // workspace's overrides of them. `tier` is what puts an override after
         // the prose it speaks about, which is the whole of how it takes
         // precedence -- a model reads the later instruction as the current one.
@@ -988,6 +989,20 @@ impl SkillStore for PostgresSkillStore {
                  select b.skill_id, b.version_id as pinned, b.position
                    from agent_skills b
                   where b.workspace_id = $1 and b.agent_id = $2
+                 union all
+                 -- A template agent's skills, from the template's newest
+                 -- version, ahead of any the workspace bound itself. One the
+                 -- workspace also bound is the workspace's binding, which may
+                 -- pin it, rather than composed twice.
+                 select ts.skill_id, ts.version_id, ts.position - 100000
+                   from agents a
+                   join lateral (select tv.id from agent_template_versions tv
+                                  where tv.template_id = a.template_id
+                                  order by tv.ordinal desc limit 1) tv on true
+                   join agent_template_skills ts on ts.template_version_id = tv.id
+                  where a.workspace_id = $1 and a.id = $2
+                    and not exists (select 1 from agent_skills b2
+                                     where b2.agent_id = $2 and b2.skill_id = ts.skill_id)
              ),
              picked as (
                  select bd.position, 0 as tier, s.id as skill_id, s.slug, s.workspace_id as owner,

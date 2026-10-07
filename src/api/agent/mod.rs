@@ -16,6 +16,12 @@ pub struct Agent {
     pub system_prompt: String,
     pub policy: serde_json::Value,
     pub enabled: bool,
+    /// The template this agent was made from, if any. Its instructions,
+    /// skills and policy are then the template's, and what the workspace
+    /// writes goes in `workspace_addition`. See docs/agent-templates.md.
+    pub template_id: Option<Uuid>,
+    /// The workspace's own section of a template agent's prompt.
+    pub workspace_addition: String,
 }
 
 impl Agent {
@@ -56,6 +62,9 @@ pub struct UpdateAgent {
     pub system_prompt: Option<String>,
     pub policy: Option<serde_json::Value>,
     pub enabled: Option<bool>,
+    /// A template agent's workspace section. Refused on an agent made by hand,
+    /// which has its whole prompt to edit instead.
+    pub workspace_addition: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
