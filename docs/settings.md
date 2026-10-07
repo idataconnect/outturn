@@ -24,7 +24,9 @@ agent       (Invoicer)   --                    override off: no row, inherits
 ```
 
 Resolution walks up: the agent's row, else the workspace's, else the system's,
-else the catalog default. Turning an override off deletes the row, so that
+else the catalog default. An agent made from a template has one level more,
+and it wins over all of these: the values its template fixes
+([agent-templates.md](agent-templates.md)). Turning an override off deletes the row, so that
 level falls back to whatever is above it. There is no "copy the default down"
 step, which is what lets an operator change a system value and have it reach
 every workspace that never chose otherwise.

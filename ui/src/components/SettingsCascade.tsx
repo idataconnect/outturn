@@ -15,7 +15,7 @@ export type Effective = {
   default: unknown
   owner: 'operator_only' | 'workspace_overridable'
   value: unknown
-  source: 'default' | 'operator' | 'workspace' | 'agent'
+  source: 'default' | 'operator' | 'workspace' | 'agent' | 'template'
   override_value: unknown | undefined
   inherited: unknown
 }
@@ -25,6 +25,7 @@ const SOURCE_LABEL: Record<Effective['source'], string> = {
   operator: 'the platform',
   workspace: 'this workspace',
   agent: 'this agent',
+  template: 'the template this agent was made from, which fixes it',
 }
 
 function show(value: unknown): string {
@@ -111,7 +112,9 @@ export default function SettingsCascade({
       )}
       {settings?.map((s) => {
         const overridden = s.override_value !== undefined
-        const locked = !canEdit || s.owner === 'operator_only'
+        // A value a template fixes is not this level's to change, whoever
+        // is looking.
+        const locked = !canEdit || s.owner === 'operator_only' || s.source === 'template'
         return (
           <div
             key={s.key}
@@ -133,9 +136,11 @@ export default function SettingsCascade({
                     : 'text-surface-700 dark:text-surface-300'
                 }`}
                 title={
-                  s.owner === 'operator_only'
-                    ? 'Set by the platform operator and not overridable here'
-                    : `Override for ${levelName}`
+                  s.source === 'template'
+                    ? 'Fixed by the template this agent was made from'
+                    : s.owner === 'operator_only'
+                      ? 'Set by the platform operator and not overridable here'
+                      : `Override for ${levelName}`
                 }
               >
                 <input
@@ -178,7 +183,7 @@ export default function SettingsCascade({
 const field =
   'px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 disabled:opacity-60'
 
-function Control({
+export function Control({
   setting,
   disabled,
   onChange,

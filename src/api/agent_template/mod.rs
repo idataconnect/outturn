@@ -68,6 +68,9 @@ pub struct TemplateVersion {
     pub policy: serde_json::Value,
     pub eager_tools: Vec<String>,
     pub skills: Vec<TemplateSkill>,
+    /// Settings it fixes, by catalog key. They win over the workspace's and
+    /// the agent's own.
+    pub settings: serde_json::Map<String, serde_json::Value>,
     pub note: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -101,6 +104,8 @@ pub struct NewVersion {
     pub eager_tools: Vec<String>,
     #[serde(default)]
     pub skills: Vec<TemplateSkill>,
+    #[serde(default)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub note: String,
 }
@@ -282,6 +287,7 @@ mod tests {
             policy: serde_json::json!({}),
             eager_tools: vec![],
             skills: vec![],
+            settings: Default::default(),
             note: String::new(),
             created_at: chrono::Utc::now(),
         }

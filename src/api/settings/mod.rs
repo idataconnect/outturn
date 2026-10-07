@@ -290,6 +290,9 @@ pub enum Source {
     Operator,
     Workspace,
     Agent,
+    /// Fixed by the template the agent was made from. Wins over the workspace
+    /// and the agent, which is what fixing a value means.
+    Template,
 }
 
 /// A setting as one level sees it: what applies, where it came from, and

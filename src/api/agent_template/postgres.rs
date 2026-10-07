@@ -32,7 +32,8 @@ fn internal(e: sqlx::Error) -> TemplateError {
 }
 
 const VERSION_COLUMNS: &str = "v.id, v.template_id, v.ordinal, v.name, v.description, \
-     v.requirements, v.defaults, v.reminder, v.policy, v.eager_tools, v.note, v.created_at";
+     v.requirements, v.defaults, v.reminder, v.policy, v.eager_tools, v.settings, v.note, \
+     v.created_at";
 
 fn read_version(row: &PgRow) -> TemplateVersion {
     TemplateVersion {
@@ -47,6 +48,10 @@ fn read_version(row: &PgRow) -> TemplateVersion {
         policy: row.get("policy"),
         eager_tools: row.get("eager_tools"),
         skills: Vec::new(),
+        settings: match row.get::<serde_json::Value, _>("settings") {
+            serde_json::Value::Object(map) => map,
+            _ => Default::default(),
+        },
         note: row.get("note"),
         created_at: row.get("created_at"),
     }
@@ -150,15 +155,24 @@ impl PostgresAgentTemplateStore {
             ));
         }
 
+        // Checked against the catalog as an override would be: a template
+        // fixing a value no setting can take would fail every turn instead.
+        for (key, value) in &input.settings {
+            let setting = crate::api::settings::find(key)
+                .ok_or_else(|| TemplateError::Invalid(format!("no setting named {key}")))?;
+            crate::api::settings::validate(&setting, value)
+                .map_err(|e| TemplateError::Invalid(e.to_string()))?;
+        }
+
         let version_id = Uuid::now_v7();
         sqlx::query(
             "insert into agent_template_versions \
                  (id, template_id, ordinal, name, description, requirements, defaults, \
-                  reminder, policy, eager_tools, note, created_by) \
+                  reminder, policy, eager_tools, settings, note, created_by) \
              values ($1, $2, \
                      (select coalesce(max(ordinal), 0) + 1 from agent_template_versions \
                        where template_id = $2), \
-                     $3, $4, $5, $6, $7, coalesce($8, '{}'::jsonb), $9, $10, $11)",
+                     $3, $4, $5, $6, $7, coalesce($8, '{}'::jsonb), $9, $10, $11, $12)",
         )
         .bind(version_id)
         .bind(template_id)
@@ -169,6 +183,7 @@ impl PostgresAgentTemplateStore {
         .bind(&input.reminder)
         .bind(&input.policy)
         .bind(&input.eager_tools)
+        .bind(serde_json::Value::Object(input.settings.clone()))
         .bind(&input.note)
         .bind(created_by)
         .execute(&mut **tx)

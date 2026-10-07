@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { ArrowLeft, Save } from 'lucide-react'
 
-import { ApiError } from '../lib/api'
+import { ApiError, api } from '../lib/api'
+import { Control, type Effective } from '../components/SettingsCascade'
 import {
   AVAILABILITY,
   createTemplate,
@@ -59,6 +60,7 @@ const EMPTY: Form = {
   model: '',
   eager_tools: [],
   skills: [],
+  settings: {},
   note: '',
 }
 
@@ -77,6 +79,7 @@ function fromTemplate(t: Template): Form {
     model,
     eager_tools: t.current.eager_tools,
     skills: t.current.skills,
+    settings: t.current.settings ?? {},
     // A note says what one publish changed, so it does not carry forward.
     note: '',
   }
@@ -97,6 +100,7 @@ function version(form: Form): NewVersion {
     policy,
     eager_tools: form.eager_tools,
     skills: form.skills,
+    settings: form.settings,
     note: form.note,
   }
 }
@@ -124,6 +128,9 @@ export default function AgentTemplateEditor() {
   const [form, setForm] = useState<Form>(EMPTY)
   const [loaded, setLoaded] = useState<Template | null>(null)
   const [skills, setSkills] = useState<Skill[]>([])
+  /** The settings catalog, as the platform sees it, for the fixed-settings
+   *  controls: each setting's kind, label and the value it has now. */
+  const [catalog, setCatalog] = useState<Effective[]>([])
   const [loading, setLoading] = useState(!creating)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -134,8 +141,14 @@ export default function AgentTemplateEditor() {
       try {
         // Only the operator's own skills: a template is in every workspace,
         // and a workspace's skill there would be that workspace's everywhere.
-        const all = await listSkills()
-        if (!stale) setSkills(all.filter((s) => s.workspace_id !== workspaceId && !s.retired_at))
+        const [all, settings] = await Promise.all([
+          listSkills(),
+          api<Effective[]>('/v1/platform/settings'),
+        ])
+        if (!stale) {
+          setSkills(all.filter((s) => s.workspace_id !== workspaceId && !s.retired_at))
+          setCatalog(settings)
+        }
         if (creating) return
         const t = await getTemplate(id)
         if (stale) return
@@ -397,6 +410,44 @@ export default function AgentTemplateEditor() {
                   {tool}
                 </label>
               ))}
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend className={label}>Fixed settings</legend>
+            <span className={hint}>
+              Values every agent made from this runs with, whatever its workspace sets.
+            </span>
+            <div className="space-y-2">
+              {catalog.map((setting) => {
+                const fixed = setting.key in form.settings
+                return (
+                  <div key={setting.key} className="flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-2 w-56 text-sm text-surface-700 dark:text-surface-300">
+                      <input
+                        type="checkbox"
+                        checked={fixed}
+                        onChange={(e) => {
+                          const settings = { ...form.settings }
+                          // Fixing starts from the value that applies now,
+                          // so nothing changes until it is edited.
+                          if (e.target.checked) settings[setting.key] = setting.value
+                          else delete settings[setting.key]
+                          setForm({ ...form, settings })
+                        }}
+                      />
+                      {setting.label}
+                    </label>
+                    <Control
+                      setting={{ ...setting, value: fixed ? form.settings[setting.key] : setting.value }}
+                      disabled={!fixed}
+                      onChange={(value) =>
+                        setForm({ ...form, settings: { ...form.settings, [setting.key]: value } })
+                      }
+                    />
+                  </div>
+                )
+              })}
             </div>
           </fieldset>
 
