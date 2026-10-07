@@ -240,7 +240,8 @@ are near before changing it.
 - [compaction.md](docs/compaction.md) -- summarizing long conversations, the
   trim underneath, and why the system prompt is spent rather than compacted.
 - Access and tenancy: [authorities.md](docs/authorities.md),
-  [workspaces.md](docs/workspaces.md), [settings.md](docs/settings.md).
+  [workspaces.md](docs/workspaces.md), [settings.md](docs/settings.md),
+  [agent-templates.md](docs/agent-templates.md).
 - Models and spend: [routing.md](docs/routing.md), [usage.md](docs/usage.md),
   [caching.md](docs/caching.md).
 - Reaching the outside: [egress.md](docs/egress.md),
