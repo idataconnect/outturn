@@ -3,9 +3,9 @@
 A fast and secure foundation for companies that want to build and run their
 own agent platform.
 
-![outturn](docs/screenshot.png)
-
-![dashboard](docs/dashboard.png)
+<!-- The walkthrough: scripts/demo-video.sh records it, and GitHub plays it
+     from an upload's user-attachments URL on the line below. -->
+VIDEO_URL
 
 Workspaces deploy agents that serve their own customers, with isolation, usage
 attribution and security boundaries built in rather than added later. The
