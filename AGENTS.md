@@ -70,6 +70,10 @@ forgot to set one.
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
 | `OUTTURN_DEFAULT_MODEL` | api | Model when an agent names none. Unset, such an agent refuses its turns and sessions go unnamed |
+| `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
+| `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`; the UI's is `VITE_BRAND_NAME`, set at build time |
+| `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
+| `OUTTURN_AGENT_MODULE` | runtime | Path of the agent component. Default `/usr/local/share/outturn/agent_default.wasm`, the one in the image |
 
 Three are required rather than tunable, and each tier gets only the one it
 needs:
