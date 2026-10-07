@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::actor::Actor;
 use crate::runtime::storage::scope;
 
 /// What a skill is: prose in its own right, or instructions layered over one.
@@ -111,38 +112,25 @@ pub struct SkillVersion {
     /// where the version was read for the history, so not sent with a version
     /// read on its own, where it would always say nobody was recorded.
     #[serde(skip)]
-    pub author: Author,
+    pub author: Actor,
 }
 
 /// Who wrote a version, as the workspace reading it may know them.
 ///
-/// A person in the reader's own workspace is named. A version of an operator's
-/// skill was written by the operator's staff, whom a customer has no
-/// relationship with and no business being told the names of, so it is the
-/// operator's. A version nobody signed -- an install, a seed, a generated
-/// skill -- says so rather than naming a guess.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Author {
-    Person {
-        name: String,
-    },
-    Operator,
-    #[default]
-    Unrecorded,
-}
-
-impl Author {
-    /// From a version's owner and its author's name, as the reader sees them.
-    pub fn as_seen_by(reader: Uuid, owner: Uuid, name: Option<String>) -> Self {
-        if owner != reader {
-            return Author::Operator;
-        }
-        match name {
-            Some(name) => Author::Person { name },
-            None => Author::Unrecorded,
-        }
+/// A version of an operator's skill was written by the operator's staff, so
+/// it is the operator's whoever signed it. Anything else is named by the rules
+/// every actor is named by -- see `api::actor`. A version nobody signed -- an
+/// install, a seed, a generated skill -- says so rather than naming a guess.
+pub fn author_as_seen_by(
+    reader: Uuid,
+    owner: Uuid,
+    name: Option<String>,
+    operator_staff: bool,
+) -> Actor {
+    if owner != reader {
+        return Actor::Operator;
     }
+    Actor::user(name, operator_staff)
 }
 
 /// A version as the history lists it: what a person needs to choose one, and
@@ -164,7 +152,7 @@ pub struct VersionSummary {
     pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub author: Author,
+    pub author: Actor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -746,17 +734,26 @@ pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
 mod tests {
     #[test]
     fn an_author_is_named_only_inside_their_own_workspace() {
-        use super::Author;
+        use super::author_as_seen_by;
+        use crate::api::actor::Actor;
         let ours = uuid::Uuid::now_v7();
         let platform = uuid::Uuid::now_v7();
         assert_eq!(
-            Author::as_seen_by(ours, ours, Some("Ana".into())),
-            Author::Person { name: "Ana".into() }
+            author_as_seen_by(ours, ours, Some("Ana".into()), false),
+            Actor::Person { name: "Ana".into() }
         );
-        assert_eq!(Author::as_seen_by(ours, ours, None), Author::Unrecorded);
         assert_eq!(
-            Author::as_seen_by(ours, platform, Some("Staff".into())),
-            Author::Operator
+            author_as_seen_by(ours, ours, None, false),
+            Actor::Unrecorded
+        );
+        assert_eq!(
+            author_as_seen_by(ours, platform, Some("Staff".into()), true),
+            Actor::Operator
+        );
+        // Staff writing in a customer's own workspace are still the operator.
+        assert_eq!(
+            author_as_seen_by(ours, ours, Some("Staff".into()), true),
+            Actor::Operator
         );
     }
 

@@ -8,6 +8,7 @@
 
 mod common;
 
+use outturn::api::actor::Actor;
 use outturn::api::skill::PostgresSkillStatsStore;
 use outturn::api::skill::stats::SkillStatsStore;
 use uuid::Uuid;
@@ -310,6 +311,83 @@ async fn the_figures_stop_at_the_workspace() {
 
     w.db.cleanup().await;
     other.db.cleanup().await;
+}
+
+/// The operator's staff are counted together as the operator, neither named
+/// nor told apart, while the workspace's own people are named.
+#[tokio::test]
+async fn the_operators_staff_are_counted_as_the_operator() {
+    let w = setup().await;
+    let (skill, _) = a_skill(&w, "Shared").await;
+
+    let user = |name: &'static str, staff: bool| {
+        let pool = w.db.pool.clone();
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query("insert into users (id, display_name) values ($1, $2)")
+                .bind(id)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .expect("user");
+            if staff {
+                sqlx::query(
+                    "insert into user_system_roles (user_id, role) values ($1, 'system_admin')",
+                )
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("role");
+            }
+            id
+        }
+    };
+    let ana = user("Ana", false).await;
+    let staff = [user("Staff One", true).await, user("Staff Two", true).await];
+
+    for (ordinal, author) in [(2, staff[0]), (3, staff[1]), (4, ana)] {
+        let version = a_version(&w, skill, ordinal).await;
+        sqlx::query("update skill_versions set created_by = $1 where id = $2")
+            .bind(author)
+            .bind(version)
+            .execute(&w.db.pool)
+            .await
+            .expect("author");
+    }
+
+    let (from, to) = window();
+    let stats = PostgresSkillStatsStore::new(w.db.pool.clone())
+        .stats(w.workspace, from, to, 20)
+        .await
+        .expect("stats");
+
+    let operator: Vec<_> = stats
+        .authors
+        .iter()
+        .filter(|a| a.author == Actor::Operator)
+        .collect();
+    assert_eq!(
+        operator.len(),
+        1,
+        "staff were told apart: {:?}",
+        stats.authors
+    );
+    assert_eq!(operator[0].versions, 2);
+    assert!(operator[0].user_id.is_none(), "a staff id was sent");
+
+    let ours = stats
+        .authors
+        .iter()
+        .find(|a| a.user_id == Some(ana))
+        .expect("Ana's row");
+    assert_eq!(ours.author, Actor::Person { name: "Ana".into() });
+    assert_eq!(
+        stats.authors.iter().map(|a| a.versions).sum::<i64>(),
+        stats.totals.versions,
+        "the cut must add up to the total"
+    );
+
+    w.db.cleanup().await;
 }
 
 /// Versions written by an install carry no author, and dropping those rows

@@ -1,5 +1,6 @@
 import { AlertTriangle, Clock, PauseCircle } from 'lucide-react'
 
+import { actorName, type Actor } from '../lib/actors'
 import { compact, exact } from '../lib/viz'
 import StatTile from './StatTile'
 
@@ -40,8 +41,9 @@ export type SkillStats = {
     pinned: boolean
   }[]
   authors: {
+    /** Only for a person this workspace may be told about. */
     user_id: string | null
-    name: string | null
+    author: Actor
     versions: number
     skills: number
   }[]
@@ -193,13 +195,14 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
           <ul className="mt-3 space-y-1 text-sm">
             {stats.authors.map((a) => (
               <li
-                key={a.user_id ?? 'platform'}
+                key={a.user_id ?? a.author.kind}
                 className="flex items-baseline justify-between gap-3"
               >
                 <span className="truncate text-surface-800 dark:text-surface-200">
                   {/* A version written by an install or a seed carries no
-                      author. Named as such rather than left blank. */}
-                  {a.name ?? 'Set up automatically'}
+                      author. Named as such rather than left blank. The
+                      operator's staff come as one row, as the operator. */}
+                  {capitalize(actorName(a.author)) ?? 'Set up automatically'}
                 </span>
                 <span className="shrink-0 text-xs text-surface-500 dark:text-surface-400">
                   {a.versions} {a.versions === 1 ? 'edit' : 'edits'} to {a.skills}{' '}
@@ -219,4 +222,9 @@ export default function SkillStats({ stats }: { stats: SkillStats }) {
       )}
     </section>
   )
+}
+
+/** A row label starts with a capital: "The operator", not "the operator". */
+function capitalize(words: string | null): string | null {
+  return words === null ? null : words.charAt(0).toUpperCase() + words.slice(1)
 }

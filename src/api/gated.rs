@@ -44,6 +44,9 @@ use super::actions::{NewItem, Target};
 use super::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
 use super::router::{ApiError, ApiState};
 
+/// Who takes a gate's hold: the platform, as a rule, rather than a person.
+pub const GATE_HOLDER: &str = "gate";
+
 /// What the runtime says was refused.
 ///
 /// The shape of a request rather than a conclusion about it: this tier decides
@@ -197,7 +200,7 @@ pub async fn raise(
             // Recorded as the platform rather than as a person: nobody asked for
             // this hold, a rule did. `docs/triggers.md` draws the same line for a
             // turn nobody is waiting on.
-            held_by: "gate".to_string(),
+            held_by: GATE_HOLDER.to_string(),
         })
         .await?;
 

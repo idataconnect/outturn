@@ -1,3 +1,4 @@
+import { actorName, type Actor } from './actors'
 import { api, apiText, allPages } from './api'
 
 /**
@@ -97,19 +98,14 @@ export type VersionSummary = {
   author: Author
 }
 
-export type Author = { kind: 'person'; name: string } | { kind: 'operator' } | { kind: 'unrecorded' }
+/** Who wrote a version: see `Actor`. A version nobody signed is unrecorded. */
+export type Author = Actor
 
 /** A version's author as the history says it, or nothing where none was
  *  recorded. */
 export function writtenBy(author: Author | undefined): string | null {
-  switch (author?.kind) {
-    case 'person':
-      return `by ${author.name}`
-    case 'operator':
-      return 'by the operator'
-    default:
-      return null
-  }
+  const who = actorName(author)
+  return who === null ? null : `by ${who}`
 }
 
 export function listVersions(id: string): Promise<VersionSummary[]> {

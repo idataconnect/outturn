@@ -101,8 +101,22 @@ describe('the skills panel', () => {
   /// A version written by an install carries no author. Named rather than left
   /// blank, so a row with no name does not read as a rendering fault.
   it('says so plainly where there is no author', () => {
-    shown({ authors: [{ user_id: null, name: null, versions: 2, skills: 1 }] })
+    shown({
+      authors: [{ user_id: null, author: { kind: 'unrecorded' }, versions: 2, skills: 1 }],
+    })
     expect(screen.getByText('Set up automatically')).toBeInTheDocument()
+  })
+
+  /// The operator's staff come as one row, and are not named.
+  it("counts the operator's staff as the operator", () => {
+    shown({
+      authors: [
+        { user_id: null, author: { kind: 'operator' }, versions: 3, skills: 1 },
+        { user_id: 'u1', author: { kind: 'person', name: 'Ana' }, versions: 1, skills: 1 },
+      ],
+    })
+    expect(screen.getByText('The operator')).toBeInTheDocument()
+    expect(screen.getByText('Ana')).toBeInTheDocument()
   })
 
   /// The quiet panels stay quiet. A workspace with nothing wrong should see no

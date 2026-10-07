@@ -3,12 +3,12 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
+use crate::api::actor::Actor;
 use crate::api::usage::PLATFORM_WORKSPACE;
 
 use super::{
-    Author, Binding, CreateSkill, DeclaredGate, ForkSkill, NewVersion, ResolvedSkill, Skill,
-    SkillError, SkillFile, SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name,
-    validate_slug,
+    Binding, CreateSkill, DeclaredGate, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError,
+    SkillFile, SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
 };
 
 pub struct PostgresSkillStore {
@@ -330,7 +330,7 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
         unreached: None,
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
-        author: Author::default(),
+        author: Actor::default(),
     }
 }
 
@@ -622,10 +622,12 @@ impl SkillStore for PostgresSkillStore {
         limit: i64,
     ) -> Result<Vec<SkillVersion>, SkillError> {
         self.get(workspace_id, id).await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(concat!(
             "select v.id, v.skill_id, v.ordinal, v.body, v.note, v.based_on_version_id, \
                     v.created_by, v.created_at, v.workspace_id as owner, \
-                    u.display_name as author_name, \
+                    u.display_name as author_name, ",
+            crate::operator_staff_sql!("v.created_by"),
+            " as author_staff, \
                     h.hosts, f.files, f.file_sizes, f.file_hashes, f.file_links \
              from skill_versions v \
              left join users u on u.id = v.created_by \
@@ -644,7 +646,7 @@ impl SkillStore for PostgresSkillStore {
                and ($2::uuid is null or v.id < $2) \
              order by v.id desc \
              limit $3",
-        )
+        ))
         .bind(id)
         .bind(after)
         .bind(limit)
@@ -684,7 +686,12 @@ impl SkillStore for PostgresSkillStore {
                     unreached: None,
                     created_by: r.get("created_by"),
                     created_at: r.get("created_at"),
-                    author: Author::as_seen_by(workspace_id, r.get("owner"), r.get("author_name")),
+                    author: super::author_as_seen_by(
+                        workspace_id,
+                        r.get("owner"),
+                        r.get("author_name"),
+                        r.get("author_staff"),
+                    ),
                 }
                 .with_unreached()
             })

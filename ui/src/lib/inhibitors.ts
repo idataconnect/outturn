@@ -1,3 +1,4 @@
+import type { Actor } from './actors'
 import { api, allPages } from './api'
 
 /**
@@ -17,7 +18,10 @@ export type Inhibitor = {
   strength: 'suspended' | 'stopped'
   /** Why, in the holder's words. Required, so this is never empty. */
   reason: string
+  /** What took it, raw: a user's id or a machine's name. Not for showing. */
   held_by: string
+  /** Who holds it, in words. Sent with the list, not with a hold just taken. */
+  holder?: Actor
   created_at: string
 }
 
