@@ -25,7 +25,7 @@ const SOURCE_LABEL: Record<Effective['source'], string> = {
   operator: 'the platform',
   workspace: 'this workspace',
   agent: 'this agent',
-  template: 'the template this agent was made from, which fixes it',
+  template: 'the template from which this agent is derived',
 }
 
 function show(value: unknown): string {
@@ -137,7 +137,7 @@ export default function SettingsCascade({
                 }`}
                 title={
                   s.source === 'template'
-                    ? 'Fixed by the template this agent was made from'
+                    ? 'Defined by the template from which this agent is derived'
                     : s.owner === 'operator_only'
                       ? 'Set by the platform operator and not overridable here'
                       : `Override for ${levelName}`
@@ -170,7 +170,9 @@ export default function SettingsCascade({
                   ? `Set for ${levelName}. Without it: ${show(s.inherited)}, from ${
                       s.source === 'default' ? SOURCE_LABEL.default : 'above'
                     }.`
-                  : `From ${SOURCE_LABEL[s.source]}.`}
+                  : s.source === 'template'
+                    ? 'This value is defined by the template from which this agent is derived.'
+                    : `From ${SOURCE_LABEL[s.source]}.`}
               </span>
             </div>
           </div>
