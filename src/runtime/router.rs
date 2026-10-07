@@ -109,6 +109,11 @@ pub struct ExecuteRequest {
     /// Sent rather than proven one at a time, because a request has to be shown
     /// to match *none* of them and a Merkle proof cannot show absence.
     pub gates: crate::egress::gate::Gates,
+    /// Tools to offer from the first round, by name: a template agent's,
+    /// which its operator chose. Empty -- an agent made by hand, or a request
+    /// from an older API -- defers every tool to the guest's loader.
+    #[serde(default)]
+    pub eager_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -10511,3 +10511,390 @@ async fn one_session_can_be_read_on_its_own() {
 
     h.db.cleanup().await;
 }
+
+// Agent templates --------------------------------------------------------------
+
+async fn send_as(
+    h: &Harness,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: &str,
+) -> (StatusCode, String) {
+    h.send(
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request"),
+    )
+    .await
+}
+
+/// The operator, and a workspace admin, of one workspace.
+async fn template_people(h: &Harness) -> (Uuid, String, String) {
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    (acme, operator, admin)
+}
+
+async fn make_template(h: &Harness, operator: &str, body: &str) -> Value {
+    let (status, body) = h
+        .post("/v1/platform/agent-templates", Some(operator), body)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+/// The workspace's agents made from templates, by template id.
+async fn template_agents(h: &Harness, token: &str) -> Vec<Value> {
+    let (status, body) = h.get("/v1/agent-templates", Some(token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+/// A required template reaches every workspace there is, and every one made
+/// after it, and cannot be removed from any.
+#[tokio::test]
+async fn a_required_template_is_in_every_workspace_and_stays() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required",
+            "requirements":"Quote only listed prices."}"#,
+    )
+    .await;
+
+    let catalog = template_agents(&h, &admin).await;
+    let agent_id = catalog[0]["agent_id"]
+        .as_str()
+        .expect("made in an existing workspace");
+    assert_eq!(catalog[0]["name"], "Invoicer");
+
+    let (status, body) = send_as(&h, "DELETE", &format!("/v1/agents/{agent_id}"), &admin, "").await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a required agent was removed: {body}"
+    );
+
+    // A workspace made afterwards has it from the start.
+    let (status, body) = h
+        .post(
+            "/v1/workspaces",
+            Some(&operator),
+            r#"{"name":"Initech","slug":"initech"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let initech: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let theirs = h
+        .login_as("admin@initech.example", None, Some((initech, "admin")))
+        .await;
+    assert!(template_agents(&h, &theirs).await[0]["agent_id"].is_string());
+    let _ = t;
+}
+
+/// A default template's agent a workspace removed is not put back by the next
+/// publish, and comes back when the workspace adds it.
+#[tokio::test]
+async fn a_removed_default_agent_stays_removed_until_added_again() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"books","name":"Bookkeeper","availability":"default"}"#,
+    )
+    .await;
+    let id = t["id"].as_str().unwrap();
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = send_as(&h, "DELETE", &format!("/v1/agents/{agent_id}"), &admin, "").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/agent-templates/{id}/versions"),
+            Some(&operator),
+            r#"{"name":"Bookkeeper","description":"now with more books"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        template_agents(&h, &admin).await[0]["agent_id"].is_null(),
+        "a publish put back an agent the workspace removed"
+    );
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-templates/{id}/install"),
+            Some(&admin),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let catalog = template_agents(&h, &admin).await;
+    assert!(catalog[0]["agent_id"].is_string());
+    assert_eq!(catalog[0]["description"], "now with more books");
+}
+
+/// An optional template is offered, not made, and a workspace adds it.
+#[tokio::test]
+async fn an_optional_template_is_offered_and_added_on_request() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"inventory","name":"Inventory","availability":"optional"}"#,
+    )
+    .await;
+    assert!(template_agents(&h, &admin).await[0]["agent_id"].is_null());
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-templates/{}/install", t["id"].as_str().unwrap()),
+            Some(&admin),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent_id = serde_json::from_str::<Value>(&body).unwrap()["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}"), Some(&admin)).await;
+    let agent: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(agent["slug"], "inventory");
+    assert_eq!(agent["template_id"], t["id"]);
+}
+
+/// Only the operator makes templates.
+#[tokio::test]
+async fn a_workspace_admin_cannot_make_templates() {
+    let h = harness().await;
+    let (_, _, admin) = template_people(&h).await;
+    let (status, _) = h
+        .post(
+            "/v1/platform/agent-templates",
+            Some(&admin),
+            r#"{"slug":"mine","name":"Mine"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A template agent's instructions are the operator's; what the workspace
+/// writes is its own section, where the template allows one.
+#[tokio::test]
+async fn a_workspace_writes_only_its_own_section_of_a_template_agent() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required"}"#,
+    )
+    .await;
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let uri = format!("/v1/agents/{agent_id}");
+
+    let (status, _) = send_as(&h, "PATCH", &uri, &admin, r#"{"system_prompt":"anything"}"#).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the template's prompt was overwritten"
+    );
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &uri,
+        &admin,
+        r#"{"workspace_addition":"Void duplicates instead of raising them."}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/platform/agent-templates/{}", t["id"].as_str().unwrap()),
+        &operator,
+        r#"{"allow_additions":false}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = send_as(
+        &h,
+        "PATCH",
+        &uri,
+        &admin,
+        r#"{"workspace_addition":"More."}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an addition the operator turned off was kept"
+    );
+}
+
+/// A template agent's turns get the template's skills, ahead of its own.
+#[tokio::test]
+async fn a_template_agent_is_given_its_templates_skills() {
+    use outturn::api::skill::SkillStore as _;
+    let h = harness().await;
+    let (acme, operator, admin) = template_people(&h).await;
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"ledger","name":"Ledger","body":"Post to the ledger."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill_id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    make_template(
+        &h,
+        &operator,
+        &format!(
+            r#"{{"slug":"invoicer","name":"Invoicer","availability":"required",
+                 "skills":[{{"skill_id":"{skill_id}"}}]}}"#
+        ),
+    )
+    .await;
+    let agent_id: Uuid = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let skills = outturn::api::skill::PostgresSkillStore::new(h.db.pool.clone());
+    let resolved = skills
+        .resolve_for_agent(acme, agent_id)
+        .await
+        .expect("resolved");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].slug, "ledger");
+}
+
+/// A template's skills must be the operator's: one workspace's skill in every
+/// workspace would be that workspace's in all the others.
+#[tokio::test]
+async fn a_template_refuses_a_workspaces_own_skill() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let (_, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"ours","name":"Ours","body":"x"}"#,
+        )
+        .await;
+    let skill_id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) = h
+        .post(
+            "/v1/platform/agent-templates",
+            Some(&operator),
+            &format!(r#"{{"slug":"t","name":"T","skills":[{{"skill_id":"{skill_id}"}}]}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// A template agent's turn is sent the template's prompt -- requirements,
+/// defaults, then the workspace's section -- and the template's eager tools.
+#[tokio::test]
+async fn a_template_agents_turn_carries_the_templates_prompt_and_tools() {
+    let h = harness().await;
+    let (acme, operator, admin) = template_people(&h).await;
+    make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required",
+            "requirements":"Quote only listed prices.",
+            "defaults":"Raise suspected duplicates.",
+            "reminder":"listed prices only",
+            "policy":{"model":"test-model"},
+            "eager_tools":["read_object"]}"#,
+    )
+    .await;
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/agents/{agent_id}"),
+        &admin,
+        r#"{"workspace_addition":"Void duplicates instead of raising them."}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let session = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(&admin),
+            r#"{"content":"Invoice Acme."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, body) = h.post("/v1/work", Some(&h.runtime_token(acme)), "{}").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let turn: Value = serde_json::from_str(&body).unwrap();
+
+    let prompt = turn["system_prompt"].as_str().expect("a system prompt");
+    let at = |s: &str| {
+        prompt
+            .find(s)
+            .unwrap_or_else(|| panic!("{s:?} missing: {prompt}"))
+    };
+    assert!(at("Quote only listed prices.") < at("Raise suspected duplicates."));
+    assert!(at("Raise suspected duplicates.") < at("Void duplicates instead"));
+    assert!(at("Void duplicates instead") < at("Requirements still apply: listed prices only"));
+    assert_eq!(turn["model"], "test-model");
+    assert_eq!(turn["eager_tools"], serde_json::json!(["read_object"]));
+}

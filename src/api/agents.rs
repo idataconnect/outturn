@@ -127,6 +127,8 @@ pub async fn update_agent(
     Json(input): Json<UpdateAgent>,
 ) -> Result<Json<Agent>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
+    let current = state.agents.get(claims.workspace_id, id).await?;
+    template_rules(&state, &current, &input).await?;
     let agent = state.agents.update(claims.workspace_id, id, input).await?;
     tracing::info!(
         actor = %claims.subject,
@@ -143,6 +145,15 @@ pub async fn delete_agent(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsDelete).await?;
+    let agent = state.agents.get(claims.workspace_id, id).await?;
+    // A required template's agent is refused; a default one's removal is
+    // remembered, so the next publish does not make it again.
+    if let Some(template_id) = agent.template_id {
+        state
+            .templates
+            .removing(claims.workspace_id, template_id)
+            .await?;
+    }
     state.agents.delete(claims.workspace_id, id).await?;
     tracing::info!(
         actor = %claims.subject,
@@ -151,4 +162,60 @@ pub async fn delete_agent(
         "agent deleted"
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a workspace may change about an agent, which depends on whether it was
+/// made from a template.
+///
+/// A template's agent takes its name, instructions and policy from the
+/// template, so those are the operator's to change; what the workspace has is
+/// its own section of the prompt, where the template allows one. An agent made
+/// by hand has its whole prompt, and no section to add.
+async fn template_rules(
+    state: &ApiState,
+    agent: &Agent,
+    input: &UpdateAgent,
+) -> Result<(), ApiError> {
+    let Some(template_id) = agent.template_id else {
+        if input.workspace_addition.is_some() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "only an agent made from a template has a workspace section; edit this \
+                 agent's instructions instead"
+                    .into(),
+            ));
+        }
+        return Ok(());
+    };
+    if input.name.is_some()
+        || input.description.is_some()
+        || input.system_prompt.is_some()
+        || input.policy.is_some()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "this agent's name, instructions and policy come from its template; write how \
+             this business works in its workspace section instead"
+                .into(),
+        ));
+    }
+    if let Some(addition) = &input.workspace_addition {
+        let template = state.templates.get(template_id).await?;
+        if !template.allow_additions && !addition.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "the operator does not allow additions to this agent's instructions".into(),
+            ));
+        }
+        if addition.len() > super::agent_template::MAX_ADDITION_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "a workspace section is at most {} bytes",
+                    super::agent_template::MAX_ADDITION_BYTES
+                ),
+            ));
+        }
+    }
+    Ok(())
 }

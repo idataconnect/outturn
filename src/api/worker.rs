@@ -775,6 +775,40 @@ pub(super) enum Prepared {
 }
 
 impl Worker {
+    /// The agent as a turn sees it, and the tools offered from its first round.
+    ///
+    /// An agent made from a template runs the template's newest version: its
+    /// prompt, composed with the workspace's own section where the template
+    /// allows one, and its policy. Read each turn rather than copied into the
+    /// agent, so a publish reaches every workspace at its next turn. An agent
+    /// made by hand is as it was written, and defers every tool.
+    async fn agent_for_turn(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> anyhow::Result<(super::agent::Agent, Vec<String>)> {
+        use super::agent_template::AgentTemplateStore as _;
+        let mut agent = self
+            .agents
+            .get(workspace_id, agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let Some(template_id) = agent.template_id else {
+            return Ok((agent, Vec::new()));
+        };
+        let templates = super::agent_template::PostgresAgentTemplateStore::new(self.pool.clone());
+        let template = templates
+            .get(template_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("template: {e}"))?;
+        let addition = template
+            .allow_additions
+            .then_some(agent.workspace_addition.as_str());
+        agent.system_prompt = super::agent_template::compose_prompt(&template.current, addition);
+        agent.policy = template.current.policy.clone();
+        Ok((agent, template.current.eager_tools))
+    }
+
     /// Gives up on a turn: clears the reply nothing will fill, and says so.
     ///
     /// An empty reply left behind wedges the session against further messages,
@@ -1132,10 +1166,9 @@ impl Worker {
                                 round: round as i32,
                                 traffic_type: traffic_type_for(
                                     &self
-                                        .agents
-                                        .get(payload.workspace_id, payload.agent_id)
+                                        .agent_for_turn(payload.workspace_id, payload.agent_id)
                                         .await
-                                        .map(|a| a.policy)
+                                        .map(|(a, _)| a.policy)
                                         .unwrap_or(serde_json::Value::Null),
                                 ),
                                 endpoint,
@@ -1586,9 +1619,8 @@ impl Worker {
         job_id: Uuid,
         payload: &ChatTurnPayload,
     ) -> anyhow::Result<Prepared> {
-        let agent = self
-            .agents
-            .get(payload.workspace_id, payload.agent_id)
+        let (agent, eager_tools) = self
+            .agent_for_turn(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 
@@ -1932,6 +1964,7 @@ impl Worker {
                 egress_commitment,
                 gate_commitment,
                 gates,
+                eager_tools,
             },
         )))
     }
@@ -2018,9 +2051,8 @@ impl Worker {
             Err(super::chat::ChatError::NotFound) => return Ok(()),
             Err(e) => anyhow::bail!("session: {e}"),
         };
-        let agent = self
-            .agents
-            .get(workspace_id, session.agent_id)
+        let (agent, _) = self
+            .agent_for_turn(workspace_id, session.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
         let live_skills = self
@@ -2098,9 +2130,8 @@ impl Worker {
                 skills: Vec::new(),
             });
         };
-        let agent = self
-            .agents
-            .get(workspace_id, agent_id)
+        let (agent, _) = self
+            .agent_for_turn(workspace_id, agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
         let live = self
@@ -2714,9 +2745,8 @@ impl Worker {
             return Err(LeaseLost.into());
         }
 
-        let agent = self
-            .agents
-            .get(payload.workspace_id, payload.agent_id)
+        let (agent, _) = self
+            .agent_for_turn(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
 

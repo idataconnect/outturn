@@ -318,11 +318,9 @@ impl Puller {
                 Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
                 None => super::router::DEFAULT_MAX_TOOL_ROUNDS,
             },
-            // Nothing eager yet, so every tool is reached through the guest's
-            // loader. The path is here for a policy to travel down -- the
-            // agent's settings, alongside `model` -- once there is one worth
-            // sending; what promotes a tool is a decision nobody has made.
-            eager_tools: Vec::new(),
+            // A template agent's, chosen by its operator; empty for every other
+            // agent, which reaches each tool through the guest's loader.
+            eager_tools: request.eager_tools.clone(),
             reply_id: request.reply_id,
             storage: self.storage.clone(),
             workspace_id: request.workspace_id,

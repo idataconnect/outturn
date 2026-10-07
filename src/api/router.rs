@@ -25,6 +25,9 @@ pub struct ApiState {
     pub(super) users: Arc<dyn UserStore>,
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) agents: Arc<dyn AgentStore>,
+    /// Agents the operator defines once for every workspace that should have
+    /// them. Built from the pool, like the action store.
+    pub(super) templates: Arc<dyn super::agent_template::AgentTemplateStore>,
     /// Instructions an agent is given beside its system prompt, and which of
     /// them each agent gets.
     pub(super) skills: Arc<dyn super::skill::SkillStore>,
@@ -105,6 +108,9 @@ impl ApiState {
             // invalidates it, so a second one is the same store. The pool is
             // already a parameter for the same reason.
             skill_stats: Arc::new(super::skill::PostgresSkillStatsStore::new(pool.clone())),
+            templates: Arc::new(super::agent_template::PostgresAgentTemplateStore::new(
+                pool.clone(),
+            )),
             workspaces,
             users,
             sessions,
@@ -451,6 +457,12 @@ async fn create_workspace(
     let workspace = state.workspaces.create(input).await?;
     // A workspace with no roles is one nobody can be given access to.
     state.roles.seed_defaults(workspace.id).await?;
+    // And one with none of the agents the operator gives everyone is not the
+    // product it was sold as. A failure here is logged rather than failing the
+    // workspace: the next publish provisions it.
+    if let Err(e) = state.templates.provision(Some(workspace.id)).await {
+        tracing::warn!(workspace_id = %workspace.id, error = %e, "could not provision template agents");
+    }
     tracing::info!(
         actor = %claims.subject,
         workspace_id = %workspace.id,
@@ -1769,6 +1781,26 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/platform/skills/{id}/retired",
             axum::routing::put(super::skills::retire_platform_skill),
+        )
+        .route(
+            "/v1/platform/agent-templates",
+            get(super::agent_templates::list_templates)
+                .post(super::agent_templates::create_template),
+        )
+        .route(
+            "/v1/platform/agent-templates/{id}",
+            get(super::agent_templates::get_template)
+                .patch(super::agent_templates::update_template),
+        )
+        .route(
+            "/v1/platform/agent-templates/{id}/versions",
+            get(super::agent_templates::list_template_versions)
+                .post(super::agent_templates::publish_template),
+        )
+        .route("/v1/agent-templates", get(super::agent_templates::catalog))
+        .route(
+            "/v1/agent-templates/{id}/install",
+            post(super::agent_templates::install),
         )
         .route("/v1/platform/settings", get(view_operator_settings))
         .route(
