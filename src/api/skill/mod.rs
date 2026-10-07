@@ -107,6 +107,42 @@ pub struct SkillVersion {
     pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Who wrote it, as the workspace reading it should see them. Known only
+    /// where the version was read for the history, so not sent with a version
+    /// read on its own, where it would always say nobody was recorded.
+    #[serde(skip)]
+    pub author: Author,
+}
+
+/// Who wrote a version, as the workspace reading it may know them.
+///
+/// A person in the reader's own workspace is named. A version of an operator's
+/// skill was written by the operator's staff, whom a customer has no
+/// relationship with and no business being told the names of, so it is the
+/// operator's. A version nobody signed -- an install, a seed, a generated
+/// skill -- says so rather than naming a guess.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Author {
+    Person {
+        name: String,
+    },
+    Operator,
+    #[default]
+    Unrecorded,
+}
+
+impl Author {
+    /// From a version's owner and its author's name, as the reader sees them.
+    pub fn as_seen_by(reader: Uuid, owner: Uuid, name: Option<String>) -> Self {
+        if owner != reader {
+            return Author::Operator;
+        }
+        match name {
+            Some(name) => Author::Person { name },
+            None => Author::Unrecorded,
+        }
+    }
 }
 
 /// A version as the history lists it: what a person needs to choose one, and
@@ -128,6 +164,7 @@ pub struct VersionSummary {
     pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub author: Author,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -154,6 +191,7 @@ impl VersionSummary {
             unreached: version.unreached.clone(),
             created_by: version.created_by,
             created_at: version.created_at,
+            author: version.author.clone(),
         }
     }
 }
@@ -706,6 +744,22 @@ pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_author_is_named_only_inside_their_own_workspace() {
+        use super::Author;
+        let ours = uuid::Uuid::now_v7();
+        let platform = uuid::Uuid::now_v7();
+        assert_eq!(
+            Author::as_seen_by(ours, ours, Some("Ana".into())),
+            Author::Person { name: "Ana".into() }
+        );
+        assert_eq!(Author::as_seen_by(ours, ours, None), Author::Unrecorded);
+        assert_eq!(
+            Author::as_seen_by(ours, platform, Some("Staff".into())),
+            Author::Operator
+        );
+    }
+
     use super::*;
 
     /// An agent asked what it is should find the answer in front of it.
