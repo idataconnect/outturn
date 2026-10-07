@@ -3,8 +3,8 @@
 How defaults cascade from the operator to workspaces to agents, and who may
 change what. Built: the catalog is `src/api/settings/mod.rs`, the rows are
 `setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
-turn in `prepare_turn`. The first three entries are temperature, reasoning
-effort and model calls per turn.
+turn in `prepare_turn`. It holds eight settings, listed under
+[What is in it](#what-is-in-it).
 
 ## The shape
 
@@ -50,7 +50,9 @@ Part of the catalog, not of the roles. Each setting is either
 *operator-only* or *workspace-overridable*, and a workspace-overridable setting may
 also be overridden per agent.
 
-- Temperature, reasoning effort, max tool rounds: workspace-overridable.
+- Every setting in the catalog today: temperature, reasoning effort, file
+  access for both scopes, new-host approval, model calls per turn, context
+  budget and session naming. All workspace-overridable.
 - Model routing: operator-only. The operator certified a workflow against a
   model and pays for it; a workspace switching models breaks both. A workspace that
   brings its own key gets model choice within what the operator has certified,
@@ -83,14 +85,59 @@ and never belongs there.
 
 ## What is in it
 
-Temperature, reasoning effort and model calls per turn, moved out of the
-agent's free-form `policy` JSON, where they had no defaults above the agent and
-no way for an operator to set them once. Storage retention comes when scopes
-do. The endpoints are `/v1/settings` (workspace), `/v1/platform/settings`
+Temperature, reasoning effort and model calls per turn began here, moved out
+of the agent's free-form `policy` JSON, where they had no defaults above the
+agent and no way for an operator to set them once. The rest arrived with the
+features they govern. Storage retention comes when scopes do. Every setting
+below is workspace-overridable, and so overridable per agent too.
+
+| Key | Label | Default | Choices |
+|---|---|---|---|
+| `temperature` | Temperature | unset, left to the provider | 0 to 2 in steps of 0.1, or unset |
+| `reasoning_effort` | Thinking before answering | `low` | `none` (Off), `none_repeat_prompt` (Off, with prompt repetition), `low`, `medium`, `high` |
+| `agent_file_access` | Agent files | `read_write` | `none`, `read`, `read_write` |
+| `workspace_file_access` | Workspace files | `read` | `none`, `read`, `read_write` |
+| `approve_new_hosts` | Approve new hosts | `reach_freely` | `reach_freely` (Reach freely), `approve_new_hosts` (Ask for approval) |
+| `max_tool_rounds` | Model calls per turn | 100 | 0 to 10,000; zero is no limit |
+| `context_budget` | Conversation size sent to the model | 400,000 bytes | 1,000 to 100,000,000 bytes |
+| `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
+
+Where each is explained in depth:
+
+- `reasoning_effort`: the repetition choice is [below](#prompt-repetition).
+- `agent_file_access`, `workspace_file_access`: the `agent/` and `workspace/`
+  scopes in [storage.md](storage.md). Session files are always read and
+  write, and an agent can always read what it may write.
+- `approve_new_hosts`: [above](#a-setting-that-is-a-ceiling), and
+  [egress.md](egress.md).
+- `max_tool_rounds`: a runaway guard, not a budget; nothing more to it.
+- `context_budget`: [compaction.md](compaction.md).
+- `session_naming`: [below](#session-naming), since nothing else covers it.
+
+The endpoints are `/v1/settings` (workspace), `/v1/platform/settings`
 (operator) and `/v1/agents/{id}/settings` (agent), each returning every
 setting with its effective value, where it came from, what this level would
 inherit, and whether this level has its own row. PUT sets a row, DELETE
 removes it.
+
+## Session naming
+
+A conversation nobody has titled is named by a model, as a background job
+queued when a turn finishes (`src/api/naming.rs`). The setting decides when,
+and how much of the conversation the model is shown:
+
+- **After the first message** (`after_message`): queued when the first turn
+  ends, but the namer is shown only what the person wrote. Cheapest and
+  quickest, and as vague as the opening message is.
+- **After the first reply** (`after_first_turn`, the default): queued at the
+  same point, with the reply in view, so the title says what the exchange
+  turned out to be about.
+- **After two exchanges** (`after_second_turn`): waits until the session has
+  two non-empty replies. Usually the best title, later.
+
+Either way the namer checks again before it writes, so a title a person set
+while the job waited is kept. Without a default model (`OUTTURN_DEFAULT_MODEL`)
+sessions go unnamed whatever this says.
 
 ## Prompt repetition
 
