@@ -777,7 +777,8 @@ pub(super) enum Prepared {
 impl Worker {
     /// The agent as a turn sees it, and the tools offered from its first round.
     ///
-    /// An agent made from a template runs the template's newest version: its
+    /// An agent made from a template runs the template's newest version, or the
+    /// one its workspace pinned where the template allows it: its
     /// prompt, composed with the workspace's own section where the template
     /// allows one, and its policy. Read each turn rather than copied into the
     /// agent, so a publish reaches every workspace at its next turn. An agent
@@ -793,20 +794,24 @@ impl Worker {
             .get(workspace_id, agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let Some(template_id) = agent.template_id else {
+        if agent.template_id.is_none() {
+            return Ok((agent, Vec::new()));
+        }
+        let templates = super::agent_template::PostgresAgentTemplateStore::new(self.pool.clone());
+        let Some(made) = templates
+            .for_agent(workspace_id, agent_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("template: {e}"))?
+        else {
             return Ok((agent, Vec::new()));
         };
-        let templates = super::agent_template::PostgresAgentTemplateStore::new(self.pool.clone());
-        let template = templates
-            .get(template_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("template: {e}"))?;
-        let addition = template
+        let addition = made
+            .template
             .allow_additions
             .then_some(agent.workspace_addition.as_str());
-        agent.system_prompt = super::agent_template::compose_prompt(&template.current, addition);
-        agent.policy = template.current.policy.clone();
-        Ok((agent, template.current.eager_tools))
+        agent.system_prompt = super::agent_template::compose_prompt(&made.running, addition);
+        agent.policy = made.running.policy.clone();
+        Ok((agent, made.running.eager_tools))
     }
 
     /// Gives up on a turn: clears the reply nothing will fill, and says so.

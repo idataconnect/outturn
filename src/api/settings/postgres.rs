@@ -101,14 +101,18 @@ impl PostgresSettingsStore {
         Ok(out)
     }
 
-    /// What the template an agent was made from fixes, from its newest
-    /// version. Empty for an agent made by hand.
+    /// What the template an agent was made from fixes, from the version it
+    /// runs: pinned where allowed, else the newest. Empty for an agent made by
+    /// hand.
     async fn fixed_by_template(&self, agent_id: Uuid) -> Result<Rows, SettingsError> {
         let settings: Option<serde_json::Value> = sqlx::query_scalar(
             "select v.settings from agents a \
-               join lateral (select settings from agent_template_versions \
-                              where template_id = a.template_id \
-                              order by ordinal desc limit 1) v on true \
+               join agent_templates t on t.id = a.template_id \
+               join lateral (select settings from agent_template_versions tv \
+                              where tv.template_id = a.template_id \
+                                and (not t.allow_pinning or a.template_version_id is null \
+                                     or tv.id = a.template_version_id) \
+                              order by tv.ordinal desc limit 1) v on true \
               where a.id = $1",
         )
         .bind(agent_id)

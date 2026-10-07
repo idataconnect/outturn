@@ -5,6 +5,11 @@ import { ArrowLeft, Save } from 'lucide-react'
 import { ApiError, api } from '../lib/api'
 import { useSession } from '../lib/session'
 import SettingsCascade from '../components/SettingsCascade'
+import {
+  agentTemplateVersions,
+  pinTemplateVersion,
+  type VersionChoice,
+} from '../lib/agentTemplates'
 import AgentSkills from '../components/AgentSkills'
 import AgentSchedules from '../components/AgentSchedules'
 
@@ -22,10 +27,15 @@ export type Agent = {
   /** For an agent made from a template: what the operator's says. */
   template?: {
     id: string
+    /** The version this agent runs. */
     version: number
+    /** The newest, so a pinned agent can be told it is behind. */
+    latest: number
+    pinned: boolean
     requirements: string
     defaults: string
     allow_additions: boolean
+    allow_pinning: boolean
   } | null
 }
 
@@ -90,6 +100,8 @@ export default function AgentEditor() {
    *  name and instructions are the operator's; the workspace writes only its
    *  own section, where the template allows one. */
   const [template, setTemplate] = useState<Agent['template']>(null)
+  /** The template's versions, newest first, where this agent may stay on one. */
+  const [versions, setVersions] = useState<VersionChoice[]>([])
   const [slugEdited, setSlugEdited] = useState(false)
   const [loading, setLoading] = useState(!creating)
   const [saving, setSaving] = useState(false)
@@ -104,6 +116,10 @@ export default function AgentEditor() {
         if (!stale) {
           setForm(fromAgent(agent))
           setTemplate(agent.template ?? null)
+        }
+        if (agent.template?.allow_pinning) {
+          const list = await agentTemplateVersions(id)
+          if (!stale) setVersions(list)
         }
       } catch (e) {
         if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load agent')
@@ -120,6 +136,20 @@ export default function AgentEditor() {
   // button so the form says what it needs before it is clicked -- trimmed,
   // because a name of spaces is not a name.
   const complete = form.name.trim() !== '' && form.slug.trim() !== ''
+
+  /** Stays on a version, or with null follows the newest again. Saved at
+   *  once rather than with the form: it is a choice about which instructions
+   *  apply, not an edit to them. */
+  async function onPin(versionId: string | null) {
+    if (!id) return
+    try {
+      await pinTemplateVersion(id, versionId)
+      const agent = await api<Agent>(`/v1/agents/${id}`)
+      setTemplate(agent.template ?? null)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to change version')
+    }
+  }
 
   function onNameChange(value: string) {
     setForm((f) => ({
@@ -242,6 +272,34 @@ export default function AgentEditor() {
 
           {template ? (
             <>
+              {template.allow_pinning && versions.length > 0 && (
+                <label className="block">
+                  <span className={label}>Version</span>
+                  <select
+                    value={
+                      template.pinned
+                        ? (versions.find((v) => v.ordinal === template.version)?.id ?? '')
+                        : ''
+                    }
+                    onChange={(e) => void onPin(e.target.value || null)}
+                    disabled={!canSave}
+                    className={field}
+                  >
+                    <option value="">Follow the newest (version {template.latest})</option>
+                    {versions.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        Stay on version {v.ordinal}
+                        {v.note ? ` \u2014 ${v.note}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {template.pinned && template.version < template.latest && (
+                    <span className="block mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      A newer version, {template.latest}, is available.
+                    </span>
+                  )}
+                </label>
+              )}
               <div>
                 <p className={label}>Instructions from the operator</p>
                 <p className="text-xs text-surface-500 dark:text-surface-400 mb-2">

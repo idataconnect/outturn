@@ -20,6 +20,9 @@ pub struct Agent {
     /// skills and policy are then the template's, and what the workspace
     /// writes goes in `workspace_addition`. See docs/agent-templates.md.
     pub template_id: Option<Uuid>,
+    /// The template version it stays on, where its workspace pinned one and
+    /// the template allows it. None follows the newest.
+    pub template_version_id: Option<Uuid>,
     /// The workspace's own section of a template agent's prompt.
     pub workspace_addition: String,
 }

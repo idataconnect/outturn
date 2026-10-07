@@ -1797,6 +1797,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::agent_templates::list_template_versions)
                 .post(super::agent_templates::publish_template),
         )
+        .route(
+            "/v1/agents/{id}/template-versions",
+            get(super::agents::list_template_versions),
+        )
+        .route(
+            "/v1/agents/{id}/template-version",
+            axum::routing::put(super::agents::pin_template_version),
+        )
         .route("/v1/agent-templates", get(super::agent_templates::catalog))
         .route(
             "/v1/agent-templates/{id}/install",

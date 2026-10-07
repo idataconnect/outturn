@@ -1,7 +1,7 @@
 # Agent templates
 
 How an operator defines an agent once and has it in every workspace that
-should have it. Built, apart from pinning, which is marked below as not yet.
+should have it. Built.
 
 ## Why
 
@@ -128,8 +128,14 @@ process against today's agent pins it to this version, sees that a newer one
 exists, and moves when it chooses. An operator who needs every workspace on
 the current version leaves pinning off, and required templates usually will.
 
-Following is built; pinning is not yet. It wants a nullable pinned version
-beside `template_id`, as `agent_skills` already has.
+A pin is `agents.template_version_id`, beside `template_id`, honored only while
+the template's `allow_pinning` is on. Everything that reads a template agent's
+version reads the pinned one -- its prompt and policy, eager tools, skills and
+fixed settings -- while its name follows the newest, since that is how the
+workspace recognizes it. Turning pinning off brings every agent back to the
+newest without touching their rows, so turning it on again restores the pins.
+A workspace chooses on the agent's page, which says when a newer version is
+available.
 
 ## Eager tools
 
