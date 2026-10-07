@@ -10898,3 +10898,80 @@ async fn a_template_agents_turn_carries_the_templates_prompt_and_tools() {
     assert_eq!(turn["model"], "test-model");
     assert_eq!(turn["eager_tools"], serde_json::json!(["read_object"]));
 }
+
+/// A setting a template fixes wins over the workspace's and the agent's own,
+/// cannot be overridden on the agent, and says where it came from.
+#[tokio::test]
+async fn a_setting_a_template_fixes_wins_and_cannot_be_overridden() {
+    use outturn::api::settings::SettingsStore as _;
+    let h = harness().await;
+    let (acme, operator, admin) = template_people(&h).await;
+    make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required",
+            "settings":{"temperature":0.2}}"#,
+    )
+    .await;
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The workspace's own value is beaten by the template's.
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        "/v1/settings/temperature",
+        &admin,
+        r#"{"value":0.9}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    // The agent's own is refused outright.
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        &format!("/v1/agents/{agent_id}/settings/temperature"),
+        &admin,
+        r#"{"value":0.9}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an agent overrode its template: {body}"
+    );
+    assert!(body.contains("fixed by the template"), "{body}");
+
+    let (_, body) = h
+        .get(&format!("/v1/agents/{agent_id}/settings"), Some(&admin))
+        .await;
+    let view: Vec<Value> = serde_json::from_str(&body).unwrap();
+    let temperature = view.iter().find(|s| s["key"] == "temperature").unwrap();
+    assert_eq!(temperature["value"], 0.2);
+    assert_eq!(temperature["source"], "template");
+
+    let settings = outturn::api::settings::PostgresSettingsStore::new(h.db.pool.clone());
+    let resolved = settings
+        .resolve(acme, agent_id.parse().unwrap())
+        .await
+        .expect("resolved");
+    assert_eq!(resolved.temperature, Some(0.2));
+}
+
+/// A template cannot fix a value no setting can take.
+#[tokio::test]
+async fn a_template_refuses_a_setting_the_catalog_would() {
+    let h = harness().await;
+    let (_, operator, _) = template_people(&h).await;
+    for body in [
+        r#"{"slug":"a","name":"A","settings":{"temperature":9}}"#,
+        r#"{"slug":"b","name":"B","settings":{"no_such_setting":1}}"#,
+    ] {
+        let (status, reply) = h
+            .post("/v1/platform/agent-templates", Some(&operator), body)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
+    }
+}

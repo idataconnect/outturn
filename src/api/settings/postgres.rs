@@ -90,9 +90,35 @@ impl PostgresSettingsStore {
                     })
                     .await?,
                 ));
+                // Last, so it wins: a value a workspace or agent could change
+                // is not one the template fixed.
+                out.push((
+                    super::Source::Template,
+                    self.fixed_by_template(agent_id).await?,
+                ));
             }
         }
         Ok(out)
+    }
+
+    /// What the template an agent was made from fixes, from its newest
+    /// version. Empty for an agent made by hand.
+    async fn fixed_by_template(&self, agent_id: Uuid) -> Result<Rows, SettingsError> {
+        let settings: Option<serde_json::Value> = sqlx::query_scalar(
+            "select v.settings from agents a \
+               join lateral (select settings from agent_template_versions \
+                              where template_id = a.template_id \
+                              order by ordinal desc limit 1) v on true \
+              where a.id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(match settings {
+            Some(serde_json::Value::Object(map)) => map.into_iter().collect(),
+            _ => Rows::new(),
+        })
     }
 }
 
@@ -117,14 +143,29 @@ fn walk(
 impl SettingsStore for PostgresSettingsStore {
     async fn view(&self, level: Level) -> Result<Vec<Effective>, SettingsError> {
         let chain = self.chain(level).await?;
-        let (above, here) = chain.split_at(chain.len() - 1);
-        let here = &here[0].1;
+        // This level's own rows, and everything else: the levels above it, and
+        // a template's fixed values, which apply whether or not it has a row.
+        let own = match level {
+            Level::Operator => super::Source::Operator,
+            Level::Workspace(_) => super::Source::Workspace,
+            Level::Agent { .. } => super::Source::Agent,
+        };
+        let here = chain
+            .iter()
+            .find(|(source, _)| *source == own)
+            .map(|(_, rows)| rows.clone())
+            .unwrap_or_default();
+        let without: Vec<(super::Source, Rows)> = chain
+            .iter()
+            .filter(|(source, _)| *source != own)
+            .cloned()
+            .collect();
 
         Ok(catalog()
             .into_iter()
             .map(|setting| {
                 let (value, source) = walk(&chain, setting.key, &setting.default);
-                let (inherited, _) = walk(above, setting.key, &setting.default);
+                let (inherited, _) = walk(&without, setting.key, &setting.default);
                 Effective {
                     override_value: here.get(setting.key).cloned(),
                     inherited,
@@ -144,6 +185,14 @@ impl SettingsStore for PostgresSettingsStore {
     ) -> Result<(), SettingsError> {
         let setting = find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
         validate(&setting, &value)?;
+        if let Level::Agent { agent_id, .. } = level
+            && self.fixed_by_template(agent_id).await?.contains_key(key)
+        {
+            return Err(SettingsError::Invalid(format!(
+                "{} is fixed by the template this agent was made from",
+                setting.label
+            )));
+        }
         let (workspace_id, agent_id) = address(level);
         sqlx::query(
             "insert into setting_overrides (workspace_id, agent_id, key, value) \

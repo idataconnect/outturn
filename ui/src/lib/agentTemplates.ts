@@ -20,6 +20,9 @@ export type TemplateVersion = {
   policy: Record<string, unknown>
   eager_tools: string[]
   skills: TemplateSkill[]
+  /** Settings it fixes, by catalog key. They win over the workspace's and
+   *  the agent's own. */
+  settings: Record<string, unknown>
   note: string
   created_at: string
 }
@@ -44,6 +47,7 @@ export type NewVersion = {
   policy: Record<string, unknown>
   eager_tools: string[]
   skills: TemplateSkill[]
+  settings: Record<string, unknown>
   note: string
 }
 

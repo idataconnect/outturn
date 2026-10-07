@@ -1,8 +1,7 @@
 # Agent templates
 
 How an operator defines an agent once and has it in every workspace that
-should have it. Built, apart from pinning and the settings a template fixes,
-which are marked below as not yet.
+should have it. Built, apart from pinning, which is marked below as not yet.
 
 ## Why
 
@@ -27,7 +26,7 @@ made of:
 - name, slug and description;
 - the system prompt, in two parts (below);
 - the skills it is given, each following or pinned as an agent's skills are;
-- settings it fixes, such as a temperature the operator certified (not yet);
+- settings it fixes, such as a temperature the operator certified;
 - its policy, and the tools offered from the first round ([below](#eager-tools));
 - three rules for the workspaces that get it: its availability, whether they
   may add to its prompt, and whether they may pin a version.
@@ -111,9 +110,11 @@ placed after the template's own text.
 Skills and settings follow the same idea. A template's skills come with it,
 composed ahead of the agent's own, and are not among the bindings a workspace
 edits, so it may give its agent more and cannot take the template's away. A
-template is to sit in the settings walk between the workspace and the agent, as
-[settings.md](settings.md) already plans for skills, so that what it fixes the
-workspace does not override; that is not built yet.
+template's fixed settings are the last level of the settings walk, after the
+agent's own ([settings.md](settings.md)), so they win: a value a workspace or
+agent could change is not one the template fixed. An agent-level override of a
+fixed setting is refused, and the agent's settings page shows it as the
+template's.
 
 ## Versions
 
