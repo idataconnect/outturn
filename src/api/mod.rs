@@ -1,5 +1,6 @@
 pub mod actions;
 mod actions_api;
+pub mod actor;
 pub mod agent;
 pub mod agent_template;
 mod agent_templates;

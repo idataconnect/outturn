@@ -12,6 +12,7 @@ function hold(over: Partial<Inhibitor> = {}): Inhibitor {
     strength: 'stopped',
     reason: 'monthly spend cap reached',
     held_by: 'billing-bot',
+    holder: { kind: 'system', name: 'billing-bot' },
     created_at: '2026-09-17T06:00:00Z',
     ...over,
   }
@@ -56,6 +57,30 @@ describe('showing what is held', () => {
   it('names who is holding it and since when', () => {
     render(<Holds held={[hold()]} canRelease={() => true} onRelease={() => {}} />)
     expect(screen.getByText(/billing-bot/)).toBeInTheDocument()
+  })
+
+  it("calls the operator's staff the operator, never by id", () => {
+    const staff = '01a0e660-aaf5-70a0-8cdb-8ea713ba79ed'
+    render(
+      <Holds
+        held={[hold({ held_by: staff, holder: { kind: 'operator' } })]}
+        canRelease={() => true}
+        onRelease={() => {}}
+      />,
+    )
+    expect(screen.getByText(/Held by the operator/)).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(staff))).toBeNull()
+  })
+
+  it('says only since when where the holder cannot be said', () => {
+    render(
+      <Holds
+        held={[hold({ held_by: 'gone', holder: { kind: 'unrecorded' } })]}
+        canRelease={() => true}
+        onRelease={() => {}}
+      />,
+    )
+    expect(screen.getByText(/^Held since/)).toBeInTheDocument()
   })
 
   it('offers no release to somebody who may not lift it', () => {

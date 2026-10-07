@@ -1346,7 +1346,7 @@ async fn list_inhibitors(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
-) -> Result<Json<super::Page<super::inhibitor::Inhibitor>>, ApiError> {
+) -> Result<Json<super::Page<super::inhibitor::Held>>, ApiError> {
     // Seeing what is stopped is not the same as being able to stop it.
     // `agents:read` rather than either inhibit authority: a viewer watching a
     // silent agent is owed the reason, and withholding it is how "why is
@@ -1357,7 +1357,14 @@ async fn list_inhibitors(
     let items = store
         .in_workspace(claims.workspace_id, query.after, limit + 1)
         .await?;
-    Ok(Json(super::Page::from_rows(items, limit, |i| i.id)))
+    let page = super::Page::from_rows(items, limit, |i| i.id);
+    // Who holds each, in words: `held_by` is an id or a machine's name, and the
+    // operator's staff are not named to a customer.
+    let items = super::inhibitor::with_holders(&state.pool, page.items).await?;
+    Ok(Json(super::Page {
+        items,
+        next: page.next,
+    }))
 }
 
 #[derive(serde::Deserialize)]

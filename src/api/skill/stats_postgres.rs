@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::api::actor::Actor;
+
 use super::stats::{
     IdleSkill, LaggingSkill, SkillAuthor, SkillStats, SkillStatsStore, SkillTotals, SkillUse,
     StatsError,
@@ -225,19 +227,28 @@ impl SkillStatsStore for PostgresSkillStatsStore {
 
         // Who wrote what. Left joined to the user, because a version written by
         // an install or a seed carries no author and dropping those rows would
-        // make the counts here disagree with `totals.versions`.
-        let authors = sqlx::query(
-            "select v.created_by as user_id, u.display_name as name, \
+        // make the counts here disagree with `totals.versions`. The operator's
+        // staff are grouped as one, with no id, so they are neither named nor
+        // told apart -- see `api::actor`.
+        let authors = sqlx::query(concat!(
+            "with authored as ( \
+                 select v.skill_id, ",
+            crate::operator_staff_sql!("v.created_by"),
+            " as staff, v.created_by \
+                   from skill_versions v \
+                  where v.workspace_id = $1 \
+                    and v.created_at >= $2 and v.created_at < $3 \
+             ) \
+             select case when a.staff then null else a.created_by end as user_id, \
+                    a.staff, u.display_name as name, \
                     count(*) as versions, \
-                    count(distinct v.skill_id) as skills \
-               from skill_versions v \
-               left join users u on u.id = v.created_by \
-              where v.workspace_id = $1 \
-                and v.created_at >= $2 and v.created_at < $3 \
-              group by v.created_by, u.display_name \
+                    count(distinct a.skill_id) as skills \
+               from authored a \
+               left join users u on u.id = a.created_by and not a.staff \
+              group by 1, a.staff, u.display_name \
               order by versions desc, name nulls last \
               limit $4",
-        )
+        ))
         .bind(workspace_id)
         .bind(from)
         .bind(to)
@@ -248,11 +259,18 @@ impl SkillStatsStore for PostgresSkillStatsStore {
 
         let authors = authors
             .iter()
-            .map(|r| SkillAuthor {
-                user_id: r.get("user_id"),
-                name: r.get("name"),
-                versions: r.get("versions"),
-                skills: r.get("skills"),
+            .map(|r| {
+                let staff: bool = r.get("staff");
+                SkillAuthor {
+                    user_id: r.get("user_id"),
+                    author: if staff {
+                        Actor::Operator
+                    } else {
+                        Actor::user(r.get("name"), false)
+                    },
+                    versions: r.get("versions"),
+                    skills: r.get("skills"),
+                }
             })
             .collect();
 

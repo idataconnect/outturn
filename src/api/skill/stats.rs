@@ -25,6 +25,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::api::actor::Actor;
+
 /// The window's figures, echoed back with the window itself so a reader of the
 /// JSON knows what was asked rather than inferring it from the numbers.
 #[derive(Debug, Clone, Serialize)]
@@ -105,10 +107,12 @@ pub struct LaggingSkill {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillAuthor {
-    /// Absent for a version written by the platform rather than a person --
-    /// an install, a seed -- which is why this is not a name.
+    /// Present only for a person this workspace may be told about. Absent for
+    /// a version nobody signed -- an install, a seed -- and for the operator's
+    /// staff, who are counted together as the operator and not singled out.
     pub user_id: Option<Uuid>,
-    pub name: Option<String>,
+    /// Who, by the rules every actor is named by: see `api::actor`.
+    pub author: Actor,
     pub versions: i64,
     pub skills: i64,
 }

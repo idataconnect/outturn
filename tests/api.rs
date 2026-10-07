@@ -4391,6 +4391,57 @@ async fn stopping_an_org_needs_more_than_stopping_an_agent() {
     );
 }
 
+/// A hold says who holds it as the workspace may be told: one of its own
+/// people by name, and the operator's staff as the operator -- even staff who
+/// also belong to the workspace, since the capacity they acted in is not kept.
+#[tokio::test]
+async fn a_hold_names_its_holder_as_the_workspace_may_know_them() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let staff = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    for (who, reason) in [(&staff, "testing"), (&admin, "spend cap")] {
+        let (status, body) = h
+            .post(
+                "/v1/workspace/stop",
+                Some(who),
+                &format!(r#"{{"reason":"{reason}"}}"#),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    let (status, body) = h.get("/v1/inhibitors", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let held = items(&body);
+    let holder = |reason: &str| {
+        held.iter()
+            .find(|i| i["reason"] == reason)
+            .unwrap_or_else(|| panic!("no hold for {reason}: {body}"))["holder"]
+            .clone()
+    };
+
+    let theirs = holder("testing");
+    assert_eq!(theirs["kind"], "operator", "{body}");
+    assert!(
+        theirs.get("name").is_none(),
+        "the operator's staff was named: {body}"
+    );
+
+    let ours = holder("spend cap");
+    assert_eq!(ours["kind"], "person", "{body}");
+    assert_eq!(ours["name"], "Test User", "{body}");
+}
+
 /// A hold needs a reason, because the conversation it stops cannot explain
 /// itself.
 #[tokio::test]

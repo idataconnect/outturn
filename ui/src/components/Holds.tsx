@@ -1,5 +1,6 @@
 import { OctagonX, PauseCircle, X } from 'lucide-react'
 
+import { actorName } from '../lib/actors'
 import type { Inhibitor } from '../lib/inhibitors'
 
 /**
@@ -61,7 +62,9 @@ export default function Holds({
                 {hold.reason}
               </p>
               <p className="mt-0.5 text-xs text-surface-600 dark:text-surface-400">
-                Held by {hold.held_by} since{' '}
+                {/* Never `held_by`: it is an id or a machine's name, and an
+                    id is what named the operator's staff to a customer. */}
+                {heldBy(hold)} since{' '}
                 <time dateTime={hold.created_at}>
                   {new Date(hold.created_at).toLocaleString()}
                 </time>
@@ -96,4 +99,10 @@ function describe(hold: Inhibitor): string {
           ? 'This agent'
           : 'One conversation'
   return hold.strength === 'stopped' ? `${what}: stopped` : `${what}: waiting`
+}
+
+/** "Held by …", or just "Held" where the holder cannot be said. */
+function heldBy(hold: Inhibitor): string {
+  const who = actorName(hold.holder)
+  return who === null ? 'Held' : `Held by ${who}`
 }
