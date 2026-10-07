@@ -145,6 +145,9 @@ async fn harness() -> Harness {
     state.set_worker(Arc::new(outturn::api::worker::Worker {
         pool: pool.clone(),
         agents: agents.clone(),
+        templates: Arc::new(
+            outturn::api::agent_template::PostgresAgentTemplateStore::new(pool.clone()),
+        ),
         skills: skills.clone(),
         chat: chat.clone(),
         usage: usage.clone(),
@@ -2910,6 +2913,7 @@ async fn skill_history_names_its_authors_as_the_reader_may_know_them() {
         author.get("name").is_none(),
         "the operator's staff was named: {body}"
     );
+    finish!(h);
 }
 
 /// A version read back lists the hosts it declared, not an empty list.
@@ -10332,6 +10336,9 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
     let worker = outturn::api::worker::Worker {
         pool: h.db.pool.clone(),
         agents: h.agents.clone(),
+        templates: Arc::new(
+            outturn::api::agent_template::PostgresAgentTemplateStore::new(h.db.pool.clone()),
+        ),
         skills: h.skills.clone(),
         chat: Arc::new(PostgresChatStore::new(h.db.pool.clone())),
         usage: Arc::new(outturn::api::usage::PostgresUsageStore::new(
@@ -10561,7 +10568,7 @@ async fn make_template(h: &Harness, operator: &str, body: &str) -> Value {
 async fn template_agents(h: &Harness, token: &str) -> Vec<Value> {
     let (status, body) = h.get("/v1/agent-templates", Some(token)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    serde_json::from_str(&body).unwrap()
+    items(&body)
 }
 
 /// A required template reaches every workspace there is, and every one made
@@ -10610,6 +10617,7 @@ async fn a_required_template_is_in_every_workspace_and_stays() {
         .await;
     assert!(template_agents(&h, &theirs).await[0]["agent_id"].is_string());
     let _ = t;
+    finish!(h);
 }
 
 /// A default template's agent a workspace removed is not put back by the next
@@ -10656,6 +10664,7 @@ async fn a_removed_default_agent_stays_removed_until_added_again() {
     let catalog = template_agents(&h, &admin).await;
     assert!(catalog[0]["agent_id"].is_string());
     assert_eq!(catalog[0]["description"], "now with more books");
+    finish!(h);
 }
 
 /// An optional template is offered, not made, and a workspace adds it.
@@ -10687,6 +10696,7 @@ async fn an_optional_template_is_offered_and_added_on_request() {
     let agent: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(agent["slug"], "inventory");
     assert_eq!(agent["template_id"], t["id"]);
+    finish!(h);
 }
 
 /// Only the operator makes templates.
@@ -10702,6 +10712,7 @@ async fn a_workspace_admin_cannot_make_templates() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    finish!(h);
 }
 
 /// A template agent's instructions are the operator's; what the workspace
@@ -10760,6 +10771,7 @@ async fn a_workspace_writes_only_its_own_section_of_a_template_agent() {
         StatusCode::BAD_REQUEST,
         "an addition the operator turned off was kept"
     );
+    finish!(h);
 }
 
 /// A template agent's turns get the template's skills, ahead of its own.
@@ -10802,6 +10814,7 @@ async fn a_template_agent_is_given_its_templates_skills() {
         .expect("resolved");
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].slug, "ledger");
+    finish!(h);
 }
 
 /// A template's skills must be the operator's: one workspace's skill in every
@@ -10829,6 +10842,7 @@ async fn a_template_refuses_a_workspaces_own_skill() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    finish!(h);
 }
 
 /// A template agent's turn is sent the template's prompt -- requirements,
@@ -10897,6 +10911,7 @@ async fn a_template_agents_turn_carries_the_templates_prompt_and_tools() {
     assert!(at("Void duplicates instead") < at("Requirements still apply: listed prices only"));
     assert_eq!(turn["model"], "test-model");
     assert_eq!(turn["eager_tools"], serde_json::json!(["read_object"]));
+    finish!(h);
 }
 
 /// A setting a template fixes wins over the workspace's and the agent's own,
@@ -10958,6 +10973,7 @@ async fn a_setting_a_template_fixes_wins_and_cannot_be_overridden() {
         .await
         .expect("resolved");
     assert_eq!(resolved.temperature, Some(0.2));
+    finish!(h);
 }
 
 /// A template cannot fix a value no setting can take.
@@ -10974,6 +10990,7 @@ async fn a_template_refuses_a_setting_the_catalog_would() {
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
     }
+    finish!(h);
 }
 
 /// The prompt a template agent's turn is sent, as the runtime receives it.
@@ -11068,6 +11085,7 @@ async fn a_pinned_agent_stays_on_its_version_while_the_template_allows() {
     let view: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(view["template"]["version"], 2);
     assert_eq!(view["template"]["pinned"], false);
+    finish!(h);
 }
 
 /// Pinning is refused where the template does not allow it, and for a version
@@ -11130,4 +11148,106 @@ async fn a_pin_is_refused_where_it_is_not_allowed_or_not_this_templates() {
         "pinned to another template's version"
     );
     let _ = other;
+    finish!(h);
+}
+
+/// A workspace whose agents were never made -- its provisioning failed, or it
+/// was made by some path that skipped it -- gets them when its catalog is read.
+#[tokio::test]
+async fn reading_the_catalog_makes_the_agents_a_workspace_is_owed() {
+    let h = harness().await;
+    let (_, operator, _) = template_people(&h).await;
+    make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required"}"#,
+    )
+    .await;
+    // Made directly, so the API's provisioning never ran for it.
+    let late = h.make_workspace("Late", "late").await;
+    let admin = h
+        .login_as("admin@late.example", None, Some((late, "admin")))
+        .await;
+    assert!(
+        template_agents(&h, &admin).await[0]["agent_id"].is_string(),
+        "a workspace was left without its required agent"
+    );
+    finish!(h);
+}
+
+/// An optional agent a workspace removed stays removed when the operator later
+/// makes its template default.
+#[tokio::test]
+async fn a_removed_optional_agent_stays_removed_when_made_default() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    let t = make_template(
+        &h,
+        &operator,
+        r#"{"slug":"inventory","name":"Inventory","availability":"optional"}"#,
+    )
+    .await;
+    let id = t["id"].as_str().unwrap();
+    let (_, body) = h
+        .post(
+            &format!("/v1/agent-templates/{id}/install"),
+            Some(&admin),
+            "",
+        )
+        .await;
+    let agent_id = serde_json::from_str::<Value>(&body).unwrap()["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = send_as(&h, "DELETE", &format!("/v1/agents/{agent_id}"), &admin, "").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/platform/agent-templates/{id}"),
+        &operator,
+        r#"{"availability":"default"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        template_agents(&h, &admin).await[0]["agent_id"].is_null(),
+        "an agent the workspace removed came back"
+    );
+    finish!(h);
+}
+
+/// A template agent takes its template's slug, or the next free number after
+/// it where the workspace already has an agent by that name.
+#[tokio::test]
+async fn a_template_agent_takes_the_next_free_slug() {
+    let h = harness().await;
+    let (_, operator, admin) = template_people(&h).await;
+    for slug in ["invoicer", "invoicer-2"] {
+        let (status, body) = h
+            .post(
+                "/v1/agents",
+                Some(&admin),
+                &format!(r#"{{"name":"{slug}","slug":"{slug}"}}"#),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    make_template(
+        &h,
+        &operator,
+        r#"{"slug":"invoicer","name":"Invoicer","availability":"required"}"#,
+    )
+    .await;
+    let agent_id = template_agents(&h, &admin).await[0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h.get(&format!("/v1/agents/{agent_id}"), Some(&admin)).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["slug"],
+        "invoicer-3"
+    );
+    finish!(h);
 }

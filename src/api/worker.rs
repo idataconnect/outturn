@@ -719,6 +719,9 @@ struct FailedForGood(String);
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
+    /// The operator's agent templates, which a template agent's turn is
+    /// prepared from.
+    pub templates: Arc<dyn super::agent_template::AgentTemplateStore>,
     /// The instructions an agent is given beside its own prompt.
     pub skills: Arc<dyn super::skill::SkillStore>,
     pub chat: Arc<dyn ChatStore>,
@@ -775,6 +778,27 @@ pub(super) enum Prepared {
 }
 
 impl Worker {
+    /// The policy a turn of this agent runs under: its template version's for
+    /// one made from a template, else its own. Null, said in the log, where it
+    /// cannot be read -- the ledger row is still worth writing.
+    async fn policy_of(&self, workspace_id: Uuid, agent_id: Uuid) -> serde_json::Value {
+        match self.templates.for_agent(workspace_id, agent_id).await {
+            Ok(Some(made)) => return made.running.policy,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(%agent_id, error = %e, "could not read a template agent's policy");
+                return serde_json::Value::Null;
+            }
+        }
+        match self.agents.get(workspace_id, agent_id).await {
+            Ok(agent) => agent.policy,
+            Err(e) => {
+                tracing::warn!(%agent_id, error = %e, "could not read an agent's policy");
+                serde_json::Value::Null
+            }
+        }
+    }
+
     /// The agent as a turn sees it, and the tools offered from its first round.
     ///
     /// An agent made from a template runs the template's newest version, or the
@@ -788,7 +812,6 @@ impl Worker {
         workspace_id: Uuid,
         agent_id: Uuid,
     ) -> anyhow::Result<(super::agent::Agent, Vec<String>)> {
-        use super::agent_template::AgentTemplateStore as _;
         let mut agent = self
             .agents
             .get(workspace_id, agent_id)
@@ -797,8 +820,8 @@ impl Worker {
         if agent.template_id.is_none() {
             return Ok((agent, Vec::new()));
         }
-        let templates = super::agent_template::PostgresAgentTemplateStore::new(self.pool.clone());
-        let Some(made) = templates
+        let Some(made) = self
+            .templates
             .for_agent(workspace_id, agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("template: {e}"))?
@@ -946,6 +969,10 @@ impl Worker {
         // first call that needs it, so a turn that makes no model call reads
         // nothing.
         let mut account: Option<Option<String>> = None;
+        // The traffic type the ledger records each call under, read once for
+        // the same reason. From the agent's policy only -- its template's,
+        // for one made from a template -- rather than the whole turn's view.
+        let mut traffic: Option<String> = None;
 
         // Chunks are cut wherever the network cut them, which can be inside
         // a character; see `crate::utf8`.
@@ -1169,13 +1196,18 @@ impl Worker {
                                 reply_id: Some(message_id),
                                 job_id: Some(job_id),
                                 round: round as i32,
-                                traffic_type: traffic_type_for(
-                                    &self
-                                        .agent_for_turn(payload.workspace_id, payload.agent_id)
-                                        .await
-                                        .map(|(a, _)| a.policy)
-                                        .unwrap_or(serde_json::Value::Null),
-                                ),
+                                traffic_type: match &traffic {
+                                    Some(t) => t.clone(),
+                                    None => {
+                                        let t = traffic_type_for(
+                                            &self
+                                                .policy_of(payload.workspace_id, payload.agent_id)
+                                                .await,
+                                        );
+                                        traffic = Some(t.clone());
+                                        t
+                                    }
+                                },
                                 endpoint,
                                 model,
                                 credential_owner: paid_by,

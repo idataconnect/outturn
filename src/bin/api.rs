@@ -165,6 +165,9 @@ async fn main() {
     let worker = Arc::new(Worker {
         pool: pool.clone(),
         agents: agents.clone(),
+        templates: Arc::new(
+            outturn::api::agent_template::PostgresAgentTemplateStore::new(pool.clone()),
+        ),
         skills: skills.clone(),
         chat: chat.clone(),
         usage,

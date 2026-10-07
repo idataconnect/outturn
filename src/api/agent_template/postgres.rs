@@ -68,11 +68,24 @@ fn templates_query(filter: &str) -> String {
                 where template_id = t.id order by ordinal desc limit 1 \
            ) v on true \
           where {filter} \
-          order by t.slug"
+          order by t.id \
+          limit $2"
     )
 }
 
 impl PostgresAgentTemplateStore {
+    /// Provisions one template's agents after what changed it is committed.
+    ///
+    /// Its failure is logged rather than returned: the change is already
+    /// made, and reporting it as failed would have the operator make it again.
+    /// A workspace left without its agent gets it when the workspace's catalog
+    /// is next read, or at the next change to the template.
+    async fn provision_after_commit(&self, template_id: Uuid) {
+        if let Err(e) = self.provision(None, Some(template_id)).await {
+            tracing::warn!(%template_id, error = %e, "could not provision a template's agents");
+        }
+    }
+
     /// Fills in each version's skills, in one query.
     async fn with_skills(
         &self,
@@ -104,9 +117,11 @@ impl PostgresAgentTemplateStore {
         &self,
         filter: &str,
         id: Option<Uuid>,
+        limit: i64,
     ) -> Result<Vec<Template>, TemplateError> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(templates_query(filter)))
             .bind(id)
+            .bind(limit)
             .fetch_all(&self.pool)
             .await
             .map_err(internal)?;
@@ -165,6 +180,14 @@ impl PostgresAgentTemplateStore {
                 .map_err(|e| TemplateError::Invalid(e.to_string()))?;
         }
 
+        // Taken before the ordinal is chosen, so two publishes at once are one
+        // after the other rather than both choosing the same number.
+        sqlx::query("select 1 from agent_templates where id = $1 for update")
+            .bind(template_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(internal)?;
+
         let version_id = Uuid::now_v7();
         sqlx::query(
             "insert into agent_template_versions \
@@ -214,82 +237,83 @@ impl PostgresAgentTemplateStore {
 
     /// Makes a workspace's agent from a template, or finds the one it has.
     ///
-    /// Named by the template's slug, or the slug with a number after it where
-    /// the workspace already made an agent by that name itself: the template's
-    /// agent should not displace one the workspace owns.
+    /// Named by the template's slug, or the slug with the lowest free number
+    /// after it where the workspace already has an agent by that name: the
+    /// template's agent should not displace one the workspace made itself. One
+    /// statement, so a second caller making the same agent at the same moment
+    /// finds the first one's rather than making another.
     async fn make_agent(
         &self,
         workspace_id: Uuid,
         template_id: Uuid,
     ) -> Result<(Uuid, bool), TemplateError> {
-        if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-            "select id from agents where workspace_id = $1 and template_id = $2",
-        )
-        .bind(workspace_id)
-        .bind(template_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?
-        {
-            return Ok((id, false));
-        }
-        let row = sqlx::query(
-            "select t.slug, v.name, v.description from agent_templates t \
-               join lateral (select * from agent_template_versions \
-                              where template_id = t.id order by ordinal desc limit 1) v on true \
-              where t.id = $1",
-        )
-        .bind(template_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?
-        .ok_or(TemplateError::NotFound)?;
-        let base: String = row.get("slug");
-        for n in 1..=20 {
-            let slug = if n == 1 {
-                base.clone()
-            } else {
-                format!("{base}-{n}")
-            };
-            let id = Uuid::now_v7();
-            let made = sqlx::query(
-                "insert into agents (id, workspace_id, name, slug, description, template_id) \
-                 values ($1, $2, $3, $4, $5, $6)",
+        // A slug can still be taken between choosing and inserting -- by an
+        // agent made by hand at the same moment -- so the choice is made again.
+        for _ in 0..3 {
+            let made = sqlx::query_scalar::<_, Uuid>(
+                "with t as ( \
+                     select t.slug, v.name, v.description from agent_templates t \
+                       join lateral (select * from agent_template_versions \
+                                      where template_id = t.id \
+                                      order by ordinal desc limit 1) v on true \
+                      where t.id = $2), \
+                 free as ( \
+                     select case when not exists (select 1 from agents \
+                                                   where workspace_id = $1 and slug = t.slug) \
+                                 then t.slug \
+                                 else t.slug || '-' || ( \
+                                     select min(n) from generate_series(2, 100000) n \
+                                      where not exists (select 1 from agents \
+                                                         where workspace_id = $1 \
+                                                           and slug = t.slug || '-' || n)) \
+                            end as slug \
+                       from t) \
+                 insert into agents (id, workspace_id, name, slug, description, template_id) \
+                 select $3, $1, t.name, free.slug, t.description, $2 from t, free \
+                 on conflict (workspace_id, template_id) where template_id is not null \
+                 do nothing \
+                 returning id",
             )
-            .bind(id)
             .bind(workspace_id)
-            .bind(row.get::<String, _>("name"))
-            .bind(&slug)
-            .bind(row.get::<String, _>("description"))
             .bind(template_id)
-            .execute(&self.pool)
+            .bind(Uuid::now_v7())
+            .fetch_optional(&self.pool)
             .await;
             match made {
-                Ok(_) => return Ok((id, true)),
-                Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => {
-                    // Somebody made it at the same moment: theirs is the one.
-                    if db.constraint() == Some("agents_one_per_template") {
-                        return Box::pin(self.make_agent(workspace_id, template_id)).await;
-                    }
-                    continue;
+                Ok(Some(id)) => return Ok((id, true)),
+                // Nothing made: the workspace has this template's agent
+                // already, or there is no such template.
+                Ok(None) => {
+                    return sqlx::query_scalar::<_, Uuid>(
+                        "select id from agents where workspace_id = $1 and template_id = $2",
+                    )
+                    .bind(workspace_id)
+                    .bind(template_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(internal)?
+                    .map(|id| (id, false))
+                    .ok_or(TemplateError::NotFound);
                 }
+                Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => continue,
                 Err(e) => return Err(internal(e)),
             }
         }
-        Err(TemplateError::Refused(format!(
-            "this workspace already has agents named {base} through {base}-20"
-        )))
+        Err(TemplateError::Refused(
+            "could not choose a name for this agent; try again".into(),
+        ))
     }
 }
 
 #[async_trait]
 impl AgentTemplateStore for PostgresAgentTemplateStore {
-    async fn list(&self) -> Result<Vec<Template>, TemplateError> {
-        self.templates("$1::uuid is null", None).await
+    async fn list(&self, after: Option<Uuid>, limit: i64) -> Result<Vec<Template>, TemplateError> {
+        self.templates("($1::uuid is null or t.id > $1)", after, limit)
+            .await
     }
 
     async fn get(&self, id: Uuid) -> Result<Template, TemplateError> {
-        self.templates("t.id = $1", Some(id))
+        self.templates("t.id = $1", Some(id), 1)
             .await?
             .into_iter()
             .next()
@@ -324,7 +348,7 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         Self::write_version(&mut tx, id, &input.version, created_by).await?;
         tx.commit().await.map_err(internal)?;
         if input.availability.provisioned() {
-            self.provision(None).await?;
+            self.provision_after_commit(id).await;
         }
         self.get(id).await
     }
@@ -346,7 +370,7 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         tx.commit().await.map_err(internal)?;
         // Renames reach the agents made from it; nothing else is copied, since
         // a turn reads the rest from the template itself.
-        self.provision(None).await?;
+        self.provision_after_commit(id).await;
         self.get(id).await
     }
 
@@ -375,18 +399,28 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         }
         let template = self.get(id).await?;
         if template.availability.provisioned() && !template.retired {
-            self.provision(None).await?;
+            self.provision_after_commit(id).await;
         }
         Ok(template)
     }
 
-    async fn versions(&self, id: Uuid) -> Result<Vec<TemplateVersion>, TemplateError> {
+    async fn versions(
+        &self,
+        id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<TemplateVersion>, TemplateError> {
         self.get(id).await?;
+        // Newest first. Ids are UUIDv7, so the order they sort in is the order
+        // the versions were published in.
         let rows = sqlx::query(sql!(
             "select {VERSION_COLUMNS} from agent_template_versions v \
-              where v.template_id = $1 order by v.ordinal desc"
+              where v.template_id = $1 and ($2::uuid is null or v.id < $2) \
+              order by v.id desc limit $3"
         ))
         .bind(id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -399,10 +433,11 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         workspace_id: Uuid,
         agent_id: Uuid,
     ) -> Result<Option<AgentTemplate>, TemplateError> {
-        let row = sqlx::query(
-            "select template_id, template_version_id from agents \
-              where workspace_id = $1 and id = $2",
-        )
+        let row = sqlx::query(sql!(
+            "select t.id as tid, {VERSION_COLUMNS} from agents a {} \
+              where a.workspace_id = $1 and a.id = $2",
+            super::RUNNING_VERSION
+        ))
         .bind(workspace_id)
         .bind(agent_id)
         .fetch_optional(&self.pool)
@@ -411,32 +446,8 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        let Some(template_id) = row.get::<Option<Uuid>, _>("template_id") else {
-            return Ok(None);
-        };
-        let template = self.get(template_id).await?;
-        let pinned: Option<Uuid> = row.get("template_version_id");
-        let running = match pinned.filter(|_| template.allow_pinning) {
-            // The pin, while the template allows one. A template that stops
-            // allowing it brings every agent back to the newest, and the rows
-            // keep their pins for if it allows them again.
-            Some(version_id) if version_id != template.current.id => {
-                let row = sqlx::query(sql!(
-                    "select {VERSION_COLUMNS} from agent_template_versions v \
-                      where v.id = $1 and v.template_id = $2"
-                ))
-                .bind(version_id)
-                .bind(template_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(internal)?;
-                match row {
-                    Some(row) => self.with_skills(vec![read_version(&row)]).await?.remove(0),
-                    None => template.current.clone(),
-                }
-            }
-            _ => template.current.clone(),
-        };
+        let template = self.get(row.get("tid")).await?;
+        let running = self.with_skills(vec![read_version(&row)]).await?.remove(0);
         Ok(Some(AgentTemplate { template, running }))
     }
 
@@ -487,7 +498,12 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         Ok(())
     }
 
-    async fn catalog(&self, workspace_id: Uuid) -> Result<Vec<CatalogEntry>, TemplateError> {
+    async fn catalog(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<CatalogEntry>, TemplateError> {
         let rows = sqlx::query(
             "select t.id, t.slug, t.availability, v.name, v.description, a.id as agent_id \
                from agent_templates t \
@@ -495,9 +511,12 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
                               where template_id = t.id order by ordinal desc limit 1) v on true \
                left join agents a on a.template_id = t.id and a.workspace_id = $1 \
               where t.retired_at is null \
-              order by v.name",
+                and ($2::uuid is null or t.id > $2) \
+              order by t.id limit $3",
         )
         .bind(workspace_id)
+        .bind(after)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -515,7 +534,11 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
             .collect())
     }
 
-    async fn provision(&self, workspace_id: Option<Uuid>) -> Result<usize, TemplateError> {
+    async fn provision(
+        &self,
+        workspace_id: Option<Uuid>,
+        template_id: Option<Uuid>,
+    ) -> Result<usize, TemplateError> {
         // Owed: every workspace but the platform's, every required template,
         // and every default one the workspace has not removed.
         let owed = sqlx::query(
@@ -524,6 +547,7 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
                cross join agent_templates t \
               where w.id <> $1 \
                 and ($2::uuid is null or w.id = $2) \
+                and ($3::uuid is null or t.id = $3) \
                 and t.retired_at is null \
                 and (t.availability = 'required' \
                      or (t.availability = 'default' and not exists ( \
@@ -534,15 +558,23 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
         )
         .bind(PLATFORM_WORKSPACE)
         .bind(workspace_id)
+        .bind(template_id)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
         let mut made = 0;
         for row in &owed {
-            let (_, new) = self
-                .make_agent(row.get("workspace_id"), row.get("template_id"))
-                .await?;
-            made += new as usize;
+            let (workspace_id, template_id): (Uuid, Uuid) =
+                (row.get("workspace_id"), row.get("template_id"));
+            match self.make_agent(workspace_id, template_id).await {
+                Ok((_, new)) => made += new as usize,
+                Err(e) => tracing::warn!(
+                    %workspace_id,
+                    %template_id,
+                    error = %e,
+                    "could not make a template's agent; it is made the next time this runs"
+                ),
+            }
         }
 
         // Names follow the template, so a rename reaches every agent made
@@ -554,9 +586,11 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
                               where template_id = t.id order by ordinal desc limit 1) v on true \
               where a.template_id = t.id \
                 and ($1::uuid is null or a.workspace_id = $1) \
+                and ($2::uuid is null or t.id = $2) \
                 and (a.name <> v.name or a.description <> v.description)",
         )
         .bind(workspace_id)
+        .bind(template_id)
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -581,23 +615,22 @@ impl AgentTemplateStore for PostgresAgentTemplateStore {
 
     async fn removing(&self, workspace_id: Uuid, template_id: Uuid) -> Result<(), TemplateError> {
         let template = self.get(template_id).await?;
-        match template.availability {
-            Availability::Required if !template.retired => Err(TemplateError::Refused(
+        if template.availability == Availability::Required && !template.retired {
+            return Err(TemplateError::Refused(
                 "this agent is one every workspace has, and cannot be removed".into(),
-            )),
-            Availability::Default => {
-                sqlx::query(
-                    "insert into agent_template_dismissals (workspace_id, template_id) \
-                     values ($1, $2) on conflict do nothing",
-                )
-                .bind(workspace_id)
-                .bind(template_id)
-                .execute(&self.pool)
-                .await
-                .map_err(internal)?;
-                Ok(())
-            }
-            _ => Ok(()),
+            ));
         }
+        // Remembered for an optional template too: one later made default
+        // would otherwise put the agent back in a workspace that removed it.
+        sqlx::query(
+            "insert into agent_template_dismissals (workspace_id, template_id) \
+             values ($1, $2) on conflict do nothing",
+        )
+        .bind(workspace_id)
+        .bind(template_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
     }
 }

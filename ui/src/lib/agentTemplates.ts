@@ -1,4 +1,4 @@
-import { api } from './api'
+import { allPages, api } from './api'
 
 /**
  * An agent the operator defines once and has made in every workspace that
@@ -80,7 +80,7 @@ export const AVAILABILITY: Record<Availability, { label: string; detail: string 
   },
 }
 
-export const listTemplates = () => api<Template[]>('/v1/platform/agent-templates')
+export const listTemplates = () => allPages<Template>('/v1/platform/agent-templates')
 
 export const getTemplate = (id: string) => api<Template>(`/v1/platform/agent-templates/${id}`)
 
@@ -117,7 +117,7 @@ export const updateTemplate = (
     body: JSON.stringify(input),
   })
 
-export const templateCatalog = () => api<CatalogEntry[]>('/v1/agent-templates')
+export const templateCatalog = () => allPages<CatalogEntry>('/v1/agent-templates')
 
 export const installTemplate = (id: string) =>
   api<{ agent_id: string }>(`/v1/agent-templates/${id}/install`, { method: 'POST' })
@@ -126,7 +126,7 @@ export const installTemplate = (id: string) =>
 export type VersionChoice = { id: string; ordinal: number; note: string; created_at: string }
 
 export const agentTemplateVersions = (agentId: string) =>
-  api<VersionChoice[]>(`/v1/agents/${agentId}/template-versions`)
+  allPages<VersionChoice>(`/v1/agents/${agentId}/template-versions`)
 
 /** Keeps an agent on a version, or with null follows the newest again. */
 export const pinTemplateVersion = (agentId: string, versionId: string | null) =>

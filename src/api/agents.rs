@@ -277,16 +277,15 @@ pub async fn list_template_versions(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<VersionChoice>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<VersionChoice>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     let agent = state.agents.get(claims.workspace_id, id).await?;
-    let Some(template_id) = agent.template_id else {
-        return Ok(Json(Vec::new()));
-    };
-    Ok(Json(
-        state
+    let items = match agent.template_id {
+        Some(template_id) => state
             .templates
-            .versions(template_id)
+            .versions(template_id, query.after, limit + 1)
             .await?
             .into_iter()
             .map(|v| VersionChoice {
@@ -296,7 +295,9 @@ pub async fn list_template_versions(
                 created_at: v.created_at,
             })
             .collect(),
-    ))
+        None => Vec::new(),
+    };
+    Ok(Json(super::Page::from_rows(items, limit, |v| v.id)))
 }
 
 #[derive(Debug, serde::Deserialize)]

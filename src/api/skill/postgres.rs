@@ -984,7 +984,7 @@ impl SkillStore for PostgresSkillStore {
         // workspace's overrides of them. `tier` is what puts an override after
         // the prose it speaks about, which is the whole of how it takes
         // precedence -- a model reads the later instruction as the current one.
-        let rows = sqlx::query(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "with bound as (
                  select b.skill_id, b.version_id as pinned, b.position
                    from agent_skills b
@@ -997,13 +997,8 @@ impl SkillStore for PostgresSkillStore {
                  -- pin it, rather than composed twice.
                  select ts.skill_id, ts.version_id, ts.position - 100000
                    from agents a
-                   join agent_templates t on t.id = a.template_id
-                   join lateral (select tv.id from agent_template_versions tv
-                                  where tv.template_id = a.template_id
-                                    and (not t.allow_pinning or a.template_version_id is null
-                                         or tv.id = a.template_version_id)
-                                  order by tv.ordinal desc limit 1) tv on true
-                   join agent_template_skills ts on ts.template_version_id = tv.id
+                   {running}
+                   join agent_template_skills ts on ts.template_version_id = v.id
                   where a.workspace_id = $1 and a.id = $2
                     and not exists (select 1 from agent_skills b2
                                      where b2.agent_id = $2 and b2.skill_id = ts.skill_id)
@@ -1030,7 +1025,9 @@ impl SkillStore for PostgresSkillStore {
                from picked p
                join skill_versions v on v.id = p.version_id
               order by p.position, p.tier",
-        )
+            // A constant, never anything a caller sent.
+            running = crate::api::agent_template::RUNNING_VERSION,
+        )))
         .bind(workspace_id)
         .bind(agent_id)
         .fetch_all(&self.pool)
