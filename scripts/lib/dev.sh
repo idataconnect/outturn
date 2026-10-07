@@ -548,11 +548,17 @@ dev_llamacpp_log() { echo "$(dirname "$(dev_machine_file)")/.llama-server.log"; 
 # --jinja because that is what gives llama-server the model's own chat
 # template and its tool-call parser, which streams a call as it is written and
 # is the reason to use this over ollama; without it tools are not offered at
-# all. The alias is the name the cluster asks for.
+# all. --repeat-penalty 1.05 is a light one, against a model repeating itself
+# without enough to bend a tool call's arguments. --temp 0.6 and --top-k 20
+# for an agent meant to be dependable rather than inventive; a temperature an
+# agent's settings name still wins, since it travels with the request.
+# --reasoning-budget 2048 because nothing else bounds thinking here: a model
+# that loops in it otherwise thinks until the context window is spent. The
+# alias is the name the cluster asks for.
 dev_llamacpp_command() {
   local port
   port=$(echo "$dev_llama_url" | sed -nE 's#.*:([0-9]+)(/.*)?$#\1#p')
-  echo "llama-server -hf $dev_model --jinja -c $dev_context_window --alias $dev_served_model --host 127.0.0.1 --port ${port:-8080}"
+  echo "llama-server -hf $dev_model --jinja --repeat-penalty 1.05 --temp 0.6 --top-k 20 --reasoning-budget 2048 -c $dev_context_window --alias $dev_served_model --host 127.0.0.1 --port ${port:-8080}"
 }
 
 # What a running llama-server is serving, as "alias window", or nothing.
