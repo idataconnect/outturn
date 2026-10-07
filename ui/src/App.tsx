@@ -6,6 +6,7 @@ import {
   Globe,
   Inbox as InboxIcon,
   LayoutDashboard,
+  LayoutTemplate,
   MessageSquare,
   Settings,
   SlidersHorizontal,
@@ -53,6 +54,8 @@ import UserEditor from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
 import PlatformDefaults from './pages/PlatformDefaults'
+import AgentTemplates from './pages/AgentTemplates'
+import AgentTemplateEditor from './pages/AgentTemplateEditor'
 import Inbox from './pages/Inbox'
 import { paths } from './lib/paths'
 import { iconButton, iconButtonLarge } from './lib/buttons'
@@ -264,6 +267,7 @@ function PlatformSection() {
       items={[
         { to: paths.workspaces, label: 'Workspaces', icon: Building2, allowed: true },
         { to: paths.platformDefaults, label: 'Defaults', icon: SlidersHorizontal, allowed: operator },
+        { to: paths.agentTemplates, label: 'Agent templates', icon: LayoutTemplate, allowed: operator },
       ]}
     />
   )
@@ -663,6 +667,9 @@ function Shell() {
               }
             />
             <Route path="defaults" element={<PlatformDefaults />} />
+            <Route path="agent-templates" element={<AgentTemplates />} />
+            <Route path="agent-templates/new" element={<AgentTemplateEditor />} />
+            <Route path="agent-templates/:id" element={<AgentTemplateEditor />} />
           </Route>
           {/* Where these used to be, so a bookmark or an old link still lands. */}
           <Route path="/users/*" element={<Moved from="/users" to={paths.users} />} />

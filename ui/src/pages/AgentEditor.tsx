@@ -16,6 +16,17 @@ export type Agent = {
   system_prompt: string
   policy: { reasoning_effort?: string; [key: string]: unknown }
   enabled: boolean
+  template_id?: string | null
+  /** The workspace's own section of a template agent's instructions. */
+  workspace_addition?: string
+  /** For an agent made from a template: what the operator's says. */
+  template?: {
+    id: string
+    version: number
+    requirements: string
+    defaults: string
+    allow_additions: boolean
+  } | null
 }
 
 /** What the form holds, whichever way it was reached. */
@@ -25,6 +36,7 @@ type Form = {
   description: string
   system_prompt: string
   enabled: boolean
+  workspace_addition: string
 }
 
 const EMPTY: Form = {
@@ -33,6 +45,7 @@ const EMPTY: Form = {
   description: '',
   system_prompt: '',
   enabled: true,
+  workspace_addition: '',
 }
 
 function fromAgent(agent: Agent): Form {
@@ -42,6 +55,7 @@ function fromAgent(agent: Agent): Form {
     description: agent.description,
     system_prompt: agent.system_prompt,
     enabled: agent.enabled,
+    workspace_addition: agent.workspace_addition ?? '',
   }
 }
 
@@ -72,6 +86,10 @@ export default function AgentEditor() {
   const canSave = authorities.includes(creating ? 'agents:create' : 'agents:update')
 
   const [form, setForm] = useState<Form>(EMPTY)
+  /** What the operator's template says, for an agent made from one. Its
+   *  name and instructions are the operator's; the workspace writes only its
+   *  own section, where the template allows one. */
+  const [template, setTemplate] = useState<Agent['template']>(null)
   const [slugEdited, setSlugEdited] = useState(false)
   const [loading, setLoading] = useState(!creating)
   const [saving, setSaving] = useState(false)
@@ -83,7 +101,10 @@ export default function AgentEditor() {
     void (async () => {
       try {
         const agent = await api<Agent>(`/v1/agents/${id}`)
-        if (!stale) setForm(fromAgent(agent))
+        if (!stale) {
+          setForm(fromAgent(agent))
+          setTemplate(agent.template ?? null)
+        }
       } catch (e) {
         if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load agent')
       } finally {
@@ -132,12 +153,19 @@ export default function AgentEditor() {
       }
       await api<Agent>(`/v1/agents/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          name: form.name,
-          description: form.description,
-          system_prompt: form.system_prompt,
-          enabled: form.enabled,
-        }),
+        body: JSON.stringify(
+          template
+            ? {
+                enabled: form.enabled,
+                ...(template.allow_additions ? { workspace_addition: form.workspace_addition } : {}),
+              }
+            : {
+                name: form.name,
+                description: form.description,
+                system_prompt: form.system_prompt,
+                enabled: form.enabled,
+              },
+        ),
       })
       setSaving(false)
       void navigate(`/agents/${id}`)
@@ -180,7 +208,7 @@ export default function AgentEditor() {
                 value={form.name}
                 onChange={(e) => onNameChange(e.target.value)}
                 required
-                disabled={!canSave}
+                disabled={!canSave || !!template}
                 className={field}
               />
             </label>
@@ -207,21 +235,70 @@ export default function AgentEditor() {
             <input
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              disabled={!canSave}
+              disabled={!canSave || !!template}
               className={field}
             />
           </label>
 
-          <label className="block">
-            <span className={label}>System prompt</span>
-            <textarea
-              value={form.system_prompt}
-              onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-              rows={8}
-              disabled={!canSave}
-              className={field}
-            />
-          </label>
+          {template ? (
+            <>
+              <div>
+                <p className={label}>Instructions from the operator</p>
+                <p className="text-xs text-surface-500 dark:text-surface-400 mb-2">
+                  This agent is provided by the operator, who keeps its instructions up to date
+                  (version {template.version}). The requirements apply as written; the defaults
+                  are how most businesses work, and this workspace may describe its own way below.
+                </p>
+                <div className="space-y-3 rounded-md border border-surface-200 dark:border-surface-800 bg-surface-50 dark:bg-surface-950 p-3 text-sm text-surface-700 dark:text-surface-300">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
+                      Requirements
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap">{template.requirements || 'None.'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
+                      Defaults
+                    </p>
+                    <p className="mt-1 whitespace-pre-wrap">{template.defaults || 'None.'}</p>
+                  </div>
+                </div>
+              </div>
+              {template.allow_additions ? (
+                <label className="block">
+                  <span className={label}>How this business works</span>
+                  <span className="block text-xs text-surface-500 dark:text-surface-400 mb-1">
+                    Where this workspace does something differently from the defaults. Naming
+                    what it replaces -- &ldquo;instead of raising suspected duplicates, void
+                    them&rdquo; -- leaves the agent nothing to reconcile.
+                  </span>
+                  <textarea
+                    value={form.workspace_addition}
+                    onChange={(e) => setForm({ ...form, workspace_addition: e.target.value })}
+                    rows={6}
+                    maxLength={4096}
+                    disabled={!canSave}
+                    className={field}
+                  />
+                </label>
+              ) : (
+                <p className="text-sm text-surface-600 dark:text-surface-400">
+                  The operator keeps this agent&rsquo;s instructions exactly as written.
+                </p>
+              )}
+            </>
+          ) : (
+            <label className="block">
+              <span className={label}>System prompt</span>
+              <textarea
+                value={form.system_prompt}
+                onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
+                rows={8}
+                disabled={!canSave}
+                className={field}
+              />
+            </label>
+          )}
 
           {!creating && (
             <label className="flex items-start gap-2">

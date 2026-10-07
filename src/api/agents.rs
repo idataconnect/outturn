@@ -50,6 +50,9 @@ pub struct AgentSummary {
     pub slug: String,
     pub description: String,
     pub enabled: bool,
+    /// The template it was made from, if any: a page marks the operator's
+    /// agents, and does not offer to delete one the template requires.
+    pub template_id: Option<Uuid>,
 }
 
 impl From<Agent> for AgentSummary {
@@ -61,6 +64,7 @@ impl From<Agent> for AgentSummary {
             slug: agent.slug,
             description: agent.description,
             enabled: agent.enabled,
+            template_id: agent.template_id,
         }
     }
 }
@@ -111,13 +115,45 @@ pub async fn create_agent(
     Ok((StatusCode::CREATED, Json(agent)))
 }
 
+/// An agent, and for one made from a template, what the template says: the
+/// operator's instructions the workspace's section is added to, read-only.
+#[derive(Debug, serde::Serialize)]
+pub struct AgentView {
+    #[serde(flatten)]
+    pub agent: Agent,
+    pub template: Option<TemplateView>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct TemplateView {
+    pub id: Uuid,
+    pub version: i32,
+    pub requirements: String,
+    pub defaults: String,
+    pub allow_additions: bool,
+}
+
 pub async fn get_agent(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<Agent>, ApiError> {
+) -> Result<Json<AgentView>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
-    Ok(Json(state.agents.get(claims.workspace_id, id).await?))
+    let agent = state.agents.get(claims.workspace_id, id).await?;
+    let template = match agent.template_id {
+        Some(template_id) => {
+            let t = state.templates.get(template_id).await?;
+            Some(TemplateView {
+                id: t.id,
+                version: t.current.ordinal,
+                requirements: t.current.requirements,
+                defaults: t.current.defaults,
+                allow_additions: t.allow_additions,
+            })
+        }
+        None => None,
+    };
+    Ok(Json(AgentView { agent, template }))
 }
 
 pub async fn update_agent(
