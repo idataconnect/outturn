@@ -84,8 +84,8 @@ files=$(for f in "$dir"/*.md; do
   jq -n --arg path "$name" --rawfile content "$f" '{path: $path, content: $content}'
 done | jq -s .)
 
-existing=$(curl -sf "$api/v1/skills" -H "$auth" \
-  | jq -r ".[] | select(.slug == \"$slug\") | .id" | head -1)
+existing=$(curl -sf "$api/v1/skills?limit=200" -H "$auth" \
+  | jq -r ".items[] | select(.slug == \"$slug\") | .id" | head -1)
 
 # Already there: publish what this component now says, rather than stopping.
 # Stopping was the first version of this, and it meant an edited skill never
@@ -138,8 +138,8 @@ say "approved $host"
 # made for. Somebody who removed every skill on purpose gets this one back on
 # the next redeploy, which is the cheaper of the two ways to be wrong.
 agent_slug=front-desk
-agents=$(call "$api/v1/agents" -H "$auth") || { say "could not list agents"; exit 1; }
-agent=$(echo "$agents" | jq -r ".[] | select(.slug == \"$agent_slug\") | .id" | head -1)
+agents=$(call "$api/v1/agents?limit=200" -H "$auth") || { say "could not list agents"; exit 1; }
+agent=$(echo "$agents" | jq -r ".items[] | select(.slug == \"$agent_slug\") | .id" | head -1)
 
 if [ -n "$agent" ]; then
   bound=$(call "$api/v1/agents/$agent/skills" -H "$auth") \
