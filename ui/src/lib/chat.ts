@@ -8,6 +8,8 @@ export type Agent = {
   enabled: boolean
   /** Whether this reader may start a conversation with it. */
   can_chat: boolean
+  /** The operator's template it was made from, if any. */
+  template_id?: string | null
 }
 export type AgentSession = {
   id: string

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { MessageSquare, OctagonX, Play, Plus, Settings2, Trash2 } from 'lucide-react'
 
+import { installTemplate, templateCatalog, type CatalogEntry } from '../lib/agentTemplates'
+
 import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
 import { recentSessionsOf, sessionName, type Agent, type AgentSession } from '../lib/chat'
@@ -53,14 +55,21 @@ export default function Agents() {
   const canReadSessions = authorities.includes('sessions:read')
 
   const [held, setHeld] = useState<Inhibitor[]>([])
+  /** The operator's agents this workspace may have, and which it has. */
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([])
 
   async function refresh() {
     try {
       // Together, so the list never renders an agent as running while the
       // workspace holding it is still loading.
-      const [list, holds] = await Promise.all([allPages<Agent>('/v1/agents'), listInhibitors()])
+      const [list, holds, offered] = await Promise.all([
+        allPages<Agent>('/v1/agents'),
+        listInhibitors(),
+        templateCatalog(),
+      ])
       setAgents(list)
       setHeld(holds)
+      setCatalog(offered)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load agents')
@@ -100,6 +109,21 @@ export default function Agents() {
   useEffect(() => {
     void refresh()
   }, [workspaceId])
+
+  async function onAdd(entry: CatalogEntry) {
+    try {
+      const { agent_id } = await installTemplate(entry.template_id)
+      await refresh()
+      void navigate(`/agents/${agent_id}`)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'failed to add agent')
+    }
+  }
+
+  /** Whether an agent is one the operator requires every workspace to have. */
+  function required(agent: Agent) {
+    return catalog.some((e) => e.agent_id === agent.id && e.availability === 'required')
+  }
 
   async function onDelete(agent: Agent) {
     if (!window.confirm(`Delete ${agent.name}? Its sessions go with it.`)) return
@@ -199,6 +223,42 @@ export default function Agents() {
               />
             )}
           </div>
+          {/* The operator's agents this workspace does not have: a default one
+              it removed, or an optional one it never added. */}
+          {canCreate && catalog.some((e) => !e.agent_id) && (
+            <div className="p-3 border-t border-surface-200 dark:border-surface-800">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-surface-500 dark:text-surface-400">
+                Available to add
+              </h2>
+              <ul className="mt-2 space-y-2">
+                {catalog
+                  .filter((e) => !e.agent_id)
+                  .map((entry) => (
+                    <li key={entry.template_id} className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-surface-800 dark:text-surface-200 truncate">
+                          {entry.name}
+                        </p>
+                        {entry.description && (
+                          <p className="text-xs text-surface-500 dark:text-surface-400 line-clamp-2">
+                            {entry.description}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void onAdd(entry)}
+                        aria-label={`Add ${entry.name}`}
+                        className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-surface-300 dark:border-surface-700 text-xs text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800"
+                      >
+                        <Plus size={12} aria-hidden />
+                        Add
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
           {/* Workspace-wide, so it lives with the list rather than with any one
               agent: it stops every one of them. */}
           {canStopWorkspace && !held.some((i) => i.scope.level === 'workspace') && (
@@ -268,6 +328,12 @@ export default function Agents() {
                   <p className="text-xs font-mono text-surface-500 dark:text-surface-400">
                     {selected.slug}
                   </p>
+                  {selected.template_id && (
+                    <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
+                      Provided by the operator
+                      {required(selected) && ', and part of every workspace'}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <Link
@@ -298,7 +364,7 @@ export default function Agents() {
                         <OctagonX size={16} aria-hidden />
                       </button>
                     ))}
-                  {canDelete && (
+                  {canDelete && !required(selected) && (
                     <button
                       onClick={() => void onDelete(selected)}
                       aria-label={`Delete ${selected.name}`}
