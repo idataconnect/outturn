@@ -92,6 +92,38 @@ setting with its effective value, where it came from, what this level would
 inherit, and whether this level has its own row. PUT sets a row, DELETE
 removes it.
 
+## Prompt repetition
+
+"Thinking before answering" has one choice that is not a level of effort:
+**Off, with prompt repetition** (`none_repeat_prompt`). Thinking is off, and
+the turn's prompt is sent twice:
+
+```
+<the prompt>
+Let me repeat that:
+<the prompt>
+```
+
+A model reads its prompt one token at a time, each able to look only at what
+came before it, so the start of a question is read without knowing how it
+ends. A second copy is read with all of the first in view. Google found this
+improves answers when a model does not deliberate, and does little when it
+does -- thinking re-reads the question anyway ([Leviathan, Kalman and Matias,
+2025](https://arxiv.org/abs/2512.14982)). So it is offered as what a model gets
+instead of thinking, not alongside it.
+
+Only the prompt this turn answers is repeated. The system prompt and earlier
+messages are not: repeating the history would double what each round costs
+to restate what the model already answered. It is found by its text rather
+than its position, since a turn resumed after an approval does not end on its
+prompt; a prompt nobody typed, such as a wake, is sent once. And it changes
+only what the model is sent, never the stored conversation -- see `repeated`
+in `src/api/worker.rs`.
+
+The cost is the prompt's tokens a second time, on every round of the turn.
+After the first round they are part of a cached prefix where the provider
+caches ([caching.md](caching.md)).
+
 ## What is deliberately not a setting
 
 - Anything the agent could read or change. The sandbox receives resolved
