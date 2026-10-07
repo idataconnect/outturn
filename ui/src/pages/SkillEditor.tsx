@@ -26,6 +26,7 @@ import {
   type Skill,
   type SkillVersion,
   type VersionSummary,
+  writtenBy,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
 import SkillConnections from '../components/SkillConnections'
@@ -670,6 +671,7 @@ export default function SkillEditor() {
                   )}
                   <p className="text-xs text-surface-500 dark:text-surface-500">
                     {new Date(v.created_at).toLocaleString()}
+                    {writtenBy(v.author) && <> · {writtenBy(v.author)}</>}
                   </p>
                   {/* Compared against the live version rather than the one before
                       it: somebody weighing Restore is asking what would be

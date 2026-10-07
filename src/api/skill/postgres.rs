@@ -6,8 +6,9 @@ use uuid::Uuid;
 use crate::api::usage::PLATFORM_WORKSPACE;
 
 use super::{
-    Binding, CreateSkill, DeclaredGate, ForkSkill, NewVersion, ResolvedSkill, Skill, SkillError,
-    SkillFile, SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name, validate_slug,
+    Author, Binding, CreateSkill, DeclaredGate, ForkSkill, NewVersion, ResolvedSkill, Skill,
+    SkillError, SkillFile, SkillKind, SkillStore, SkillVersion, UpdateSkill, validate_name,
+    validate_slug,
 };
 
 pub struct PostgresSkillStore {
@@ -329,6 +330,7 @@ fn read_version(row: &sqlx::postgres::PgRow) -> SkillVersion {
         unreached: None,
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
+        author: Author::default(),
     }
 }
 
@@ -622,9 +624,11 @@ impl SkillStore for PostgresSkillStore {
         self.get(workspace_id, id).await?;
         let rows = sqlx::query(
             "select v.id, v.skill_id, v.ordinal, v.body, v.note, v.based_on_version_id, \
-                    v.created_by, v.created_at, \
+                    v.created_by, v.created_at, v.workspace_id as owner, \
+                    u.display_name as author_name, \
                     h.hosts, f.files, f.file_sizes, f.file_hashes, f.file_links \
              from skill_versions v \
+             left join users u on u.id = v.created_by \
              left join lateral ( \
                  select coalesce(array_agg(host order by host), '{}') as hosts \
                  from skill_version_hosts where version_id = v.id \
@@ -680,6 +684,7 @@ impl SkillStore for PostgresSkillStore {
                     unreached: None,
                     created_by: r.get("created_by"),
                     created_at: r.get("created_at"),
+                    author: Author::as_seen_by(workspace_id, r.get("owner"), r.get("author_name")),
                 }
                 .with_unreached()
             })

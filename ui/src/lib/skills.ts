@@ -91,6 +91,25 @@ export type VersionSummary = {
   unreached: string[] | null
   created_by: string | null
   created_at: string
+  /** Who wrote it, as this workspace may know them. The operator's staff are
+   *  the operator; a version nobody signed -- an install, a seed -- is
+   *  unrecorded. */
+  author: Author
+}
+
+export type Author = { kind: 'person'; name: string } | { kind: 'operator' } | { kind: 'unrecorded' }
+
+/** A version's author as the history says it, or nothing where none was
+ *  recorded. */
+export function writtenBy(author: Author | undefined): string | null {
+  switch (author?.kind) {
+    case 'person':
+      return `by ${author.name}`
+    case 'operator':
+      return 'by the operator'
+    default:
+      return null
+  }
 }
 
 export function listVersions(id: string): Promise<VersionSummary[]> {

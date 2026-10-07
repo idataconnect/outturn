@@ -2852,6 +2852,66 @@ async fn a_workspace_reads_the_operators_skills_but_cannot_edit_them() {
     );
 }
 
+/// The history names who wrote each version: a person in the reader's own
+/// workspace by name, and the operator's staff as the operator.
+#[tokio::test]
+async fn skill_history_names_its_authors_as_the_reader_may_know_them() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/platform/skills",
+            Some(&operator),
+            r#"{"slug":"crm","name":"CRM","body":"Call the v1 endpoint."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let theirs: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"inn","name":"Inn","body":"x"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let ours: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let (_, body) = h
+        .get(
+            &format!("/v1/skills/{}/versions", ours["id"].as_str().unwrap()),
+            Some(&admin),
+        )
+        .await;
+    let author = &items(&body)[0]["author"];
+    assert_eq!(author["kind"], "person", "{body}");
+    assert_eq!(author["name"], "Test User", "{body}");
+
+    let (_, body) = h
+        .get(
+            &format!("/v1/skills/{}/versions", theirs["id"].as_str().unwrap()),
+            Some(&admin),
+        )
+        .await;
+    let author = &items(&body)[0]["author"];
+    assert_eq!(author["kind"], "operator", "{body}");
+    assert!(
+        author.get("name").is_none(),
+        "the operator's staff was named: {body}"
+    );
+}
+
 /// A version read back lists the hosts it declared, not an empty list.
 #[tokio::test]
 async fn a_version_read_back_names_its_hosts() {
