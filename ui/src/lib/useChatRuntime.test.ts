@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   annotate,
+  parkedIsPending,
   parts as parts_,
+  promptIsParked,
+  replyIsRunning,
   splitAtSteers,
   turnIsRunning,
   withQuote,
@@ -512,5 +515,55 @@ describe('a reply interrupted and started again', () => {
       finished_at: '2026-10-03T18:56:00Z',
     })
     expect(restartedOf([prompt, first, second])).toBe(false)
+  })
+})
+
+describe('a turn resumed after an approval', () => {
+  /// What the feed says, in the order it says it: the reply that asked is
+  /// finished and announced done before the job parks, so the prompt reads as
+  /// succeeded until the hold arrives.
+  const asked = () => {
+    let msgs = [
+      message({ id: 'u1', role: 'user', content: 'charge her', job_state: 'running' }),
+      message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'asking' }),
+    ]
+    msgs = msgs.map((m) => (m.id === 'u1' ? { ...m, job_state: 'succeeded' as const } : m))
+    return promptIsParked(msgs, 'u1')
+  }
+  const liveOf = (msgs: Message[], id: string) =>
+    annotate(msgs, new Set(), new Map()).find((m) => m.id === id)?.live === true
+
+  it('is not running while it waits on somebody', () => {
+    const msgs = asked()
+    expect(msgs[0].job_state).toBe('parked')
+    expect(liveOf(msgs, 'a1')).toBe(false)
+  })
+
+  it('is running from the moment the approval is given', () => {
+    const msgs = parkedIsPending(asked())
+    expect(turnIsRunning(msgs)).toBe(true)
+    expect(liveOf(msgs, 'a1')).toBe(true)
+  })
+
+  /// The bug: with the prompt left as succeeded, the resumed attempt's deltas
+  /// were refused as late events and its mark never moved.
+  it('is running while the resumed attempt streams, even if nobody here approved it', () => {
+    let msgs = [
+      ...asked(),
+      message({ id: 'a2', role: 'assistant', replies_to: 'u1', attempt: 2, content: 'done' }),
+    ]
+    msgs = replyIsRunning(msgs, 'a2')
+    expect(liveOf(msgs, 'a2')).toBe(true)
+  })
+
+  it('stays finished when a late event arrives after the turn ended', () => {
+    const msgs = replyIsRunning(
+      [
+        message({ id: 'u1', role: 'user', content: 'go', job_state: 'succeeded' }),
+        message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'all of it' }),
+      ],
+      'a1',
+    )
+    expect(liveOf(msgs, 'a1')).toBe(false)
   })
 })
