@@ -412,6 +412,9 @@ export default function AgentEditor() {
             </p>
           </div>
           <SettingsCascade
+            // Read again when the template version changes: what it fixes is
+            // that version's, so a pin can change what applies here.
+            key={template ? `v${template.version}` : 'own'}
             base={`/v1/agents/${id}/settings`}
             canEdit={authorities.includes('settings:update')}
             levelName="this agent"
