@@ -128,6 +128,45 @@ export function turnIsRunning(messages: Message[]): boolean {
   )
 }
 
+/** A prompt whose turn the feed has said is held.
+ *
+ * A turn that stops for an approval mid-stream finishes its reply before it
+ * parks, so `chat.done` arrives first and reads as the job having succeeded.
+ * Left that way, nothing that follows can say the turn is running again: the
+ * resumed attempt's deltas are refused as late events on a finished turn, and
+ * its mark sits still for the whole of a reply that is visibly streaming.
+ */
+export function promptIsParked(messages: Message[], promptId: string): Message[] {
+  return messages.map((m) =>
+    m.id === promptId && m.role === 'user' ? { ...m, job_state: 'parked' } : m,
+  )
+}
+
+/** Every parked prompt, back on the queue once its hold is lifted. */
+export function parkedIsPending(messages: Message[]): Message[] {
+  return messages.some((m) => m.job_state === 'parked')
+    ? messages.map((m) => (m.job_state === 'parked' ? { ...m, job_state: 'pending' } : m))
+    : messages
+}
+
+/** The prompt a reply answers, running, because an event about the reply
+ *  arrived.
+ *
+ * Only while the prompt is not already finished: a late event arriving after
+ * `chat.done` must not restart the animation on a turn that has stopped. A
+ * parked prompt is not finished -- it is the one case where events about a
+ * reply resume after its turn went quiet.
+ */
+export function replyIsRunning(messages: Message[], replyId: string): Message[] {
+  const reply = messages.find((m) => m.id === replyId)
+  if (!reply?.replies_to) return messages
+  const prompt = messages.find((m) => m.id === reply.replies_to)
+  if (!prompt || prompt.job_state === 'succeeded' || prompt.job_state === 'running') {
+    return messages
+  }
+  return messages.map((m) => (m.id === reply.replies_to ? { ...m, job_state: 'running' } : m))
+}
+
 export function annotate(
   messages: Message[],
   retrying: Set<string>,
@@ -628,7 +667,13 @@ export function useChatRuntime(
   // cannot appear on another whatever order the updates land in.
   const [heldAt, setHeldAt] = useState<{ session: string; hold: Held } | null>(null)
   const held = heldAt && heldAt.session === sessionId ? heldAt.hold : null
-  const clearHeld = useCallback(() => setHeldAt(null), [])
+  // Lifting a hold gives the turn back to the queue, so the prompt it parked
+  // is pending again from that moment rather than from whenever the resumed
+  // reply's first event happens to arrive.
+  const clearHeld = useCallback(() => {
+    setHeldAt(null)
+    setMessages(parkedIsPending)
+  }, [])
   // The reader saying they have seen it. Only the notice goes: the failed
   // reply keeps its own mark and its retry, which are what the notice was
   // pointing at.
@@ -800,19 +845,7 @@ export function useChatRuntime(
             }
             const { message_id } = event.payload as { message_id?: string }
             if (!message_id) continue
-            setMessages((prev) => {
-              const reply = prev.find((m) => m.id === message_id)
-              // Only while the prompt it answers is not already finished: a
-              // late event arriving after `chat.done` must not restart the
-              // animation on a turn that has stopped.
-              if (!reply?.replies_to) return prev
-              const prompt = prev.find((m) => m.id === reply.replies_to)
-              if (!prompt || prompt.job_state === 'succeeded') return prev
-              if (prompt.job_state === 'running') return prev
-              return prev.map((m) =>
-                m.id === reply.replies_to ? { ...m, job_state: 'running' } : m,
-              )
-            })
+            setMessages((prev) => replyIsRunning(prev, message_id))
           }
 
           // lands on the message already on screen rather than appearing
@@ -1128,6 +1161,8 @@ export function useChatRuntime(
               approval: approval ?? undefined,
               asleep: asleep ?? undefined,
             })
+            const { message_id } = holding.payload as { message_id?: string }
+            if (message_id) setMessages((prev) => promptIsParked(prev, message_id))
             setSending(false)
             setStopping(false)
           }
