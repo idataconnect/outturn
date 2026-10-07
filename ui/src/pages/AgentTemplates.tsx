@@ -20,7 +20,7 @@ export default function AgentTemplates() {
     listTemplates().then(
       (list) => {
         if (stale) return
-        setTemplates(list)
+        setTemplates([...list].sort((a, b) => a.current.name.localeCompare(b.current.name)))
         setLoading(false)
       },
       (e) => {

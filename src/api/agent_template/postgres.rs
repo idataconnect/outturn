@@ -238,7 +238,8 @@ impl PostgresAgentTemplateStore {
     /// Makes a workspace's agent from a template, or finds the one it has.
     ///
     /// Named by the template's slug, or the slug with the lowest free number
-    /// after it where the workspace already has an agent by that name: the
+    /// after it -- up to a thousand -- where the workspace already has an
+    /// agent by that name: the
     /// template's agent should not displace one the workspace made itself. One
     /// statement, so a second caller making the same agent at the same moment
     /// finds the first one's rather than making another.
@@ -256,13 +257,13 @@ impl PostgresAgentTemplateStore {
                        join lateral (select * from agent_template_versions \
                                       where template_id = t.id \
                                       order by ordinal desc limit 1) v on true \
-                      where t.id = $2), \
+                      where t.id = $2 and t.retired_at is null), \
                  free as ( \
                      select case when not exists (select 1 from agents \
                                                    where workspace_id = $1 and slug = t.slug) \
                                  then t.slug \
                                  else t.slug || '-' || ( \
-                                     select min(n) from generate_series(2, 100000) n \
+                                     select min(n) from generate_series(2, 1000) n \
                                       where not exists (select 1 from agents \
                                                          where workspace_id = $1 \
                                                            and slug = t.slug || '-' || n)) \
@@ -270,6 +271,7 @@ impl PostgresAgentTemplateStore {
                        from t) \
                  insert into agents (id, workspace_id, name, slug, description, template_id) \
                  select $3, $1, t.name, free.slug, t.description, $2 from t, free \
+                  where free.slug is not null \
                  on conflict (workspace_id, template_id) where template_id is not null \
                  do nothing \
                  returning id",
@@ -282,9 +284,10 @@ impl PostgresAgentTemplateStore {
             match made {
                 Ok(Some(id)) => return Ok((id, true)),
                 // Nothing made: the workspace has this template's agent
-                // already, or there is no such template.
+                // already, there is no such template (or it is retired), or
+                // every name for it is taken.
                 Ok(None) => {
-                    return sqlx::query_scalar::<_, Uuid>(
+                    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
                         "select id from agents where workspace_id = $1 and template_id = $2",
                     )
                     .bind(workspace_id)
@@ -292,8 +295,17 @@ impl PostgresAgentTemplateStore {
                     .fetch_optional(&self.pool)
                     .await
                     .map_err(internal)?
-                    .map(|id| (id, false))
-                    .ok_or(TemplateError::NotFound);
+                    {
+                        return Ok((id, false));
+                    }
+                    let template = self.get(template_id).await?;
+                    if template.retired {
+                        return Err(TemplateError::NotFound);
+                    }
+                    return Err(TemplateError::Refused(format!(
+                        "this workspace already has agents named {0} through {0}-1000",
+                        template.slug
+                    )));
                 }
                 Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => continue,
                 Err(e) => return Err(internal(e)),

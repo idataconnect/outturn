@@ -123,8 +123,11 @@ pub async fn catalog(
 ) -> Result<Json<super::Page<CatalogEntry>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     // Owed agents made first, so a workspace whose provisioning failed when it
-    // was created, or at a publish, gets them the next time anyone looks. One
-    // query when nothing is owed.
+    // was created, or at a publish, gets them the next time anyone looks.
+    // Only ever agents the workspace is owed, whoever reads: a read that
+    // writes, but one that writes only what the workspace should already
+    // have. Two statements when nothing is owed -- the owed query and the
+    // name refresh, which changes no rows.
     if let Err(e) = state
         .templates
         .provision(Some(claims.workspace_id), None)

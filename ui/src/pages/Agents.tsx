@@ -69,7 +69,9 @@ export default function Agents() {
       ])
       setAgents(list)
       setHeld(holds)
-      setCatalog(offered)
+      // By name: the API pages in creation order, which is not one a person
+      // looks things up in.
+      setCatalog([...offered].sort((a, b) => a.name.localeCompare(b.name)))
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load agents')
