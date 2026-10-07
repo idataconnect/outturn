@@ -544,8 +544,11 @@ async fn chat_completions_stream(
     State(state): State<Arc<GatewayState>>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ChatCompletionRequest>,
-) -> Result<Response, Response> {
-    let claims = authenticate(&state, &headers).map_err(IntoResponse::into_response)?;
+) -> Response {
+    let claims = match authenticate(&state, &headers) {
+        Ok(claims) => claims,
+        Err(refused) => return refused.into_response(),
+    };
 
     tracing::debug!(
         session_id = %claims.subject,
@@ -696,10 +699,10 @@ async fn chat_completions_stream(
                 let stop = stop_rx.borrow().clone();
                 let line = trailer(pending, stop);
                 let body = futures::stream::iter(line.map(Ok::<_, std::io::Error>));
-                return Ok(respond(
+                return respond(
                     provider.endpoint(),
                     axum::body::Body::from_stream(body),
-                ));
+                );
             }
         };
 
@@ -737,10 +740,7 @@ async fn chat_completions_stream(
                 .filter_map(std::future::ready);
                 let body = body.chain(tail);
 
-                return Ok(respond(
-                    provider.endpoint(),
-                    axum::body::Body::from_stream(body),
-                ));
+                return respond(provider.endpoint(), axum::body::Body::from_stream(body));
             }
             Err(e) => {
                 // The Debug form, whole: what a caller is shown is capped.
@@ -771,7 +771,7 @@ async fn chat_completions_stream(
         None => "no provider could stream".into(),
     };
     if malformed {
-        return Err((
+        return (
             StatusCode::BAD_GATEWAY,
             [(
                 axum::http::HeaderName::from_static(FAILURE_HEADER),
@@ -779,9 +779,9 @@ async fn chat_completions_stream(
             )],
             message,
         )
-            .into_response());
+            .into_response();
     }
-    Err((StatusCode::BAD_GATEWAY, message).into_response())
+    (StatusCode::BAD_GATEWAY, message).into_response()
 }
 
 /// Names what kind of failure a 502 from the streaming route is, where it is

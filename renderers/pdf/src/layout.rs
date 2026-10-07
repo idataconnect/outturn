@@ -180,9 +180,9 @@ impl Faces {
         let mut chars = text.char_indices().peekable();
         while let Some((i, c)) = chars.next() {
             let next = chars.peek().map(|(_, n)| *n);
-            let face = if joins(c) && current == Some(FaceId::Emoji) {
-                FaceId::Emoji
-            } else if next == Some('\u{FE0F}') && emoji.has(c) {
+            let modifies_emoji = joins(c) && current == Some(FaceId::Emoji);
+            let asks_for_emoji = next == Some('\u{FE0F}') && emoji.has(c);
+            let face = if modifies_emoji || asks_for_emoji {
                 FaceId::Emoji
             } else if main.has(c) || !emoji.has(c) {
                 primary
