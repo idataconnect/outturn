@@ -173,6 +173,55 @@ deuteranopia, and contrast against the surface. `ui/src/lib/viz.ts` holds them,
 and the fixed slot order is the safety mechanism -- anything past the last slot
 takes a neutral rather than a hue nobody checked.
 
+## The skills panel
+
+Below the usage panels the dashboard shows what the workspace's skills are
+doing, from `GET /v1/skills/stats`. It is kept apart from them on purpose: the
+usage panels read the ledger and are about spend, and this one reads the
+transcript and is about what was carried. Nothing attributes tokens to a skill,
+so no figure here is a cost, and none pretends to be.
+
+The window is the one the page's picker chose -- the same closed window the
+summary takes, defaulting to the 30 days ending at the next UTC midnight and
+refused past 370. It is one workspace only, needs `SkillsRead` rather than
+`UsageRead`, and has no platform-wide cut: a list of every workspace's skill
+names is their content, not a statistic about it. An operator viewing every
+workspace simply gets no panel. Lists are capped at 20 rows.
+
+Use comes from `turn_skills`, the row recording which version of which skill
+each reply was given. Its time is the reply's `created_at` in `agent_messages`.
+Edits come from `skill_versions`, where every save is a version.
+
+- **Skills** counts the workspace's skills that are not retired, and beneath it
+  how many of those any agent carries.
+- **Times used** counts `turn_skills` rows in the window: one per skill per
+  reply, so a reply carrying three skills counts three times.
+- **Edits** counts versions written in the window, with skills first created
+  and skills retired in it beneath.
+- **Unused** is skills an agent carries that served no reply in the window.
+  Each is sent to the model on every round anyway, so it is a standing cost
+  with nothing to show. Its "last used" reaches outside the window: "never"
+  means never, not merely not lately.
+- **Most used** ranks skills by replies served, with the distinct
+  conversations among them -- one busy session and twenty light ones are
+  different facts -- and how many times the skill was edited in the window.
+  The bars are drawn against the busiest skill rather than the total, since
+  several skills share a reply.
+- **Using an older version** lists skills that served replies on something
+  older than their newest version. Whether an agent pins the skill is what
+  tells the two cases apart: a pin is somebody's decision, and its absence is
+  an edit nobody picked up.
+- **Who edited them** groups the window's versions by author, with how many
+  versions and how many distinct skills each wrote.
+
+Authors are named by the rule every actor is, written once in
+`src/api/actor.rs` and only repeated by `ui/src/lib/actors.ts`. Anybody is
+named by their display name, except the operator's staff, who appear as one
+row called the operator with no id -- a platform admin is named to no customer,
+even in a workspace they belong to. A version nobody signed, from an install or
+a seed, is kept rather than dropped, so the rows still add up to **Edits**,
+and is shown as set up automatically.
+
 ## Not yet
 
 - `credential_owner` is always `operator` and `fallback` always `none`, because
