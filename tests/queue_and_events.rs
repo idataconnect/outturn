@@ -1960,6 +1960,46 @@ async fn routes_are_ordered_by_precedence() {
     finish!(db);
 }
 
+/// Background work nobody has routed goes where assistant work goes, rather
+/// than to the static providers an unrouted class otherwise falls to.
+#[tokio::test]
+async fn background_traffic_borrows_the_assistant_routes_until_it_has_its_own() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://in-house", "careful").await;
+    let borrowed = routing::routes_for(pool, workspace, routing::BACKGROUND_TRAFFIC_TYPE)
+        .await
+        .expect("routes");
+    assert_eq!(borrowed.len(), 1);
+    assert_eq!(borrowed[0].model, "careful");
+
+    add_route(pool, None, "background", 10, "http://in-house", "cheap").await;
+    let own = routing::routes_for(pool, workspace, routing::BACKGROUND_TRAFFIC_TYPE)
+        .await
+        .expect("routes");
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].model, "cheap");
+
+    finish!(db);
+}
+
+/// Only background borrows. Any other class nobody routed still comes back
+/// empty, so the gateway's fallback for it is unchanged.
+#[tokio::test]
+async fn other_unrouted_classes_borrow_nothing() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://in-house", "careful").await;
+    let none = routing::routes_for(pool, workspace, "session-name")
+        .await
+        .expect("routes");
+    assert!(none.is_empty());
+
+    finish!(db);
+}
+
 /// A workspace's own routes replace the system defaults rather than extending
 /// them, so its traffic cannot quietly fall through to somebody else's
 /// endpoint once it has said where it wants to go.
