@@ -26,7 +26,7 @@ import { productName } from './lib/brand'
 import SectionLayout from './components/SectionLayout'
 import InboxProvider from './components/InboxProvider'
 import { useInbox } from './lib/inbox'
-import { ApiError, api } from './lib/api'
+import { ApiError, api, onSessionEnded } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
 import { useBreakpoint } from './lib/useBreakpoint'
 import {
@@ -163,6 +163,11 @@ function useSessionState(): [SessionState, SessionActions] {
   useEffect(() => {
     void load()
   }, [load])
+
+  // A session the server refuses mid-use -- a refresh token expired or revoked,
+  // a membership removed -- goes straight to the sign-in page. The URL is left
+  // as it was, so signing in again lands where the person was.
+  useEffect(() => onSessionEnded(() => setState({ status: 'anonymous' })), [])
 
   const signIn = useCallback(() => {
     void load()
