@@ -220,8 +220,8 @@ also records why tools living inside the guest is a fork to take later rather
 than the prerequisite it first looked like.
 
 Intended but not yet built, so that nobody mistakes these for facts about the
-code: Redis caching, per-workspace usage attribution, OpenTelemetry, and workflows
-as scripted tasks in sub-sessions.
+code: Redis caching, OpenTelemetry, and workflows as scripted tasks in
+sub-sessions.
 
 A workspace's egress list is managed through `/v1/egress-rules`, and from
 Settings > Connections, which allows and removes hosts and connects each one's
