@@ -173,6 +173,25 @@ deuteranopia, and contrast against the surface. `ui/src/lib/viz.ts` holds them,
 and the fixed slot order is the safety mechanism -- anything past the last slot
 takes a neutral rather than a hue nobody checked.
 
+The Work panel cuts tokens by traffic class, and names the platform's own
+classes for the work they are rather than by the word the ledger stores:
+`assistant` is people talking to agents, `background` is schedules and webhooks
+(see [routing.md](routing.md)), `session-name` is naming conversations and
+`compaction` is summarizing long ones. A class an operator added keeps the name
+they gave it, which they chose and will recognize.
+
+Beside "Right now", a panel headed "Running on their own" lists the workspace's
+schedules and webhooks, each linking to its agent's settings page. Those pages
+are the right place to edit one and the wrong place to notice that one stopped
+working: a schedule failing every morning is a broken integration nobody sees
+until somebody opens that particular agent. So whatever is not working comes
+first -- a schedule with a problem or a failed last run, a webhook whose last
+request failed or was refused -- then what is on, the soonest schedule leading
+and webhooks after it, since a webhook has no next run to rank by, then what is
+off. It needs `agents:read`, and like the skills panel it is one workspace's: an
+operator viewing every workspace gets no panel rather than one that quietly
+narrowed to their own.
+
 ## The skills panel
 
 Below the usage panels the dashboard shows what the workspace's skills are
