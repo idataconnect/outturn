@@ -250,3 +250,32 @@ other repository, it is that tree's own.
 Without a terminal, in CI or through a pipe, nothing is asked. The run uses the
 suggestions, says so, and writes nothing, so the first run at a terminal still
 asks.
+
+## The demo workspace and the README video
+
+Two scripts exist for showing the product rather than working on it: for
+screenshots, and for re-recording the README's walkthrough once the UI has
+changed enough that the old one shows something that is no longer there.
+
+`scripts/demo-seed.sh` fills an empty workspace with something worth looking
+at: the Hollowbrook skill and its Front desk agent, a second version of the
+skill so its history has a difference to show, a skill whose host nobody has
+approved, a Concierge agent, temperature set at each level of the settings
+cascade, and a few real conversations, the last of them ending in a charge
+held for approval. `scripts/demo-video.sh` drives the UI through
+`ui/e2e/demo-video.mjs` with Playwright and encodes `docs/demo.mp4` and
+`docs/demo.gif`. Neither file is committed.
+
+Both need the cluster from `scripts/dev.sh --with hollowbrook`, the UI's dev
+server on :3000, and the local model, since the seed runs real turns and
+takes a few minutes for it.
+
+The seed expects an empty database. It adds rather than replaces, so a second
+run leaves a second set of conversations. The walkthrough approves the seeded
+charge, so a second take needs a fresh seed, or a `pg_dump` taken after
+seeding and restored into an empty schema. `pg_restore --clean` over the
+seeded one fails on the partitioned `usage_ledger`.
+
+The README does not point at `docs/demo.mp4`. Its video is an upload to
+GitHub's user-attachments, so after a new take, drag the MP4 into a GitHub
+comment or issue box and replace the URL in the README by hand.
