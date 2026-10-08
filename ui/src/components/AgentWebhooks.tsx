@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
+import { elapsedPhrase } from '../lib/elapsed'
 import {
   BODY,
   createWebhook,
@@ -36,15 +37,7 @@ const SCHEMES: { value: Scheme; label: string; detail: string }[] = [
   },
 ]
 
-function ago(iso: string): string {
-  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 90) return 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 90) return `${minutes} minutes ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 36) return `${hours} hours ago`
-  return `${Math.round(hours / 24)} days ago`
-}
+const ago = (iso: string) => elapsedPhrase(new Date(iso).getTime()).toLowerCase()
 
 type Draft = {
   id: string | null

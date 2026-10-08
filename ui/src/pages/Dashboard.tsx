@@ -10,6 +10,7 @@ import StatTile from '../components/StatTile'
 import SkillStatsPanel, { type SkillStats } from '../components/SkillStats'
 import WaitingOnYou from '../components/WaitingOnYou'
 import AgentActivity from '../components/AgentActivity'
+import RunningOnTheirOwn from '../components/RunningOnTheirOwn'
 
 type Summary = {
   from: string
@@ -58,6 +59,7 @@ export default function Dashboard() {
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canRead = authorities.includes('usage:read')
   const canReadSkills = authorities.includes('skills:read')
+  const canReadAgents = authorities.includes('agents:read')
   const isOperator =
     state.status === 'authenticated' && state.session.roles.includes('system_admin')
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
@@ -187,6 +189,11 @@ export default function Dashboard() {
           <div className="mt-6">
             <AgentActivity />
           </div>
+          {canReadAgents && (
+            <div className="mt-6">
+              <RunningOnTheirOwn />
+            </div>
+          )}
         </div>
       </div>
     )
@@ -264,6 +271,11 @@ export default function Dashboard() {
 
       {/* What is happening now, before what happened over the window. */}
       <AgentActivity />
+
+      {/* Like the skills below, one workspace's: an operator looking at
+          every workspace gets no panel rather than one that quietly narrowed
+          to their own. */}
+      {canReadAgents && !(everywhere && isOperator) && <RunningOnTheirOwn />}
 
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">
@@ -428,8 +440,11 @@ export default function Dashboard() {
             />
             <Panel
               title="Work"
-              subtitle="An agent answering somebody, against the platform's own naming and compaction"
-              slices={summary.by_traffic}
+              subtitle="What the tokens were spent on"
+              slices={summary.by_traffic.map((s) => ({
+                ...s,
+                label: (s.key && WORK[s.key]) ?? s.label,
+              }))}
               empty="No work in this window."
             />
           </section>
@@ -443,6 +458,19 @@ export default function Dashboard() {
       )}
     </div>
   )
+}
+
+/**
+ * The platform's own traffic classes, as a reader would name the work.
+ *
+ * Keyed by class because the ledger stores the class. A class an operator
+ * added for themselves keeps its own name, which they chose and will know.
+ */
+const WORK: Record<string, string> = {
+  assistant: 'People talking to agents',
+  background: 'Schedules and webhooks',
+  'session-name': 'Naming conversations',
+  compaction: 'Summarizing long conversations',
 }
 
 function Panel({
