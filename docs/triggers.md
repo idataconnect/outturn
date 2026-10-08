@@ -217,6 +217,11 @@ cover, with the next few firings shown as plain dates in the schedule's own
 zone. Showing when it will actually run is what catches a wrong expression
 before it is saved rather than after.
 
+The list lives on the agent's settings page, beside its webhooks, because a
+schedule means nothing without the agent it starts. The dashboard gathers them
+again under "Running on their own" (see [usage.md](usage.md#the-dashboard)) so
+that one failing is noticed without opening the agent it belongs to.
+
 ## Webhooks
 
 An inbound endpoint per trigger, at an unguessable path, accepting a POST from
@@ -359,6 +364,36 @@ acts on the world should be written so that acting twice is survivable.
 `shared_secret` is worse and the difference is worth stating: it binds no body,
 so a captured request can be replayed with a payload of the attacker's choosing
 until the secret is rotated.
+
+### Managing them
+
+Webhooks are made on the agent's settings page, in a section beside its
+schedules, since both answer what the agent does when nobody is talking to it.
+Each is a name, the prompt its deliveries become -- with `{{body}}` where the
+request's body goes -- a scheme, an optional account label -- whose conversations
+these are, as the dashboard groups usage -- and an hourly ceiling.
+
+The full address is composed in the browser, from its own origin and the path
+the API returns. The API cannot know the host it is publicly reached at, and
+the browser is reaching it at that host already. When that host is clearly not
+reachable from the internet -- loopback, a private address, a name with no dot,
+or a suffix such as `.local` reserved never to resolve publicly -- the page notes
+that a sender outside the network needs a public address. Only the certain
+cases raise that note: a private name under a real domain is not caught,
+because a warning that is sometimes wrong teaches people to ignore it.
+
+The secret is shown once, after the webhook is created or its secret rotated,
+alongside what a sender needs to prove it holds it: under `hmac`, the
+timestamp and signature headers and what is signed; under `shared_secret`, the
+header that carries it. The API never returns it again, so a lost secret is
+replaced rather than recovered, and rotating one stops the sender until they
+are given the new one.
+
+A request with a wrong signature or secret is answered `404`, as though the
+address did not exist, and is not counted anywhere but the log: it is refused
+before the sender has proved anything, and recording it would let a probe of
+the address create work. The `refused` count beside each webhook is only what
+the hourly ceiling turned away.
 
 ### What is still to settle
 
