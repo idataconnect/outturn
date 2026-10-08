@@ -269,4 +269,5 @@ are near before changing it.
   [streaming-storage.md](docs/streaming-storage.md),
   [document-extraction.md](docs/document-extraction.md),
   [pdf-rendering.md](docs/pdf-rendering.md),
-  [session-search.md](docs/session-search.md), [vision.md](docs/vision.md).
+  [session-search.md](docs/session-search.md),
+  [history-access.md](docs/history-access.md), [vision.md](docs/vision.md).
