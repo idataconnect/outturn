@@ -47,7 +47,7 @@ export class NetworkError extends Error {}
  *
  * Access tokens are short-lived, so a 401 is usually just an expired one: the
  * refresh cookie is exchanged for a new one and the call retried once. Only if
- * that fails is the session really over.
+ * that fails is the session really over, and then `onSessionEnded` hears it.
  */
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return withRefresh(path, () => call<T>(path, init))
@@ -63,15 +63,46 @@ async function withRefresh<T>(path: string, attempt: () => Promise<T>): Promise<
   try {
     return await attempt()
   } catch (e) {
-    if (!(e instanceof ApiError) || e.status !== 401 || path === REFRESH_PATH) {
+    if (!isUnauthorized(e) || path === REFRESH_PATH || path === LOGIN_PATH) {
       throw e
     }
-    await refreshSession()
-    return await attempt()
+    try {
+      await refreshSession()
+      return await attempt()
+    } catch (after) {
+      // A refresh refused, or a request still refused with a fresh token: the
+      // server has said this session is over, and no retry will change its
+      // mind. Said once, here, because otherwise each caller decides alone --
+      // and a poller built to wait out a restarting API retries a revoked
+      // session every few seconds for as long as the tab is open.
+      if (isUnauthorized(after)) endSession()
+      throw after
+    }
   }
 }
 
+const isUnauthorized = (e: unknown) => e instanceof ApiError && e.status === 401
+
 const REFRESH_PATH = '/v1/session/refresh'
+// Excluded from refreshing because its 401 is a wrong password, not an expired
+// session -- there is no session yet to refresh or to end.
+const LOGIN_PATH = '/v1/login'
+
+const sessionEnded = new Set<() => void>()
+
+/** Calls `listener` when the server refuses this session for good. Returns the
+ *  unsubscribe. The app's session state is the one listener, and it shows the
+ *  sign-in page, which unmounts everything still polling. */
+export function onSessionEnded(listener: () => void): () => void {
+  sessionEnded.add(listener)
+  return () => {
+    sessionEnded.delete(listener)
+  }
+}
+
+function endSession() {
+  for (const listener of sessionEnded) listener()
+}
 
 /** In-flight refresh, so concurrent 401s trigger only one rotation. */
 let refreshInFlight: Promise<void> | null = null

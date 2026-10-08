@@ -28,6 +28,7 @@ vi.mock('../lib/api', () => ({
     }
     return {}
   }),
+  onSessionEnded: () => () => {},
 }))
 
 describe('nav collapse control', () => {
