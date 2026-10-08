@@ -143,15 +143,27 @@ than the agent's, which is what `traffic_type` records; it is not nobody's
 spend. Both wrote a null for a while, and the result was tokens an operator
 could see on a page that cuts spend by agent and nobody could account for.
 
-Two things on it are design rather than decoration. Cache reads are drawn beside
-the daily stack rather than in it: on a transcript-heavy workload they run an
-order of magnitude above the rest, and stacking them leaves completion tokens a
-few pixels tall. The separation is real rather than cosmetic -- a cache read is
+Two things on it are design rather than decoration. Cache reads are kept out
+of the daily stack: on a transcript-heavy workload they run an order of
+magnitude above the rest, and stacking them leaves completion tokens a few
+pixels tall. The separation is real rather than cosmetic -- a cache read is
 context being re-read, priced differently by every provider, not new work the
 way a prompt or a completion is -- and the alternatives are worse, a log axis
 making a tenfold difference look small and a second y-axis never being the
-answer. The line is dashed and its own maximum is written into the legend,
-because a reader must be able to see that it does not share the axis beside it.
+answer. They get a strip of their own beneath the stack instead, with its own
+0-100% axis, showing the share of each day's input served from cache. It was
+once a dashed line laid over the stack against its own maximum, and its zero
+sat about where the stack topped out, so it read as one more band measured
+against an axis that was not its own; a legend saying so could not undo what
+its position said. A rate rather than a count also answers what a reader wants
+from it, which is whether caching is working. Input is prompt, cache read and
+cache write together, because the gateway counts cache reads outside the prompt
+figure. The two panels share one x-axis and one hover, and the line breaks over
+a day with no input rather than dropping to 0%: a day nobody called a model did
+not miss the cache. The "Cache hit rate" tile above, which replaced a count of
+cache reads, is the same figure over the whole window -- the count's share of
+all tokens set context re-read against completions written, and answered
+nothing.
 
 The other is that every chart has a table behind it carrying the same figures,
 and that the series colors are checked rather than chosen: they come from the
