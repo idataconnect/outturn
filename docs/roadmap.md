@@ -540,6 +540,12 @@ and a person's verdict, for free. Enough of them is a corpus nobody wrote.
 Small on its own -- a column and a button -- and load-bearing out of proportion
 to that.
 
+**History access.** An agent reading its own past conversations, which a
+schedule's "summarize yesterday" examples assume and nothing provides.
+Designed in [history-access.md](history-access.md), and off unless somebody
+turns it on: it is the one tool that could repeat one customer's conversation
+to another.
+
 **Memory, or whatever the durable thing turns out to be.** A schedule running
 weekly in a fresh session each time cannot learn anything, and the fix is not a
 long-lived session. What it wants is narrow and durable, and the shape is
