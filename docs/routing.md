@@ -31,13 +31,25 @@ credential. A skill will name a class the same way. The workspace and the
 workspace's customers never learn which model served them unless the workspace is
 the one holding the key.
 
-`assistant` is the generic class: realtime chat and scheduled work of the same
-character. `session-name` is the second: the one request made after a
+`assistant` is the generic class: a person talking to an agent.
+`background` is the same work with nobody waiting on it -- a turn a schedule or
+a webhook started, which carries no user -- so an operator can send it to a
+cheaper or slower model with a row, and the ledger can tell what people asked
+for from what ran on its own. It is the same judgment that queues such a turn
+behind anybody who is waiting. A class the agent's policy names wins over it:
+an agent confined to one class is confined for a reason, and a schedule is not
+a way round that. `session-name` is the third: the one request made after a
 conversation's first turn to give it a title, sent by the API tier under its
 own class so an operator can point it at a small model with a row. More come
 as they are needed -- `customer-service`, `summarize`, `compaction` -- and
-each is a row set, not code. Absent a row for a class, the gateway's static
-providers serve it, so a class costs nothing to introduce.
+each is a row set, not code.
+
+Absent a row for a class, the gateway's static providers serve it, so a class
+costs nothing to introduce -- with one exception. `background` borrows
+`assistant`'s routes until it has its own, because the static providers can
+be a different vendor from the one assistant traffic was confined to, and a
+deployment should not find its scheduled turns somewhere new the day the
+class appeared.
 
 Absent is not the same as rejected. A class whose rows all exist and are all
 turned down -- every base URL pointing inside the network with no operator

@@ -23,6 +23,25 @@ use super::llm::provider::{
 /// The class of work a request belongs to, when the caller does not say.
 pub const DEFAULT_TRAFFIC_TYPE: &str = "assistant";
 
+/// A turn nobody is waiting on -- a schedule's, a webhook's -- so an operator
+/// can send it somewhere cheaper or slower than a person's, and the ledger can
+/// tell the two apart.
+pub const BACKGROUND_TRAFFIC_TYPE: &str = "background";
+
+/// The class to borrow routes from when this one has none.
+///
+/// Background work is assistant work nobody is watching, so until somebody
+/// routes it separately it goes where assistant traffic goes. Not to the
+/// static providers, which is where an unrouted class otherwise lands: a
+/// deployment that confined its assistant traffic to one provider would find
+/// its scheduled turns at a different vendor the day this class appeared.
+fn borrows_from(traffic_type: &str) -> Option<&'static str> {
+    match traffic_type {
+        BACKGROUND_TRAFFIC_TYPE => Some(DEFAULT_TRAFFIC_TYPE),
+        _ => None,
+    }
+}
+
 /// One attempt: where to go, and what to ask for.
 #[derive(Debug, Clone)]
 pub struct Route {
@@ -45,6 +64,19 @@ impl Route {
 /// them: a workspace that has configured where its traffic goes should not have
 /// requests quietly fall through to somebody else's endpoint.
 pub async fn routes_for(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    traffic_type: &str,
+) -> Result<Vec<Route>, sqlx::Error> {
+    let routes = routes_of(pool, workspace_id, traffic_type).await?;
+    match borrows_from(traffic_type) {
+        Some(parent) if routes.is_empty() => routes_of(pool, workspace_id, parent).await,
+        _ => Ok(routes),
+    }
+}
+
+/// One class's own routes, with no borrowing.
+async fn routes_of(
     pool: &PgPool,
     workspace_id: Uuid,
     traffic_type: &str,

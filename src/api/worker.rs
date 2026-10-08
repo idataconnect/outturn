@@ -1203,6 +1203,7 @@ impl Worker {
                                             &self
                                                 .policy_of(payload.workspace_id, payload.agent_id)
                                                 .await,
+                                            payload.user_id.is_none(),
                                         );
                                         traffic = Some(t.clone());
                                         t
@@ -1994,7 +1995,7 @@ impl Worker {
                 timezone: payload.timezone.clone(),
                 reasoning_effort: settings.reasoning_effort,
                 temperature: settings.temperature,
-                traffic_type: Some(traffic_type_for(&agent.policy)),
+                traffic_type: Some(traffic_type_for(&agent.policy, payload.user_id.is_none())),
                 max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
                 reply_id: placeholder.message.id,
                 egress,
@@ -2913,16 +2914,22 @@ impl Worker {
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.
-/// What class of traffic this agent's turns are, from its policy.
+/// What class of traffic a turn is.
 ///
 /// Names the work rather than the destination: the gateway decides where
 /// "assistant" traffic goes, and can move it without the agent changing.
-fn traffic_type_for(policy: &serde_json::Value) -> String {
-    policy
-        .get("traffic_type")
-        .and_then(|t| t.as_str())
-        .unwrap_or(crate::gateway::routing::DEFAULT_TRAFFIC_TYPE)
-        .to_string()
+///
+/// A class the agent's policy names wins, triggered or not: an agent confined
+/// to one class is confined for a reason, and a schedule is not a way round
+/// it. Otherwise a turn nobody sent -- a schedule's or a webhook's, which carry
+/// no user -- is background, the same judgment that queues it behind people.
+fn traffic_type_for(policy: &serde_json::Value, nobody_waiting: bool) -> String {
+    use crate::gateway::routing::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
+    match policy.get("traffic_type").and_then(|t| t.as_str()) {
+        Some(named) => named.to_string(),
+        None if nobody_waiting => BACKGROUND_TRAFFIC_TYPE.to_string(),
+        None => DEFAULT_TRAFFIC_TYPE.to_string(),
+    }
 }
 
 /// The agent's model, or the operator's where the agent names none.
@@ -2939,6 +2946,30 @@ fn model_for(policy: &serde_json::Value) -> anyhow::Result<String> {
         .ok_or_else(|| {
             anyhow::anyhow!("no model: the agent names none and OUTTURN_DEFAULT_MODEL is not set")
         })
+}
+
+#[cfg(test)]
+mod traffic_type_tests {
+    use super::traffic_type_for;
+    use serde_json::json;
+
+    #[test]
+    fn a_turn_somebody_sent_is_assistant_traffic() {
+        assert_eq!(traffic_type_for(&json!({}), false), "assistant");
+    }
+
+    #[test]
+    fn a_turn_nobody_is_waiting_on_is_background_traffic() {
+        assert_eq!(traffic_type_for(&json!({}), true), "background");
+    }
+
+    /// An agent confined to a class stays confined when a schedule runs it.
+    #[test]
+    fn a_class_the_agent_names_wins_either_way() {
+        let policy = json!({ "traffic_type": "in-house" });
+        assert_eq!(traffic_type_for(&policy, false), "in-house");
+        assert_eq!(traffic_type_for(&policy, true), "in-house");
+    }
 }
 
 #[cfg(test)]
