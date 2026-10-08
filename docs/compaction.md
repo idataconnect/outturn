@@ -137,3 +137,53 @@ the durable transcript from the projection sent to a model, so provider-specific
 artifacts (Gemini thought signatures, Anthropic thinking blocks, differing tool
 call shapes) are annotations filtered per target rather than facts about
 storage. Lossy parts should degrade, never fail the turn.
+
+## Compacting on request
+
+A conversation keeps the system prompt it was given until it compacts, so a
+skill published, or an agent's instructions edited, after it began does not
+reach it before then. Why the prompt is composed once per conversation rather
+than every turn is in [prompt-contributors.md](prompt-contributors.md); the
+short of it is a stable cached prefix and a record of what each turn actually
+had. Compacting on request is how a person takes up the newer prompt without
+starting over.
+
+`/compact` in the composer's slash menu, or the button on the banner below,
+calls `POST /v1/agent-sessions/{id}/compact`. Picking it writes nothing into
+the message; it queues a `session.compact` job (`api::compact`) under the
+session's own serial key, the same one its turns use, so it never runs beside
+a turn -- a summary written while a turn is still adding to the conversation
+would summarize something already out of date. It is queued at realtime
+priority, since somebody pressed it and is watching.
+
+The job (`worker::compact`) summarizes what the ordinary rule would summarize,
+whatever the budget, and composes the system prompt again from the agent and
+its skills as they stand, with the summary written against that new prompt. A
+conversation too short to summarize skips the summary as it always would, and
+the prompt is still composed again, since that is what the request is for.
+
+Who may ask is who may send a message: `sessions:create`, with the same
+narrowing. Having started the conversation is not enough on its own, because
+compacting changes what the agent reads from here on, and somebody narrowed
+away from an agent should not be able to do that any more than keep talking
+to it.
+
+**The "behind" banner.** `GET /v1/agent-sessions/{id}/prompt` says whether the
+kept prompt is what would be composed now, and which skills moved on. When it
+is not current, the session page shows a banner naming the change -- a newer
+version published, a skill added to or removed from the agent, or, when no
+skill moved, that the agent's instructions were changed -- and offers to
+compact this conversation or start a new one. Without it, an edit that has
+not reached a running conversation looks like one that did not take. A
+request that fails to start says so beneath it rather than disappearing.
+
+**While it runs.** Every compaction, requested or automatic, emits
+`chat.compacting` when it starts and `chat.compacted` when it lands, so a
+reply that is slow to start has a reason a person can see. The banner turns
+into "Compacting this conversation…" with a pulsing dot on a brand tint, drawn
+the way the session list draws a running turn. It shows from the click itself,
+not only from the event: a fast compaction delivers both events in one poll
+and the indicator would never paint. The event still drives it for automatic
+compactions and for other tabs, where there is no click. When the compaction
+lands, the status is read again and the banner goes away if the prompt is now
+current; the summary appears in the transcript, marked as the boundary it is.
