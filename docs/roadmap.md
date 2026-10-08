@@ -14,7 +14,7 @@ than an accident.
 
 ## Tier 1 — independent
 
-Five things that need nothing above them.
+Things that need nothing above them.
 
 An earlier draft of this file put tool registration above them all, on the
 grounds that integrations could not work until something outside the guest
@@ -57,14 +57,14 @@ having tested before building on it. See *The shape, tried once* in
 
 ### Skills as packages
 
-[skill-packages.md](skill-packages.md).
+[skill-packages.md](skill-packages.md). Built.
 
 A skill version as a body plus a set of files, versioned together and read
-through a `skill/` scope resolved against the version the turn bound. Today the
-detail sits in `workspace/` scope beside it: overwritten in place while the
-body is versioned, owned by nothing, editable by anyone with workspace storage
-write, and unreachable for an operator's skill. Worth doing before the wizard,
-which should write into this shape rather than fix the current one in place.
+through a `skill/` scope resolved against the version the turn bound. It
+replaced detail kept in `workspace/` scope beside the skill: overwritten in
+place while the body was versioned, owned by nothing, editable by anyone with
+workspace storage write, and unreachable for an operator's skill. The wizard
+writes into this shape.
 
 ### Prompt caching
 
@@ -168,7 +168,7 @@ do.
 
 ### Triggers
 
-[triggers.md](triggers.md). Schedules first; webhooks and email designed and
+[triggers.md](triggers.md). Schedules and webhooks built; email designed and
 deferred.
 
 The only item here that makes agents useful to a workspace not sitting in the
@@ -212,8 +212,9 @@ requeue, no parked state, the job completes, and the next turn re-evaluates.
 So a suspension does not park and resume today -- it declines, and something
 must arrive later to try again.
 
-That makes human-in-the-loop a build rather than a wiring-up, and says what
-the build is. See its entry in tier 2.
+That made human-in-the-loop a build rather than a wiring-up, and said what
+the build was. Approvals since take suspended holds, and a suspended turn now
+parks rather than declines (migration 0014); see its entry in tier 2.
 
 ## Tier 2 — larger, and each needs a decision made first
 
@@ -239,35 +240,15 @@ adding the capability.
 
 ### Human in the loop
 
-[inhibitors.md](inhibitors.md) — the same mechanism, once suspension and resume
-work.
+Built. [approvals.md](approvals.md) and [action-queue.md](action-queue.md).
 
-A build rather than a wiring-up, now that the tier 1 item above has established
-why. Three pieces, none of them the verdict model, which is done:
-
-1. **Something that takes a suspended hold.** Both stop endpoints hardcode
-   `Strength::Stopped`, so nothing can create one. Whatever asks for approval
-   is what takes it, which means the shape follows from the approval flow
-   rather than from the inhibitor API.
-2. **A turn that parks rather than declines.** `Verdict::Suspended` currently
-   refuses the turn and completes the job, so nothing is left to resume. A
-   held turn has to remain claimable -- a requeue with a `run_after`, or a
-   state the claim skips until the hold lifts -- and that choice interacts
-   with the serial key, since a parked turn must not block its session's
-   queue for ever.
-3. **Resumption when the hold lifts.** A stop waits for a person by design;
-   a suspension is supposed to run again of its own accord. Releasing the
-   hold is the event, and something has to notice it and give the turn back
-   to the queue.
-
-The reader-facing half is already there: `chat.held` carries a `resumable`
-flag, true for suspensions, and the worker already announces it.
-
-What it does not have is a way to tell somebody who is not looking at that
-session. An approval nobody hears about is a turn parked for ever, so this
-wants the inbox under [Undesigned, and wanted](#undesigned-and-wanted) --
-not as a prerequisite, since a workspace watching one session would manage,
-but as the thing that makes it usable by anybody else.
+The three pieces this entry named are all there. Approvals and gates take a
+suspended hold, so the request that needs a person is what asks for one. A
+held turn parks rather than declines -- a `parked` job state the claim skips,
+which leaves its session's queue free (migration 0014). And answering the
+approval wakes it, so the turn runs again of its own accord. The inbox tells
+somebody who is not looking at the session, which is what keeps an approval
+from becoming a turn parked for ever.
 
 ### Auto-approval
 
@@ -450,6 +431,13 @@ model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
 
+**Agent templates** — 2026-10-07. An agent the operator defines once and has
+made in every workspace that should have it: required, default or optional;
+a prompt in requirements and defaults, with a workspace's own part after
+both; fixed settings that win over the workspace's; eager tools; and versions
+a workspace may pin when the template allows it. See
+[agent-templates.md](agent-templates.md).
+
 **Hollowbrook as a component, and one wizard run by hand** — 2026-09-22.
 `scripts/dev-mac.sh --with hollowbrook` brings the guesthouse up, opens its
 host, and installs a skill describing its API -- so the platform's own
@@ -510,12 +498,14 @@ persisted the moment it is sent and a browser-held copy would be a second
 source of truth that vanishes with the tab. An inbox is the opposite case:
 the server is the origin, so there is nothing local to disagree with it.
 
-**Showing what the model was thinking.** Thinking blocks are dropped at
-`src/gateway/llm/translate.rs`, with a comment saying they cannot be replayed
-to the provider so keeping them would only put them in a transcript that must
-not send them back. That conflates two questions. What a provider will accept
-back is one thing; what a person may see is another, and the second does not
-follow from the first.
+**Replaying what the model was thinking.** Showing it is built: reasoning is
+stored as a part of the reply (`Part::Reasoning`) and drawn in the transcript.
+What is left is the provider half. Anthropic's thinking blocks are still
+dropped at `src/gateway/llm/translate.rs` with their signatures, so a turn
+continuing into tool use cannot return them, and nothing gates display: every
+workspace sees reasoning where the model gave it. What a provider will accept
+back is one question and what a person may see is another; only the second is
+answered.
 
 The real constraint is narrower: Anthropic wants a thinking block returned
 with its signature when a turn continues into tool use, so the block and its
@@ -523,25 +513,14 @@ signature have to be kept together and replayed where the API expects them,
 and dropped where a provider has no equivalent. That is the ordinary shape of
 multi-provider mapping rather than a reason not to store them.
 
-Four pieces: keep the block and signature instead of discarding them; store it
-as a part the transcript can tell from output; replay or drop per provider at
-the gateway; and a workspace setting that gates display. Off by default,
-because thinking is less filtered than output and a model sometimes reasons
-about things it does not say -- which is a reason for a workspace to choose it
-deliberately, not a reason nobody may have it.
-
-`ChainOfThoughtPrimitive` renders it once there is something to render, and
-brings its own accordion.
+Two pieces remain: keep the block and signature, and replay or drop them per
+provider at the gateway; and a workspace setting that gates display. The
+second matters because thinking is less filtered than output and a model
+sometimes reasons about things it does not say -- which is a reason for a
+workspace to choose it deliberately, not a reason nobody may have it.
 
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
-
-**Per-agent narrowing on trigger creation.** Creating a schedule or a webhook
-is a way to make an agent run turns, and neither checks the per-agent narrowing
-that `sessions::create_session` enforces with `require_for_agent`. Somebody
-scoped away from an agent can still give it a trigger. Small -- one call in two
-handlers -- and it is a documented rule the code does not follow, so it should
-not wait for a bigger piece of work. See [triggers.md](triggers.md).
 
 **Flagging a session as wrong.** Nothing today lets a person say a turn did the
 wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it twice over,
@@ -569,6 +548,11 @@ mattered, which is nearer compaction carry-over than user-declared memory, and
 [compaction.md](compaction.md) is explicit that those must not share a store. It is also partly an
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
+
+## Designed, and not yet tiered
+
+Each has a design or its reasoning written down, and is waiting on a place in
+the tiers rather than on a decision.
 
 ### Prompt contributors
 
@@ -689,6 +673,6 @@ different product with different auth, and
 for does not need one. The row-level authorization it would require is not on
 this path.
 
-**Redis caching, OpenTelemetry, per-workspace usage attribution, workflows as
-scripted tasks in sub-sessions.** [design-notes.md](design-notes.md#direction) lists these as intended. None
+**Redis caching, OpenTelemetry, workflows as scripted tasks in
+sub-sessions.** [design-notes.md](design-notes.md#direction) lists these as intended. None
 blocks anything above.

@@ -2,8 +2,8 @@
 
 Starting a turn when nobody is typing.
 
-Schedules are being built. Webhooks and email are designed here and not built,
-so that the first one does not get in their way.
+Schedules and webhooks are built. Email is designed here and not built, so
+that the first two do not get in its way.
 
 ## Why this matters more than it looks
 
@@ -373,12 +373,12 @@ unbounded by the ceiling that was supposed to bound it.
 schedule fires only as often as its own expression says, where a hook fires as
 often as whoever holds the URL chooses.
 
-**Per-agent narrowing on trigger creation.** Creating a trigger is a way to
+**Per-agent narrowing on trigger creation.** Fixed. Creating a trigger is a way to
 make an agent run turns, and `sessions:create` is narrowed per agent
 (`user_agent_scopes`) while `agents:update` deliberately is not. So somebody
-narrowed away from an agent can still cause it to run by giving it a schedule
-or a hook. Both endpoints have this; neither checks `require_for_agent` the way
-`sessions::create_session` does.
+narrowed away from an agent could cause it to run by giving it a schedule or
+a hook. Both endpoints now check `require_for_agent` with `sessions:create`,
+as `sessions::create_session` does.
 
 ## Email
 
