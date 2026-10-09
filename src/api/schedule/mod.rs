@@ -112,10 +112,11 @@ pub fn upcoming(cron: &Cron, tz: Tz, from: DateTime<Utc>, count: usize) -> Vec<D
 
 /// Where the next firing goes, given where the last one was owed.
 ///
-/// A deployment down overnight should not wake to twenty-four queued turns, so
-/// anything already past is passed over rather than run late. The count of
-/// what was skipped is returned and stored, because a schedule that quietly
-/// missed a week looks exactly like one that never worked.
+/// A deployment down overnight should not wake to twenty-four queued turns.
+/// The firing that was owed runs, late, and is the one this follows; every
+/// firing after it that is also already past is passed over rather than run.
+/// The count of what was skipped is returned and stored, because a schedule
+/// that quietly missed a week looks exactly like one that never worked.
 pub fn advance(
     cron: &Cron,
     tz: Tz,
