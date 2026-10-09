@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useAnchor } from '../lib/useAnchor'
 import { AlertTriangle, Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
@@ -137,6 +138,10 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
   const canEdit = authorities.includes('agents:update')
   const internal = isClearlyPrivate(window.location.hostname)
 
+  // A link to one of them -- from a conversation it started, or the
+  // dashboard -- lands on it once the list has arrived.
+  const target = useAnchor(!loading)
+
   const reload = useCallback(async () => {
     try {
       setRows(await listWebhooks(agentId))
@@ -263,7 +268,8 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
         {rows.map((w) => (
           <li
             key={w.id}
-            className="p-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800"
+            id={`webhook-${w.id}`}
+            className={`p-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 scroll-mt-4 transition-shadow ${target === `webhook-${w.id}` ? 'ring-2 ring-brand-500 dark:ring-brand-400' : ''}`}
           >
             <div className="flex items-start justify-between gap-3">
               <button

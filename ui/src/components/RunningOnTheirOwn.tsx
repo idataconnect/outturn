@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { triggerHref } from '../lib/useAnchor'
 import { Link } from 'react-router'
 import { AlertTriangle, Clock, Webhook as WebhookIcon } from 'lucide-react'
 
@@ -84,7 +85,7 @@ export default function RunningOnTheirOwn() {
               return (
                 <li key={`${t.kind}:${t.id}`}>
                   <Link
-                    to={`/agents/${t.agentId}/edit`}
+                    to={triggerHref(t.agentId, t.kind, t.id)}
                     className="flex items-start gap-3 py-2 -mx-2 px-2 rounded hover:bg-surface-50 dark:hover:bg-surface-800/50"
                   >
                     {t.trouble ? (

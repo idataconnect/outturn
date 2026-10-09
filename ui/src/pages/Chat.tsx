@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { triggerHref } from '../lib/useAnchor'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { Menu, PanelLeftClose, Paperclip, Plus, X } from 'lucide-react'
@@ -568,7 +569,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
               // whole sentence crowded the conversation's own title down to a
               // few letters wherever the files panel was open.
               <Link
-                to={`/agents/${current.agent_id}/edit`}
+                to={triggerHref(current.agent_id, current.started_by.kind, current.started_by.id)}
                 title={`Started by ${startedByPhrase(current.started_by)}`}
                 aria-label={`Started by ${startedByPhrase(current.started_by)}`}
                 className="hidden md:flex min-w-0 max-w-40 items-center gap-1 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"

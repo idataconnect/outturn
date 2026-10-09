@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useAnchor } from '../lib/useAnchor'
 import { AlertTriangle, Clock, Plus, Trash2 } from 'lucide-react'
 import cronstrue from 'cronstrue'
 
@@ -130,6 +131,10 @@ export default function AgentSchedules({ agentId }: { agentId: string }) {
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canEdit = authorities.includes('agents:update')
+
+  // A link to one of them -- from a conversation it started, or the
+  // dashboard -- lands on it once the list has arrived.
+  const target = useAnchor(!loading)
 
   const reload = useCallback(async () => {
     try {
@@ -269,7 +274,8 @@ export default function AgentSchedules({ agentId }: { agentId: string }) {
         {rows.map((s) => (
           <li
             key={s.id}
-            className="p-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800"
+            id={`schedule-${s.id}`}
+            className={`p-3 rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 scroll-mt-4 transition-shadow ${target === `schedule-${s.id}` ? 'ring-2 ring-brand-500 dark:ring-brand-400' : ''}`}
           >
             <div className="flex items-start justify-between gap-3">
               <button
