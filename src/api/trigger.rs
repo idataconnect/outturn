@@ -71,13 +71,14 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     let inserted = match started.source {
         Source::Schedule(_) => sqlx::query(
             "insert into agent_sessions \
-                 (id, workspace_id, agent_id, user_id, title, account, schedule_id) \
-             values ($1, $2, $3, null, $4, $5, $6)",
+                 (id, workspace_id, agent_id, user_id, title, account, schedule_id, started_by) \
+             values ($1, $2, $3, null, $4, $5, $6, 'schedule')",
         ),
         Source::Webhook(_) => sqlx::query(
             "insert into agent_sessions \
-                 (id, workspace_id, agent_id, user_id, title, account, webhook_trigger_id) \
-             values ($1, $2, $3, null, $4, $5, $6)",
+                 (id, workspace_id, agent_id, user_id, title, account, webhook_trigger_id, \
+                  started_by) \
+             values ($1, $2, $3, null, $4, $5, $6, 'webhook')",
         ),
     };
     inserted

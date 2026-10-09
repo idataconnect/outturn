@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use super::{
     AgentSession, ChatError, ChatStore, CreateSession, DECLINED_GUIDANCE, Delivery, History,
-    Message, Placeholder, Recent, Usage,
+    Message, Placeholder, Recent, StartedBy, Usage,
 };
 
 pub struct PostgresChatStore {
@@ -351,6 +351,17 @@ fn read_session(row: &sqlx::postgres::PgRow) -> AgentSession {
         account: row.try_get("account").ok().flatten(),
         last_active_at: row.get("last_active_at"),
         turn: row.get("turn"),
+        // `try_get`, because a session just created by a person is read back
+        // from an insert that has no trigger to select.
+        started_by: row
+            .try_get::<Option<String>, _>("started_by")
+            .ok()
+            .flatten()
+            .map(|kind| StartedBy {
+                kind,
+                id: row.try_get("trigger_id").ok().flatten(),
+                name: row.try_get("trigger_name").ok().flatten(),
+            }),
     }
 }
 
@@ -452,8 +463,12 @@ impl ChatStore for PostgresChatStore {
             //
             // `turn` is the live turn's state -- see `live_turn`.
             "select s.id, s.workspace_id, s.agent_id, s.user_id, s.title, s.account, \
-                    s.last_active_at, live_turn(s.id) as turn \
+                    s.last_active_at, live_turn(s.id) as turn, s.started_by, \
+                    coalesce(s.schedule_id, s.webhook_trigger_id) as trigger_id, \
+                    coalesce(sc.name, wh.name) as trigger_name \
              from agent_sessions s \
+             left join schedules sc on sc.id = s.schedule_id \
+             left join webhook_triggers wh on wh.id = s.webhook_trigger_id \
              where s.workspace_id = $1 \
                and ($2::uuid[] is null or s.agent_id = any($2) or s.user_id = $3) \
                and ($4::timestamptz is null or (s.last_active_at, s.id) < ($4, $5)) \
@@ -483,10 +498,14 @@ impl ChatStore for PostgresChatStore {
         session_id: Uuid,
     ) -> Result<AgentSession, ChatError> {
         let row = sqlx::query(
-            "select id, workspace_id, agent_id, user_id, title, account, last_active_at, \
-                    live_turn(id) as turn \
-             from agent_sessions \
-             where workspace_id = $1 and id = $2",
+            "select s.id, s.workspace_id, s.agent_id, s.user_id, s.title, s.account, \
+                    s.last_active_at, live_turn(s.id) as turn, s.started_by, \
+                    coalesce(s.schedule_id, s.webhook_trigger_id) as trigger_id, \
+                    coalesce(sc.name, wh.name) as trigger_name \
+             from agent_sessions s \
+             left join schedules sc on sc.id = s.schedule_id \
+             left join webhook_triggers wh on wh.id = s.webhook_trigger_id \
+             where s.workspace_id = $1 and s.id = $2",
         )
         .bind(workspace_id)
         .bind(session_id)
