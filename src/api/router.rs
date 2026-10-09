@@ -1596,6 +1596,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/agent-sessions/{id}/messages",
             get(super::sessions::get_messages).post(super::sessions::send_message),
         )
+        // A person's verdict on a reply or on the whole conversation, under
+        // the right to read it.
+        .route(
+            "/v1/agent-sessions/{id}/feedback",
+            get(super::feedback::list)
+                .put(super::feedback::give)
+                .delete(super::feedback::withdraw),
+        )
         // Stopping a turn, rather than a resource of its own: what is being
         // acted on is the conversation, and which job is answering it is the
         // platform's business rather than the caller's.

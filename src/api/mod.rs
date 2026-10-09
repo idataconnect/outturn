@@ -12,6 +12,7 @@ mod credentials;
 pub mod egress;
 mod events;
 pub mod extract;
+mod feedback;
 mod files;
 pub mod gated;
 pub mod grant;

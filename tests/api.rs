@@ -6362,6 +6362,140 @@ async fn a_triggered_session_says_what_started_it_after_the_trigger_is_gone() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feedback_is_one_verdict_per_person_per_reply_or_conversation() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let ana = h
+        .login_as("ana@acme.example", None, Some((acme, "admin")))
+        .await;
+    let bo = h
+        .login_as("bo@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post("/v1/agents", Some(&ana), r#"{"name":"Desk","slug":"desk"}"#)
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&ana),
+            &format!(r#"{{"agent_id":"{agent_id}"}}"#),
+        )
+        .await;
+    let session: Uuid = serde_json::from_str::<Value>(&body).expect("session")["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    // A prompt and the reply to it, written as a turn would leave them.
+    let (prompt, reply) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, role) in [(prompt, "user"), (reply, "assistant")] {
+        sqlx::query(
+            "insert into agent_messages (id, session_id, role, content, metadata) \
+             values ($1, $2, $3, 'words', '{}')",
+        )
+        .bind(id)
+        .bind(session)
+        .bind(role)
+        .execute(&h.db.pool)
+        .await
+        .expect("message");
+    }
+
+    let uri = format!("/v1/agent-sessions/{session}/feedback");
+    let send = |method: &'static str, uri: String, token: String, body: String| {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body))
+            .expect("request");
+        h.send(req)
+    };
+
+    let (status, _) = send(
+        "PUT",
+        uri.clone(),
+        ana.clone(),
+        format!(r#"{{"message_id":"{reply}","verdict":"down","note":"made up a room"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(
+        "PUT",
+        uri.clone(),
+        ana.clone(),
+        r#"{"verdict":"up"}"#.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "the whole conversation");
+
+    // Changed in place, not added to.
+    send(
+        "PUT",
+        uri.clone(),
+        ana.clone(),
+        format!(
+            r#"{{"message_id":"{reply}","verdict":"down","note":"charged before confirming"}}"#
+        ),
+    )
+    .await;
+    // Somebody else's verdict is their own.
+    send(
+        "PUT",
+        uri.clone(),
+        bo.clone(),
+        format!(r#"{{"message_id":"{reply}","verdict":"up"}}"#),
+    )
+    .await;
+
+    // A person's own words are not the agent's to be judged on.
+    let (status, _) = send(
+        "PUT",
+        uri.clone(),
+        ana.clone(),
+        format!(r#"{{"message_id":"{prompt}","verdict":"down"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (_, body) = h.get(&uri, Some(&ana)).await;
+    let all: Vec<Value> = serde_json::from_str(&body).expect("list");
+    assert_eq!(all.len(), 3, "{all:?}");
+    let mine_on_reply = all
+        .iter()
+        .find(|f| f["mine"] == true && f["message_id"] == reply.to_string())
+        .expect("ana's verdict on the reply");
+    assert_eq!(mine_on_reply["note"], "charged before confirming");
+    assert!(
+        all.iter()
+            .any(|f| f["mine"] == false && f["verdict"] == "up")
+    );
+
+    // Withdrawn, and only the reader's own.
+    let (status, _) = send(
+        "DELETE",
+        format!("{uri}?message_id={reply}"),
+        ana.clone(),
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h.get(&uri, Some(&bo)).await;
+    let left: Vec<Value> = serde_json::from_str(&body).expect("list");
+    assert_eq!(
+        left.len(),
+        2,
+        "bo's and ana's whole-conversation verdict remain"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() {
     // A trigger is a standing instruction to start sessions with an agent, so
     // it has to clear the bar `sessions::create_session` clears. It did not:

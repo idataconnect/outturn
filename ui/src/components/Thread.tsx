@@ -6,6 +6,7 @@ import {
   ThreadPrimitive,
   useAuiState,
 } from '@assistant-ui/react'
+import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import TriggerIcon from './TriggerIcon'
 import type { StartedBy } from '../lib/chat'
 import {
@@ -436,7 +437,11 @@ function AssistantMessage() {
             <Check size={13} aria-hidden className="hidden [[data-copied]_&]:block" />
           </ActionBarPrimitive.Copy>
         </ActionBarPrimitive.Root>
+        {/* Our own thumbs rather than assistant-ui's: theirs submit on the
+            click, and a verdict here asks first what it is about. */}
+        <ReplyThumbs shown={shown} />
       </div>
+      <ReplyFeedback />
       {/* Kept mounted after the turn ends so the mark can finish: it draws its
           dots together into a line rather than vanishing, which is what
           distinguishes a reply that is done from one still being written.
