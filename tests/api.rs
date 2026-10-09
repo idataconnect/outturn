@@ -6278,6 +6278,90 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_triggered_session_says_what_started_it_after_the_trigger_is_gone() {
+    // The link to the schedule is set null when the schedule is deleted, which
+    // left a conversation that ran on its own reading afterwards as though a
+    // person had opened it.
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("origin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id: Uuid = agent["id"].as_str().expect("id").parse().expect("uuid");
+    let (_, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Morning arrivals","prompt":"list them","expression":"0 8 * * *","timezone":"UTC"}}"#
+            ),
+        )
+        .await;
+    let schedule: Value = serde_json::from_str(&body).expect("schedule");
+    let schedule_id: Uuid = schedule["id"].as_str().expect("id").parse().expect("uuid");
+
+    let session = outturn::api::trigger::start(
+        &h.db.pool,
+        outturn::api::trigger::Started {
+            workspace_id: acme,
+            agent_id,
+            title: "Morning arrivals".into(),
+            prompt: "list them".into(),
+            account: None,
+            timezone: None,
+            source: outturn::api::trigger::Source::Schedule(schedule_id),
+            metadata: serde_json::json!({ "schedule_id": schedule_id }),
+        },
+    )
+    .await
+    .expect("start");
+
+    let read = |body: String| -> Value {
+        serde_json::from_str::<Value>(&body).expect("session")["started_by"].clone()
+    };
+    let (_, body) = h
+        .get(&format!("/v1/agent-sessions/{session}"), Some(&token))
+        .await;
+    let started = read(body);
+    assert_eq!(started["kind"], "schedule");
+    assert_eq!(started["id"], schedule_id.to_string());
+    assert_eq!(started["name"], "Morning arrivals");
+
+    sqlx::query("delete from schedules where id = $1")
+        .bind(schedule_id)
+        .execute(&h.db.pool)
+        .await
+        .expect("delete");
+    let (_, body) = h
+        .get(&format!("/v1/agent-sessions/{session}"), Some(&token))
+        .await;
+    let started = read(body);
+    assert_eq!(started["kind"], "schedule", "it forgot it was triggered");
+    assert!(started["id"].is_null());
+    assert!(started["name"].is_null());
+
+    // And a person's own conversation says nothing.
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&token),
+            &format!(r#"{{"agent_id":"{agent_id}"}}"#),
+        )
+        .await;
+    assert!(read(body).is_null());
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() {
     // A trigger is a standing instruction to start sessions with an agent, so
     // it has to clear the bar `sessions::create_session` clears. It did not:

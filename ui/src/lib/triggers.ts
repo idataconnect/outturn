@@ -1,10 +1,11 @@
+import type { StartedBy, TriggerKind } from './chat'
 import { elapsedPhrase } from './elapsed'
 import type { Schedule } from './schedules'
 import type { Webhook } from './webhooks'
 
 /** One schedule or webhook, as this panel says it. */
 export type Trigger = {
-  kind: 'schedule' | 'webhook'
+  kind: TriggerKind
   id: string
   name: string
   agentId: string
@@ -86,4 +87,31 @@ export function ordered(triggers: Trigger[]): Trigger[] {
       (a.next ?? Infinity) - (b.next ?? Infinity) ||
       a.name.localeCompare(b.name),
   )
+}
+
+/**
+ * What started a conversation, said the way its header says it.
+ *
+ * The kind outlives the trigger and the name does not, so a deleted one is
+ * named for what it was rather than left blank.
+ */
+export function startedByPhrase(started: Pick<StartedBy, 'kind' | 'name'>): string {
+  const kind = started.kind === 'schedule' ? 'schedule' : 'webhook'
+  return started.name ? `the ${started.name} ${kind}` : `a ${kind} since deleted`
+}
+
+/**
+ * The trigger an opening message came from, read from what was stored with it.
+ *
+ * A snapshot taken when it ran, so it still names a trigger renamed or deleted
+ * since -- which is what an account of the past should do.
+ */
+export function triggerOf(metadata: Record<string, unknown>): Pick<StartedBy, 'kind' | 'name'> | null {
+  if (metadata.schedule_id) {
+    return { kind: 'schedule', name: (metadata.schedule_name as string | undefined) ?? null }
+  }
+  if (metadata.webhook_trigger_id) {
+    return { kind: 'webhook', name: (metadata.webhook_trigger_name as string | undefined) ?? null }
+  }
+  return null
 }

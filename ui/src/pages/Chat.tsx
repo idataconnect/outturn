@@ -28,6 +28,8 @@ import {
 import SessionTitle from '../components/SessionTitle'
 import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
+import { startedByPhrase } from '../lib/triggers'
+import TriggerIcon from '../components/TriggerIcon'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 import { iconButtonLarge } from '../lib/buttons'
@@ -509,6 +511,16 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
               }
             >
               <span className="flex items-center gap-1.5">
+                {/* How it started, which a person replying later does not
+                    change -- the messages inside say who is in it. */}
+                {session.started_by && (
+                  <span
+                    className="shrink-0 text-surface-400 dark:text-surface-500"
+                    title={`Started by ${startedByPhrase(session.started_by)}`}
+                  >
+                    <TriggerIcon kind={session.started_by.kind} />
+                  </span>
+                )}
                 <span className="truncate">{sessionName(session)}</span>
                 <TurnMark turn={session.turn} />
               </span>
@@ -548,6 +560,22 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
             canRename={canRename && !!current}
             onRename={(t) => current && void rename(current.id, t)}
           />
+          {current?.started_by && (
+            // The trigger's name and its mark, with the sentence on hover: the
+            // whole sentence crowded the conversation's own title down to a
+            // few letters wherever the files panel was open.
+            <Link
+              to={`/agents/${current.agent_id}/edit`}
+              title={`Started by ${startedByPhrase(current.started_by)}`}
+              aria-label={`Started by ${startedByPhrase(current.started_by)}`}
+              className="hidden md:flex min-w-0 max-w-40 items-center gap-1 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
+            >
+              <TriggerIcon kind={current.started_by.kind} className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">
+                {current.started_by.name ?? `A ${current.started_by.kind} since deleted`}
+              </span>
+            </Link>
+          )}
           {(current || draftWith) && (
             <Link
               to={`/agents/${current?.agent_id ?? draftWith?.id}`}

@@ -6,6 +6,8 @@ import {
   ThreadPrimitive,
   useAuiState,
 } from '@assistant-ui/react'
+import TriggerIcon from './TriggerIcon'
+import type { StartedBy } from '../lib/chat'
 import {
   Check,
   CircleSlash,
@@ -186,17 +188,36 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
     (s) => s.message.metadata.custom?.finishedAt as string | null | undefined,
   )
   const { phrase, shown, handlers } = useMessageAge(id ?? '', finishedAt)
+  const trigger = useAuiState(
+    (s) => s.message.metadata.custom?.trigger as Pick<StartedBy, 'kind' | 'name'> | null | undefined,
+  )
   const held = status ? heldLabel(status) : null
   if (wake) return <WakeMark wake={wake} />
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
-      <div
-        {...handlers}
-        tabIndex={-1}
-        className="group user max-w-[75%] min-w-0 [overflow-wrap:anywhere] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
-      >
-        <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
-      </div>
+      {trigger ? (
+        // Across the width, like the other things nobody typed: on the
+        // reader's side in their color it read as though they had sent it.
+        <div
+          {...handlers}
+          tabIndex={-1}
+          className="w-full min-w-0 [overflow-wrap:anywhere] rounded-lg border border-surface-200 dark:border-surface-700 bg-surface-50 dark:bg-surface-800/60 px-4 py-2 text-sm text-surface-800 dark:text-surface-200"
+        >
+          <p className="mb-1 flex items-center gap-1.5 text-[10px] font-medium tracking-wide uppercase text-surface-500 dark:text-surface-400">
+            <TriggerIcon kind={trigger.kind} className="w-3 h-3" />
+            {trigger.name ? `${trigger.name} · ${trigger.kind}` : trigger.kind}
+          </p>
+          <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
+        </div>
+      ) : (
+        <div
+          {...handlers}
+          tabIndex={-1}
+          className="group user max-w-[75%] min-w-0 [overflow-wrap:anywhere] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
+        >
+          <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
+        </div>
+      )}
       <MessageAge phrase={phrase} shown={shown} align="right" />
       {/* Terminal states stay with the message they are about, on the right
           where it sits. */}

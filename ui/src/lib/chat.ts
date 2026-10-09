@@ -19,6 +19,18 @@ export type AgentSession = {
   last_active_at?: string
   /** The live turn's job state, absent when nothing is in flight. */
   turn?: 'pending' | 'running' | 'parked' | null
+  /** The schedule or webhook that opened it; null when a person did. Its id
+   *  and name are null once the trigger is deleted, and the kind is kept. */
+  started_by?: StartedBy | null
+}
+
+/** What can start a conversation besides a person. */
+export type TriggerKind = 'schedule' | 'webhook'
+
+export type StartedBy = {
+  kind: TriggerKind
+  id: string | null
+  name: string | null
 }
 
 /** A tool the agent ran, labeled by the agent with what it was doing. */

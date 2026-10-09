@@ -38,6 +38,18 @@ pub struct AgentSession {
     /// The state of its live turn -- `pending`, `running` or `parked` -- or
     /// none when nothing is in flight.
     pub turn: Option<String>,
+    /// The schedule or webhook that opened it, or none when a person did. Kept
+    /// when the trigger is deleted, with only its id and name gone, so a
+    /// conversation that ran on its own never reads afterwards as somebody's.
+    pub started_by: Option<StartedBy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartedBy {
+    /// `schedule` or `webhook`.
+    pub kind: String,
+    pub id: Option<Uuid>,
+    pub name: Option<String>,
 }
 
 /// A place in the recent list: the last session seen, by the two values the
