@@ -540,6 +540,16 @@ and a person's verdict, for free. Enough of them is a corpus nobody wrote.
 Small on its own -- a column and a button -- and load-bearing out of proportion
 to that.
 
+**Dictation.** Speaking a message rather than typing it. assistant-ui has
+the pieces -- `ComposerPrimitive.Dictate` and a `DictationAdapter`, with a
+ready-made one over the browser's Web Speech API -- so the button is small.
+The decision is where the audio goes: Chrome's speech recognition sends it to
+Google to transcribe, and Firefox has none, which for a platform whose case
+is that a workspace's data stays inside the boundary is not a detail. The
+adapter can instead send audio through the gateway to a speech model, which
+lands in the ledger and under the deployment's routing like any other model
+call. Reading replies aloud is the same question in the other direction.
+
 **History access.** An agent reading its own past conversations, which a
 schedule's "summarize yesterday" examples assume and nothing provides.
 Designed in [history-access.md](history-access.md), and off unless somebody
