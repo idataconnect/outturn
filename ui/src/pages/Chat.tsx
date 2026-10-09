@@ -30,6 +30,7 @@ import { useChatRuntime } from '../lib/useChatRuntime'
 import { useSession } from '../lib/session'
 import { startedByPhrase } from '../lib/triggers'
 import TriggerIcon from '../components/TriggerIcon'
+import { ConversationVerdicts, FeedbackProvider } from '../components/Feedback'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 import { iconButtonLarge } from '../lib/buttons'
@@ -410,310 +411,313 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
   }
 
   return (
-    <div className="flex h-full relative">
-      <aside
-        className={`${sessionsOpen ? 'flex' : 'hidden'} flex-col ${
-          breakpoint === 'phone' ? 'fixed inset-y-0 left-0 shadow-xl' : 'static'
-        } z-30 w-64 shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
-      >
-        {/* No close button of its own. The header's toggle already hides this
-            panel and is the only thing that can bring it back, so a second
-            control that could only do half the job left the pair disagreeing
-            about which one to reach for -- and it sat inside the thing it
-            closed, vanishing with it. */}
-        {/* One button, not a button per agent. The list of agents used to sit
-            here, and it grew with the workspace until the conversations it
-            sat above were pushed off the bottom of the panel. Choosing who to
-            talk to is the new-chat page's job. */}
-        <div className="p-3 border-b border-surface-200 dark:border-surface-800">
-          {agents.length === 0 ? (
-            canCreateAgents ? (
-              <NavLink
-                to="/agents/new"
-                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
-              >
-                <Plus size={14} className="shrink-0" />
-                <span>Create an agent</span>
-              </NavLink>
-            ) : (
-              <p className="text-xs text-surface-600 dark:text-surface-400">
-                No agents yet. Ask an administrator to add one.
-              </p>
-            )
-          ) : canStart && chattable.length > 0 ? (
-            <Link
-              to="/sessions/new"
-              onClick={() => {
-                if (breakpoint === 'phone') toggleSessions(false)
-              }}
-              className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
-            >
-              <Plus size={14} aria-hidden />
-              New chat
-            </Link>
-          ) : (
-            // A badge rather than a sentence. What a reader needs is to know
-            // that no button is the arrangement rather than a list that failed
-            // to load, and two words do that. The reason is in the tooltip for
-            // whoever is asking why.
-            <span
-              title={
-                canStart
-                  ? 'You have not been given any agent to start a chat with'
-                  : 'Starting a chat needs the sessions:create authority'
-              }
-              className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-surface-100 dark:bg-surface-800 text-surface-500 dark:text-surface-400"
-            >
-              Read-only
-            </span>
-          )}
-        </div>
-        <div className="px-3 pt-2">
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search conversations"
-            aria-label="Search conversations by title"
-            className="w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 text-sm text-surface-800 dark:text-surface-200 placeholder:text-surface-400"
-          />
-        </div>
-        <div
-          className="flex-1 overflow-auto p-2 space-y-1"
-          onScroll={(e) => {
-            const el = e.currentTarget
-            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMore()
-          }}
+    <FeedbackProvider sessionId={active ?? null}>
+      <div className="flex h-full relative">
+        <aside
+          className={`${sessionsOpen ? 'flex' : 'hidden'} flex-col ${
+            breakpoint === 'phone' ? 'fixed inset-y-0 left-0 shadow-xl' : 'static'
+          } z-30 w-64 shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}
         >
-          {results !== null && results.length === 0 && (
-            <p className="px-2 py-1.5 text-sm text-surface-500 dark:text-surface-400">
-              No conversations with that in the title.
-            </p>
-          )}
-          {(results ?? sessions).map((session) => (
-            <NavLink
-              key={session.id}
-              to={`/sessions/${session.id}`}
-              // Picking a session dismisses the list only where the list was
-              // in the way. Inline it sits beside the thread, and closing it
-              // would take the sidebar away every time somebody used it.
-              onClick={() => {
-                if (breakpoint === 'phone') toggleSessions(false)
-                setFocusRequest((n) => n + 1)
-              }}
-              title={`${sessionName(session)} — ${agentName(session.agent_id)}`}
-              className={({ isActive }) =>
-                `block w-full px-2 py-1.5 rounded-md text-sm text-left ${
-                  isActive
-                    ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
-                    : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
-                }`
-              }
-            >
-              <span className="flex items-center gap-1.5">
-                {/* How it started, which a person replying later does not
-                    change -- the messages inside say who is in it. */}
-                {session.started_by && (
-                  <span
-                    className="shrink-0 text-surface-400 dark:text-surface-500"
-                    title={`Started by ${startedByPhrase(session.started_by)}`}
-                  >
-                    <TriggerIcon kind={session.started_by.kind} />
-                  </span>
-                )}
-                <span className="truncate">{sessionName(session)}</span>
-                <TurnMark turn={session.turn} />
-              </span>
-              <span className="block truncate text-xs text-surface-400 dark:text-surface-500">
-                {agentName(session.agent_id)}
-              </span>
-            </NavLink>
-          ))}
-        </div>
-      </aside>
-
-      {sessionsOpen && breakpoint === 'phone' && (
-        <div
-          className="fixed inset-0 z-20 bg-black/30"
-          onClick={() => toggleSessions(false)}
-          aria-hidden
-        />
-      )}
-
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* One header at every width. The pair this replaces -- one below
-            `lg`, one above -- had drifted apart, which is why the sessions
-            toggle existed on a phone and nowhere else. */}
-        <div className="flex items-center gap-2 px-2 lg:px-4 py-2 border-b border-surface-200 dark:border-surface-800">
-          <button
-            type="button"
-            onClick={() => toggleSessions(!sessionsOpen)}
-            aria-label={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
-            aria-expanded={sessionsOpen}
-            title={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
-            className={iconButtonLarge}
-          >
-            {sessionsOpen ? <PanelLeftClose size={18} aria-hidden /> : <Menu size={18} aria-hidden />}
-          </button>
-          <SessionTitle
-            title={activeTitle}
-            canRename={canRename && !!current}
-            onRename={(t) => current && void rename(current.id, t)}
-          />
-          {current?.started_by && (
-            // The trigger's name and its mark, with the sentence on hover: the
-            // whole sentence crowded the conversation's own title down to a
-            // few letters wherever the files panel was open.
-            <Link
-              to={`/agents/${current.agent_id}/edit`}
-              title={`Started by ${startedByPhrase(current.started_by)}`}
-              aria-label={`Started by ${startedByPhrase(current.started_by)}`}
-              className="hidden md:flex min-w-0 max-w-40 items-center gap-1 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
-            >
-              <TriggerIcon kind={current.started_by.kind} className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">
-                {current.started_by.name ?? `A ${current.started_by.kind} since deleted`}
-              </span>
-            </Link>
-          )}
-          {(current || draftWith) && (
-            <Link
-              to={`/agents/${current?.agent_id ?? draftWith?.id}`}
-              className="hidden sm:block shrink-0 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
-            >
-              {agentName(current?.agent_id ?? draftWith!.id)}
-            </Link>
-          )}
-        </div>
-        {shown && (
-          <div
-            className="flex items-start gap-3 px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
-            role="alert"
-          >
-            <p className="min-w-0 flex-1">{shown}</p>
-            {/* An error can be put away; a link that went nowhere cannot, since
-                it is about the page itself and leaves with it. */}
-            {(error ?? chatError) && (
-              <button
-                type="button"
+          {/* No close button of its own. The header's toggle already hides this
+              panel and is the only thing that can bring it back, so a second
+              control that could only do half the job left the pair disagreeing
+              about which one to reach for -- and it sat inside the thing it
+              closed, vanishing with it. */}
+          {/* One button, not a button per agent. The list of agents used to sit
+              here, and it grew with the workspace until the conversations it
+              sat above were pushed off the bottom of the panel. Choosing who to
+              talk to is the new-chat page's job. */}
+          <div className="p-3 border-b border-surface-200 dark:border-surface-800">
+            {agents.length === 0 ? (
+              canCreateAgents ? (
+                <NavLink
+                  to="/agents/new"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-brand-700 dark:text-brand-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+                >
+                  <Plus size={14} className="shrink-0" />
+                  <span>Create an agent</span>
+                </NavLink>
+              ) : (
+                <p className="text-xs text-surface-600 dark:text-surface-400">
+                  No agents yet. Ask an administrator to add one.
+                </p>
+              )
+            ) : canStart && chattable.length > 0 ? (
+              <Link
+                to="/sessions/new"
                 onClick={() => {
-                  setError(null)
-                  dismissError()
+                  if (breakpoint === 'phone') toggleSessions(false)
                 }}
-                aria-label="Dismiss"
-                title="Dismiss"
-                className="shrink-0 rounded p-0.5 text-red-500 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                className="flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium"
               >
-                <X size={14} aria-hidden />
-              </button>
+                <Plus size={14} aria-hidden />
+                New chat
+              </Link>
+            ) : (
+              // A badge rather than a sentence. What a reader needs is to know
+              // that no button is the arrangement rather than a list that failed
+              // to load, and two words do that. The reason is in the tooltip for
+              // whoever is asking why.
+              <span
+                title={
+                  canStart
+                    ? 'You have not been given any agent to start a chat with'
+                    : 'Starting a chat needs the sessions:create authority'
+                }
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-surface-100 dark:bg-surface-800 text-surface-500 dark:text-surface-400"
+              >
+                Read-only
+              </span>
             )}
           </div>
-        )}
-        {/* A hold reads as a pause, not a fault: nothing was lost and nothing
-            is being retried. `status` rather than `alert` for the same reason
-            -- a screen reader should hear this as the state of the
-            conversation, not as something going wrong. */}
-        {held && !shown && (
-          // Tinted, so the amber card has something to sit against. On the
-          // page's own background the card and the strip around it read as one
-          // shape, and the band that is holding the conversation up looks like
-          // part of the transcript rather than something across it.
-          <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
-            {/* A sleep is a pause the agent chose, not a fault or a question,
-                so it is not drawn in the amber of one. Anybody who may send
-                here may end it: sending is what it holds back. */}
-            {held.asleep && active ? (
-              <SleepBanner sessionId={active} asleep={held.asleep} onWoken={clearHeld} />
-            ) : (
-              <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
-                {/* "Hold" is a word from inside this platform, and the sentence
-                    was also passive about something the reader is often the one
-                    to do. Said as what happens next, to them. */}
-                {held.message}
-                {held.resumable
-                  ? held.approval
-                    ? ' \u2014 it will carry on as soon as somebody answers.'
-                    : ' \u2014 it will carry on by itself once this is sorted.'
-                  : ' \u2014 send a message to pick it up again once this is sorted.'}
+          <div className="px-3 pt-2">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search conversations"
+              aria-label="Search conversations by title"
+              className="w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 text-sm text-surface-800 dark:text-surface-200 placeholder:text-surface-400"
+            />
+          </div>
+          <div
+            className="flex-1 overflow-auto p-2 space-y-1"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) loadMore()
+            }}
+          >
+            {results !== null && results.length === 0 && (
+              <p className="px-2 py-1.5 text-sm text-surface-500 dark:text-surface-400">
+                No conversations with that in the title.
               </p>
             )}
-            {/* Answerable here when the hold is an approval. The queue remains
-                the place to find every pending decision; this is for the person
-                who was already looking -- and whether they may answer is the
-                API's to say, not this component's. */}
-            {held.approval && canAnswerApprovals && (
-              <ApprovalPrompt
-                approval={held.approval}
-                onAnswered={() => {
-                  // The turn is given back to the queue by the answer itself,
-                  // so nothing here restarts it. Clearing the banner is all
-                  // that is owed: the reply resumes streaming on its own.
-                  clearHeld()
+            {(results ?? sessions).map((session) => (
+              <NavLink
+                key={session.id}
+                to={`/sessions/${session.id}`}
+                // Picking a session dismisses the list only where the list was
+                // in the way. Inline it sits beside the thread, and closing it
+                // would take the sidebar away every time somebody used it.
+                onClick={() => {
+                  if (breakpoint === 'phone') toggleSessions(false)
+                  setFocusRequest((n) => n + 1)
                 }}
-              />
-            )}
+                title={`${sessionName(session)} — ${agentName(session.agent_id)}`}
+                className={({ isActive }) =>
+                  `block w-full px-2 py-1.5 rounded-md text-sm text-left ${
+                    isActive
+                      ? 'bg-brand-50 dark:bg-brand-950 text-brand-800 dark:text-brand-200'
+                      : 'text-surface-600 dark:text-surface-400 hover:bg-surface-50 dark:hover:bg-surface-800/50'
+                  }`
+                }
+              >
+                <span className="flex items-center gap-1.5">
+                  {/* How it started, which a person replying later does not
+                      change -- the messages inside say who is in it. */}
+                  {session.started_by && (
+                    <span
+                      className="shrink-0 text-surface-400 dark:text-surface-500"
+                      title={`Started by ${startedByPhrase(session.started_by)}`}
+                    >
+                      <TriggerIcon kind={session.started_by.kind} />
+                    </span>
+                  )}
+                  <span className="truncate">{sessionName(session)}</span>
+                  <TurnMark turn={session.turn} />
+                </span>
+                <span className="block truncate text-xs text-surface-400 dark:text-surface-500">
+                  {agentName(session.agent_id)}
+                </span>
+              </NavLink>
+            ))}
           </div>
-        )}
-        {active && current && (
-          <PromptBanner
-            key={active}
-            sessionId={active}
-            agentId={current.agent_id}
-            compacting={compacting}
-            compactions={compactions}
+        </aside>
+
+        {sessionsOpen && breakpoint === 'phone' && (
+          <div
+            className="fixed inset-0 z-20 bg-black/30"
+            onClick={() => toggleSessions(false)}
+            aria-hidden
           />
         )}
-        <div className="flex-1 min-h-0">
-          {/* A new chat draws nothing until the agents are in: whether to ask
-              who with depends on how many there are, and a guess either way
-              is drawn and then taken back. */}
-          {draft && !loaded ? null : draft && !draftWith ? (
-            // Who to talk to, asked in the page rather than in a menu: this is
-            // the whole of what the reader came here to decide.
-            <div className="h-full overflow-auto p-6">
-              <div className="max-w-md mx-auto">
-                <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
-                  Who would you like to talk to?
-                </h2>
-                {draftAgent && loaded && (
-                  <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
-                    That agent is not one you can start a chat with. Pick another.
-                  </p>
-                )}
-                <div className="mt-4">
-                  <AgentList
-                    agents={chattable}
-                    href={(agent) => `/sessions/new?agent=${agent.id}`}
-                    autoFocus
-                    empty={
-                      <p className="text-sm text-surface-600 dark:text-surface-400">
-                        There is no agent you can start a chat with.
-                      </p>
-                    }
-                  />
+
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* One header at every width. The pair this replaces -- one below
+              `lg`, one above -- had drifted apart, which is why the sessions
+              toggle existed on a phone and nowhere else. */}
+          <div className="flex items-center gap-2 px-2 lg:px-4 py-2 border-b border-surface-200 dark:border-surface-800">
+            <button
+              type="button"
+              onClick={() => toggleSessions(!sessionsOpen)}
+              aria-label={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
+              aria-expanded={sessionsOpen}
+              title={sessionsOpen ? 'Hide sessions' : 'Show sessions'}
+              className={iconButtonLarge}
+            >
+              {sessionsOpen ? <PanelLeftClose size={18} aria-hidden /> : <Menu size={18} aria-hidden />}
+            </button>
+            <SessionTitle
+              title={activeTitle}
+              canRename={canRename && !!current}
+              onRename={(t) => current && void rename(current.id, t)}
+            />
+            <ConversationVerdicts />
+            {current?.started_by && (
+              // The trigger's name and its mark, with the sentence on hover: the
+              // whole sentence crowded the conversation's own title down to a
+              // few letters wherever the files panel was open.
+              <Link
+                to={`/agents/${current.agent_id}/edit`}
+                title={`Started by ${startedByPhrase(current.started_by)}`}
+                aria-label={`Started by ${startedByPhrase(current.started_by)}`}
+                className="hidden md:flex min-w-0 max-w-40 items-center gap-1 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
+              >
+                <TriggerIcon kind={current.started_by.kind} className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">
+                  {current.started_by.name ?? `A ${current.started_by.kind} since deleted`}
+                </span>
+              </Link>
+            )}
+            {(current || draftWith) && (
+              <Link
+                to={`/agents/${current?.agent_id ?? draftWith?.id}`}
+                className="hidden sm:block shrink-0 text-xs text-surface-400 dark:text-surface-500 hover:underline underline-offset-2"
+              >
+                {agentName(current?.agent_id ?? draftWith!.id)}
+              </Link>
+            )}
+          </div>
+          {shown && (
+            <div
+              className="flex items-start gap-3 px-6 py-2 text-sm text-red-600 dark:text-red-400 border-b border-surface-200 dark:border-surface-800"
+              role="alert"
+            >
+              <p className="min-w-0 flex-1">{shown}</p>
+              {/* An error can be put away; a link that went nowhere cannot, since
+                  it is about the page itself and leaves with it. */}
+              {(error ?? chatError) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null)
+                    dismissError()
+                  }}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  className="shrink-0 rounded p-0.5 text-red-500 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                >
+                  <X size={14} aria-hidden />
+                </button>
+              )}
+            </div>
+          )}
+          {/* A hold reads as a pause, not a fault: nothing was lost and nothing
+              is being retried. `status` rather than `alert` for the same reason
+              -- a screen reader should hear this as the state of the
+              conversation, not as something going wrong. */}
+          {held && !shown && (
+            // Tinted, so the amber card has something to sit against. On the
+            // page's own background the card and the strip around it read as one
+            // shape, and the band that is holding the conversation up looks like
+            // part of the transcript rather than something across it.
+            <div className="border-b border-surface-200 bg-surface-100 px-6 py-2 dark:border-surface-800 dark:bg-surface-800">
+              {/* A sleep is a pause the agent chose, not a fault or a question,
+                  so it is not drawn in the amber of one. Anybody who may send
+                  here may end it: sending is what it holds back. */}
+              {held.asleep && active ? (
+                <SleepBanner sessionId={active} asleep={held.asleep} onWoken={clearHeld} />
+              ) : (
+                <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+                  {/* "Hold" is a word from inside this platform, and the sentence
+                      was also passive about something the reader is often the one
+                      to do. Said as what happens next, to them. */}
+                  {held.message}
+                  {held.resumable
+                    ? held.approval
+                      ? ' \u2014 it will carry on as soon as somebody answers.'
+                      : ' \u2014 it will carry on by itself once this is sorted.'
+                    : ' \u2014 send a message to pick it up again once this is sorted.'}
+                </p>
+              )}
+              {/* Answerable here when the hold is an approval. The queue remains
+                  the place to find every pending decision; this is for the person
+                  who was already looking -- and whether they may answer is the
+                  API's to say, not this component's. */}
+              {held.approval && canAnswerApprovals && (
+                <ApprovalPrompt
+                  approval={held.approval}
+                  onAnswered={() => {
+                    // The turn is given back to the queue by the answer itself,
+                    // so nothing here restarts it. Clearing the banner is all
+                    // that is owed: the reply resumes streaming on its own.
+                    clearHeld()
+                  }}
+                />
+              )}
+            </div>
+          )}
+          {active && current && (
+            <PromptBanner
+              key={active}
+              sessionId={active}
+              agentId={current.agent_id}
+              compacting={compacting}
+              compactions={compactions}
+            />
+          )}
+          <div className="flex-1 min-h-0">
+            {/* A new chat draws nothing until the agents are in: whether to ask
+                who with depends on how many there are, and a guess either way
+                is drawn and then taken back. */}
+            {draft && !loaded ? null : draft && !draftWith ? (
+              // Who to talk to, asked in the page rather than in a menu: this is
+              // the whole of what the reader came here to decide.
+              <div className="h-full overflow-auto p-6">
+                <div className="max-w-md mx-auto">
+                  <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
+                    Who would you like to talk to?
+                  </h2>
+                  {draftAgent && loaded && (
+                    <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
+                      That agent is not one you can start a chat with. Pick another.
+                    </p>
+                  )}
+                  <div className="mt-4">
+                    <AgentList
+                      agents={chattable}
+                      href={(agent) => `/sessions/new?agent=${agent.id}`}
+                      autoFocus
+                      empty={
+                        <p className="text-sm text-surface-600 dark:text-surface-400">
+                          There is no agent you can start a chat with.
+                        </p>
+                      }
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-          <AssistantRuntimeProvider runtime={runtime}>
-            <Thread
-              disabled={(!active && !draftWith) || !canSend}
-              readOnly={!!active && !canSend}
-              skills={skills}
-              onRetry={retry}
-              stopping={stopping}
-              focusRequest={focusRequest}
-              sessionId={active}
-              onStoredChange={onStoredChange}
-              takeAttachments={takeAttachments}
-            />
-          </AssistantRuntimeProvider>
-          )}
+            ) : (
+            <AssistantRuntimeProvider runtime={runtime}>
+              <Thread
+                disabled={(!active && !draftWith) || !canSend}
+                readOnly={!!active && !canSend}
+                skills={skills}
+                onRetry={retry}
+                stopping={stopping}
+                focusRequest={focusRequest}
+                sessionId={active}
+                onStoredChange={onStoredChange}
+                takeAttachments={takeAttachments}
+              />
+            </AssistantRuntimeProvider>
+            )}
+          </div>
         </div>
-      </div>
 
-      {active && <SidePane tabs={paneTabs} storageKey="chat.pane" />}
-    </div>
+        {active && <SidePane tabs={paneTabs} storageKey="chat.pane" />}
+      </div>
+    </FeedbackProvider>
   )
 }
 
