@@ -14,6 +14,9 @@ export type Session = {
   roles: string[]
   authorities: string[]
   workspaces: WorkspaceMembership[]
+  /** Whether the message box offers a microphone in this workspace. Absent
+   *  from an API older than the setting, which is read as allowed. */
+  dictation?: boolean
 }
 
 export type SessionState =

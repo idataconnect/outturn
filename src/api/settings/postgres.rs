@@ -161,9 +161,26 @@ impl SettingsStore for PostgresSettingsStore {
 
         Ok(catalog()
             .into_iter()
+            // A ceiling stops at the workspace: it is about the people using
+            // the product, and an agent's page offering it would be offering
+            // something that does nothing.
+            .filter(|setting| {
+                !(setting.owner == super::Owner::OperatorCeiling
+                    && matches!(level, Level::Agent { .. }))
+            })
             .map(|setting| {
-                let (value, source) = walk(&chain, setting.key, &setting.default);
+                let (mut value, mut source) = walk(&chain, setting.key, &setting.default);
                 let (inherited, _) = walk(&without, setting.key, &setting.default);
+                if setting.owner == super::Owner::OperatorCeiling {
+                    // Whatever a workspace chose, never looser than the
+                    // operator's: the walk alone lets the nearer level win.
+                    let operator = walk(&chain[..1], setting.key, &setting.default).0;
+                    let bounded = super::stricter(&setting, &operator, &value);
+                    if bounded != value {
+                        value = bounded;
+                        source = super::Source::Operator;
+                    }
+                }
                 Effective {
                     override_value: here.get(setting.key).cloned(),
                     inherited,

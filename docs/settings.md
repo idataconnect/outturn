@@ -48,9 +48,20 @@ turns it into ordinary gates when it prepares a turn.
 
 ## Who may override
 
-Part of the catalog, not of the roles. Each setting is either
-*operator-only* or *workspace-overridable*, and a workspace-overridable setting may
-also be overridden per agent.
+Part of the catalog, not of the roles. Each setting is *operator-only*,
+*workspace-overridable* -- which may also be overridden per agent -- or an
+*operator ceiling*.
+
+An operator ceiling is for a feature a deployment may need to forbid: the
+operator's value bounds what a workspace may choose, so a workspace may be
+stricter and never looser. An operator who turns it off turns it off
+everywhere, and a workspace asking to turn it back on is refused rather than
+saved and ignored; one who leaves it on leaves each workspace free to turn it
+off for itself. A row a workspace wrote before the operator turned it off is
+bounded when read, so it does not get through either. Stricter means earlier
+in the choice's options, which are listed strictest first. It stops at the
+workspace: a ceiling is about the people using the product, so an agent's page
+does not offer it and a template cannot fix it. Dictation is the one there is.
 
 - Every setting in the catalog today: temperature, reasoning effort, file
   access for both scopes, new-host approval, model calls per turn, context
@@ -103,6 +114,7 @@ below is workspace-overridable, and so overridable per agent too.
 | `max_tool_rounds` | Model calls per turn | 100 | 0 to 10,000; zero is no limit |
 | `context_budget` | Conversation size sent to the model | 400,000 bytes | 1,000 to 100,000,000 bytes |
 | `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
+| `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
 
 Where each is explained in depth:
 
@@ -115,6 +127,11 @@ Where each is explained in depth:
 - `max_tool_rounds`: a runaway guard, not a budget; nothing more to it.
 - `context_budget`: [compaction.md](compaction.md).
 - `session_naming`: [below](#session-naming), since nothing else covers it.
+- `dictation`: the microphone in the message box, using the browser's own
+  speech recognition, which in most browsers sends the audio to the
+  browser's maker to transcribe. On by default, since that custodian already
+  sees everything typed into the page; see [who may override](#who-may-override)
+  for why it is a ceiling.
 
 The endpoints are `/v1/settings` (workspace), `/v1/platform/settings`
 (operator) and `/v1/agents/{id}/settings` (agent), each returning every

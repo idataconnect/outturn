@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useDictation } from './dictation'
 import { triggerOf } from './triggers'
 import { mintedAt } from './elapsed'
 import {
@@ -1440,7 +1441,9 @@ export function useChatRuntime(
   // flicker off between sending and the poll that first reports the job.
   const isRunning = sending || turnIsRunning(messages)
 
+  const dictation = useDictation()
   const runtime = useExternalStoreRuntime({
+    adapters: { dictation },
     messages: annotated,
     isRunning,
     convertMessage,

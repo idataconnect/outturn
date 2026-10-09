@@ -13,7 +13,7 @@ export type Effective = {
   description: string
   kind: Kind
   default: unknown
-  owner: 'operator_only' | 'workspace_overridable'
+  owner: 'operator_only' | 'workspace_overridable' | 'operator_ceiling'
   value: unknown
   source: 'default' | 'operator' | 'workspace' | 'agent' | 'template'
   override_value: unknown | undefined
@@ -114,7 +114,15 @@ export default function SettingsCascade({
         const overridden = s.override_value !== undefined
         // A value a template fixes is not this level's to change, whoever
         // is looking.
-        const locked = !canEdit || s.owner === 'operator_only' || s.source === 'template'
+        // A ceiling the operator has set to its strictest leaves a workspace
+        // nothing to choose: it may only be stricter, and there is nothing
+        // stricter.
+        const capped =
+          s.owner === 'operator_ceiling' &&
+          s.kind.type === 'choice' &&
+          s.inherited === s.kind.options[0]?.value
+        const locked =
+          !canEdit || s.owner === 'operator_only' || s.source === 'template' || capped
         return (
           <div
             key={s.key}
@@ -138,7 +146,9 @@ export default function SettingsCascade({
                 title={
                   s.source === 'template'
                     ? 'Defined by the template from which this agent is derived'
-                    : s.owner === 'operator_only'
+                    : capped
+                      ? 'Turned off by the platform operator'
+                      : s.owner === 'operator_only'
                       ? 'Set by the platform operator and not overridable here'
                       : `Override for ${levelName}`
                 }

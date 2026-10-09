@@ -441,7 +441,9 @@ export default function AgentTemplateEditor() {
               Values every agent made from this runs with, whatever its workspace sets.
             </span>
             <div className="space-y-2">
-              {catalog.map((setting) => {
+              {catalog
+                .filter((setting) => setting.owner !== 'operator_ceiling')
+                .map((setting) => {
                 const fixed = setting.key in form.settings
                 return (
                   <div key={setting.key} className="flex flex-wrap items-center gap-3">

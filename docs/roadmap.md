@@ -431,6 +431,12 @@ model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
 
+**Dictation, and operator ceilings** — 2026-10-09. A microphone in the
+message box using the browser's own speech recognition, on by default; a
+setting of a new kind, a ceiling, which an operator can turn off for
+everyone and a workspace can turn off for itself but not back on. See
+[settings.md](settings.md#who-may-override).
+
 **Feedback on replies and conversations** — 2026-10-09. A thumb up or down
 on each of the agent's replies, about that reply or the whole conversation,
 with an optional note: one verdict per person per target, seen by everyone who
@@ -530,16 +536,6 @@ workspace to choose it deliberately, not a reason nobody may have it.
 
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
-
-**Dictation.** Speaking a message rather than typing it. assistant-ui has
-the pieces -- `ComposerPrimitive.Dictate` and a `DictationAdapter`, with a
-ready-made one over the browser's Web Speech API -- so the button is small.
-The decision is where the audio goes: Chrome's speech recognition sends it to
-Google to transcribe, and Firefox has none, which for a platform whose case
-is that a workspace's data stays inside the boundary is not a detail. The
-adapter can instead send audio through the gateway to a speech model, which
-lands in the ledger and under the deployment's routing like any other model
-call. Reading replies aloud is the same question in the other direction.
 
 **History access.** An agent reading its own past conversations, which a
 schedule's "summarize yesterday" examples assume and nothing provides.

@@ -178,6 +178,14 @@ impl PostgresAgentTemplateStore {
                 .ok_or_else(|| TemplateError::Invalid(format!("no setting named {key}")))?;
             crate::api::settings::validate(&setting, value)
                 .map_err(|e| TemplateError::Invalid(e.to_string()))?;
+            // A ceiling is about the people using the product, not an agent,
+            // so an agent's template has nothing of it to fix.
+            if setting.owner == crate::api::settings::Owner::OperatorCeiling {
+                return Err(TemplateError::Invalid(format!(
+                    "{} is not set per agent",
+                    setting.label
+                )));
+            }
         }
 
         // Taken before the ordinal is chosen, so two publishes at once are one

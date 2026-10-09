@@ -6,6 +6,7 @@ import {
   ThreadPrimitive,
   useAuiState,
 } from '@assistant-ui/react'
+import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import TriggerIcon from './TriggerIcon'
 import type { StartedBy } from '../lib/chat'
@@ -17,6 +18,7 @@ import {
   Hourglass,
   Loader,
   Merge,
+  Mic,
   Quote,
   RotateCw,
   Send,
@@ -524,6 +526,7 @@ export default function Thread({
   const input = useRef<HTMLTextAreaElement>(null)
   const focused = useRef(0)
   const [pasting, setPasting] = useState(false)
+  const dictation = useDictation()
   /** A drag is over the box. Only for the outline: the drop is what stores
    *  anything, and a drag that leaves again must put the box back. */
   const [dragging, setDragging] = useState(false)
@@ -867,6 +870,32 @@ export default function Thread({
           }
           className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
         />
+        {dictation && (
+          <>
+            {/* The browser's speech recognition, on where the workspace
+                allows it. Two buttons sharing one square, as send and stop
+                do, chosen by whether it is listening. */}
+            <ComposerPrimitive.If dictation={false}>
+              <ComposerPrimitive.Dictate
+                aria-label="Dictate"
+                title="Dictate"
+                disabled={disabled}
+                className="flex items-center px-3 py-2 rounded-md border border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-700 disabled:opacity-50"
+              >
+                <Mic size={16} aria-hidden />
+              </ComposerPrimitive.Dictate>
+            </ComposerPrimitive.If>
+            <ComposerPrimitive.If dictation>
+              <ComposerPrimitive.StopDictation
+                aria-label="Stop dictating"
+                title="Stop dictating"
+                className="flex items-center px-3 py-2 rounded-md border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 animate-pulse"
+              >
+                <Mic size={16} aria-hidden />
+              </ComposerPrimitive.StopDictation>
+            </ComposerPrimitive.If>
+          </>
+        )}
         {/* One square of screen, two jobs, chosen by what is in the box
             rather than by the run state alone. An empty composer mid-reply
             has nothing to send, so it offers the stop; anything typed or

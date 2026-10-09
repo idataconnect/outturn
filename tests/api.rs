@@ -6362,6 +6362,110 @@ async fn a_triggered_session_says_what_started_it_after_the_trigger_is_gone() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operator_ceiling_lets_a_workspace_be_stricter_and_never_looser() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("ws@acme.example", None, Some((acme, "admin")))
+        .await;
+    let operator = h
+        .login_as(
+            "op@platform.example",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let call = |method: &'static str, uri: &str, token: &str, body: &str| {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        h.send(req)
+    };
+    let harness = &h;
+    let dictation = |token: String| async move {
+        let (_, body) = harness.get("/v1/session", Some(&token)).await;
+        serde_json::from_str::<Value>(&body).expect("session")["dictation"].clone()
+    };
+
+    // On unless somebody says otherwise, and a workspace may say otherwise.
+    assert_eq!(dictation(admin.clone()).await, true);
+    let (status, _) = call(
+        "PUT",
+        "/v1/settings/dictation",
+        &admin,
+        r#"{"value":"off"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(dictation(admin.clone()).await, false);
+    call("DELETE", "/v1/settings/dictation", &admin, "").await;
+
+    // Off at the operator is off everywhere, and cannot be turned back on.
+    let (status, _) = call(
+        "PUT",
+        "/v1/platform/settings/dictation",
+        &operator,
+        r#"{"value":"off"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call("PUT", "/v1/settings/dictation", &admin, r#"{"value":"on"}"#).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(dictation(admin.clone()).await, false);
+
+    // Nor does a row written before the operator turned it off get through.
+    sqlx::query(
+        "insert into setting_overrides (workspace_id, agent_id, key, value) \
+         values ($1, '00000000-0000-0000-0000-000000000000', 'dictation', '\"on\"')",
+    )
+    .bind(acme)
+    .execute(&h.db.pool)
+    .await
+    .expect("stale row");
+    assert_eq!(dictation(admin.clone()).await, false);
+    let (_, body) = h.get("/v1/settings", Some(&admin)).await;
+    let view: Vec<Value> = serde_json::from_str(&body).expect("view");
+    let row = view
+        .iter()
+        .find(|e| e["key"] == "dictation")
+        .expect("listed");
+    assert_eq!(row["value"], "off");
+    assert_eq!(row["source"], "operator");
+
+    // Not an agent's to set, and not offered on an agent's page.
+    let (_, body) = call(
+        "POST",
+        "/v1/agents",
+        &admin,
+        r#"{"name":"Desk","slug":"desk"}"#,
+    )
+    .await;
+    let agent = serde_json::from_str::<Value>(&body).expect("agent")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (status, _) = call(
+        "PUT",
+        &format!("/v1/agents/{agent}/settings/dictation"),
+        &admin,
+        r#"{"value":"off"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, body) = h
+        .get(&format!("/v1/agents/{agent}/settings"), Some(&admin))
+        .await;
+    let view: Vec<Value> = serde_json::from_str(&body).expect("view");
+    assert!(!view.iter().any(|e| e["key"] == "dictation"));
+
+    finish!(h);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn feedback_is_one_verdict_per_person_per_reply_or_conversation() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;

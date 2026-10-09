@@ -408,6 +408,10 @@ struct SessionInfo {
     roles: Vec<String>,
     authorities: Vec<String>,
     workspaces: Vec<WorkspaceMembership>,
+    /// Whether the message box offers a microphone in this workspace. Here
+    /// rather than read from the settings, which not everybody who chats may
+    /// read.
+    dictation: bool,
 }
 
 async fn session_info(
@@ -426,6 +430,12 @@ async fn session_info(
     // built from too.
     let user = state.users.get(claims.subject).await?;
     let workspaces = state.users.memberships(claims.subject).await?;
+    let dictation = state
+        .settings
+        .view(Level::Workspace(claims.workspace_id))
+        .await?
+        .into_iter()
+        .any(|e| e.setting.key == "dictation" && e.value == "on");
 
     Ok(Json(SessionInfo {
         session_id: claims.subject,
@@ -434,6 +444,7 @@ async fn session_info(
         roles: claims.roles.clone(),
         authorities,
         workspaces,
+        dictation,
     }))
 }
 
@@ -1291,7 +1302,46 @@ async fn may_write(
                     ),
                 ));
             }
+            if setting.owner == Owner::OperatorCeiling && matches!(level, Level::Agent { .. }) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{} is set per workspace, not per agent", setting.label),
+                ));
+            }
         }
+    }
+    Ok(())
+}
+
+/// Refuses a workspace value looser than the operator's ceiling.
+///
+/// Checked here as well as bounded when read, so somebody choosing it is told
+/// why it will not take rather than seeing their choice saved and ignored.
+async fn within_ceiling(
+    state: &ApiState,
+    level: Level,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), ApiError> {
+    let Some(setting) = super::settings::find(key) else {
+        return Ok(());
+    };
+    if setting.owner != Owner::OperatorCeiling || !matches!(level, Level::Workspace(_)) {
+        return Ok(());
+    }
+    let operator = state
+        .settings
+        .view(Level::Operator)
+        .await?
+        .into_iter()
+        .find(|e| e.setting.key == key)
+        .map(|e| e.value)
+        .unwrap_or(setting.default.clone());
+    if super::settings::stricter(&setting, &operator, value) != *value {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("{} is turned off by the platform operator", setting.label),
+        ));
     }
     Ok(())
 }
@@ -1502,6 +1552,7 @@ async fn set_workspace_setting(
     let claims = authenticate(&state, &headers)?;
     let level = Level::Workspace(claims.workspace_id);
     may_write(&state, &claims, level, &key).await?;
+    within_ceiling(&state, level, &key, &input.value).await?;
     state.settings.set(level, &key, input.value).await?;
     tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, key = %key, "workspace setting set");
     Ok(StatusCode::NO_CONTENT)

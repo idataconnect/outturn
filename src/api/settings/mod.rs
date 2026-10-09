@@ -29,6 +29,36 @@ pub enum Owner {
     OperatorOnly,
     /// Workspaces may override, and agents within a workspace may override again.
     WorkspaceOverridable,
+    /// The operator's value is a ceiling: a workspace may choose something
+    /// stricter and never something looser, so an operator who turns a
+    /// feature off turns it off everywhere, and one who leaves it on leaves
+    /// each workspace free to turn it off for itself. Not set per agent --
+    /// these are about the people using the product, not the agents in it.
+    /// "Stricter" is earlier in the choice's options, which are listed
+    /// strictest first.
+    OperatorCeiling,
+}
+
+/// The stricter of two values of a ceiling setting: the one earlier in its
+/// options. A value that is not among them -- a row written before an option
+/// was removed -- loses to one that is.
+pub fn stricter(
+    setting: &Setting,
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+) -> serde_json::Value {
+    let rank = |v: &serde_json::Value| match &setting.kind {
+        Kind::Choice { options } => v
+            .as_str()
+            .and_then(|s| options.iter().position(|o| o.value == s))
+            .unwrap_or(usize::MAX),
+        _ => usize::MAX,
+    };
+    if rank(b) < rank(a) {
+        b.clone()
+    } else {
+        a.clone()
+    }
 }
 
 /// What kind of value a setting takes, for validation and for the control
@@ -274,6 +304,33 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("after_first_turn"),
             owner: Owner::WorkspaceOverridable,
+        },
+        // The browser's own speech recognition, which in most browsers sends
+        // the audio to the browser's maker to transcribe. On by default, since
+        // that custodian already sees everything typed into the page; a
+        // ceiling, so a deployment or a workspace whose policy forbids it can
+        // turn it off, and a workspace cannot turn back on what the operator
+        // turned off.
+        Setting {
+            key: "dictation",
+            label: "Dictation",
+            description: "A microphone in the message box, using the browser's own speech \
+                          recognition. Most browsers send the audio to their maker to \
+                          transcribe.",
+            kind: Kind::Choice {
+                options: &[
+                    ChoiceOption {
+                        value: "off",
+                        label: "Off",
+                    },
+                    ChoiceOption {
+                        value: "on",
+                        label: "On",
+                    },
+                ],
+            },
+            default: serde_json::json!("on"),
+            owner: Owner::OperatorCeiling,
         },
     ]
 }
