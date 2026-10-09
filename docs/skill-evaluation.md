@@ -284,6 +284,11 @@ right thing to do.
 
 ## A flag invalidates what was learned from it
 
+Flags exist: the `feedback` table (migration 0036), a person's thumb up or
+down on a reply or a whole conversation, with an optional note. A
+thumbs-down is the flag this section means. Retraction and the per-operation
+count below are not built, since nothing derives anything from sessions yet.
+
 Somebody marking a session as wrong is a person's judgment arriving after the
 automated signal, about the same evidence. It is the correction channel the
 loop otherwise has no way to hear, and it has to do more than stop future

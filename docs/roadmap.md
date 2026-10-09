@@ -431,6 +431,15 @@ model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
 
+**Feedback on replies and conversations** — 2026-10-09. A thumb up or down
+on each of the agent's replies, about that reply or the whole conversation,
+with an optional note: one verdict per person per target, seen by everyone who
+may read the conversation. It is the flagging
+[skill-evaluation.md](skill-evaluation.md) needs, as the correction channel
+and as the only labeling that will ever happen; nothing reads it yet. Stored
+per reply rather than per session, because a conversation can go well for ten
+turns and break on the eleventh, and evaluation has to know which.
+
 **Agent templates** — 2026-10-07. An agent the operator defines once and has
 made in every workspace that should have it: required, default or optional;
 a prompt in requirements and defaults, with a workspace's own part after
@@ -521,24 +530,6 @@ workspace to choose it deliberately, not a reason nobody may have it.
 
 **A dashboard panel for agent health.** The smallest useful version of the
 above, and it reads rows `/v1/usage` already carries.
-
-**Flagging a session as wrong.** Nothing today lets a person say a turn did the
-wrong thing. [skill-evaluation.md](skill-evaluation.md) needs it twice over,
-and the second is the surprising one.
-
-As a correction channel: a flag retracts what was derived from that session,
-and repeated flags against one operation say the signal is unreliable there.
-
-And as the *only labeling that will ever happen*. Every turn stored is real
-and none of it says whether it went well, so a held set of cases to test a
-skill edit against has to come from somewhere -- and the alternatives are
-asking a workspace to author test cases, which is a second job, or inventing
-them, which cannot show that prose is confusing because whoever wrote them
-already knew what it meant. A flagged session is real inputs, a real failure
-and a person's verdict, for free. Enough of them is a corpus nobody wrote.
-
-Small on its own -- a column and a button -- and load-bearing out of proportion
-to that.
 
 **Dictation.** Speaking a message rather than typing it. assistant-ui has
 the pieces -- `ComposerPrimitive.Dictate` and a `DictationAdapter`, with a
