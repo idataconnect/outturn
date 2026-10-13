@@ -572,6 +572,10 @@ only, at first: workspace-owned routes are the shape the schema already
 allows, and `route_is_reachable` already vets them, but who may write one is
 the [authorities.md](authorities.md) question and not this one.
 
+The page is now step 2 of [model-catalog.md](model-catalog.md), which fills
+routes from a fetched catalog and moves provider keys into sealed credentials
+so a route edit needs no restart.
+
 ## Designed, and not yet tiered
 
 Each has a design or its reasoning written down, and is waiting on a place in
