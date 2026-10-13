@@ -552,6 +552,26 @@ mattered, which is nearer compaction carry-over than user-declared memory, and
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
 
+**Routes an operator can edit without psql.** `traffic_routes` has no write
+API, so pointing a deployment at a model means an insert by hand -- found
+moving local development onto a hosted model, where the first route written
+also switched off the ollama the deployment had been using, with nothing to
+say so. That second part is deliberate ([routing.md](routing.md); the comment
+in `attempts` in `src/gateway/router.rs` says why a configured list must not
+fall through to the environment's providers), but it leaves an operator who
+wants "this model, else what I had" writing the old provider out as a route
+and naming its host in `OUTTURN_INTERNAL_HOSTS`.
+
+What would make that easy without undoing the reason: a page listing the
+platform's routes per traffic class, in order, and a "fall back to the built-in
+provider" option that writes a sentinel row -- a provider meaning "the
+statically configured ones" -- at a priority the operator can see. The
+fallback stays explicit and ordered in the same list as every other attempt,
+rather than becoming a flag beside it that nobody looks at. Platform routes
+only, at first: workspace-owned routes are the shape the schema already
+allows, and `route_is_reachable` already vets them, but who may write one is
+the [authorities.md](authorities.md) question and not this one.
+
 ## Designed, and not yet tiered
 
 Each has a design or its reasoning written down, and is waiting on a place in
