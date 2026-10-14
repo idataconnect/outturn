@@ -4940,8 +4940,10 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
     // write and every pod knowing -- including this one. Polled rather than
     // slept through: what is asserted is that it arrives, not how long it takes.
     scopes.set(acme, me, &[]).await.expect("clear scope");
-    let mut restored = false;
-    for _ in 0..50 {
+    // Until it arrives, with no deadline: a drop that never comes hangs here,
+    // which is unmistakable, where "within a second" failed a loaded machine.
+    // The pause only keeps the loop from hammering the API.
+    loop {
         let (status, _) = h
             .post(
                 "/v1/agent-sessions",
@@ -4950,15 +4952,10 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
             )
             .await;
         if status == StatusCode::CREATED {
-            restored = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(
-        restored,
-        "clearing the scope never restored access within a second"
-    );
 }
 
 /// An agent's files are narrowed with its conversations, and your own are
@@ -8879,21 +8876,35 @@ async fn a_leased_turn(h: &Harness) -> (String, String, Uuid, String) {
 async fn report_while_the_lease_is_lost(h: &Harness, last: Option<&'static str>) -> StatusCode {
     let (job, lease, _, runtime) = a_leased_turn(h).await;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    // Says when the endpoint first reads the body, and yields nothing itself.
+    let read_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let reading = {
+        use futures::StreamExt as _;
+        let read_started = read_started.clone();
+        futures::stream::once(async move {
+            read_started.notify_one();
+        })
+        .filter_map(|()| async { None::<Result<bytes::Bytes, std::io::Error>> })
+    };
     let req = Request::builder()
         .method("POST")
         .uri(format!("/v1/work/{job}/events"))
         .header("authorization", format!("Bearer {runtime}"))
         .header(outturn::api::work::LEASE_HEADER, lease)
-        .body(Body::from_stream(
+        .body(Body::from_stream(futures::StreamExt::chain(
+            reading,
             tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+        )))
         .expect("request");
 
     let pool = h.db.pool.clone();
     let job_id: Uuid = job.parse().unwrap();
     let feed = async move {
         // Past the endpoint's upfront lease check, then reaped and handed on.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // The endpoint reads the body only once the check has passed, so its
+        // first read is the moment to take the lease -- waited for, where a
+        // sleep guessed at it.
+        read_started.notified().await;
         sqlx::query("update jobs set lease_token = $2 where id = $1")
             .bind(job_id)
             .bind(Uuid::now_v7())
@@ -10166,18 +10177,10 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let mut refused = false;
-    for _ in 0..50 {
-        if fetch(acme, rule.clone()).await == StatusCode::FORBIDDEN {
-            refused = true;
-            break;
-        }
+    // Until it arrives, with no deadline, as for a cleared scope above.
+    while fetch(acme, rule.clone()).await != StatusCode::FORBIDDEN {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(
-        refused,
-        "a revoked credential was still attached after five seconds"
-    );
     let after = sent.0.lock().unwrap().len();
     assert_eq!(fetch(acme, rule).await, StatusCode::FORBIDDEN);
     assert_eq!(sent.0.lock().unwrap().len(), after, "and stays refused");

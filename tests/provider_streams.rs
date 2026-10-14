@@ -61,16 +61,16 @@ async fn start_mock() -> Mock {
         child,
         base_url: format!("http://127.0.0.1:{port}"),
     };
-    for _ in 0..200 {
-        if reqwest::get(format!("{}/healthz", mock.base_url))
-            .await
-            .is_ok()
-        {
-            return mock;
-        }
+    // Until it answers, with no deadline: a mock that never starts hangs here,
+    // where five seconds failed a machine busy compiling. The pause only keeps
+    // the loop from spinning.
+    while reqwest::get(format!("{}/healthz", mock.base_url))
+        .await
+        .is_err()
+    {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("the mock never became ready");
+    mock
 }
 
 fn ask(text: &str) -> ChatCompletionRequest {
