@@ -499,11 +499,7 @@ fn answered(
     // refusal that was never ours, or let a fetched body pose as an approval
     // nobody gave. Neither grants authority, since the gateway refuses either
     // way, but both put words in the platform's mouth.
-    let refused = format!(
-        "{}{}",
-        crate::egress::gate::GATED_REFUSAL,
-        crate::egress::gate::GATED_MARK
-    );
+    let refused = crate::egress::gate::gated_suffix();
     const NOW_ALLOWED: &str = "It has since been approved, so make this call now.";
 
     projected
@@ -1120,16 +1116,18 @@ impl Worker {
                         // retry is for the model. Both come out of what a
                         // person reads; `content`, which the model is handed
                         // and the retraction later matches on, keeps them.
-                        let gated = details.contains(crate::egress::gate::GATED_MARK);
-                        let details = if gated {
-                            details
-                                .replace(crate::egress::gate::GATED_MARK, "")
-                                .replace(crate::egress::gate::GATED_REFUSAL, "")
-                                .trim()
-                                .to_string()
-                        } else {
-                            details
-                        };
+                        //
+                        // Only an error ending in the gate's own suffix: a
+                        // fetched page can carry the mark or the sentence, and
+                        // matching either anywhere let it pose as a held call
+                        // and had a quoted copy of the sentence cut out.
+                        let suffix = crate::egress::gate::gated_suffix();
+                        let held = is_error
+                            .then(|| details.strip_suffix(suffix.as_str()))
+                            .flatten()
+                            .map(|said| said.trim_end().to_string());
+                        let gated = held.is_some();
+                        let details = held.unwrap_or(details);
                         // Attached to the call it answers rather than sent as
                         // its own thing, so the browser has one object per
                         // tool: what it was doing, and what came back.

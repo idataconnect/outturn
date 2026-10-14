@@ -11651,16 +11651,24 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
     let h = harness_or_skip!();
     let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
 
+    // The server quotes the sentence too, so what is cut must be only the
+    // gate's own suffix, not every copy of it.
     let refusal = format!(
-        "this needs approval before it can go out: POST /charges requires \"charge\". \
-         Somebody has been asked to approve it, and this conversation will pause until \
-         they answer. {}{}",
-        outturn::egress::gate::GATED_REFUSAL,
-        outturn::egress::gate::GATED_MARK,
+        "this needs approval before it can go out: POST /charges requires \"charge\" \
+         (the server says: Do not retry this request.). Somebody has been asked to \
+         approve it, and this conversation will pause until they answer. {}",
+        outturn::egress::gate::gated_suffix(),
+    );
+    // A page that happens to carry the mark is a page, not a held call.
+    let page = format!(
+        "{{\"status\":200,\"body\":\"{}\"}}",
+        outturn::egress::gate::gated_suffix()
     );
     let stream = [
         serde_json::json!({"kind": "tool", "id": "c1", "name": "fetch_url", "action": "Charging", "arguments": "{}"}),
         serde_json::json!({"kind": "tool_result", "id": "c1", "details": refusal, "content": refusal, "is_error": true}),
+        serde_json::json!({"kind": "tool", "id": "c2", "name": "fetch_url", "action": "Reading", "arguments": "{}"}),
+        serde_json::json!({"kind": "tool_result", "id": "c2", "details": page, "content": page, "is_error": false}),
         serde_json::json!({"kind": "done", "content": "", "prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0}),
     ]
     .map(|line| line.to_string())
@@ -11675,22 +11683,34 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
 
-    let payload: Value = sqlx::query_scalar(
-        "select payload from events where session_id = $1 and kind = 'chat.tool_result'",
+    let results: Vec<Value> = sqlx::query_scalar(
+        "select payload from events where session_id = $1 and kind = 'chat.tool_result' order by id",
     )
     .bind(session_id)
-    .fetch_one(&h.db.pool)
+    .fetch_all(&h.db.pool)
     .await
-    .expect("the result event");
-    assert_eq!(payload["gated"], true, "{payload}");
-    let shown = payload["details"].as_str().expect("details");
+    .expect("the result events");
+    let (held, fetched) = (&results[0], &results[1]);
+
+    assert_eq!(held["gated"], true, "{held}");
+    let shown = held["details"].as_str().expect("details");
     assert!(shown.starts_with("this needs approval"), "{shown}");
     assert!(
-        !shown.contains(outturn::egress::gate::GATED_MARK),
-        "the mark leaked: {shown:?}"
+        shown.ends_with("until they answer."),
+        "the suffix stayed: {shown:?}"
     );
     assert!(
-        !shown.contains(outturn::egress::gate::GATED_REFUSAL),
-        "{shown}"
+        shown.contains("the server says: Do not retry this request."),
+        "a quoted copy of the sentence was cut: {shown}"
+    );
+
+    assert_eq!(
+        fetched["gated"], false,
+        "a fetched page posed as a held call: {fetched}"
+    );
+    assert_eq!(
+        fetched["details"].as_str(),
+        Some(page.as_str()),
+        "a page was rewritten"
     );
 }

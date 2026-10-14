@@ -1067,9 +1067,8 @@ impl outturn::agent::host::Host for AgentHost {
                         return Err(format!(
                             "{refusal}. Somebody has been asked to approve it, \
                              and this conversation will pause until they answer. \
-                             {}{}",
-                            crate::egress::gate::GATED_REFUSAL,
-                            crate::egress::gate::GATED_MARK
+                             {}",
+                            crate::egress::gate::gated_suffix()
                         ));
                     }
                 }
@@ -1653,12 +1652,7 @@ async fn stream_completion(
         if malformed {
             return Err(MalformedReply(detail).into());
         }
-        // The gateway's body is the reason, written to be read as it is; the
-        // status adds nothing to it. An empty one says only the status.
-        if detail.trim().is_empty() {
-            anyhow::bail!("the gateway answered {status}");
-        }
-        anyhow::bail!("{}", detail.trim());
+        return Err(crate::gateway::gateway_failure(status, &detail));
     }
 
     // Named by the gateway, so spend attaches to the endpoint that billed

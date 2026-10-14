@@ -438,6 +438,14 @@ read, rather than parking the turn: parking is the API's, which owns the job and
 the queue, and this tier has a method, a URL and a token. So the money does not
 move and get approved afterwards -- which is the ordering that matters.
 
+The refusal ends in a fixed suffix (`egress::gate::gated_suffix`): a sentence
+telling the model not to retry, then a mark. Three things find it by that
+suffix -- the API retracting the sentence once somebody approves, the worker
+recording the result as `gated` so the browser draws a held call as waiting
+rather than failed, and the worker taking the suffix out of what a person reads.
+Only ever as the end of an error the gate raised: the mark is not secret, and a
+fetched page carrying it is a page.
+
 **Not the guest asking.** A `request_approval` host call would be a gate that
 fires only when the guest chooses to ask, which is the same fault
 [inhibitors.md](inhibitors.md) names in delivering a denial as a tool result. A

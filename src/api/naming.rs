@@ -267,13 +267,8 @@ async fn run_one(
         .await?;
     let status = response.status();
     if !status.is_success() {
-        // The gateway's body is the reason, already a sentence, as a turn's
-        // failure passes it on; an empty one says only the status.
         let detail = response.text().await.unwrap_or_default();
-        if detail.trim().is_empty() {
-            anyhow::bail!("the gateway answered {status}");
-        }
-        anyhow::bail!("{}", detail.trim());
+        return Err(crate::gateway::gateway_failure(status, &detail));
     }
     // Read before the body is consumed, and the only place the endpoint and
     // payer are named: the completion itself does not say.

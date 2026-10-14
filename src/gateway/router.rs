@@ -792,6 +792,18 @@ pub fn failure_message(last_error: Option<&ProviderError>) -> String {
     }
 }
 
+/// What a caller makes of a failed response from the gateway: its body, which
+/// is already the sentence `failure_message` wrote, passed on as it is -- a
+/// status in front of it adds nothing a person can use. An empty body says
+/// only the status. One rule for every caller, so a turn and a session's title
+/// read the same failure the same way.
+pub fn gateway_failure(status: StatusCode, body: &str) -> anyhow::Error {
+    match body.trim() {
+        "" => anyhow::anyhow!("the gateway answered {status}"),
+        said => anyhow::anyhow!("{said}"),
+    }
+}
+
 /// A message as a sentence: capitalized, and ended if it was not already.
 fn sentence(message: &str) -> String {
     let mut chars = message.chars();

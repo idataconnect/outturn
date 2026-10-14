@@ -147,12 +147,25 @@ impl Gate {
 /// response kept verbatim, so a page the agent fetched can contain any sentence
 /// the platform writes -- and a substring sweep would rewrite a refusal that was
 /// never ours, or let a remote body pose as an approval the platform granted.
-/// The marker is stripped before the reader ever sees it, and nothing a guest
-/// fetches can emit it without the platform having put it there.
+/// It is not secret -- a fetched page can contain it too -- which is why it is
+/// only ever recognized at the end of an error the gate raised, through
+/// `gated_suffix`, and stripped before a model or a person reads it.
 pub const GATED_MARK: &str = "\u{2060}outturn:gated\u{2060}";
 
 /// What a gated refusal tells the guest to do, ending in `GATED_MARK`.
 pub const GATED_REFUSAL: &str = "Do not retry this request.";
+
+/// How every gated refusal ends: the instruction, then the mark. Built once,
+/// since the gate writes it, the API retracts it after an approval, and the
+/// worker recognizes a held call by it -- and any of the three drifting from
+/// the others is a refusal the rest no longer find.
+///
+/// Recognized only as the end of an error the gate raised, never as text found
+/// anywhere: a fetched page can carry the mark or the sentence, and neither
+/// makes it the platform's.
+pub fn gated_suffix() -> String {
+    format!("{GATED_REFUSAL}{GATED_MARK}")
+}
 
 pub fn normalize_path(path: &str) -> String {
     let decoded = percent_decode(path);
