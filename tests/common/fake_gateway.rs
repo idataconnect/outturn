@@ -455,8 +455,18 @@ fn ndjson(lines: Vec<String>) -> Response {
 fn malformed_reply() -> axum::response::Response {
     (
         StatusCode::BAD_GATEWAY,
-        [(outturn::gateway::FAILURE_HEADER, outturn::gateway::MALFORMED_REPLY)],
-        "no provider could stream: the model wrote a tool call its arguments could not be read from",
+        [(
+            outturn::gateway::FAILURE_HEADER,
+            outturn::gateway::MALFORMED_REPLY,
+        )],
+        // What the gateway says for one, built the way it builds it, so a test
+        // passing the message on checks the words a person would see.
+        outturn::gateway::failure_message(Some(
+            &outturn::gateway::llm::provider::ProviderError::Upstream {
+                status: Some(500),
+                detail: "500: Failed to parse tool call arguments as JSON".into(),
+            },
+        )),
     )
         .into_response()
 }

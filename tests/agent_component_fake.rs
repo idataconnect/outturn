@@ -187,11 +187,10 @@ async fn the_system_prompt_leads_the_conversation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gateway_failure_surfaces_as_an_error() {
-    let gateway = FakeGateway::start(Behavior::Status(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "no provider available".into(),
-    ))
-    .await;
+    let said = outturn::gateway::failure_message(Some(
+        &outturn::gateway::llm::provider::ProviderError::Unavailable,
+    ));
+    let gateway = FakeGateway::start(Behavior::Status(StatusCode::BAD_GATEWAY, said.clone())).await;
     let runner = runner();
 
     let result = runner
@@ -208,7 +207,7 @@ async fn a_gateway_failure_surfaces_as_an_error() {
     // sentence that already says what went wrong.
     assert_eq!(
         error.to_string(),
-        "no provider available",
+        said,
         "the error should say what happened"
     );
 }
@@ -231,7 +230,9 @@ async fn a_malformed_reply_is_marked_and_an_outage_is_not() {
 
     let down = FakeGateway::start(Behavior::Status(
         StatusCode::BAD_GATEWAY,
-        "no provider could stream: provider unavailable".into(),
+        outturn::gateway::failure_message(Some(
+            &outturn::gateway::llm::provider::ProviderError::Unavailable,
+        )),
     ))
     .await;
     let error = runner()

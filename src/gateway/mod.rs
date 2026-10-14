@@ -5,4 +5,6 @@ pub mod routing;
 
 pub mod egress;
 
-pub use router::{FAILURE_HEADER, GatewayState, MALFORMED_REPLY, TRAFFIC_HEADER, routes};
+pub use router::{
+    FAILURE_HEADER, GatewayState, MALFORMED_REPLY, TRAFFIC_HEADER, failure_message, routes,
+};

@@ -521,10 +521,7 @@ async fn chat_completions(
     }
 
     // The same sentence the streaming route gives, for the same reader.
-    let msg = match last_error {
-        Some(e) => sentence(&e.to_string()),
-        None => "No model provider was available for this request.".into(),
-    };
+    let msg = failure_message(last_error.as_ref());
     Err((StatusCode::BAD_GATEWAY, msg))
 }
 
@@ -770,10 +767,7 @@ async fn chat_completions_stream(
     // The last failure's own sentence, capitalized, and nothing around it:
     // this is what the person whose turn failed is shown. "No provider could
     // stream" said only that something had, which every failure here does.
-    let message = match last_error {
-        Some(e) => sentence(&e.to_string()),
-        None => "No model provider was available for this request.".into(),
-    };
+    let message = failure_message(last_error.as_ref());
     if malformed {
         return (
             StatusCode::BAD_GATEWAY,
@@ -786,6 +780,16 @@ async fn chat_completions_stream(
             .into_response();
     }
     (StatusCode::BAD_GATEWAY, message).into_response()
+}
+
+/// What a caller is told when no provider answered: the last failure's own
+/// sentence, or that there was nobody to ask. Public so a test standing in
+/// for the gateway says exactly what the gateway says.
+pub fn failure_message(last_error: Option<&ProviderError>) -> String {
+    match last_error {
+        Some(e) => sentence(&e.to_string()),
+        None => "No model provider was available for this request.".into(),
+    }
 }
 
 /// A message as a sentence: capitalized, and ended if it was not already.
