@@ -330,16 +330,19 @@ fn loader_tool(eager: &BTreeSet<String>) -> ToolDefinition {
 /// What the model is offered this round.
 ///
 /// The eager set, plus whatever has been loaded so far, plus the loader itself
-/// while anything is still unloaded. The loader drops out once nothing is left
-/// to load, so a turn that has loaded everything does not carry a tool whose
-/// whole description is an empty list.
+/// whenever anything is deferred -- even once everything has been loaded.
+///
+/// The tool list is the front of a cached prompt, and every change to it is a
+/// full miss for everything after it. Loading a tool has to change it; the
+/// loader leaving would be one more change, bought to save one definition.
+/// Calling it again for a loaded tool is harmless: that is a success.
 fn offered_tools(eager: &BTreeSet<String>, loaded: &BTreeSet<String>) -> Vec<ToolDefinition> {
     let mut offered: Vec<ToolDefinition> = all_tools()
         .into_iter()
         .filter(|t| eager.contains(&t.name) || loaded.contains(&t.name))
         .collect();
 
-    if deferred_names(eager).iter().any(|name| !loaded.contains(name)) {
+    if !deferred_names(eager).is_empty() {
         offered.push(loader_tool(eager));
     }
 
