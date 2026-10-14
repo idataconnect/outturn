@@ -104,8 +104,27 @@ pub fn openai_to_anthropic(
         "messages": messages,
     });
 
+    // Two cache breakpoints, the most that pays without knowing more about the
+    // conversation than its shape. Anthropic caches only what is marked.
+    //
+    // The system prompt's: tools render before it, so one marker covers both,
+    // and both change only when somebody edits the agent -- every session of
+    // that agent reads it.
+    //
+    // The last message's: it moves forward every round, tool results
+    // included, so each request reads the one before it. Marking only
+    // completed turns was the earlier design, and a long tool loop would
+    // carry its breakpoint past the twenty blocks Anthropic looks back to
+    // find the previous entry, rewriting the whole conversation unseen.
     if let Some(sys) = system {
-        body["system"] = serde_json::json!(sys);
+        body["system"] = serde_json::json!([{
+            "type": "text",
+            "text": sys,
+            "cache_control": {"type": "ephemeral"},
+        }]);
+    }
+    if let Some(last) = body["messages"].as_array_mut().and_then(|m| m.last_mut()) {
+        mark_for_cache(last);
     }
     if let Some(temp) = req.temperature {
         body["temperature"] = serde_json::json!(temp);
@@ -131,6 +150,30 @@ pub fn openai_to_anthropic(
     }
 
     Ok(body)
+}
+
+/// Mark a message's last block as the end of a cached prefix.
+///
+/// A message whose content is a bare string has no block to carry the marker,
+/// so it becomes one text block -- the same prompt to the model. An empty
+/// text block is left unmarked, since Anthropic refuses a marker on one.
+fn mark_for_cache(message: &mut serde_json::Value) {
+    if let Some(text) = message["content"].as_str() {
+        if text.is_empty() {
+            return;
+        }
+        message["content"] = serde_json::json!([{"type": "text", "text": text}]);
+    }
+    let Some(block) = message["content"]
+        .as_array_mut()
+        .and_then(|blocks| blocks.last_mut())
+    else {
+        return;
+    };
+    if block["type"] == "text" && block["text"].as_str().is_none_or(str::is_empty) {
+        return;
+    }
+    block["cache_control"] = serde_json::json!({"type": "ephemeral"});
 }
 
 /// Convert Anthropic Messages API response to OpenAI format.
@@ -248,6 +291,72 @@ pub struct TranslateError(pub String);
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn translated(messages: serde_json::Value) -> serde_json::Value {
+        let request: ChatCompletionRequest =
+            serde_json::from_value(serde_json::json!({"model": "m", "messages": messages}))
+                .expect("request");
+        openai_to_anthropic(&request).expect("translate")
+    }
+
+    fn marked(block: &serde_json::Value) -> bool {
+        block["cache_control"] == serde_json::json!({"type": "ephemeral"})
+    }
+
+    /// The system prompt and the newest message each end a cached prefix, and
+    /// nothing in between does: two breakpoints of Anthropic's four.
+    #[test]
+    fn the_system_prompt_and_the_last_message_are_marked() {
+        let body = translated(serde_json::json!([
+            {"role": "system", "content": "Be useful."},
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "user", "content": "Second question"},
+        ]));
+
+        assert_eq!(body["system"][0]["text"], "Be useful.");
+        assert!(marked(&body["system"][0]), "system unmarked: {body}");
+
+        let messages = body["messages"].as_array().expect("messages");
+        let last = &messages[messages.len() - 1]["content"][0];
+        assert_eq!(last["text"], "Second question");
+        assert!(marked(last), "last message unmarked: {body}");
+
+        let earlier = serde_json::to_string(&messages[..messages.len() - 1]).expect("json");
+        assert!(!earlier.contains("cache_control"), "marked too early: {earlier}");
+    }
+
+    /// Mid-loop the newest message is a tool result, and it is the one marked,
+    /// so each round reads the round before it.
+    #[test]
+    fn a_tool_result_carries_the_moving_breakpoint() {
+        let body = translated(serde_json::json!([
+            {"role": "user", "content": "What's the weather?"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "content": "Foggy"},
+        ]));
+
+        let last = &body["messages"][2]["content"][0];
+        assert_eq!(last["type"], "tool_result");
+        assert!(marked(last), "tool result unmarked: {body}");
+    }
+
+    /// Anthropic refuses a marker on an empty text block, so one is left bare.
+    #[test]
+    fn an_empty_last_message_is_not_marked() {
+        let body = translated(serde_json::json!([
+            {"role": "user", "content": ""},
+        ]));
+        assert!(!body.to_string().contains("cache_control"), "{body}");
     }
 }
 
