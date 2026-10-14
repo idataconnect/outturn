@@ -162,11 +162,18 @@ async fn shutdown_releases_parked_poll() {
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    // A oneshot rather than a `Notify`: sent before the poll begins awaiting
-    // it, a `Notify` is lost and the poll waits for ever, which is why this
-    // used to sleep first and hope. A oneshot keeps what was sent.
+    // The stop is sent once the poll is parked, not before it starts: sent
+    // first, it would only show that a stop already given ends a poll, and a
+    // poll that checked for one before parking but not while parked would
+    // pass. The shutdown future says when it is first polled -- which happens
+    // in the poll's wait, so only once it is parked -- and the stop is sent
+    // then. A oneshot keeps what is sent, so nothing hangs on the order.
+    let (parked, is_parked) = tokio::sync::oneshot::channel::<()>();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    stop.send(()).expect("send");
+    let stopper = tokio::spawn(async move {
+        is_parked.await.expect("the poll parked");
+        stop.send(()).expect("send");
+    });
 
     // A timeout nothing will reach, so returning at all means shutdown
     // released it: a draining service must not hold every parked poll open
@@ -180,12 +187,14 @@ async fn shutdown_releases_parked_poll() {
         100,
         Duration::from_secs(3600),
         async move {
+            let _ = parked.send(());
             let _ = stopped.await;
         },
         None,
     )
     .await
     .expect("wait");
+    stopper.await.expect("stopper");
 
     assert!(found.is_empty());
 
