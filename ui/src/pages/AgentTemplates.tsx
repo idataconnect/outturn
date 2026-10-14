@@ -8,7 +8,7 @@ import { paths } from '../lib/paths'
 
 /**
  * The operator's agent templates: agents defined once and made in every
- * workspace that should have them. See docs/agent-templates.md.
+ * workspace that they are assigned. See docs/agent-templates.md.
  */
 export default function AgentTemplates() {
   const [templates, setTemplates] = useState<Template[]>([])
@@ -42,7 +42,7 @@ export default function AgentTemplates() {
             Agent templates
           </h1>
           <p className="mt-2 text-surface-600 dark:text-surface-400">
-            Agents defined once and made in every workspace that should have them. Each
+            Agents defined once and made in every workspace that they are assigned. Each
             workspace&rsquo;s agent follows its template&rsquo;s newest version.
           </p>
         </div>
