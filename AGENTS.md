@@ -131,19 +131,15 @@ it, including whatever gets run before a push.
 
 Within that suite a missing key fails rather than skips.
 
-Do not assert elapsed time in the slow suites because of core competition
-and parallel runs.
-
-One test does, and is flaky for it: `long_poll_returns_empty_on_timeout` in
-`tests/queue_and_events.rs` fails roughly one run in three under the full
-suite and passes alone. It pauses tokio's virtual clock and then asserts the
-poll waited out 25 seconds, and `EventBus::spawn` opens its listener on a task
-of its own -- so a loaded machine can pause the clock while that connection is
-still being made, and the first query races a clock already past the deadline.
-Pre-existing, and not something a warm-up query fixes: tried, and it failed
-twice in four runs rather than once in three. Fixing it properly means not
-asserting on the clock, which is what the line above says. Re-run before
-believing a red suite.
+Never let a test depend on how long something usually takes. Wait on the
+thing itself -- `EventBus::listening()` rather than a sleep, a signal from a
+fake rather than a guess at when it got there. To show a wait was woken
+rather than timed out, give it a timeout nothing reaches; returning at all is
+the proof. A bound on elapsed real time may only be a lower one, since a
+sleep never ends early. Tokio's paused clock is for code that waits on
+nothing but tokio: it advances whenever the runtime is idle, including while
+a real query is in flight, which made `long_poll_returns_empty_on_timeout`
+fail a run in three until it stopped using one.
 
 Every test gets a private Postgres schema, so the suite is safe to run in
 parallel and no test has to clean up after another. `tests/common/fake_gateway.rs`
