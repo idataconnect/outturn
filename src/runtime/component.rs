@@ -1879,6 +1879,18 @@ async fn stream_completion(
             parts: parts
                 .into_iter()
                 .filter(|p| !matches!(p, ContentPart::Call(c) if c.name.is_empty()))
+                // A call with no arguments streams none, and an empty string is
+                // not JSON: kept as it came, every later round replayed it as
+                // something no provider can read. Written as the empty object
+                // it means, here where the call is assembled, so what is stored
+                // and handed to the guest is already right.
+                .map(|p| match p {
+                    ContentPart::Call(mut c) if c.arguments.trim().is_empty() => {
+                        c.arguments = "{}".to_string();
+                        ContentPart::Call(c)
+                    }
+                    other => other,
+                })
                 .collect(),
             finish_reason,
             usage,

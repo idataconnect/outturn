@@ -2600,3 +2600,36 @@ async fn create_archive_streams_its_inputs_into_one_zip() {
     let result = first_tool_result(&gateway);
     assert!(result.contains("\"entries\":2"), "{result}");
 }
+
+/// A call with no arguments streams none. What goes back on the next round
+/// is the empty object it means, not an empty string -- which is not JSON,
+/// and which a provider replaying it refused on every round after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_without_arguments_goes_back_as_an_empty_object() {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: String::new(),
+        reply: "Done.".into(),
+    })
+    .await;
+
+    runner()
+        .run(
+            &component(),
+            user("When?"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let call = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "assistant" && m["tool_calls"].is_array())
+        .expect("the call, replayed")["tool_calls"][0]
+        .clone();
+    assert_eq!(call["function"]["arguments"], "{}", "{call}");
+}
