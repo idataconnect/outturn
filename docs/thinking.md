@@ -63,10 +63,10 @@ The Anthropic translation sends, on a model that thinks:
   because the person reading the transcript should see why a turn did what it
   did, and the cost is the same.
 - **Effort from `reasoning_effort`**, as `output_config.effort`. `minimal`
-  becomes `low`. `none` means the field is left out and `thinking` with it --
-  never `disabled`, which the always-on models refuse; on Haiku 5.5, which
-  allows it, `none` may become `disabled`. A level the model does not offer is
-  clamped to the highest it does, and the turn's log says so.
+  becomes `low`. `none` leaves `thinking` out and asks for the lowest effort
+  the model offers -- never `disabled`, which the always-on models refuse, and
+  leaving `thinking` out does not stop them thinking. A level the model does
+  not offer is clamped to the highest it does.
 - **`max_tokens` at the model's output limit**, not 4096. A large cap costs
   nothing unless it is used, and a small one turns a hard question into a
   truncated answer. Effort is the control; the cap is only the guarantee.
@@ -139,15 +139,17 @@ the edit is invalid. So:
 
 ## Order of work
 
-1. **Ask properly.** `display`, effort from `reasoning_effort`, `max_tokens` at
-   the model's limit, sampling and forced tool choice dropped where refused --
-   from family defaults until the catalog exists. All in `translate.rs`, and
-   the first three change what a Sonnet turn can do today.
+1. **Ask properly.** Built, apart from forced tool choice, which nothing sends
+   yet: `display`, effort from `reasoning_effort`, `max_tokens` at the
+   model's limit, and sampling dropped where refused, from the model's name
+   until the catalog exists (`ClaudeTraits` in `translate.rs`).
 2. **Show it.** `thinking_delta` to `reasoning`.
 3. **Stream one real tool-using turn** with `summarized` and with `updates`,
-   and look at what arrives and how often, before deciding what the UI does
-   with between-tool notes. Small, and it settles a question the reference
-   does not answer.
+   before deciding what the UI does with between-tool notes. Half answered: a
+   summarized block streams as many small `thinking_delta` chunks, a few
+   words each, followed by one `signature_delta` -- it does not arrive in a
+   burst. An easy question at medium effort may not think at all. What a
+   tool loop sends between calls is still to be looked at.
 4. **Keep it.** The signature through the gateway, the runtime, the guest and
    `Part::Reasoning`, and replay to the same model.
 5. **Place system messages by the rule**, effort as a message, and

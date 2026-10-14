@@ -134,13 +134,23 @@ pub fn openai_to_anthropic(
     if let Some(last) = body["messages"].as_array_mut().and_then(|m| m.last_mut()) {
         mark_for_cache(last);
     }
+    let claude = ClaudeTraits::of(&req.model);
+    // A model that refuses sampling parameters refuses the whole request over
+    // one, so it is left out -- except 1, the one value these models accept.
     if let Some(temp) = req.temperature {
-        body["temperature"] = serde_json::json!(temp);
+        if claude.sampling || temp == 1.0 {
+            body["temperature"] = serde_json::json!(temp);
+        } else {
+            tracing::debug!(model = %req.model, temp, "temperature left out: this model refuses it");
+        }
     }
-    if let Some(max) = req.max_tokens {
-        body["max_tokens"] = serde_json::json!(max);
-    } else {
-        body["max_tokens"] = serde_json::json!(4096);
+    // Required by the protocol, so filled in when the request names none. At
+    // the model's own limit: thinking counts against it, the model is not told
+    // where it is, and a small one cuts a hard answer off mid-thought. Effort
+    // is what controls how much is written; this is only the guarantee.
+    body["max_tokens"] = serde_json::json!(req.max_tokens.unwrap_or(claude.output_limit));
+    if claude.adaptive {
+        apply_thinking(&mut body, &claude, req.reasoning_effort.as_deref());
     }
 
     if let Some(tools) = &req.tools {
@@ -158,6 +168,112 @@ pub fn openai_to_anthropic(
     }
 
     Ok(body)
+}
+
+/// What a Claude model accepts, told from its name until the model catalog
+/// says (docs/model-catalog.md, docs/thinking.md).
+#[derive(Debug, PartialEq)]
+struct ClaudeTraits {
+    /// Thinks adaptively, with effort as its control: 4.6 and later.
+    adaptive: bool,
+    /// Accepts `temperature` and its siblings: refused from 4.7 on.
+    sampling: bool,
+    /// The default `max_tokens`.
+    output_limit: u32,
+    /// The effort levels it offers, lowest first.
+    efforts: &'static [&'static str],
+}
+
+impl ClaudeTraits {
+    fn of(model: &str) -> Self {
+        const NEWEST: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+        let newest = Self {
+            adaptive: true,
+            sampling: false,
+            output_limit: 128_000,
+            efforts: NEWEST,
+        };
+        let older = Self {
+            adaptive: false,
+            sampling: true,
+            output_limit: 4096,
+            efforts: &[],
+        };
+
+        // `claude-sonnet-5-5`, `claude-opus-4-6-20260101`, `claude-3-5-haiku`.
+        // The version is the run of short numbers after the name; a date is a
+        // long one and ends it, so it is never read as a minor version.
+        let Some(rest) = model
+            .rsplit("claude-")
+            .next()
+            .filter(|_| model.contains("claude-"))
+        else {
+            return newest;
+        };
+        let version: Vec<u32> = rest
+            .split('-')
+            .skip_while(|part| part.parse::<u32>().is_err())
+            .take_while(|part| part.len() <= 2)
+            .map_while(|part| part.parse().ok())
+            .collect();
+        // Fable and Mythos number from 5, as every 5.x does.
+        let family_is_new = rest.starts_with("fable") || rest.starts_with("mythos");
+        match version.as_slice() {
+            _ if family_is_new => newest,
+            // A name nothing recognizes is far likelier to be the next model
+            // than an old one, so it is treated as the newest.
+            [] => newest,
+            [major, ..] if *major >= 5 => newest,
+            [4, minor, ..] if *minor >= 7 => newest,
+            [4, 6, ..] => Self {
+                sampling: true,
+                efforts: &["low", "medium", "high", "max"],
+                ..newest
+            },
+            _ => older,
+        }
+    }
+}
+
+/// Asks an adaptive model for its reasoning, and sets how much of it.
+///
+/// Summarized, because the default returns thinking blocks with nothing in
+/// them, and the person reading the transcript should see why a turn did what
+/// it did -- the reasoning is billed the same whether it is shown or not.
+///
+/// `none` leaves `thinking` out rather than sending `disabled`, which the
+/// always-on models refuse, and asks for the least effort the model offers:
+/// on those, leaving it out does not stop it thinking. A level the model does
+/// not offer becomes the highest one it does.
+fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: Option<&str>) {
+    let effort = match effort {
+        Some("none") => {
+            if let Some(lowest) = claude.efforts.first() {
+                body["output_config"] = serde_json::json!({"effort": lowest});
+            }
+            return;
+        }
+        Some("minimal") => Some("low"),
+        other => other,
+    };
+    body["thinking"] = serde_json::json!({"type": "adaptive", "display": "summarized"});
+    let Some(asked) = effort else {
+        return;
+    };
+    let level = if claude.efforts.contains(&asked) {
+        Some(asked)
+    } else if ["xhigh", "max"].contains(&asked) {
+        claude.efforts.last().copied()
+    } else {
+        None
+    };
+    match level {
+        Some(level) => body["output_config"] = serde_json::json!({"effort": level}),
+        None => tracing::warn!(
+            effort = asked,
+            "an effort no Claude model offers; left to the model's default"
+        ),
+    }
 }
 
 /// Mark a message's last block as the end of a cached prefix.
@@ -376,6 +492,92 @@ mod cache_tests {
         assert_eq!(
             body["messages"][1]["content"][0]["input"],
             serde_json::json!({})
+        );
+    }
+
+    fn asked(model: &str, effort: Option<&str>, temperature: Option<f32>) -> serde_json::Value {
+        let mut request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+        }))
+        .expect("request");
+        request.reasoning_effort = effort.map(str::to_string);
+        request.temperature = temperature;
+        openai_to_anthropic(&request).expect("translate")
+    }
+
+    /// The current models are asked for their reasoning, summarized, with
+    /// room to write it: their own output limit rather than 4096, which
+    /// thinking counted against and a hard answer ran out of.
+    #[test]
+    fn a_current_model_is_asked_to_show_its_thinking_with_room_to_answer() {
+        let body = asked("claude-sonnet-5-5", Some("medium"), None);
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type": "adaptive", "display": "summarized"})
+        );
+        assert_eq!(body["output_config"]["effort"], "medium");
+        assert_eq!(body["max_tokens"], 128_000);
+    }
+
+    /// `none` cannot turn an always-on model's thinking off, and `disabled` is
+    /// refused outright, so it asks for the least there is instead.
+    #[test]
+    fn none_asks_for_the_least_effort_rather_than_disabling() {
+        let body = asked("claude-opus-5-5", Some("none"), None);
+        assert!(body.get("thinking").is_none(), "{body}");
+        assert_eq!(body["output_config"]["effort"], "low");
+    }
+
+    /// A level the model does not offer becomes its highest, and `minimal`
+    /// is `low`.
+    #[test]
+    fn an_effort_is_clamped_to_what_the_model_offers() {
+        assert_eq!(
+            asked("claude-opus-4-6", Some("xhigh"), None)["output_config"]["effort"],
+            "max"
+        );
+        assert_eq!(
+            asked("claude-sonnet-5-5", Some("minimal"), None)["output_config"]["effort"],
+            "low"
+        );
+    }
+
+    /// The current models refuse a temperature outright -- the request, not
+    /// the parameter -- except 1. The 4.6 line still takes one.
+    #[test]
+    fn a_temperature_reaches_only_a_model_that_takes_it() {
+        assert!(
+            asked("claude-sonnet-5-5", None, Some(0.7))
+                .get("temperature")
+                .is_none()
+        );
+        assert_eq!(
+            asked("claude-sonnet-5-5", None, Some(1.0))["temperature"],
+            1.0
+        );
+        let older = asked("claude-sonnet-4-6", None, Some(0.5));
+        assert_eq!(older["temperature"], 0.5);
+    }
+
+    /// Versions are read from the name, a date suffix is not a minor version,
+    /// and a name nothing recognizes is taken for the newest.
+    #[test]
+    fn a_models_traits_come_from_its_name() {
+        let newest = ClaudeTraits::of("claude-sonnet-5-5");
+        assert!(newest.adaptive && !newest.sampling);
+        assert_eq!(ClaudeTraits::of("claude-fable-5-1"), newest);
+        assert_eq!(ClaudeTraits::of("claude-opus-4-8-20260501"), newest);
+        assert_eq!(ClaudeTraits::of("claude-something-new"), newest);
+        assert!(ClaudeTraits::of("claude-opus-4-6").sampling);
+        let old = ClaudeTraits::of("claude-sonnet-4-20250514");
+        assert!(!old.adaptive && old.sampling && old.output_limit == 4096);
+        assert!(!ClaudeTraits::of("claude-3-5-haiku-latest").adaptive);
+        // An older model is not asked about thinking at all.
+        assert!(
+            asked("claude-haiku-4-5", Some("high"), None)
+                .get("thinking")
+                .is_none()
         );
     }
 
