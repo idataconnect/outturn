@@ -120,6 +120,18 @@ At the point it builds a provider request, with the route's resolved entry:
 
 No entry, no change: the request is built exactly as it is today.
 
+**What it replaces.** Until the catalog exists, the Anthropic translation reads
+these facts from the model's name -- `ClaudeTraits` in
+`src/gateway/llm/translate.rs`, which decides adaptive thinking, whether
+sampling is accepted, the output limit and the effort levels, and which the
+temperature drop, the `max_tokens` default and effort clamping all read. It is a
+stopgap: per-model handling added before the catalog goes behind that same
+lookup rather than into name matching of its own, and when the catalog lands
+the lookup changes its source and the name parsing is deleted. Facts the
+catalog's source does not carry -- whether forced tool choice or
+mid-conversation system messages are accepted -- keep family defaults, with an
+override per route.
+
 ## Changing routes without a restart
 
 Routes are already read on every request, so a row edited through the page
