@@ -33,22 +33,25 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /app/target/release/mockllm /usr/local/bin/mockllm && \
     cp /app/target/release/hollowbrook /usr/local/bin/hollowbrook
 
-FROM debian:trixie-slim AS api
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# Each service is its binary on distroless: glibc, libgcc, CA certificates and
+# tzdata, with no shell or package manager -- about 28MB under the binary
+# rather than the 90MB a slim Debian and its apt cache came to. Debian 13, to
+# match the builder's glibc; a binary built against a newer one than it runs on
+# does not start. Nothing here links OpenSSL (reqwest is on rustls), which is
+# what keeps the `cc` image enough.
+FROM gcr.io/distroless/cc-debian13 AS api
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["api"]
 
-FROM debian:trixie-slim AS gateway
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian13 AS gateway
 COPY --from=builder /usr/local/bin/gateway /usr/local/bin/gateway
 ENV LISTEN_ADDR=0.0.0.0:8081
 EXPOSE 8081
 ENTRYPOINT ["gateway"]
 
-FROM debian:trixie-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian13 AS runtime
 COPY --from=builder /usr/local/bin/runtime /usr/local/bin/runtime
 COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8082
@@ -56,7 +59,7 @@ EXPOSE 8082
 ENTRYPOINT ["runtime"]
 
 # A model that never was. Runs at zero replicas until a load test wants it.
-FROM debian:trixie-slim AS mockllm
+FROM gcr.io/distroless/cc-debian13 AS mockllm
 COPY --from=builder /usr/local/bin/mockllm /usr/local/bin/mockllm
 EXPOSE 8083
 ENTRYPOINT ["mockllm"]
@@ -64,9 +67,7 @@ ENTRYPOINT ["mockllm"]
 # A guesthouse that never was. Sends webhooks, answers a REST API, and serves
 # its own OpenAPI document, so the seams between tiers can be tested across
 # real sockets. Zero replicas until something wants it.
-FROM debian:trixie-slim AS hollowbrook
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian13 AS hollowbrook
 COPY --from=builder /usr/local/bin/hollowbrook /usr/local/bin/hollowbrook
 EXPOSE 8084
 ENTRYPOINT ["hollowbrook"]
@@ -82,7 +83,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin outturn-renderer && \
     cp /app/target/release/outturn-renderer /usr/local/bin/outturn-renderer
 
-FROM debian:trixie-slim AS pdf-renderer
+FROM gcr.io/distroless/cc-debian13 AS pdf-renderer
 COPY --from=renderer-builder /usr/local/bin/outturn-renderer /usr/local/bin/outturn-renderer
 ENV LISTEN_ADDR=0.0.0.0:8090
 EXPOSE 8090

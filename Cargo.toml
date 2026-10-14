@@ -28,7 +28,17 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 async-stream = "0.3"
 tracing-opentelemetry = "0.33.0"
 tower-http = { version = "0.7.0", features = ["trace", "cors"] }
-reqwest = { version = "0.12", features = ["json"] }
+# rustls rather than the default native-tls: one TLS stack (rust-s3 already
+# uses rustls), and no OpenSSL to ship -- which, on Debian, also brought zlib
+# and zstd, none of which a distroless image carries. The system's roots, so
+# a certificate an operator installs is still trusted.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls-native-roots",
+    "charset",
+    "http2",
+    "system-proxy",
+] }
 # A specification's relative `servers` entry, resolved against where it was
 # fetched from.
 url = "2"
@@ -188,3 +198,11 @@ chunks_exact_to_as_chunks = "allow"
 # unaffected.
 [profile.dev.package."*"]
 opt-level = 1
+
+# Symbols stripped and thin LTO: smaller binaries in smaller images, for a
+# slower release build. The cost is in backtraces: a panic still says what
+# and where -- message, file and line are compiled in -- but its frames are
+# addresses rather than names. A debug build is where one gets read.
+[profile.release]
+strip = true
+lto = "thin"
