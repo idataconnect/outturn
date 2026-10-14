@@ -742,7 +742,10 @@ pub struct AnthropicStream {
 enum BlockKind {
     Text,
     ToolUse,
-    /// Thinking, a server-side tool's result, or anything else this does not
+    /// The model's reasoning, summarized: forwarded as `reasoning`, where the
+    /// runtime already reads other providers' thinking.
+    Thinking,
+    /// A server-side tool's result, or anything else this does not
     /// forward. Named rather than absent so a delta arriving for it is
     /// deliberately ignored instead of accidentally treated as text.
     Other,
@@ -875,6 +878,10 @@ impl AnthropicStream {
                         self.blocks.insert(index, BlockKind::Text);
                         None
                     }
+                    Some("thinking") => {
+                        self.blocks.insert(index, BlockKind::Thinking);
+                        None
+                    }
                     Some("tool_use") => {
                         self.blocks.insert(index, BlockKind::ToolUse);
                         let slot = self.next_tool_slot;
@@ -902,7 +909,7 @@ impl AnthropicStream {
                             None,
                         ))
                     }
-                    // Thinking and server-side tool blocks: noted so their
+                    // Server-side tool blocks and redacted thinking: noted so their
                     // deltas are ignored knowingly rather than mistaken for
                     // something to forward.
                     _ => {
@@ -924,6 +931,22 @@ impl AnthropicStream {
                                 content: Some(text.to_string()),
                                 tool_calls: None,
                                 reasoning: None,
+                                reasoning_content: None,
+                            },
+                            None,
+                        ))
+                    }
+                    Some("thinking_delta") => {
+                        if self.blocks.get(&index) != Some(&BlockKind::Thinking) {
+                            return None;
+                        }
+                        let thinking = delta["thinking"].as_str()?;
+                        Some(self.chunk(
+                            Delta {
+                                role: None,
+                                content: None,
+                                tool_calls: None,
+                                reasoning: Some(thinking.to_string()),
                                 reasoning_content: None,
                             },
                             None,
@@ -1042,6 +1065,38 @@ mod stream_tests {
                 },
             }
         }))
+    }
+
+    /// Summarized thinking arrives as `reasoning`, where the runtime reads
+    /// every provider's, and its signature as nothing yet: forwarding it is
+    /// keeping the block, which is a later change (docs/thinking.md).
+    #[test]
+    fn thinking_streams_as_reasoning_and_not_as_text() {
+        let mut s = AnthropicStream::new();
+        s.event(&start(10, 1));
+        assert!(
+            s.event(&event(serde_json::json!({
+                "type": "content_block_start", "index": 0,
+                "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+            })))
+            .is_none()
+        );
+        let chunk = s
+            .event(&event(serde_json::json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "I need to count"},
+            })))
+            .expect("a reasoning chunk");
+        let delta = &chunk.choices[0].delta;
+        assert_eq!(delta.reasoning.as_deref(), Some("I need to count"));
+        assert_eq!(delta.content, None, "thinking is not the reply");
+        assert!(
+            s.event(&event(serde_json::json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "signature_delta", "signature": "c2ln"},
+            })))
+            .is_none()
+        );
     }
 
     /// The opening event reports `output_tokens: 1` as a placeholder, not a

@@ -143,7 +143,8 @@ the edit is invalid. So:
    yet: `display`, effort from `reasoning_effort`, `max_tokens` at the
    model's limit, and sampling dropped where refused, from the model's name
    until the catalog exists (`ClaudeTraits` in `translate.rs`).
-2. **Show it.** `thinking_delta` to `reasoning`.
+2. **Show it.** Built: `thinking_delta` streams as `reasoning`. Redacted
+   thinking is still dropped rather than shown as a placeholder.
 3. **Stream one real tool-using turn** with `summarized` and with `updates`,
    before deciding what the UI does with between-tool notes. Half answered: a
    summarized block streams as many small `thinking_delta` chunks, a few
