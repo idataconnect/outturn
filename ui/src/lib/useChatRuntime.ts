@@ -861,122 +861,6 @@ export function useChatRuntime(
           // will be, before any of its arguments, which take seconds and are
           // not sent until whole. Without it that time looked like nothing
           // happening, and the thought before it kept counting through it.
-          for (const event of result.events) {
-            if (event.kind !== 'chat.writing') continue
-            const { message_id, index, name, bytes } = event.payload
-            const key = `${message_id}:${index}`
-            const known = writingCards.current.get(key)
-            // A call beginning is said with nothing written. Anything else is
-            // progress on a card already drawn -- unless the page was opened
-            // partway through the call, when it draws the card itself.
-            if (bytes && known) {
-              setMessages((prev) =>
-                prev.map((m) => {
-                  if (m.id !== message_id) return m
-                  const calls = m.metadata.tool_calls ?? []
-                  if (!calls.some((c) => c.id === known.id)) return m
-                  return {
-                    ...m,
-                    metadata: {
-                      ...m.metadata,
-                      tool_calls: calls.map((c) =>
-                        c.id === known.id ? { ...c, action: writtenSoFar(bytes, known.since) } : c,
-                      ),
-                    },
-                  }
-                }),
-              )
-              continue
-            }
-            // By the event, not by `index`: the index starts again every round,
-            // and one round's card is not the next round's.
-            const id = `${PREPARING}${event.id}`
-            writingCards.current.set(key, { id, since: Date.now() })
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== message_id) return m
-                const calls = m.metadata.tool_calls ?? []
-                if (calls.some((c) => c.id === id)) return m
-                return {
-                  ...m,
-                  metadata: {
-                    ...m.metadata,
-                    tool_calls: [...calls, { id, name, action: 'Preparing…' }],
-                    parts: [...(m.metadata.parts ?? []), { type: 'call', id }],
-                  },
-                }
-              }),
-            )
-          }
-
-          for (const event of result.events) {
-            if (event.kind !== 'chat.tool') continue
-            const { message_id, call } = event.payload as {
-              message_id: string
-              call: ToolCallRecord
-            }
-            callTools.current.set(call.id, call.name)
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== message_id) return m
-                const calls = m.metadata.tool_calls ?? []
-                // The same call can arrive twice if a poll overlaps a
-                // reload, and a tool run once must not be drawn twice.
-                if (calls.some((c) => c.id === call.id)) return m
-                const parts = [...(m.metadata.parts ?? [])]
-                // Into the card that was being prepared for it, where one was:
-                // calls start in the order they were written, so the first
-                // card still preparing is this call's.
-                const card = calls.find((c) => c.id.startsWith(PREPARING))
-                if (card) {
-                  return {
-                    ...m,
-                    metadata: {
-                      ...m.metadata,
-                      tool_calls: calls.map((c) => (c.id === card.id ? call : c)),
-                      parts: parts.map((p) =>
-                        p.type === 'call' && p.id === card.id ? { type: 'call', id: call.id } : p,
-                      ),
-                    },
-                  }
-                }
-                parts.push({ type: 'call', id: call.id })
-                return {
-                  ...m,
-                  metadata: { ...m.metadata, tool_calls: [...calls, call], parts },
-                }
-              }),
-            )
-          }
-
-          // A tool's result lands on the call it answers, so the browser
-          // holds one object per tool rather than two to reconcile.
-          let moved = false
-          for (const event of result.events) {
-            if (event.kind !== 'chat.tool_result') continue
-            const { message_id, id, details, is_error } = event.payload as {
-              message_id: string
-              id: string
-              details: string
-              is_error: boolean
-            }
-            // Refreshed on a failure too: an archive that failed halfway may
-            // have written some of its files, and a list is cheap to read.
-            if (FILE_TOOLS.has(callTools.current.get(id) ?? '')) moved = true
-            callTools.current.delete(id)
-            setMessages((prev) =>
-              prev.map((m) => {
-                if (m.id !== message_id) return m
-                const calls = (m.metadata.tool_calls ?? []).map((c) =>
-                  c.id === id ? { ...c, details, is_error } : c,
-                )
-                return { ...m, metadata: { ...m.metadata, tool_calls: calls } }
-              }),
-            )
-          }
-
-          if (moved) filesChanged.current?.()
-
           // A message taken mid-turn is answered inside the running reply.
           // Marking it is what stops it reading as queued for ever.
           for (const event of result.events) {
@@ -1003,6 +887,96 @@ export function useChatRuntime(
           // and nothing is swapped when the turn completes.
           let gapped = false
           for (const event of result.events) {
+            // Calls in the same pass as the text, for the same reason as a
+            // steer: one batch can hold the end of a sentence and the call
+            // after it, and handling every call before any text put the card
+            // inside the sentence -- after the words the last batch carried.
+            if (event.kind === 'chat.writing') {
+              const { message_id, index, name, bytes } = event.payload
+              const key = `${message_id}:${index}`
+              const known = writingCards.current.get(key)
+              // A call beginning is said with nothing written. Anything else is
+              // progress on a card already drawn -- unless the page was opened
+              // partway through the call, when it draws the card itself.
+              if (bytes && known) {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== message_id) return m
+                    const calls = m.metadata.tool_calls ?? []
+                    if (!calls.some((c) => c.id === known.id)) return m
+                    return {
+                      ...m,
+                      metadata: {
+                        ...m.metadata,
+                        tool_calls: calls.map((c) =>
+                          c.id === known.id ? { ...c, action: writtenSoFar(bytes, known.since) } : c,
+                        ),
+                      },
+                    }
+                  }),
+                )
+                continue
+              }
+              // By the event, not by `index`: the index starts again every round,
+              // and one round's card is not the next round's.
+              const id = `${PREPARING}${event.id}`
+              writingCards.current.set(key, { id, since: Date.now() })
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== message_id) return m
+                  const calls = m.metadata.tool_calls ?? []
+                  if (calls.some((c) => c.id === id)) return m
+                  return {
+                    ...m,
+                    metadata: {
+                      ...m.metadata,
+                      tool_calls: [...calls, { id, name, action: 'Preparing…' }],
+                      parts: [...(m.metadata.parts ?? []), { type: 'call', id }],
+                    },
+                  }
+                }),
+              )
+              continue
+            }
+            if (event.kind === 'chat.tool') {
+              const { message_id, call } = event.payload as {
+                message_id: string
+                call: ToolCallRecord
+              }
+              callTools.current.set(call.id, call.name)
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== message_id) return m
+                  const calls = m.metadata.tool_calls ?? []
+                  // The same call can arrive twice if a poll overlaps a
+                  // reload, and a tool run once must not be drawn twice.
+                  if (calls.some((c) => c.id === call.id)) return m
+                  const parts = [...(m.metadata.parts ?? [])]
+                  // Into the card that was being prepared for it, where one was:
+                  // calls start in the order they were written, so the first
+                  // card still preparing is this call's.
+                  const card = calls.find((c) => c.id.startsWith(PREPARING))
+                  if (card) {
+                    return {
+                      ...m,
+                      metadata: {
+                        ...m.metadata,
+                        tool_calls: calls.map((c) => (c.id === card.id ? call : c)),
+                        parts: parts.map((p) =>
+                          p.type === 'call' && p.id === card.id ? { type: 'call', id: call.id } : p,
+                        ),
+                      },
+                    }
+                  }
+                  parts.push({ type: 'call', id: call.id })
+                  return {
+                    ...m,
+                    metadata: { ...m.metadata, tool_calls: [...calls, call], parts },
+                  }
+                }),
+              )
+              continue
+            }
             // In the same pass as the text, so a message taken mid-turn lands
             // between the words before it and the words answering it.
             if (event.kind === 'chat.steer') {
@@ -1116,6 +1090,36 @@ export function useChatRuntime(
               return next
             })
           }
+
+          // A tool's result lands on the call it answers, so the browser
+          // holds one object per tool rather than two to reconcile. After the
+          // pass that draws calls, since a result can share a batch with its
+          // call and has nothing to land on before it.
+          let moved = false
+          for (const event of result.events) {
+            if (event.kind !== 'chat.tool_result') continue
+            const { message_id, id, details, is_error } = event.payload as {
+              message_id: string
+              id: string
+              details: string
+              is_error: boolean
+            }
+            // Refreshed on a failure too: an archive that failed halfway may
+            // have written some of its files, and a list is cheap to read.
+            if (FILE_TOOLS.has(callTools.current.get(id) ?? '')) moved = true
+            callTools.current.delete(id)
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== message_id) return m
+                const calls = (m.metadata.tool_calls ?? []).map((c) =>
+                  c.id === id ? { ...c, details, is_error } : c,
+                )
+                return { ...m, metadata: { ...m.metadata, tool_calls: calls } }
+              }),
+            )
+          }
+
+          if (moved) filesChanged.current?.()
 
           // A missing delta cannot be reconstructed from the stream, so the
           // snapshot is taken again rather than left with a hole in it.
