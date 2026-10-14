@@ -1980,7 +1980,7 @@ impl<T: Clone> CompiledCache<T> {
             .clone();
         // Poisoning only means an earlier compile panicked; the lock guards
         // nothing but the right to compile, so the next caller may.
-        let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+        let turn = gate.lock().unwrap_or_else(|e| e.into_inner());
 
         // Whoever held the lock before us may have left the build behind.
         let result = match self.get(&key) {
@@ -1989,8 +1989,20 @@ impl<T: Clone> CompiledCache<T> {
         };
 
         // Dropped by the last one out, so a key is not remembered for ever.
+        //
+        // Our own handles go first, and only then is the count read. A clone
+        // is only ever made under `compiling`, and each is released before
+        // its holder takes `compiling` again, so whoever takes it last sees
+        // the map's handle alone. Counting while still holding ours read "2"
+        // as "nobody else": a caller just ahead of us, between releasing its
+        // turn and its handle, made it 3 for everyone, and the key stayed.
+        drop(turn);
+        drop(gate);
         let mut compiling = self.compiling.lock().unwrap_or_else(|e| e.into_inner());
-        if Arc::strong_count(&gate) == 2 {
+        if compiling
+            .get(&key)
+            .is_some_and(|g| Arc::strong_count(g) == 1)
+        {
             compiling.remove(&key);
         }
         result
@@ -2440,16 +2452,32 @@ mod compiled_cache_tests {
 
     #[test]
     fn concurrent_misses_share_one_build() {
+        const CALLERS: usize = 8;
         let c = Arc::new(cache());
         let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let threads: Vec<_> = (0..8)
+        let threads: Vec<_> = (0..CALLERS)
             .map(|_| {
                 let (c, builds) = (c.clone(), builds.clone());
+                let waiting = c.clone();
                 std::thread::spawn(move || {
                     c.get_or_compile(key(1), || {
                         builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        // Long enough that the others arrive while it runs.
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        // The build does not finish until every caller is
+                        // waiting on it: the map's handle and one per caller.
+                        // Waited for rather than slept through. Nothing is
+                        // cached until this returns, so every caller misses
+                        // and has to arrive here -- the wait always ends, and
+                        // the test always exercises the sharing it is about.
+                        while waiting
+                            .compiling
+                            .lock()
+                            .expect("lock")
+                            .get(&key(1))
+                            .map(Arc::strong_count)
+                            != Some(CALLERS + 1)
+                        {
+                            std::thread::yield_now();
+                        }
                         Ok(11)
                     })
                     .expect("build")
