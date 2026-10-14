@@ -1323,7 +1323,7 @@ impl Worker {
                         if terminal {
                             return Err(FailedForGood(message).into());
                         }
-                        anyhow::bail!("guest failed: {message}")
+                        anyhow::bail!("{message}")
                     }
                     Err(e) => tracing::warn!(error = %e, "malformed event from runtime"),
                 }

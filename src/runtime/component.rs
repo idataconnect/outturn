@@ -1653,7 +1653,12 @@ async fn stream_completion(
         if malformed {
             return Err(MalformedReply(detail).into());
         }
-        anyhow::bail!("gateway returned {status}: {detail}");
+        // The gateway's body is the reason, written to be read as it is; the
+        // status adds nothing to it. An empty one says only the status.
+        if detail.trim().is_empty() {
+            anyhow::bail!("the gateway answered {status}");
+        }
+        anyhow::bail!("{}", detail.trim());
     }
 
     // Named by the gateway, so spend attaches to the endpoint that billed
@@ -2334,7 +2339,10 @@ impl AgentRunner {
                     malformed_reply: store.data().malformed_reply,
                     ..HeldError::new(
                         store.data().held.clone(),
-                        anyhow::anyhow!("guest returned an error: {e}"),
+                        // As the guest said it: the guest is passing on
+                        // why it stopped, and a prefix saying which side of
+                        // the sandbox it came from reads as another failure.
+                        anyhow::anyhow!("{e}"),
                     )
                 });
             }

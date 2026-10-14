@@ -204,9 +204,12 @@ async fn a_gateway_failure_surfaces_as_an_error() {
         .await;
 
     let error = result.expect_err("a failing gateway must not look like success");
-    assert!(
-        error.to_string().contains("503"),
-        "the error should say what happened: {error}"
+    // The gateway's reason, as it gave it: the status adds nothing to a
+    // sentence that already says what went wrong.
+    assert_eq!(
+        error.to_string(),
+        "no provider available",
+        "the error should say what happened"
     );
 }
 

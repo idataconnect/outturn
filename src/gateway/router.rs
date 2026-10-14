@@ -520,9 +520,10 @@ async fn chat_completions(
         }
     }
 
+    // The same sentence the streaming route gives, for the same reader.
     let msg = match last_error {
-        Some(e) => format!("all providers failed, last error: {e}"),
-        None => "no providers configured".into(),
+        Some(e) => sentence(&e.to_string()),
+        None => "No model provider was available for this request.".into(),
     };
     Err((StatusCode::BAD_GATEWAY, msg))
 }
@@ -766,9 +767,12 @@ async fn chat_completions_stream(
     // may work, but retrying a model that looped repeats the minutes it
     // spent looping.
     let malformed = last_error.as_ref().is_some_and(|e| e.is_malformed_reply());
+    // The last failure's own sentence, capitalized, and nothing around it:
+    // this is what the person whose turn failed is shown. "No provider could
+    // stream" said only that something had, which every failure here does.
     let message = match last_error {
-        Some(e) => format!("no provider could stream: {e}"),
-        None => "no provider could stream".into(),
+        Some(e) => sentence(&e.to_string()),
+        None => "No model provider was available for this request.".into(),
     };
     if malformed {
         return (
@@ -782,6 +786,19 @@ async fn chat_completions_stream(
             .into_response();
     }
     (StatusCode::BAD_GATEWAY, message).into_response()
+}
+
+/// A message as a sentence: capitalized, and ended if it was not already.
+fn sentence(message: &str) -> String {
+    let mut chars = message.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out: String = first.to_uppercase().chain(chars).collect();
+    if !out.ends_with(['.', '!', '?', ')']) {
+        out.push('.');
+    }
+    out
 }
 
 /// Names what kind of failure a 502 from the streaming route is, where it is
@@ -885,5 +902,22 @@ mod tests {
         let state = gateway("");
         assert!(!state.route_is_reachable(&route("not a url")));
         assert!(!state.route_is_reachable(&route("http://")));
+    }
+}
+
+#[cfg(test)]
+mod sentence_tests {
+    use super::sentence;
+
+    #[test]
+    fn a_reason_is_capitalized_and_ended_once() {
+        assert_eq!(
+            sentence("the model provider refused the request: `temperature` is deprecated for this model."),
+            "The model provider refused the request: `temperature` is deprecated for this model."
+        );
+        assert_eq!(
+            sentence("the model provider could not be reached: connection refused"),
+            "The model provider could not be reached: connection refused."
+        );
     }
 }

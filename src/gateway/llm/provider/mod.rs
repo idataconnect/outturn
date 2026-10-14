@@ -169,32 +169,58 @@ impl ProviderError {
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable => write!(f, "provider unavailable"),
-            Self::RateLimited => write!(f, "rate limited"),
+            Self::Unavailable => write!(f, "the model provider is unavailable"),
+            Self::RateLimited => write!(f, "the model provider is rate limiting these requests"),
             Self::Upstream { .. } if self.is_malformed_reply() => write!(
                 f,
                 "the model wrote a tool call its arguments could not be read \
                  from, most likely cut off when the reply ran out of room"
             ),
-            // Capped, because this is what a caller is told and a provider's
-            // error body can carry the whole of what it was sent or wrote:
-            // one held a looping seventeen-kilobyte document, shown whole as
-            // the reason a turn failed. The full body is in the gateway's
-            // log, from the Debug form.
-            Self::Upstream { detail, .. } => {
+            // One sentence: who failed, how, and the provider's own reason.
+            // It once read "upstream error: 400 Bad Request: {...}", the
+            // provider's whole error object, which said the same thing in
+            // three layers of somebody else's punctuation. The provider is
+            // not named: the protocol is not the vendor, and the host is
+            // nothing the person reading this should learn. The gateway's log
+            // has both, and the whole body.
+            Self::Upstream { status, detail } => {
+                let what = match status {
+                    Some(400..=499) => "refused the request",
+                    Some(_) => "failed",
+                    None => "could not be reached",
+                };
+                let reason = reason_in(detail);
+                let reason = reason.as_deref().unwrap_or(detail);
+                // Capped, because a provider's error body can carry the whole
+                // of what it was sent or wrote: one held a looping
+                // seventeen-kilobyte document, shown whole as the reason a
+                // turn failed.
                 const SHOWN: usize = 300;
-                match detail.char_indices().nth(SHOWN) {
+                match reason.char_indices().nth(SHOWN) {
                     Some((cut, _)) => write!(
                         f,
-                        "upstream error: {}… ({} more bytes in the gateway log)",
-                        &detail[..cut],
-                        detail.len() - cut
+                        "the model provider {what}: {}… ({} more bytes in the gateway log)",
+                        &reason[..cut],
+                        reason.len() - cut
                     ),
-                    None => write!(f, "upstream error: {detail}"),
+                    None => write!(f, "the model provider {what}: {reason}"),
                 }
             }
             Self::Translation(e) => write!(f, "translation error: {e}"),
         }
+    }
+}
+
+/// The provider's own explanation, where its error body has one.
+///
+/// Anthropic, OpenAI, Gemini and llama.cpp all put it at `error.message`;
+/// ollama sends `error` as a bare string. The body follows the status line in
+/// `detail`, so it is read from the first brace on.
+fn reason_in(detail: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(&detail[detail.find('{')?..]).ok()?;
+    match &body["error"] {
+        serde_json::Value::String(s) => Some(s.clone()),
+        error => error["message"].as_str().map(str::to_string),
     }
 }
 
@@ -301,7 +327,43 @@ mod tests {
 
     #[test]
     fn a_short_upstream_error_is_shown_whole() {
-        assert_eq!(upstream("500: bad").to_string(), "upstream error: 500: bad");
+        assert_eq!(upstream("500: bad").to_string(), "the model provider failed: 500: bad");
+    }
+
+    /// The case that prompted the sentence: Sonnet 5.5 refusing a temperature
+    /// arrived as the provider's whole error object, three layers deep.
+    #[test]
+    fn a_refusal_says_the_providers_reason_and_nothing_else() {
+        let refused = ProviderError::Upstream {
+            status: Some(400),
+            detail: r#"400 Bad Request: {"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."},"request_id":"req_1"}"#.into(),
+        };
+        assert_eq!(
+            refused.to_string(),
+            "the model provider refused the request: `temperature` is deprecated for this model."
+        );
+    }
+
+    /// ollama's error is a bare string rather than an object.
+    #[test]
+    fn a_bare_string_error_is_read_too() {
+        let missing = ProviderError::Upstream {
+            status: Some(404),
+            detail: r#"404 Not Found: {"error":"model \"qwen9\" not found"}"#.into(),
+        };
+        assert_eq!(
+            missing.to_string(),
+            r#"the model provider refused the request: model "qwen9" not found"#
+        );
+    }
+
+    #[test]
+    fn a_transport_failure_says_the_provider_could_not_be_reached() {
+        let refused = ProviderError::transport("connection refused");
+        assert_eq!(
+            refused.to_string(),
+            "the model provider could not be reached: connection refused"
+        );
     }
 
     #[test]

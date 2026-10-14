@@ -139,9 +139,11 @@ that already use them.
 
 ## Order of work
 
-1. Say which provider rejected a request, and why, in one sentence rather
-   than five nested ones. Independent of everything below, and the first
-   thing anybody meets.
+1. ~~Say which provider rejected a request, and why, in one sentence rather
+   than five nested ones.~~ Done: the error above now reads "The model
+   provider refused the request: `temperature` is deprecated for this
+   model." The provider is not named, since the protocol is not the vendor
+   and the host is not the reader's business; the gateway's log names both.
 2. The route page, with routes typed by hand, keys sealed, and the explicit
    fall-back-to-the-built-in-provider row the roadmap describes. Useful on
    its own.
