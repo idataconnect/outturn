@@ -243,7 +243,8 @@ are near before changing it.
   [workspaces.md](docs/workspaces.md), [settings.md](docs/settings.md),
   [agent-templates.md](docs/agent-templates.md).
 - Models and spend: [routing.md](docs/routing.md), [model-catalog.md](docs/model-catalog.md),
-  [usage.md](docs/usage.md), [caching.md](docs/caching.md).
+  [usage.md](docs/usage.md), [caching.md](docs/caching.md),
+  [thinking.md](docs/thinking.md).
 - Reaching the outside: [egress.md](docs/egress.md),
   [integrations.md](docs/integrations.md),
   [sealed-credentials.md](docs/sealed-credentials.md),

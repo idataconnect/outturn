@@ -83,8 +83,10 @@ nav:
           - Agent templates: agent-templates.md
       - Models and spend:
           - Routing: routing.md
+          - Model catalog: model-catalog.md
           - Usage: usage.md
           - Prompt caching: caching.md
+          - Thinking: thinking.md
           - Compaction: compaction.md
       - Reaching the outside:
           - Egress: egress.md
