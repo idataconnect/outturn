@@ -52,6 +52,15 @@ cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](settings.md). Both are mostly design: each
 says what exists.
 
+What a model accepts -- whether it takes a temperature, how it thinks, how
+much it may write -- is designed in [docs/model-catalog.md](model-catalog.md):
+a catalog fetched from models.dev when an operator asks for one, which routes
+are filled from and the gateway acts on. Until it exists, the Anthropic
+translation reads those facts from the model's name. How a model's reasoning
+is asked for, shown, kept and given back is [docs/thinking.md](thinking.md);
+asking and showing are built, keeping a thinking block's signature through
+every tier is not.
+
 Starting a turn when nobody is typing is in [docs/triggers.md](triggers.md)
 — schedules and webhooks being built, email designed and deferred. An inbound
 delivery is authenticated by `hmac` or by `shared_secret`, and under `hmac` it
