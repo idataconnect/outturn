@@ -1112,6 +1112,24 @@ impl Worker {
                         content,
                         is_error,
                     }) => {
+                        // A call held for approval is not a failure, and the
+                        // browser draws it as waiting rather than as an error.
+                        // Said as a field rather than left for the browser to
+                        // find in the text: the mark is bookkeeping between
+                        // tiers, and the sentence telling the model not to
+                        // retry is for the model. Both come out of what a
+                        // person reads; `content`, which the model is handed
+                        // and the retraction later matches on, keeps them.
+                        let gated = details.contains(crate::egress::gate::GATED_MARK);
+                        let details = if gated {
+                            details
+                                .replace(crate::egress::gate::GATED_MARK, "")
+                                .replace(crate::egress::gate::GATED_REFUSAL, "")
+                                .trim()
+                                .to_string()
+                        } else {
+                            details
+                        };
                         // Attached to the call it answers rather than sent as
                         // its own thing, so the browser has one object per
                         // tool: what it was doing, and what came back.
@@ -1120,6 +1138,9 @@ impl Worker {
                             .find(|c| c["id"].as_str() == Some(id.as_str()))
                         {
                             call["details"] = serde_json::json!(details);
+                            if gated {
+                                call["gated"] = serde_json::json!(true);
+                            }
                             // What the model was handed, kept exactly as it
                             // was handed over. Replaying anything else would
                             // rewrite the conversation the model remembers.
@@ -1136,6 +1157,7 @@ impl Worker {
                                 "id": id,
                                 "details": details,
                                 "is_error": is_error,
+                                "gated": gated,
                             }),
                         )
                         .await?;

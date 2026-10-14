@@ -313,6 +313,9 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
                 if let Some(call) = calls.iter_mut().find(|c| c["id"] == payload["id"]) {
                     call["details"] = payload["details"].clone();
                     call["is_error"] = payload["is_error"].clone();
+                    if payload["gated"] == true {
+                        call["gated"] = serde_json::json!(true);
+                    }
                 }
             }
             _ => {}

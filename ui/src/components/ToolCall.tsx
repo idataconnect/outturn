@@ -1,6 +1,6 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
-import { Check, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { Check, LoaderCircle, ShieldQuestion, TriangleAlert } from 'lucide-react'
 
 /**
  * A tool the agent ran, shown above the reply it fed.
@@ -45,8 +45,11 @@ function errorMessage(details: string): string {
 }
 
 /**
- * Three states, told apart at a glance: a spinner while the tool is running,
- * a tick once it has answered, a warning if what came back was an error.
+ * Four states, told apart at a glance: a spinner while the tool is running,
+ * a tick once it has answered, a warning if what came back was an error, and
+ * the approval prompt's own amber and shield if it is waiting on somebody.
+ * Held is not failed: drawn red, a call nobody has answered yet read as one
+ * that went wrong.
  * The action reads in the present tense either way -- "Fetching..." -- so
  * the icon is what says whether that is happening or has happened.
  */
@@ -62,20 +65,29 @@ export default function ToolCall({
   failure?: string
 }) {
   const action = typeof args?.action === 'string' ? args.action : ''
-  const isError = args?.isError === true || failure !== undefined
-  const pending = args?.pending === true && !isError
+  const gated = args?.gated === true && failure === undefined
+  const isError = !gated && (args?.isError === true || failure !== undefined)
+  const pending = args?.pending === true && !isError && !gated
   const details = typeof args?.details === 'string' ? args.details : ''
 
   return (
     <div
       className={`mb-2 rounded-md border px-3 py-2 text-xs ${
-        isError
-          ? 'border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
-          : 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-800'
+        gated
+          ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40'
+          : isError
+            ? 'border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
+            : 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-800'
       }`}
     >
       <div className="flex items-start gap-2">
-        {isError ? (
+        {gated ? (
+          <ShieldQuestion
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+            aria-label="Waiting for approval"
+            role="img"
+          />
+        ) : isError ? (
           <TriangleAlert
             className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-400"
             aria-hidden
@@ -115,6 +127,10 @@ export default function ToolCall({
           )}
 
           {children}
+
+          {gated && details && (
+            <p className="mt-1 text-amber-700 first-letter:uppercase dark:text-amber-300">{details}</p>
+          )}
 
           {isError && (failure ?? details) && (
             <p className="mt-1 text-red-700 dark:text-red-300">

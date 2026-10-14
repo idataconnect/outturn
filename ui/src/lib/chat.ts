@@ -43,6 +43,9 @@ export type ToolCallRecord = {
    *  tool finishes, and empty for tools with nothing worth showing. */
   details?: string
   is_error?: boolean
+  /** Held until somebody approves it. Not a failure: the conversation pauses
+   *  and carries on once it is answered. */
+  gated?: boolean
 }
 
 /** One piece of a reply, in the order it was produced. A call names the tool

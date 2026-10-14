@@ -11641,3 +11641,56 @@ async fn a_template_agent_takes_the_next_free_slug() {
     );
     finish!(h);
 }
+
+/// A call held for approval is reported as held, not failed, and what a person
+/// reads of it carries neither the platform's mark nor the line telling the
+/// model not to retry. The model's own copy keeps both: the retraction once
+/// somebody approves matches on them.
+#[tokio::test]
+async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
+    let h = harness_or_skip!();
+    let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
+
+    let refusal = format!(
+        "this needs approval before it can go out: POST /charges requires \"charge\". \
+         Somebody has been asked to approve it, and this conversation will pause until \
+         they answer. {}{}",
+        outturn::egress::gate::GATED_REFUSAL,
+        outturn::egress::gate::GATED_MARK,
+    );
+    let stream = [
+        serde_json::json!({"kind": "tool", "id": "c1", "name": "fetch_url", "action": "Charging", "arguments": "{}"}),
+        serde_json::json!({"kind": "tool_result", "id": "c1", "details": refusal, "content": refusal, "is_error": true}),
+        serde_json::json!({"kind": "done", "content": "", "prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0}),
+    ]
+    .map(|line| line.to_string())
+    .join("\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let payload: Value = sqlx::query_scalar(
+        "select payload from events where session_id = $1 and kind = 'chat.tool_result'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the result event");
+    assert_eq!(payload["gated"], true, "{payload}");
+    let shown = payload["details"].as_str().expect("details");
+    assert!(shown.starts_with("this needs approval"), "{shown}");
+    assert!(
+        !shown.contains(outturn::egress::gate::GATED_MARK),
+        "the mark leaked: {shown:?}"
+    );
+    assert!(
+        !shown.contains(outturn::egress::gate::GATED_REFUSAL),
+        "{shown}"
+    );
+}

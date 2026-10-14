@@ -394,6 +394,7 @@ export function parts(message: Annotated): ThreadMessageLike['content'] {
       action: call.action,
       details: call.details ?? '',
       isError: call.is_error ?? false,
+      gated: call.gated ?? false,
       // Announced but not yet answered, on a turn still running. A call
       // with no result on a finished turn is not pending; it is a turn that
       // ended before the tool did, and spinning for ever would say otherwise.
@@ -1098,11 +1099,12 @@ export function useChatRuntime(
           let moved = false
           for (const event of result.events) {
             if (event.kind !== 'chat.tool_result') continue
-            const { message_id, id, details, is_error } = event.payload as {
+            const { message_id, id, details, is_error, gated } = event.payload as {
               message_id: string
               id: string
               details: string
               is_error: boolean
+              gated?: boolean
             }
             // Refreshed on a failure too: an archive that failed halfway may
             // have written some of its files, and a list is cheap to read.
@@ -1112,7 +1114,7 @@ export function useChatRuntime(
               prev.map((m) => {
                 if (m.id !== message_id) return m
                 const calls = (m.metadata.tool_calls ?? []).map((c) =>
-                  c.id === id ? { ...c, details, is_error } : c,
+                  c.id === id ? { ...c, details, is_error, ...(gated ? { gated } : {}) } : c,
                 )
                 return { ...m, metadata: { ...m.metadata, tool_calls: calls } }
               }),
