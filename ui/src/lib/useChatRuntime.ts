@@ -1099,13 +1099,7 @@ export function useChatRuntime(
           let moved = false
           for (const event of result.events) {
             if (event.kind !== 'chat.tool_result') continue
-            const { message_id, id, details, is_error, gated } = event.payload as {
-              message_id: string
-              id: string
-              details: string
-              is_error: boolean
-              gated?: boolean
-            }
+            const { message_id, id, details, is_error, gated } = event.payload
             // Refreshed on a failure too: an archive that failed halfway may
             // have written some of its files, and a list is cheap to read.
             if (FILE_TOOLS.has(callTools.current.get(id) ?? '')) moved = true

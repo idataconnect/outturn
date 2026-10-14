@@ -247,6 +247,8 @@ export type ChatEvent =
         id: string
         details: string
         is_error: boolean
+        /** Held for approval rather than failed; absent from an older API. */
+        gated?: boolean
       }
     }
   /** A message sent mid-turn was handed to the agent, at this point in the

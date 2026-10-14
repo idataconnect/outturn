@@ -72,6 +72,9 @@ export default function ToolCall({
 
   return (
     <div
+      // The state as a fact, for anything that needs to know which it is
+      // without reading it back out of the colors.
+      data-state={gated ? 'gated' : isError ? 'error' : pending ? 'pending' : 'done'}
       className={`mb-2 rounded-md border px-3 py-2 text-xs ${
         gated
           ? 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40'

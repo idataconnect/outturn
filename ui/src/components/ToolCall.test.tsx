@@ -21,13 +21,12 @@ describe('a call held for approval', () => {
     })
     expect(screen.getByRole('img', { name: 'Waiting for approval' })).toBeInTheDocument()
     expect(screen.getByText('this needs approval before it can go out')).toBeInTheDocument()
-    expect(container.innerHTML).not.toContain('red-')
-    expect(container.innerHTML).toContain('amber-')
+    expect(container.firstElementChild).toHaveAttribute('data-state', 'gated')
   })
 
   it('still reads as an error when it really failed', () => {
     const { container } = call({ details: 'connection refused', isError: true })
     expect(screen.queryByRole('img', { name: 'Waiting for approval' })).toBeNull()
-    expect(container.innerHTML).toContain('red-')
+    expect(container.firstElementChild).toHaveAttribute('data-state', 'error')
   })
 })
