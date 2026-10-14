@@ -60,12 +60,12 @@ pub fn openai_to_anthropic(
                         _ => vec![],
                     };
                     for tc in tool_calls {
-                        // Anthropic takes only an object here. A call with no
-                        // arguments streams an empty string, which parses to
-                        // nothing; replayed as null, it fails every later round
-                        // of the turn. Anything else that is not an object is
-                        // sent as an empty one for the same reason: refusing it
-                        // would refuse the whole conversation, not one call.
+                        // Anthropic takes only an object here. The runtime now
+                        // stores an empty call as `{}`, but transcripts written
+                        // before it hold an empty string, and anything that is
+                        // not an object would fail every later round of the
+                        // conversation, not one call -- so it goes as an empty
+                        // one.
                         let input = match serde_json::from_str(&tc.function.arguments) {
                             Ok(object @ serde_json::Value::Object(_)) => object,
                             _ => serde_json::json!({}),
@@ -124,7 +124,9 @@ pub fn openai_to_anthropic(
     // completed turns was the earlier design, and a long tool loop would
     // carry its breakpoint past the twenty blocks Anthropic looks back to
     // find the previous entry, rewriting the whole conversation unseen.
-    if let Some(sys) = system {
+    // An empty one is left out: Anthropic refuses an empty text block, and
+    // there is nothing in it to cache.
+    if let Some(sys) = system.filter(|sys| !sys.is_empty()) {
         body["system"] = serde_json::json!([{
             "type": "text",
             "text": sys,
@@ -579,6 +581,17 @@ mod cache_tests {
                 .get("thinking")
                 .is_none()
         );
+    }
+
+    /// An empty system prompt is no system prompt: as a block it would be an
+    /// empty one, which Anthropic refuses on every round.
+    #[test]
+    fn an_empty_system_prompt_is_left_out() {
+        let body = translated(serde_json::json!([
+            {"role": "system", "content": ""},
+            {"role": "user", "content": "hi"},
+        ]));
+        assert!(body.get("system").is_none(), "{body}");
     }
 
     /// Anthropic refuses a marker on an empty text block, so one is left bare.
