@@ -912,7 +912,9 @@ mod sentence_tests {
     #[test]
     fn a_reason_is_capitalized_and_ended_once() {
         assert_eq!(
-            sentence("the model provider refused the request: `temperature` is deprecated for this model."),
+            sentence(
+                "the model provider refused the request: `temperature` is deprecated for this model."
+            ),
             "The model provider refused the request: `temperature` is deprecated for this model."
         );
         assert_eq!(

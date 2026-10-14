@@ -337,7 +337,10 @@ mod cache_tests {
         assert!(marked(last), "last message unmarked: {body}");
 
         let earlier = serde_json::to_string(&messages[..messages.len() - 1]).expect("json");
-        assert!(!earlier.contains("cache_control"), "marked too early: {earlier}");
+        assert!(
+            !earlier.contains("cache_control"),
+            "marked too early: {earlier}"
+        );
     }
 
     /// Mid-loop the newest message is a tool result, and it is the one marked,
@@ -370,7 +373,10 @@ mod cache_tests {
             }]},
             {"role": "tool", "tool_call_id": "c1", "content": "pong"},
         ]));
-        assert_eq!(body["messages"][1]["content"][0]["input"], serde_json::json!({}));
+        assert_eq!(
+            body["messages"][1]["content"][0]["input"],
+            serde_json::json!({})
+        );
     }
 
     /// Anthropic refuses a marker on an empty text block, so one is left bare.

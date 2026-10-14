@@ -327,7 +327,10 @@ mod tests {
 
     #[test]
     fn a_short_upstream_error_is_shown_whole() {
-        assert_eq!(upstream("500: bad").to_string(), "the model provider failed: 500: bad");
+        assert_eq!(
+            upstream("500: bad").to_string(),
+            "the model provider failed: 500: bad"
+        );
     }
 
     /// The case that prompted the sentence: Sonnet 5.5 refusing a temperature
