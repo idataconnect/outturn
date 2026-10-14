@@ -41,7 +41,7 @@ pub mod work;
 pub mod worker;
 pub mod workspace;
 
-pub use router::{ApiState, routes};
+pub use router::{ApiState, LONG_POLL, routes};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

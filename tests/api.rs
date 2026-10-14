@@ -29,6 +29,8 @@ mod common;
 
 struct Harness {
     app: axum::Router,
+    /// What the app was built from, for a test that waits on its buses.
+    state: Arc<ApiState>,
     users: Arc<dyn UserStore>,
     workspaces: Arc<dyn WorkspaceStore>,
     #[allow(dead_code)]
@@ -54,6 +56,14 @@ const TEST_RUNTIME_KEY: &str = "test-runtime-key-test-runtime-key-test-runtime-k
 const SEAL_KEY: &str = "0505050505050505050505050505050505050505050505050505050505050505";
 
 async fn harness() -> Harness {
+    harness_parking_for(outturn::api::LONG_POLL).await
+}
+
+/// A harness whose long polls park for `park`, for a test about parking: one
+/// showing a poll was woken gives it a park nothing reaches, so returning at
+/// all is the proof, and one showing a poll answers on timeout gives it a
+/// short one instead of sitting through the real 25 seconds.
+async fn harness_parking_for(park: std::time::Duration) -> Harness {
     // A private schema per test, so tests do not see each other's rows and can
     // run in parallel.
     let db = common::TestDb::new().await;
@@ -124,6 +134,7 @@ async fn harness() -> Harness {
         outturn::events::EventBus::spawn(pool.clone()),
         Arc::new(tokio::sync::Notify::new()),
     )
+    .with_long_poll(park)
     // The public half of the seal key a test's gateway opens with.
     .with_seal_key(outturn::egress::seal::public_of(SEAL_KEY).expect("seal key"))
     // What the gateway would have bound, so a rule naming these is one the
@@ -163,6 +174,7 @@ async fn harness() -> Harness {
 
     Harness {
         app: routes(Arc::clone(&state)),
+        state: Arc::clone(&state),
         users,
         workspaces,
         sessions,
@@ -7370,7 +7382,7 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
     // raised for this person, and the parked read returns it well inside the
     // 25-second timeout -- so it woke on the notification rather than timing
     // out.
-    let h = harness().await;
+    let h = harness_parking_for(std::time::Duration::from_secs(3600)).await;
     let workspace = h.make_workspace("Acme", "acme").await;
     let cookie = h
         .login_as("waiter@test.invalid", None, Some((workspace, "admin")))
@@ -7380,10 +7392,16 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
         .await
         .expect("user");
 
+    // Raised once the read is parked and the bus can hear it, waited for
+    // rather than slept through. The read subscribes before it parks, so a
+    // change made once it is counted is one it will hear.
     let pool = h.db.pool.clone();
+    let state = Arc::clone(&h.state);
     let raiser = tokio::spawn(async move {
-        // Long enough that the read is certainly parked before this lands.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        state.action_bus().listening().await;
+        while state.action_bus().waiters() == 0 {
+            tokio::task::yield_now().await;
+        }
         let store = outturn::api::actions::PostgresActionStore::new(pool);
         use outturn::api::actions::ActionStore as _;
         store
@@ -7402,20 +7420,15 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
             .expect("raise");
     });
 
-    let started = std::time::Instant::now();
+    // The park is one nothing reaches, so answering at all means the change
+    // woke it: it answers with the item on timeout too, and only the clock
+    // told the two apart before, which a loaded machine could fool.
     let (status, body) = get_with_cookie(&h, "/v1/action-items?wait=true", &cookie).await;
-    let waited = started.elapsed();
     raiser.await.expect("raiser");
 
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: Value = serde_json::from_str(&body).expect("json");
     assert_eq!(v["items"].as_array().expect("items").len(), 1);
-    // Woken rather than timed out. Not an assertion about how fast it was --
-    // only that it did not sit out the full park.
-    assert!(
-        waited < std::time::Duration::from_secs(20),
-        "the read waited {waited:?}, so it timed out rather than being woken"
-    );
 
     h.db.cleanup().await;
 }
@@ -7424,7 +7437,8 @@ async fn a_waiting_queue_read_wakes_when_something_is_raised() {
 async fn a_waiting_read_returns_the_current_queue_when_nothing_happens() {
     // A timeout answers with what is there rather than empty: the queue is a
     // set, so "nothing changed" still has a current value.
-    let h = harness().await;
+    // A short park, since showing it answers on timeout means reaching one.
+    let h = harness_parking_for(std::time::Duration::from_millis(200)).await;
     let workspace = h.make_workspace("Acme", "acme").await;
     let cookie = h
         .login_as("quiet@test.invalid", None, Some((workspace, "admin")))

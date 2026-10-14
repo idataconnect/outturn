@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{
     Json,
@@ -14,9 +13,6 @@ use crate::events;
 
 use super::router::{ApiError, ApiState};
 
-/// Long polls park for this long before returning empty. Short enough to stay
-/// well inside proxy idle timeouts, long enough that reconnect churn is low.
-const POLL_TIMEOUT: Duration = Duration::from_secs(25);
 const MAX_LIMIT: i64 = 500;
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +58,7 @@ pub async fn poll(
         query.session_id,
         query.after,
         limit,
-        POLL_TIMEOUT,
+        state.long_poll,
         Arc::clone(&state.shutdown).notified_owned(),
         visible.as_ref(),
     )

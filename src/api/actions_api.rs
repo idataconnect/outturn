@@ -17,7 +17,6 @@
 //! that workspace.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{
     Json,
@@ -42,13 +41,6 @@ const MAX_LIMIT: i64 = 200;
 /// Rendered as "and more" past this, so counting further buys nothing and costs
 /// a scan bounded by somebody else's backlog rather than by what is readable.
 const BADGE_CAP: i64 = 99;
-
-/// How long a waiting request parks before returning what it has.
-///
-/// Matched to the events poll, for the same reasons: inside proxy idle
-/// timeouts, and long enough that an idle client is not constantly
-/// reconnecting.
-const POLL_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Debug, Deserialize)]
 pub struct QueueQuery {
@@ -154,7 +146,7 @@ async fn wait_for_change(
         Ok(super::Page::from_rows(items, limit, |i| i.id))
     };
 
-    let deadline = tokio::time::sleep(POLL_TIMEOUT);
+    let deadline = tokio::time::sleep(state.long_poll);
     tokio::pin!(deadline);
     let shutdown = Arc::clone(&state.shutdown).notified_owned();
     tokio::pin!(shutdown);

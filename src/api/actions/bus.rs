@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use sqlx::postgres::{PgListener, PgPool};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use super::postgres::CHANNEL;
@@ -45,6 +45,9 @@ impl ActionHint {
 #[derive(Clone)]
 pub struct ActionBus {
     tx: broadcast::Sender<ActionHint>,
+    /// Whether the listener is subscribed right now, as `EventBus` keeps it:
+    /// a caller that needs a change to be heard has to know when it can be.
+    listening: watch::Receiver<bool>,
 }
 
 impl ActionBus {
@@ -55,11 +58,17 @@ impl ActionBus {
     /// wakes, so a missed hint costs a poll cycle rather than a wrong answer.
     pub fn spawn(pool: PgPool) -> Self {
         let (tx, _) = broadcast::channel(256);
-        let bus = Self { tx: tx.clone() };
+        let (listening_tx, listening) = watch::channel(false);
+        let bus = Self {
+            tx: tx.clone(),
+            listening,
+        };
 
         tokio::spawn(async move {
             loop {
-                match listen_loop(&pool, &tx).await {
+                let result = listen_loop(&pool, &tx, &listening_tx).await;
+                listening_tx.send_replace(false);
+                match result {
                     Ok(()) => tracing::warn!("action listener ended, restarting"),
                     Err(e) => tracing::error!(error = %e, "action listener failed, restarting"),
                 }
@@ -73,11 +82,32 @@ impl ActionBus {
     pub fn subscribe(&self) -> broadcast::Receiver<ActionHint> {
         self.tx.subscribe()
     }
+
+    /// Resolves once the listener is subscribed, so a change made after this
+    /// returns will be heard. Immediately, if it already is.
+    pub async fn listening(&self) {
+        let mut listening = self.listening.clone();
+        // An error means the listener task is gone and nothing will be heard;
+        // returning beats waiting for ever.
+        let _ = listening.wait_for(|on| *on).await;
+    }
+
+    /// How many requests are parked on this bus right now. A request
+    /// subscribes before it parks, so a change made once this counts it is
+    /// one it will hear.
+    pub fn waiters(&self) -> usize {
+        self.tx.receiver_count()
+    }
 }
 
-async fn listen_loop(pool: &PgPool, tx: &broadcast::Sender<ActionHint>) -> Result<(), sqlx::Error> {
+async fn listen_loop(
+    pool: &PgPool,
+    tx: &broadcast::Sender<ActionHint>,
+    listening: &watch::Sender<bool>,
+) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
+    listening.send_replace(true);
     tracing::info!(channel = CHANNEL, "listening for action queue changes");
 
     loop {

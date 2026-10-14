@@ -58,6 +58,11 @@ pub struct ApiState {
     /// Fires on shutdown so parked long polls return instead of holding the
     /// drain open for their full timeout.
     pub(super) shutdown: Arc<tokio::sync::Notify>,
+    /// How long a long poll parks before answering with what is there: the
+    /// events read and the action queue's alike. `LONG_POLL` but for a test,
+    /// which sets one that suits what it is showing rather than sitting
+    /// through the real one.
+    pub(super) long_poll: std::time::Duration,
     /// Prepares turns and records what they produce. Set after construction,
     /// because the worker holds this state and the two would otherwise have to
     /// be built at once.
@@ -130,6 +135,7 @@ impl ApiState {
             pool,
             bus,
             shutdown,
+            long_poll: LONG_POLL,
             worker: std::sync::OnceLock::new(),
             bindings: crate::egress::bindings::Bindings::from_env(),
             seal_key: super::credentials::seal_key_from_env(),
@@ -143,6 +149,20 @@ impl ApiState {
         self
     }
 
+    /// How long a long poll parks, for a test: one that shows a poll was woken
+    /// gives it a park nothing reaches, and one that shows it answers on
+    /// timeout gives it a short one.
+    pub fn with_long_poll(mut self, park: std::time::Duration) -> Self {
+        self.long_poll = park;
+        self
+    }
+
+    /// The action queue's bus, so a test can wait for its listener and for a
+    /// request to park rather than sleeping and hoping both had happened.
+    pub fn action_bus(&self) -> &super::actions::ActionBus {
+        &self.action_bus
+    }
+
     /// The credential bindings to check rules against, for a test that needs
     /// some.
     pub fn with_bindings(mut self, bindings: crate::egress::bindings::Bindings) -> Self {
@@ -150,6 +170,11 @@ impl ApiState {
         self
     }
 }
+
+/// How long a long poll parks before answering with what is there. Short
+/// enough to stay well inside proxy idle timeouts, long enough that an idle
+/// client is not constantly reconnecting.
+pub const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(25);
 
 pub(super) type ApiError = (StatusCode, String);
 
