@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use sqlx::postgres::{PgListener, PgPool};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 /// Postgres channel every event insert announces on.
@@ -23,6 +23,10 @@ pub struct EventHint {
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<EventHint>,
+    /// Whether the listener is subscribed right now. Notifications sent while
+    /// it is not are lost, which the cursor makes safe for a client -- but a
+    /// caller that needs one to arrive has to know when it can be heard.
+    listening: watch::Receiver<bool>,
 }
 
 impl EventBus {
@@ -33,11 +37,17 @@ impl EventBus {
     /// each request is what makes that safe.
     pub fn spawn(pool: PgPool) -> Self {
         let (tx, _) = broadcast::channel(256);
-        let bus = Self { tx: tx.clone() };
+        let (listening_tx, listening) = watch::channel(false);
+        let bus = Self {
+            tx: tx.clone(),
+            listening,
+        };
 
         tokio::spawn(async move {
             loop {
-                match listen_loop(&pool, &tx).await {
+                let result = listen_loop(&pool, &tx, &listening_tx).await;
+                listening_tx.send_replace(false);
+                match result {
                     Ok(()) => tracing::warn!("event listener ended, restarting"),
                     Err(e) => tracing::error!(error = %e, "event listener failed, restarting"),
                 }
@@ -51,11 +61,25 @@ impl EventBus {
     pub fn subscribe(&self) -> broadcast::Receiver<EventHint> {
         self.tx.subscribe()
     }
+
+    /// Resolves once the listener is subscribed, so a notification sent after
+    /// this returns will be heard. Immediately, if it already is.
+    pub async fn listening(&self) {
+        let mut listening = self.listening.clone();
+        // An error means the task holding the sender is gone, so nothing
+        // will ever be heard; returning beats waiting for ever.
+        let _ = listening.wait_for(|on| *on).await;
+    }
 }
 
-async fn listen_loop(pool: &PgPool, tx: &broadcast::Sender<EventHint>) -> Result<(), sqlx::Error> {
+async fn listen_loop(
+    pool: &PgPool,
+    tx: &broadcast::Sender<EventHint>,
+    listening: &watch::Sender<bool>,
+) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
     listener.listen(CHANNEL).await?;
+    listening.send_replace(true);
     tracing::info!(channel = CHANNEL, "listening for events");
 
     loop {

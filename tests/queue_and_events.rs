@@ -88,19 +88,18 @@ async fn long_poll_wakes_on_notify() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
-
-    // Give the listener a moment to establish its connection.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    bus.listening().await;
 
     let writer = pool.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(400)).await;
         events::append(&writer, workspace, None, "test.late", serde_json::json!({}))
             .await
             .expect("append");
     });
 
-    let start = std::time::Instant::now();
+    // A timeout nothing will reach, so returning at all means the event woke
+    // it. Asserting that it returned *quickly* was a guess about the machine,
+    // and a loaded one failed it.
     let found = events::wait_for(
         pool,
         &bus,
@@ -108,7 +107,7 @@ async fn long_poll_wakes_on_notify() {
         None,
         Uuid::nil(),
         100,
-        Duration::from_secs(10),
+        Duration::from_secs(3600),
         std::future::pending(),
         None,
     )
@@ -116,11 +115,6 @@ async fn long_poll_wakes_on_notify() {
     .expect("wait");
 
     assert_eq!(found.len(), 1, "should have woken on the notification");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "woke via notification, not timeout: {:?}",
-        start.elapsed()
-    );
 
     finish!(db);
 }
@@ -131,14 +125,14 @@ async fn long_poll_returns_empty_on_timeout() {
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    // Paused only now that connecting is done. Starting paused would trip
-    // sqlx's acquire timeout, since the virtual clock races past it while the
-    // real socket is still opening -- the clock is virtual, the network is not.
-    tokio::time::pause();
-
-    // With time virtual, a realistic 25 second poll times out instantly rather
-    // than being shortened to keep the suite fast.
-    let started = tokio::time::Instant::now();
+    // Real time, and a short timeout. A virtual clock was tried, and it
+    // advances whenever the runtime is idle -- including while a real query
+    // is in flight, so the deadline could pass before the poll had asked the
+    // database anything, about one run in three. A real clock cannot run
+    // ahead, and a sleep cannot end early, so the lower bound below holds on
+    // any machine however loaded.
+    const TIMEOUT: Duration = Duration::from_millis(200);
+    let started = std::time::Instant::now();
     let found = events::wait_for(
         pool,
         &bus,
@@ -146,7 +140,7 @@ async fn long_poll_returns_empty_on_timeout() {
         None,
         Uuid::nil(),
         100,
-        Duration::from_secs(25),
+        TIMEOUT,
         std::future::pending(),
         None,
     )
@@ -155,7 +149,7 @@ async fn long_poll_returns_empty_on_timeout() {
 
     assert!(found.is_empty());
     assert!(
-        started.elapsed() >= Duration::from_secs(25),
+        started.elapsed() >= TIMEOUT,
         "the poll must wait out its timeout before giving up"
     );
 
@@ -168,20 +162,15 @@ async fn shutdown_releases_parked_poll() {
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
 
-    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
-    let fire = notify.clone();
+    // A oneshot rather than a `Notify`: sent before the poll begins awaiting
+    // it, a `Notify` is lost and the poll waits for ever, which is why this
+    // used to sleep first and hope. A oneshot keeps what was sent.
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    stop.send(()).expect("send");
 
-    // Real time here, unlike the timeout test. Under a virtual clock the timer
-    // and the parked poll race: tokio advances time whenever nothing is
-    // runnable, which can fire the shutdown before wait_for begins awaiting it.
-    // The wait is short, and what is being checked is the ordering of two
-    // real concurrent tasks rather than the passage of time.
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        fire.notify_waiters();
-    });
-
-    let started = std::time::Instant::now();
+    // A timeout nothing will reach, so returning at all means shutdown
+    // released it: a draining service must not hold every parked poll open
+    // for its full duration.
     let found = events::wait_for(
         pool,
         &bus,
@@ -189,22 +178,16 @@ async fn shutdown_releases_parked_poll() {
         None,
         Uuid::nil(),
         100,
-        Duration::from_secs(30),
-        async move { notify.notified().await },
+        Duration::from_secs(3600),
+        async move {
+            let _ = stopped.await;
+        },
         None,
     )
     .await
     .expect("wait");
 
     assert!(found.is_empty());
-    // Returned when shutdown fired rather than waiting out the timeout: a
-    // draining service must not hold every parked poll open for its full
-    // duration.
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "shutdown must not wait out the full timeout: {:?}",
-        started.elapsed()
-    );
 
     finish!(db);
 }
@@ -3406,6 +3389,10 @@ async fn session_with_agent(pool: &sqlx::PgPool, workspace: Uuid) -> (Uuid, Uuid
 /// model thinking.
 struct Silent {
     after_first_chunk: bool,
+    /// Told once the provider has gone quiet, so the stop can be sent then
+    /// rather than after a sleep that hoped the call had got that far.
+    /// `notify_one` keeps its permit for a waiter that arrives later.
+    quiet: std::sync::Arc<tokio::sync::Notify>,
 }
 
 #[async_trait::async_trait]
@@ -3440,6 +3427,7 @@ impl outturn::gateway::llm::provider::LlmProvider for Silent {
         use futures::StreamExt;
         use outturn::gateway::llm::types::{Delta, StreamChoice, StreamChunk};
         if !self.after_first_chunk {
+            self.quiet.notify_one();
             futures::future::pending::<()>().await;
         }
         let first = StreamChunk {
@@ -3458,8 +3446,12 @@ impl outturn::gateway::llm::provider::LlmProvider for Silent {
             usage: None,
             service_tier: None,
         };
+        let quiet = self.quiet.clone();
         Ok(futures::stream::once(async move { Ok(first) })
-            .chain(futures::stream::pending())
+            .chain(futures::stream::once(async move {
+                quiet.notify_one();
+                futures::future::pending().await
+            }))
             .boxed())
     }
 
@@ -3492,6 +3484,7 @@ async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
         .await
         .expect("claim");
 
+    let quiet = std::sync::Arc::new(tokio::sync::Notify::new());
     let seed = [9u8; 32];
     let validator = outturn::auth::TokenValidator::new(
         &outturn::auth::TokenMinter::public_key_of(&seed),
@@ -3508,14 +3501,17 @@ async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
         )
         .expect("token");
     let state = outturn::gateway::GatewayState::new(
-        vec![std::sync::Arc::new(Silent { after_first_chunk })],
+        vec![std::sync::Arc::new(Silent {
+            after_first_chunk,
+            quiet: quiet.clone(),
+        })],
         validator,
     )
     .with_health(pool.clone());
     let app = outturn::gateway::routes(std::sync::Arc::new(state));
 
     let stopper = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        quiet.notified().await;
         jobs::request_cancel(&pool, job_id).await.expect("cancel");
     });
 
@@ -3533,9 +3529,10 @@ async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
             .expect("body");
         String::from_utf8_lossy(&bytes).to_string()
     };
-    let body = tokio::time::timeout(Duration::from_secs(10), read)
-        .await
-        .expect("the stop never reached a provider that had gone quiet");
+    // No ceiling on how long that takes: a stop that never arrives hangs here,
+    // which is unmistakable, where a ceiling turned a loaded machine into a
+    // failure. The provider never answers, so only the stop can end this.
+    let body = read.await;
     stopper.await.unwrap();
     drop(db);
     body
