@@ -19,23 +19,42 @@ pub struct EventHint {
 /// Fans one Postgres LISTEN connection out to every parked request.
 ///
 /// A connection per waiter would cap concurrent long polls at the pool size;
-/// this keeps it at one regardless of how many clients are waiting.
-#[derive(Clone)]
-pub struct EventBus {
-    tx: broadcast::Sender<EventHint>,
+/// this keeps it at one regardless of how many clients are waiting. One type
+/// for every channel, so the connection, the restarts and the readiness
+/// signal are written once; a bus says only which channel it listens on and
+/// what a payload becomes.
+pub struct Bus<H> {
+    tx: broadcast::Sender<H>,
     /// Whether the listener is subscribed right now. Notifications sent while
-    /// it is not are lost, which the cursor makes safe for a client -- but a
-    /// caller that needs one to arrive has to know when it can be heard.
+    /// it is not are lost, which re-reading on waking makes safe for a client
+    /// -- but a caller that needs one to arrive has to know when it can be
+    /// heard.
     listening: watch::Receiver<bool>,
 }
 
-impl EventBus {
+/// Derived by hand: the derive would ask for `H: Clone`, and cloning a bus is
+/// cloning its handles, not a hint.
+impl<H> Clone for Bus<H> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            listening: self.listening.clone(),
+        }
+    }
+}
+
+impl<H: Clone + Send + 'static> Bus<H> {
     /// Spawns the listener task and returns a handle to subscribe to.
     ///
     /// The task reconnects on its own if the connection drops. Notifications
-    /// that arrive while it is disconnected are lost by design — the cursor in
-    /// each request is what makes that safe.
-    pub fn spawn(pool: PgPool) -> Self {
+    /// that arrive while it is disconnected are lost by design: whoever
+    /// waits re-reads from their own cursor when they wake, so a missed hint
+    /// costs a poll cycle rather than a wrong answer.
+    pub fn listen<P: serde::de::DeserializeOwned + 'static>(
+        pool: PgPool,
+        channel: &'static str,
+        hint: fn(P) -> H,
+    ) -> Self {
         let (tx, _) = broadcast::channel(256);
         let (listening_tx, listening) = watch::channel(false);
         let bus = Self {
@@ -45,11 +64,11 @@ impl EventBus {
 
         tokio::spawn(async move {
             loop {
-                let result = listen_loop(&pool, &tx, &listening_tx).await;
+                let result = listen_loop(&pool, channel, &tx, &listening_tx, hint).await;
                 listening_tx.send_replace(false);
                 match result {
-                    Ok(()) => tracing::warn!("event listener ended, restarting"),
-                    Err(e) => tracing::error!(error = %e, "event listener failed, restarting"),
+                    Ok(()) => tracing::warn!(channel, "listener ended, restarting"),
+                    Err(e) => tracing::error!(channel, error = %e, "listener failed, restarting"),
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -58,7 +77,7 @@ impl EventBus {
         bus
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<EventHint> {
+    pub fn subscribe(&self) -> broadcast::Receiver<H> {
         self.tx.subscribe()
     }
 
@@ -70,30 +89,48 @@ impl EventBus {
         // will ever be heard; returning beats waiting for ever.
         let _ = listening.wait_for(|on| *on).await;
     }
+
+    /// How many requests are parked on this bus right now. A request
+    /// subscribes before it parks, so a notification sent once this counts
+    /// it is one it will hear.
+    pub fn waiters(&self) -> usize {
+        self.tx.receiver_count()
+    }
 }
 
-async fn listen_loop(
+async fn listen_loop<H, P: serde::de::DeserializeOwned>(
     pool: &PgPool,
-    tx: &broadcast::Sender<EventHint>,
+    channel: &'static str,
+    tx: &broadcast::Sender<H>,
     listening: &watch::Sender<bool>,
+    hint: fn(P) -> H,
 ) -> Result<(), sqlx::Error> {
     let mut listener = PgListener::connect_with(pool).await?;
-    listener.listen(CHANNEL).await?;
+    listener.listen(channel).await?;
     listening.send_replace(true);
-    tracing::info!(channel = CHANNEL, "listening for events");
+    tracing::info!(channel, "listening");
 
     loop {
         let notification = listener.recv().await?;
-        match serde_json::from_str::<Payload>(notification.payload()) {
+        match serde_json::from_str::<P>(notification.payload()) {
             // A send error just means nobody is parked right now.
-            Ok(p) => {
-                let _ = tx.send(EventHint {
-                    workspace_id: p.workspace_id,
-                    session_id: p.session_id,
-                });
+            Ok(payload) => {
+                let _ = tx.send(hint(payload));
             }
-            Err(e) => tracing::warn!(error = %e, "malformed event notification"),
+            Err(e) => tracing::warn!(channel, error = %e, "malformed notification"),
         }
+    }
+}
+
+/// The bus every event insert announces on.
+pub type EventBus = Bus<EventHint>;
+
+impl Bus<EventHint> {
+    pub fn spawn(pool: PgPool) -> Self {
+        Self::listen(pool, CHANNEL, |p: Payload| EventHint {
+            workspace_id: p.workspace_id,
+            session_id: p.session_id,
+        })
     }
 }
 
