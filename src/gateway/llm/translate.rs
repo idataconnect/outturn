@@ -60,8 +60,16 @@ pub fn openai_to_anthropic(
                         _ => vec![],
                     };
                     for tc in tool_calls {
-                        let input: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                        // Anthropic takes only an object here. A call with no
+                        // arguments streams an empty string, which parses to
+                        // nothing; replayed as null, it fails every later round
+                        // of the turn. Anything else that is not an object is
+                        // sent as an empty one for the same reason: refusing it
+                        // would refuse the whole conversation, not one call.
+                        let input = match serde_json::from_str(&tc.function.arguments) {
+                            Ok(object @ serde_json::Value::Object(_)) => object,
+                            _ => serde_json::json!({}),
+                        };
                         blocks.push(serde_json::json!({
                             "type": "tool_use",
                             "id": tc.id,
@@ -348,6 +356,21 @@ mod cache_tests {
         let last = &body["messages"][2]["content"][0];
         assert_eq!(last["type"], "tool_result");
         assert!(marked(last), "tool result unmarked: {body}");
+    }
+
+    /// A call with no arguments arrives as an empty string, and is replayed as
+    /// an empty object: Anthropic refuses null, and refused it every round.
+    #[test]
+    fn a_call_without_arguments_is_replayed_as_an_empty_object() {
+        let body = translated(serde_json::json!([
+            {"role": "user", "content": "Ping it"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "ping", "arguments": ""},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "content": "pong"},
+        ]));
+        assert_eq!(body["messages"][1]["content"][0]["input"], serde_json::json!({}));
     }
 
     /// Anthropic refuses a marker on an empty text block, so one is left bare.
