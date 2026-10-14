@@ -70,6 +70,66 @@ Both loops should meet a person rather than edit anything. A skill is prose
 somebody owns, and an automatic rewrite is a change nobody reviewed to a thing
 that governs what agents do.
 
+## Patterns, not transcripts
+
+The example above was one transcript, read by hand. What scales is the same
+failure found across many sessions, named once, and counted.
+
+An illustration of the shape. An agent has a tool that queries a metric by its
+exact name, and nothing else it can call lists which metrics exist; the
+catalog tool describes each service's owner and dependencies but not its
+metrics. So the agent guesses a name, the call fails with the list of valid
+ones, and the agent asks again from that list and succeeds. Written up as a
+pattern, it is one sentence saying that, and a prevalence beside it: say 15 of
+53 metric lookups failing this way, across 11 of 28 sessions that used the
+tool. Underneath, the wrong guesses sort into a few classes -- a name assumed
+to be universal, a namespace invented, the right metric asked of the wrong
+service. Five things follow from that shape.
+
+**A pattern is a finding, not a transcript.** A sentence naming the cause, the
+evidence for it, and how much of the traffic it touches. One transcript is an
+anecdote that somebody has to generalize from; a pattern has done that
+already, and is what a person with the authority to change something can act
+on. It also settles the first question under *Not decided*: the judge reads
+across many sessions, because a pattern is not visible in one.
+
+**Two denominators.** Calls affected and sessions affected, both, since they
+answer different questions -- how often the mistake is made, and how many
+people met it. 28% of lookups and 39% of sessions are one pattern seen from both
+sides. Each with a Wilson interval, for the reasons below: most of what a
+workspace runs is nearer 28 sessions than 28,000.
+
+**A failure the agent recovered from is still a failure.** Every session in
+that pattern ended well. A pass rate would have counted them all as passes; what
+they cost was a round each against a fixed budget, which is a turn somewhere
+that ran out of rounds before it finished. That is mechanically detectable
+here and needs no judge: a failed call followed, in the same turn, by a
+successful call to the same tool with different arguments is discovery by
+failure. It is worth its own count beside the error rate, because the error
+rate alone reads it as noise the agent shrugged off.
+
+**Systematic is the word that matters.** Guesses that fall into a handful of
+classes are a model reasoning consistently from a wrong premise, which a
+change to the prose or the tools can correct. Guesses that are scattered are
+noise, and no edit will move them. Sorting the failures into classes is the
+judged loop's real job -- it is what a query cannot do -- and the verdict
+"systematic" is the one that says an edit is worth making.
+
+**The diagnosis can land on a tool, not a skill.** The fix that pattern
+points at is not better prose; it is a way to list metric names, so the
+discovery stops being a failure. outturn's own tool surface has the same
+shape in places: `load_tools` names every deferred tool in its description for
+exactly this reason, and answers an unknown name with what is `available`.
+So the analysis covers every tool and every skill operation, and the
+recommendation it writes may be addressed to whoever owns the tool -- the
+platform, for the built-in ones.
+
+A sixth: the grader has patterns too. A scorer that marks a valid answer down
+because it is informational rather than an action is a pattern about the
+judge, not the agent. Whatever judges sessions here will be wrong in patterns
+of its own, and the same analysis should be pointed at it -- a judge nobody
+evaluates is a scorer whose mistakes become every skill's apparent failures.
+
 ## What a person adds
 
 The mechanical signal says a skill is failing and the judge says why, but
@@ -331,8 +391,9 @@ the turn it came from, and reversible by a flag.
 
 ## Not decided
 
-- Whether the judge reads one transcript or a sample across many, which changes
-  what it can see and what it costs.
+- How many sessions a pattern needs before it is shown. Across many is
+  settled (*Patterns, not transcripts*); the threshold is not, and a Wilson
+  interval wide enough to include zero is a reasonable floor.
 - Whether a smaller local model is enough. The task is "read this failure and
   say what about the prose misled it", which may not need a frontier model --
   and the failures being diagnosed here come from exactly the class of model
