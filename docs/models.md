@@ -356,6 +356,24 @@ Each phase leaves the platform working.
    roles, and a real call against AWS, since everything so far is tested
    against frames built by hand.
 
+   **How it is tested without an AWS account.** Three parts, each proving
+   what the others cannot:
+
+   - *The protocol*, against MiniStack (MIT, a local AWS emulator whose
+     Bedrock runtime streams Invoke in the real event-stream format, with
+     Anthropic-shaped events for `anthropic.*` ids). It runs as an optional
+     local component, `scripts/dev.sh --with ministack`, at zero replicas
+     until wanted, with `MINISTACK_BEDROCK_PROXY_URL` pointing at a local
+     OpenAI-protocol model so a real turn gets real text through a
+     Bedrock-shaped door.
+   - *Signing*, offline: SigV4 is deterministic, so the signer is checked
+     against AWS's published SigV4 test vectors and against AWS's own Python
+     signer (`botocore`'s `SigV4Auth`) on a Bedrock-shaped request with made-up
+     keys and a fixed time. MiniStack cannot do this: it parses a signature
+     to find the caller and accepts any.
+   - *AWS accepting real credentials* is the one thing left for a real call,
+     by whoever first has an account to make it with.
+
 ## Open questions
 
 - **Credentials:** sealed in the database by default, as above -- to confirm.
