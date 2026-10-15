@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - ministack.yaml
+
+# Keys for the gateway to sign Bedrock requests with, so a `bedrock` route
+# naming no API key is signed rather than skipped. Made up: MiniStack accepts
+# any. The region is the gateway's fallback for an endpoint whose host does
+# not carry one, which MiniStack's does not.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-gateway
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AWS_ACCESS_KEY_ID
+          value: "AKIDLOCALMINISTACK"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AWS_SECRET_ACCESS_KEY
+          value: "local-ministack-not-a-secret"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AWS_REGION
+          value: "us-east-1"

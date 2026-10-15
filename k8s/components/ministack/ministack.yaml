@@ -1,0 +1,75 @@
+# MiniStack: a local AWS emulator, deployed here for its Bedrock runtime, so
+# the gateway's Bedrock protocol can be exercised without an AWS account.
+#
+# What it proves and what it does not. Its `invoke-with-response-stream`
+# answers in AWS's real event-stream framing with Anthropic-shaped events for
+# an `anthropic.*` model id, so the path, the body, the framing and the events
+# are tested against something that is not ours. It does not check a request's
+# signature -- it reads one to find the caller and accepts any -- so signing
+# is proved offline instead (src/gateway/llm/provider/sigv4.rs), and only a
+# real account can show AWS accepting real keys. See docs/models.md.
+#
+# Its replies are canned unless MINISTACK_BEDROCK_PROXY_URL names an
+# OpenAI-protocol model, which it then asks and wraps as Bedrock frames: real
+# words through a Bedrock-shaped door. Plain replies only -- it does not
+# carry tool calls across -- so an agent turn that calls tools is not a test
+# of this.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ministack
+spec:
+  selector:
+    app: ministack
+  ports:
+    - name: http
+      port: 4566
+      targetPort: 4566
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ministack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ministack
+  template:
+    metadata:
+      labels:
+        app: ministack
+    spec:
+      containers:
+        - name: ministack
+          # Pinned: an emulator that changes under a test is a test that
+          # changes.
+          image: ministackorg/ministack:1.5.27
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4566
+          env:
+            # The local model, as the local overlay's OPENAI_BASE_URL has it;
+            # MiniStack appends /v1/chat/completions. Unreachable, it answers
+            # with canned text instead -- which still tests the door, just not
+            # with words. A model on another machine needs that machine's
+            # address: a LAN host name does not resolve inside the cluster.
+            - name: MINISTACK_BEDROCK_PROXY_URL
+              value: "http://172.18.0.1:11434"
+            # A local model thinking before it answers takes longer than the
+            # emulator's default thirty seconds.
+            - name: MINISTACK_BEDROCK_PROXY_TIMEOUT_SECONDS
+              value: "300"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /_ministack/health
+              port: 4566
+            initialDelaySeconds: 2
+            periodSeconds: 5
