@@ -82,6 +82,26 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/.generated
+    # Local images build with Cargo's `local` profile: incremental, no LTO,
+    # so a one-line change does not rebuild and relink everything. Set here
+    # rather than on the artifacts, so every other environment builds the
+    # same release binaries. The first five artifacts are the Rust ones.
+    patches:
+      - op: add
+        path: /build/artifacts/0/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/1/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/2/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/3/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/4/docker/buildArgs
+        value: {PROFILE: local}
 
   # A Mac. `skaffold dev -p mac` reaches ollama on the host rather than across
   # the Linux Docker bridge, and defaults to qwen3.8:27b-mlx. scripts/dev-mac.sh
@@ -91,3 +111,20 @@ profiles:
       kustomize:
         paths:
           - k8s/overlays/local-mac
+    # As in `generated`.
+    patches:
+      - op: add
+        path: /build/artifacts/0/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/1/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/2/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/3/docker/buildArgs
+        value: {PROFILE: local}
+      - op: add
+        path: /build/artifacts/4/docker/buildArgs
+        value: {PROFILE: local}

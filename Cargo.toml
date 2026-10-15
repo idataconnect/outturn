@@ -208,3 +208,13 @@ opt-level = 1
 [profile.release]
 strip = true
 lto = "thin"
+
+# What local images are built with (skaffold.yaml's local profiles). A release build turns
+# incremental compilation off and runs LTO once per binary, so a one-line
+# change rebuilt the whole crate and linked it five times. Lightly
+# optimized, so a turn behaves near enough to production; never shipped.
+[profile.local]
+inherits = "release"
+opt-level = 1
+lto = false
+incremental = true

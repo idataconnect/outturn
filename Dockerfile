@@ -24,14 +24,17 @@ COPY wit/ wit/
 # The agent component the runtime executes. Committed as a build artifact so
 # the image does not need the wasm toolchain.
 COPY assets/agent_default.wasm /agent_default.wasm
+# `release` unless told otherwise; local development asks for `local`, which
+# keeps incremental compilation and skips LTO (Cargo.toml says why).
+ARG PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin api --bin gateway --bin runtime --bin mockllm --bin hollowbrook && \
-    cp /app/target/release/api /usr/local/bin/api && \
-    cp /app/target/release/gateway /usr/local/bin/gateway && \
-    cp /app/target/release/runtime /usr/local/bin/runtime && \
-    cp /app/target/release/mockllm /usr/local/bin/mockllm && \
-    cp /app/target/release/hollowbrook /usr/local/bin/hollowbrook
+    cargo build --profile "$PROFILE" --bin api --bin gateway --bin runtime --bin mockllm --bin hollowbrook && \
+    cp /app/target/$PROFILE/api /usr/local/bin/api && \
+    cp /app/target/$PROFILE/gateway /usr/local/bin/gateway && \
+    cp /app/target/$PROFILE/runtime /usr/local/bin/runtime && \
+    cp /app/target/$PROFILE/mockllm /usr/local/bin/mockllm && \
+    cp /app/target/$PROFILE/hollowbrook /usr/local/bin/hollowbrook
 
 # Each service is its binary on distroless: glibc, libgcc, CA certificates and
 # tzdata, with no shell or package manager -- about 28MB under the binary
