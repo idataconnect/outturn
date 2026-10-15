@@ -83,7 +83,7 @@ nav:
           - Agent templates: agent-templates.md
       - Models and spend:
           - Routing: routing.md
-          - Model catalog: model-catalog.md
+          - Models: models.md
           - Usage: usage.md
           - Prompt caching: caching.md
           - Thinking: thinking.md

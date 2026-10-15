@@ -73,7 +73,7 @@ The Anthropic translation sends, on a model that thinks:
 - **No sampling parameters** to a model that refuses them, and no forced tool
   choice to one that refuses that; `required` becomes `auto`.
 
-Which model is which comes from the [model catalog](model-catalog.md): always-on
+Which model is which comes from the [model catalog](models.md): always-on
 thinking, the effort levels offered, whether sampling and forced tool choice
 are accepted, whether mid-conversation system messages are, and the output
 limit. The catalog's source does not carry all of these, so the gaps are

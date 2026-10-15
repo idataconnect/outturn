@@ -3,6 +3,11 @@
 Which model answers, whose key pays, and what happens when it fails. Part
 built, part designed; each section says which.
 
+Being replaced: [models.md](models.md) moves routes, their credentials and the
+models they name into a database-driven configuration of provider accounts,
+models and chains. Traffic classes, the breakers and attribution below carry
+over; `traffic_routes` and its environment-variable credentials do not.
+
 ## Who this serves
 
 An operator runs outturn. Workspaces are the operator's customers, and workspaces

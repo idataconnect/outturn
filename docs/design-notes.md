@@ -53,7 +53,7 @@ level is in [docs/settings.md](settings.md). Both are mostly design: each
 says what exists.
 
 What a model accepts -- whether it takes a temperature, how it thinks, how
-much it may write -- is designed in [docs/model-catalog.md](model-catalog.md):
+much it may write -- is designed in [docs/models.md](models.md):
 a catalog fetched from models.dev when an operator asks for one, which routes
 are filled from and the gateway acts on. Until it exists, the Anthropic
 translation reads those facts from the model's name. How a model's reasoning

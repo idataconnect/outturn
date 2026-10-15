@@ -242,7 +242,7 @@ are near before changing it.
 - Access and tenancy: [authorities.md](docs/authorities.md),
   [workspaces.md](docs/workspaces.md), [settings.md](docs/settings.md),
   [agent-templates.md](docs/agent-templates.md).
-- Models and spend: [routing.md](docs/routing.md), [model-catalog.md](docs/model-catalog.md),
+- Models and spend: [routing.md](docs/routing.md), [models.md](docs/models.md),
   [usage.md](docs/usage.md), [caching.md](docs/caching.md),
   [thinking.md](docs/thinking.md).
 - Reaching the outside: [egress.md](docs/egress.md),

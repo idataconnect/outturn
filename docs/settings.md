@@ -6,6 +6,10 @@ change what. Built: the catalog is `src/api/settings/mod.rs`, the rows are
 turn in `prepare_turn`. It holds eight settings, listed under
 [What is in it](#what-is-in-it).
 
+Settings that only mean something to a model -- `temperature`,
+`reasoning_effort`, `context_budget` -- are moving to a cascade keyed by model
+as well as level; see [models.md](models.md#settings-belong-to-a-model).
+
 ## The shape
 
 A **catalog in code** and **overrides as rows**. The same split as
