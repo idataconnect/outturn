@@ -1632,6 +1632,18 @@ pub fn openai_to_gemini_for(
     // to match: a `functionResponse` answering a call the model was never
     // shown is an answer to nothing.
     let mut rendered_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Each call's name, by id. A result in this protocol need not say which
+    // function answered -- the id says which call -- but Gemini refuses a
+    // `functionResponse` without a name, so it is looked up from the call.
+    let mut call_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for call in req
+        .messages
+        .iter()
+        .flat_map(|m| m.tool_calls.iter().flatten())
+    {
+        call_names.insert(call.id.clone(), call.function.name.clone());
+    }
 
     for message in &req.messages {
         let text = match &message.content {
@@ -1656,6 +1668,16 @@ pub fn openai_to_gemini_for(
                 });
             }
             Role::Tool => {
+                let name = message
+                    .name
+                    .clone()
+                    .or_else(|| {
+                        message
+                            .tool_call_id
+                            .as_ref()
+                            .and_then(|id| call_names.get(id).cloned())
+                    })
+                    .unwrap_or_default();
                 // Its call was rendered, so this is rendered to match.
                 if message
                     .tool_call_id
@@ -1665,7 +1687,7 @@ pub fn openai_to_gemini_for(
                     contents.push(serde_json::json!({
                         "role": "user",
                         "parts": [{ "text": flatten_tool_exchange(
-                            message.name.as_deref().unwrap_or("tool"),
+                            if name.is_empty() { "tool" } else { &name },
                             "",
                             &text,
                         ) }],
@@ -1674,7 +1696,7 @@ pub fn openai_to_gemini_for(
                 }
 
                 let mut response = serde_json::json!({
-                    "name": message.name.clone().unwrap_or_default(),
+                    "name": name,
                     "response": { "content": text },
                 });
                 // Newer models match a response to its call by id; older ones
@@ -2505,6 +2527,29 @@ mod gemini_tests {
         assert_eq!(
             older["contents"][0]["parts"][0]["thoughtSignature"], "c2ln",
             "it still signs, and still demands the signature back"
+        );
+    }
+
+    /// The runtime's results say which call they answer and not which
+    /// function, as this protocol allows. Gemini refuses a response without a
+    /// name, so the call's is used.
+    #[test]
+    fn a_result_without_a_name_takes_its_calls() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1", "type": "function", "provider_signature": "c2ln",
+                    "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "fog"},
+            ],
+        }))
+        .expect("request");
+        let body = openai_to_gemini_for(&request, "gemini-3.7-flash").expect("translate");
+        assert_eq!(
+            body["contents"][2]["parts"][0]["functionResponse"]["name"],
+            "get_weather"
         );
     }
 
