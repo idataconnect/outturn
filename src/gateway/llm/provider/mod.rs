@@ -68,6 +68,7 @@ pub trait LlmProvider: Send + Sync {
                         tool_calls: None,
                         reasoning: None,
                         reasoning_content: None,
+                        thinking_block: None,
                     },
                     finish_reason: c.finish_reason,
                 })

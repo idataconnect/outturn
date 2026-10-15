@@ -141,6 +141,7 @@ pub fn request(system_prompt: &str, replacing: &[Value]) -> Vec<Message> {
             name: None,
             tool_calls: None,
             tool_call_id: None,
+            thinking_blocks: Vec::new(),
         }
     }
 

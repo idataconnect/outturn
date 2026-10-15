@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 mod common;
 
-use common::fake_gateway::{Behavior, FakeGateway};
+use common::fake_gateway::{Behavior, CALL_SIGNATURE, FakeGateway, thinking_block};
 use outturn::runtime::component::Finished;
 
 fn component() -> Vec<u8> {
@@ -567,6 +567,52 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     assert!(
         content.contains("UTC"),
         "an unknown zone must read as UTC, got {content:?}"
+    );
+}
+
+/// A reply that thought and then called a tool goes back on the next round
+/// with its thinking and its call's signature, which the guest never saw:
+/// without them the model starts each round without the reasons for the
+/// call it just made, and Gemini refuses the round outright.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_reply_goes_back_signed() {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "get_current_time".into(),
+        arguments: r#"{"action":"Reading the clock"}"#.into(),
+        reply: "Done.".into(),
+    })
+    .await;
+
+    runner()
+        .run(
+            &component(),
+            user("When?"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let reply = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "assistant" && m["tool_calls"].is_array())
+        .expect("the reply that called the tool")
+        .clone();
+    assert_eq!(
+        reply["thinking_blocks"],
+        serde_json::json!([thinking_block()])
+    );
+    assert_eq!(reply["tool_calls"][0]["provider_signature"], CALL_SIGNATURE);
+    assert!(
+        requests[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m.get("thinking_blocks").is_none()),
+        "nothing is signed before the model has said anything"
     );
 }
 

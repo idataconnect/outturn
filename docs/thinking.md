@@ -19,9 +19,10 @@ because the field is required. Three things follow:
 - **A hard turn can be cut off before it answers.** `max_tokens` caps
   everything the model writes, thinking included, and the model is not told
   where the cap is. It stops mid-thought with `stop_reason: "max_tokens"`.
-- **Its reasoning does not survive the tool loop.** Each round replays the
+- **Its reasoning did not survive the tool loop.** Each round replayed the
   conversation without the thinking blocks of the rounds before it, so the
-  model starts every round without the reasons for the call it just made.
+  model started every round without the reasons for the call it just made.
+  Now kept within a turn; see step 4 below.
 
 ## What the provider does
 
@@ -145,13 +146,23 @@ the edit is invalid. So:
    until the catalog exists (`ClaudeTraits` in `translate.rs`).
 2. **Show it.** Built: `thinking_delta` streams as `reasoning`. Redacted
    thinking is still dropped rather than shown as a placeholder.
-3. **Stream one real tool-using turn** with `summarized` and with `updates`,
-   before deciding what the UI does with between-tool notes. Half answered: a
-   summarized block streams as many small `thinking_delta` chunks, a few
-   words each, followed by one `signature_delta` -- it does not arrive in a
-   burst. An easy question at medium effort may not think at all. What a
-   tool loop sends between calls is still to be looked at.
-4. **Keep it.** The signature through the gateway, the runtime, the guest and
-   `Part::Reasoning`, and replay to the same model.
+3. **Stream one real tool-using turn.** Done: a summarized block streams as
+   many small `thinking_delta` chunks, a few words each, followed by one
+   `signature_delta`, and the notes between tool calls arrive as small
+   thinking blocks shown between the calls. An easy question at medium
+   effort may not think at all.
+4. **Keep it.** Within a turn, built. The gateway assembles each signed block
+   and sends it once it closes, as `thinking_block` on a chunk beside the
+   `reasoning` it already streamed; an unsigned one, from a cut stream, is
+   let go. The runtime holds a reply's blocks, and any signatures on its
+   calls, by the reply's first call id, and puts them back when the guest
+   replays that reply -- as `thinking_blocks` on the message and
+   `provider_signature` on each call -- but only when the round asks for the
+   same model. The guest never sees them, so the agent interface did not
+   change, and an agent cannot edit what it would only break. The same path
+   carries Gemini's call signatures, which the runtime used to drop, so a
+   Gemini tool loop gets its calls back as calls instead of rendered as
+   prose. Across turns, not yet: that needs the blocks stored with the reply
+   and the model that served it, which is phase 1 of [models](models.md).
 5. **Place system messages by the rule**, effort as a message, and
    `drop_block`.

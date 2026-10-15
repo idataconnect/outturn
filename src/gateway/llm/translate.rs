@@ -53,12 +53,16 @@ pub fn openai_to_anthropic(
 
                 // Handle tool calls in assistant messages
                 if let Some(tool_calls) = &msg.tool_calls {
-                    let mut blocks: Vec<serde_json::Value> = match &msg.content {
-                        MessageContent::Text(t) if !t.is_empty() => {
-                            vec![serde_json::json!({"type": "text", "text": t})]
-                        }
-                        _ => vec![],
-                    };
+                    // Thinking first, as the reply had it: the model decided,
+                    // then spoke, then called. Only a reply that called a tool
+                    // carries them: the runtime keeps them for the rounds of
+                    // one turn, and nothing yet keeps them past it.
+                    let mut blocks: Vec<serde_json::Value> = msg.thinking_blocks.clone();
+                    if let MessageContent::Text(t) = &msg.content
+                        && !t.is_empty()
+                    {
+                        blocks.push(serde_json::json!({"type": "text", "text": t}));
+                    }
                     for tc in tool_calls {
                         // Anthropic takes only an object here. The runtime now
                         // stores an empty call as `{}`, but transcripts written
@@ -358,6 +362,7 @@ pub fn anthropic_to_openai(
             Some(tool_calls)
         },
         tool_call_id: None,
+        thinking_blocks: Vec::new(),
     };
 
     let finish_reason = match resp["stop_reason"].as_str() {
@@ -429,6 +434,36 @@ mod cache_tests {
             serde_json::from_value(serde_json::json!({"model": "m", "messages": messages}))
                 .expect("request");
         openai_to_anthropic(&request).expect("translate")
+    }
+
+    /// Signed thinking goes back first in the reply that called the tool,
+    /// as it came, and is never sent on to an OpenAI-compatible endpoint.
+    #[test]
+    fn thinking_goes_back_before_the_call_it_led_to() {
+        let thinking = serde_json::json!({"type": "thinking", "thinking": "t", "signature": "s"});
+        let body = translated(serde_json::json!([
+            {"role": "user", "content": "weather?"},
+            {"role": "assistant", "content": "Checking.", "thinking_blocks": [thinking],
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "weather", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "fog"},
+        ]));
+        let reply = &body["messages"][1]["content"];
+        assert_eq!(reply[0], thinking);
+        assert_eq!(reply[1]["type"], "text");
+        assert_eq!(reply[2]["type"], "tool_use");
+
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "assistant", "content": "", "thinking_blocks": [thinking]}],
+        }))
+        .expect("request");
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("thinking_blocks"),
+            "a passthrough body carries only fields the protocol defines"
+        );
     }
 
     fn marked(block: &serde_json::Value) -> bool {
@@ -749,6 +784,9 @@ pub struct AnthropicStream {
     usage: PartialUsage,
     /// Set once `message_delta` names one, which is the only place it appears.
     finish_reason: Option<String>,
+    /// Thinking blocks being assembled, by index, until they close: the text
+    /// streams in many deltas and the signature after it in one more.
+    thinking: std::collections::HashMap<u32, (String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -893,7 +931,20 @@ impl AnthropicStream {
                     }
                     Some("thinking") => {
                         self.blocks.insert(index, BlockKind::Thinking);
+                        self.thinking.insert(index, Default::default());
                         None
+                    }
+                    // Nothing to show, but it is the model's and goes back
+                    // with the reply, whole, like any other thinking block.
+                    Some("redacted_thinking") => {
+                        self.blocks.insert(index, BlockKind::Other);
+                        Some(self.chunk(
+                            Delta {
+                                thinking_block: Some(block.clone()),
+                                ..Delta::default()
+                            },
+                            None,
+                        ))
                     }
                     Some("tool_use") => {
                         self.blocks.insert(index, BlockKind::ToolUse);
@@ -918,6 +969,7 @@ impl AnthropicStream {
                                 }]),
                                 reasoning: None,
                                 reasoning_content: None,
+                                thinking_block: None,
                             },
                             None,
                         ))
@@ -945,6 +997,7 @@ impl AnthropicStream {
                                 tool_calls: None,
                                 reasoning: None,
                                 reasoning_content: None,
+                                thinking_block: None,
                             },
                             None,
                         ))
@@ -954,6 +1007,9 @@ impl AnthropicStream {
                             return None;
                         }
                         let thinking = delta["thinking"].as_str()?;
+                        if let Some((text, _)) = self.thinking.get_mut(&index) {
+                            text.push_str(thinking);
+                        }
                         Some(self.chunk(
                             Delta {
                                 role: None,
@@ -961,9 +1017,16 @@ impl AnthropicStream {
                                 tool_calls: None,
                                 reasoning: Some(thinking.to_string()),
                                 reasoning_content: None,
+                                thinking_block: None,
                             },
                             None,
                         ))
+                    }
+                    Some("signature_delta") => {
+                        if let Some((_, signature)) = self.thinking.get_mut(&index) {
+                            signature.push_str(delta["signature"].as_str().unwrap_or_default());
+                        }
+                        None
                     }
                     Some("input_json_delta") => {
                         // Only when the open block is a tool call. A web
@@ -996,6 +1059,7 @@ impl AnthropicStream {
                                 }]),
                                 reasoning: None,
                                 reasoning_content: None,
+                                thinking_block: None,
                             },
                             None,
                         ))
@@ -1019,7 +1083,29 @@ impl AnthropicStream {
 
             // Carries nothing the OpenAI shape has anywhere to put: the reason
             // and the usage both arrived in `message_delta` before it.
-            "message_stop" | "ping" | "content_block_stop" => None,
+            "message_stop" | "ping" => None,
+
+            // A thinking block is complete only here, with its signature
+            // after its text. One left unsigned -- a stream cut before the
+            // signature came -- is let go: the provider refuses it back.
+            "content_block_stop" => {
+                let index = event["index"].as_u64().unwrap_or(0) as u32;
+                let (text, signature) = self.thinking.remove(&index)?;
+                if signature.is_empty() {
+                    return None;
+                }
+                Some(self.chunk(
+                    Delta {
+                        thinking_block: Some(serde_json::json!({
+                            "type": "thinking",
+                            "thinking": text,
+                            "signature": signature,
+                        })),
+                        ..Delta::default()
+                    },
+                    None,
+                ))
+            }
 
             _ => None,
         }
@@ -1081,8 +1167,8 @@ mod stream_tests {
     }
 
     /// Summarized thinking arrives as `reasoning`, where the runtime reads
-    /// every provider's, and its signature as nothing yet: forwarding it is
-    /// keeping the block, which is a later change (docs/thinking.md).
+    /// every provider's. The signature says nothing to a reader, so it waits
+    /// for the block to close and goes on with the whole block.
     #[test]
     fn thinking_streams_as_reasoning_and_not_as_text() {
         let mut s = AnthropicStream::new();
@@ -1108,6 +1194,60 @@ mod stream_tests {
                 "type": "content_block_delta", "index": 0,
                 "delta": {"type": "signature_delta", "signature": "c2ln"},
             })))
+            .is_none()
+        );
+        let closed = s
+            .event(&event(
+                serde_json::json!({"type": "content_block_stop", "index": 0}),
+            ))
+            .expect("the block, once it closes");
+        assert_eq!(
+            closed.choices[0].delta.thinking_block,
+            Some(serde_json::json!({
+                "type": "thinking", "thinking": "I need to count", "signature": "c2ln",
+            }))
+        );
+        assert_eq!(closed.choices[0].delta.reasoning, None, "not shown twice");
+    }
+
+    /// A stream cut before the signature leaves a block the provider will
+    /// not take back, so none is offered.
+    #[test]
+    fn an_unsigned_thinking_block_is_not_kept() {
+        let mut s = AnthropicStream::new();
+        s.event(&start(10, 1));
+        s.event(&event(serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        })));
+        s.event(&event(serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "half a"},
+        })));
+        assert!(
+            s.event(&event(
+                serde_json::json!({"type": "content_block_stop", "index": 0}),
+            ))
+            .is_none()
+        );
+    }
+
+    /// Redacted thinking has nothing to show and is kept whole all the same.
+    #[test]
+    fn redacted_thinking_is_kept_as_it_came() {
+        let mut s = AnthropicStream::new();
+        s.event(&start(10, 1));
+        let block = serde_json::json!({"type": "redacted_thinking", "data": "b3BhcXVl"});
+        let chunk = s
+            .event(&event(serde_json::json!({
+                "type": "content_block_start", "index": 0, "content_block": block,
+            })))
+            .expect("the block");
+        assert_eq!(chunk.choices[0].delta.thinking_block, Some(block));
+        assert!(
+            s.event(&event(
+                serde_json::json!({"type": "content_block_stop", "index": 0}),
+            ))
             .is_none()
         );
     }
@@ -1851,6 +1991,7 @@ impl GeminiStream {
                     tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                     reasoning: None,
                     reasoning_content: None,
+                    thinking_block: None,
                 },
                 finish_reason: finish,
             }],
@@ -1928,6 +2069,7 @@ pub fn gemini_to_openai(
                 name: None,
                 tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                 tool_call_id: None,
+                thinking_blocks: Vec::new(),
             },
             finish_reason,
             parts,
@@ -2318,6 +2460,7 @@ mod gemini_tests {
                 name: None,
                 tool_calls: Some(vec![call]),
                 tool_call_id: None,
+                thinking_blocks: Vec::new(),
             },
             Message {
                 role: Role::Tool,
@@ -2325,6 +2468,7 @@ mod gemini_tests {
                 name: Some("get_weather".into()),
                 tool_calls: None,
                 tool_call_id: Some("call_538131".into()),
+                thinking_blocks: Vec::new(),
             },
         ];
         let request = ChatCompletionRequest {
@@ -2387,6 +2531,7 @@ mod gemini_tests {
                         },
                     }]),
                     tool_call_id: None,
+                    thinking_blocks: Vec::new(),
                 },
                 Message {
                     role: Role::Tool,
@@ -2394,6 +2539,7 @@ mod gemini_tests {
                     name: Some("get_weather".into()),
                     tool_calls: None,
                     tool_call_id: Some("c1".into()),
+                    thinking_blocks: Vec::new(),
                 },
             ],
             temperature: None,
@@ -2504,6 +2650,7 @@ mod gemini_tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    thinking_blocks: Vec::new(),
                 },
                 Message {
                     role: Role::System,
@@ -2511,6 +2658,7 @@ mod gemini_tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    thinking_blocks: Vec::new(),
                 },
                 Message {
                     role: Role::User,
@@ -2518,6 +2666,7 @@ mod gemini_tests {
                     name: None,
                     tool_calls: None,
                     tool_call_id: None,
+                    thinking_blocks: Vec::new(),
                 },
             ],
             temperature: None,
@@ -2559,6 +2708,7 @@ mod gemini_tests {
                     },
                 }]),
                 tool_call_id: None,
+                thinking_blocks: Vec::new(),
             }],
             temperature: None,
             max_tokens: None,

@@ -319,6 +319,11 @@ pub struct AgentHost {
     /// what the knob is called, is a provider detail an agent should not have
     /// to know.
     reasoning_effort: Option<String>,
+    /// What each reply that called a tool was signed with, by its first
+    /// call's id, kept for the rounds after it. Held here rather than handed
+    /// to the guest: the guest replays the reply as text and calls, and this
+    /// puts back what it never saw (docs/thinking.md).
+    signed: std::collections::HashMap<String, Signed>,
     /// The platform's temperature for this turn, applied when the guest
     /// names none. Resolved above the runtime; the guest never sees where
     /// it came from.
@@ -822,6 +827,26 @@ impl outturn::agent::host::Host for AgentHost {
                 if let Some(id) = &m.tool_call_id {
                     value["tool_call_id"] = serde_json::json!(id);
                 }
+                // Only to the model that signed them. Another refuses or
+                // ignores them, and the reply still reads as text and calls.
+                if let Some(signed) = tool_calls
+                    .first()
+                    .and_then(|c| self.signed.get(&c.id))
+                    .filter(|s| s.model == model)
+                {
+                    if !signed.thinking.is_empty() {
+                        value["thinking_blocks"] = serde_json::json!(signed.thinking);
+                    }
+                    if let Some(calls) = value["tool_calls"].as_array_mut() {
+                        for call in calls {
+                            if let Some(signature) =
+                                call["id"].as_str().and_then(|id| signed.calls.get(id))
+                            {
+                                call["provider_signature"] = serde_json::json!(signature);
+                            }
+                        }
+                    }
+                }
                 value
             })
             .collect::<Vec<_>>();
@@ -925,6 +950,20 @@ impl outturn::agent::host::Host for AgentHost {
             });
         }
         let served_by = served.endpoint;
+        if let Some(ContentPart::Call(first)) = completion
+            .parts
+            .iter()
+            .find(|p| matches!(p, ContentPart::Call(_)))
+            && (!served.signed.thinking.is_empty() || !served.signed.calls.is_empty())
+        {
+            // Keyed to the model asked for, which is what the next round asks
+            // for too; the name a provider answers under can differ from it.
+            let signed = Signed {
+                model: model.clone(),
+                ..served.signed
+            };
+            self.signed.insert(first.id.clone(), signed);
+        }
 
         // Buffered rather than delivered: the guest asks at a boundary it
         // chooses, which is the only point where injecting a message does not
@@ -1673,7 +1712,11 @@ async fn stream_completion(
         model: None,
         provider_usage: None,
         service_tier: None,
+        signed: Signed::default(),
     };
+    // Signatures on calls, by the call's index, until the calls have ids.
+    let mut call_signatures: std::collections::BTreeMap<u32, String> =
+        std::collections::BTreeMap::new();
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -1791,9 +1834,18 @@ async fn stream_completion(
                 continue;
             }
 
+            if let Some(block) = chunk["choices"][0]["delta"]
+                .get("thinking_block")
+                .filter(|b| b.is_object())
+            {
+                served.signed.thinking.push(block.clone());
+            }
             if let Some(calls) = chunk["choices"][0]["delta"]["tool_calls"].as_array() {
                 for call in calls {
                     let index = call["index"].as_u64().unwrap_or(0) as u32;
+                    if let Some(signature) = call["provider_signature"].as_str() {
+                        call_signatures.insert(index, signature.to_string());
+                    }
                     let slot = *call_slots.entry(index).or_insert_with(|| {
                         parts.push(ContentPart::Call(ToolCall {
                             id: String::new(),
@@ -1866,6 +1918,11 @@ async fn stream_completion(
         }
     }
 
+    for (index, signature) in call_signatures {
+        if let Some(ContentPart::Call(call)) = call_slots.get(&index).and_then(|&i| parts.get(i)) {
+            served.signed.calls.insert(call.id.clone(), signature);
+        }
+    }
     Ok((
         Completion {
             // A call with no name is a fragment of something that never arrived;
@@ -1909,6 +1966,23 @@ struct Served {
     paid_by: Option<String>,
     provider_usage: Option<serde_json::Value>,
     service_tier: Option<String>,
+    /// What the reply carries that only the model that wrote it can read:
+    /// its signed thinking blocks, and the signatures on its calls.
+    signed: Signed,
+}
+
+/// The parts of a reply that go back to the model as they came and are never
+/// shown to the guest: signed thinking blocks, and the signatures a provider
+/// puts on tool calls. Neither means anything to an agent, and an agent that
+/// could edit them could only break them.
+#[derive(Default, Clone)]
+struct Signed {
+    /// The model that signed them, which is the only one that will take
+    /// them back.
+    model: String,
+    thinking: Vec<serde_json::Value>,
+    /// By call id.
+    calls: std::collections::HashMap<String, String>,
 }
 
 /// Compiled components to keep, keyed by the bytes they came from.
@@ -2254,6 +2328,7 @@ impl AgentRunner {
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.
             reasoning_effort: options.reasoning_effort,
+            signed: Default::default(),
             temperature: options.temperature,
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,

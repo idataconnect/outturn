@@ -38,6 +38,16 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// The thinking blocks a reply carried, signed, exactly as the provider
+    /// streamed them -- `{"type": "thinking", "thinking", "signature"}` or
+    /// `{"type": "redacted_thinking", "data"}`. Given back with the reply so
+    /// the model keeps the reasons for the calls it made (docs/thinking.md).
+    ///
+    /// Read, never written: the protocol translators that know the shape
+    /// take it from here, and a body forwarded as-is to an OpenAI-compatible
+    /// endpoint must not carry a field it never defined.
+    #[serde(default, skip_serializing)]
+    pub thinking_blocks: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +279,13 @@ pub struct Delta {
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+    /// A thinking block complete with its signature, once the provider has
+    /// closed it -- the same block [`Message::thinking_blocks`] gives back.
+    /// Its text already streamed as `reasoning`; this is what makes it
+    /// replayable, and it arrives only for a block that was signed, since an
+    /// unsigned one cannot go back at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_block: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

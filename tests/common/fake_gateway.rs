@@ -23,6 +23,14 @@ use axum::{Json, Router};
 /// The id the gateway gives the message it reports as sent mid-turn.
 pub const STEER_ID: &str = "01a0d324-7a4b-73e2-ac02-0057d28599a2";
 
+/// What `ToolThenReply` signs its call with.
+pub const CALL_SIGNATURE: &str = "c2lnbmVkIGNhbGw=";
+
+/// The thinking `ToolThenReply` did before its call.
+pub fn thinking_block() -> serde_json::Value {
+    serde_json::json!({"type": "thinking", "thinking": "Check the clock.", "signature": "c2ln"})
+}
+
 #[derive(Clone, Debug)]
 pub enum Behavior {
     /// Stream this text, split into chunks of a few characters.
@@ -357,10 +365,17 @@ async fn completions_stream(
                 return ndjson(lines);
             }
 
-            let mut lines = vec![format!(
-                "{}\n",
-                tool_chunk(Some("call_fake_1"), Some(&name), "")
-            )];
+            // Signed, as a thinking model's call is: a block the gateway
+            // assembled, and a signature on the call itself. Both must come
+            // back on the next round without the guest ever seeing them.
+            let mut first: serde_json::Value =
+                serde_json::from_str(&tool_chunk(Some("call_fake_1"), Some(&name), "")).unwrap();
+            first["choices"][0]["delta"]["tool_calls"][0]["provider_signature"] =
+                serde_json::json!(CALL_SIGNATURE);
+            let mut thought: serde_json::Value =
+                serde_json::from_str(&chunk_json("", None)).unwrap();
+            thought["choices"][0]["delta"]["thinking_block"] = thinking_block();
+            let mut lines = vec![format!("{thought}\n"), format!("{first}\n")];
             // Arguments in pieces: a caller that reads only the first chunk
             // ends up with a fragment of JSON rather than an argument object.
             for piece in arguments.as_bytes().chunks(7) {
