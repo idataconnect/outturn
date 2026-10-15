@@ -352,9 +352,11 @@ Each phase leaves the platform working.
    protocol for Claude through Invoke -- the Anthropic body and events, so the
    same model behaves the same through either door -- authenticated with a
    Bedrock API key, and AWS's event-stream framing decoded
-   (`provider/bedrock.rs`). Not yet: AWS request signing for access keys and
-   roles, and a real call against AWS, since everything so far is tested
-   against frames built by hand.
+   (`provider/bedrock.rs`), and signed with AWS keys (SigV4,
+   `provider/sigv4.rs`) when a route names no API key: the gateway's
+   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, for the
+   region in the endpoint's host or `AWS_REGION`. Not yet: a role assumed
+   through a pod's web identity, and a real call against AWS.
 
    **How it is tested without an AWS account.** Three parts, each proving
    what the others cannot:

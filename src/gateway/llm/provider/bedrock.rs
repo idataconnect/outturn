@@ -8,10 +8,11 @@
 //! body is what `translate::openai_to_anthropic` builds, with the two fields
 //! Bedrock wants differently, and the events in the stream are Anthropic's.
 //!
-//! What differs is the door. The model is named in the path, not the body; the
-//! key is a Bedrock API key sent as a bearer token (AWS's request signing is
-//! not built yet); and a streamed response is AWS's binary event stream, each
-//! frame carrying one Anthropic event, base64-encoded.
+//! What differs is the door. The model is named in the path, not the body; a
+//! request is authenticated with a Bedrock API key as a bearer token, or signed
+//! with AWS keys (SigV4, `super::sigv4`); and a streamed response is AWS's
+//! binary event stream, each frame carrying one Anthropic event,
+//! base64-encoded.
 
 use futures::{StreamExt, TryStreamExt};
 
@@ -23,20 +24,116 @@ use crate::gateway::llm::types::{ChatCompletionRequest, ChatCompletionResponse, 
 /// header.
 const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 
+/// How a request proves who sent it.
+pub enum Auth {
+    /// A Bedrock API key, as a bearer token.
+    ApiKey(String),
+    /// AWS keys, signing each request for a region.
+    Signed {
+        credentials: super::sigv4::Credentials,
+        region: String,
+    },
+}
+
+impl Auth {
+    /// The keys AWS's own tools read, from the gateway's environment, signing
+    /// for the endpoint's region: from its host (`bedrock-runtime.<region>.
+    /// amazonaws.com`), else `AWS_REGION`, which a local emulator's host does
+    /// not carry. None when no keys are set.
+    pub fn from_aws_environment(base_url: &str) -> Option<Self> {
+        let var = |name| {
+            std::env::var(name)
+                .ok()
+                .filter(|v: &String| !v.trim().is_empty())
+        };
+        let credentials = super::sigv4::Credentials {
+            access_key_id: var("AWS_ACCESS_KEY_ID")?,
+            secret_access_key: var("AWS_SECRET_ACCESS_KEY")?,
+            session_token: var("AWS_SESSION_TOKEN"),
+        };
+        let region = region_of(base_url)
+            .or_else(|| var("AWS_REGION"))
+            .unwrap_or_else(|| "us-east-1".to_string());
+        Some(Self::Signed {
+            credentials,
+            region,
+        })
+    }
+}
+
+/// The region in a Bedrock endpoint's host, where there is one.
+fn region_of(base_url: &str) -> Option<String> {
+    let host = reqwest::Url::parse(base_url).ok()?.host_str()?.to_string();
+    let rest = host.strip_prefix("bedrock-runtime.")?;
+    let region = rest.split('.').next()?;
+    (!region.is_empty() && rest.contains("amazonaws.com")).then(|| region.to_string())
+}
+
 pub struct BedrockProvider {
     /// `https://bedrock-runtime.<region>.amazonaws.com`.
     pub base_url: String,
-    pub api_key: String,
+    auth: Auth,
     client: reqwest::Client,
 }
 
 impl BedrockProvider {
-    pub fn new(base_url: String, api_key: String) -> Self {
+    pub fn new(base_url: String, auth: Auth) -> Self {
         Self {
             base_url,
-            api_key,
+            auth,
             client: crate::http_client::streaming_client(crate::http_client::IDLE_TIMEOUT),
         }
+    }
+
+    /// A POST of `body` to `url`, authenticated. Signed requests sign the body
+    /// as it will be sent, so it is serialized once, here, and sent as bytes.
+    fn post(&self, url: &str, body: &serde_json::Value) -> reqwest::RequestBuilder {
+        let bytes = serde_json::to_vec(body).unwrap_or_default();
+        let request = self
+            .client
+            .post(url)
+            .header("content-type", "application/json");
+        let request = match &self.auth {
+            Auth::ApiKey(key) => request.bearer_auth(key),
+            Auth::Signed {
+                credentials,
+                region,
+            } => {
+                let parsed = reqwest::Url::parse(url).ok();
+                let host = parsed
+                    .as_ref()
+                    .and_then(|u| {
+                        u.host_str().map(|h| match u.port() {
+                            Some(port) => format!("{h}:{port}"),
+                            None => h.to_string(),
+                        })
+                    })
+                    .unwrap_or_default();
+                let path = parsed
+                    .as_ref()
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_default();
+                let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+                let signed = super::sigv4::sign(
+                    "POST",
+                    &host,
+                    &path,
+                    "",
+                    &bytes,
+                    credentials,
+                    region,
+                    "bedrock",
+                    &amz_date,
+                );
+                signed
+                    .headers
+                    .into_iter()
+                    .fold(request, |request, (name, value)| {
+                        request.header(name, value)
+                    })
+            }
+        };
+        request.body(bytes)
     }
 
     /// Where a model is invoked. The id goes in the path, escaped: Bedrock's
@@ -96,10 +193,7 @@ impl LlmProvider for BedrockProvider {
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, ProviderError> {
         let resp = self
-            .client
-            .post(self.url(&request.model, false))
-            .bearer_auth(&self.api_key)
-            .json(&Self::body(request)?)
+            .post(&self.url(&request.model, false), &Self::body(request)?)
             .send()
             .await
             .map_err(|e| ProviderError::transport(&e))?;
@@ -122,11 +216,8 @@ impl LlmProvider for BedrockProvider {
         request: &ChatCompletionRequest,
     ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
         let response = self
-            .client
-            .post(self.url(&request.model, true))
-            .bearer_auth(&self.api_key)
+            .post(&self.url(&request.model, true), &Self::body(request)?)
             .header("accept", "application/vnd.amazon.eventstream")
-            .json(&Self::body(request)?)
             .send()
             .await
             .map_err(|e| ProviderError::transport(&e))?;
@@ -420,7 +511,7 @@ mod tests {
     fn a_model_id_is_escaped_into_the_path() {
         let p = BedrockProvider::new(
             "https://bedrock-runtime.us-east-1.amazonaws.com/".into(),
-            "k".into(),
+            Auth::ApiKey("k".into()),
         );
         assert_eq!(
             p.url("anthropic.claude-sonnet-4-5-20250929-v1:0", true),
@@ -526,7 +617,8 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move { axum::serve(listener, app).await });
 
-        let provider = BedrockProvider::new(format!("http://{addr}"), "bedrock-key".into());
+        let provider =
+            BedrockProvider::new(format!("http://{addr}"), Auth::ApiKey("bedrock-key".into()));
         let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
             "model": "us.anthropic.claude-sonnet-5-5",
             "messages": [{"role": "user", "content": "hi"}],
@@ -550,6 +642,95 @@ mod tests {
         assert_eq!(auth, "Bearer bedrock-key");
         assert_eq!(body["anthropic_version"], BEDROCK_ANTHROPIC_VERSION);
         assert!(body.get("model").is_none(), "{body}");
+    }
+
+    #[test]
+    fn the_region_comes_from_an_aws_endpoint_and_from_nothing_else() {
+        assert_eq!(
+            region_of("https://bedrock-runtime.eu-west-2.amazonaws.com").as_deref(),
+            Some("eu-west-2")
+        );
+        assert_eq!(region_of("http://ministack:4566"), None);
+        assert_eq!(region_of("https://bedrock-runtime.example.com"), None);
+    }
+
+    /// A signed request, checked the way AWS checks one: the stand-in
+    /// recomputes the signature from the request exactly as it arrived --
+    /// host, path, date and body -- and it must match what was sent.
+    #[tokio::test]
+    async fn a_signed_request_verifies_as_it_arrives() {
+        use axum::{Router, body::Bytes, extract::OriginalUri, http::HeaderMap, routing::post};
+        use std::sync::{Arc, Mutex};
+
+        let credentials = crate::gateway::llm::provider::sigv4::Credentials {
+            access_key_id: "AKIDEXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(),
+            session_token: Some("TOKEN".into()),
+        };
+        let verified: Arc<Mutex<Option<bool>>> = Arc::default();
+        let (record, keys) = (Arc::clone(&verified), credentials.clone());
+        let app = Router::new().fallback(post(
+            move |OriginalUri(uri): OriginalUri, headers: HeaderMap, body: Bytes| {
+                let (record, keys) = (Arc::clone(&record), keys.clone());
+                async move {
+                    let header = |name: &str| {
+                        headers
+                            .get(name)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let expected = crate::gateway::llm::provider::sigv4::sign(
+                        "POST",
+                        &header("host"),
+                        uri.path(),
+                        "",
+                        &body,
+                        &keys,
+                        "eu-west-2",
+                        "bedrock",
+                        &header("x-amz-date"),
+                    );
+                    let sent = header("authorization");
+                    let matches = expected
+                        .headers
+                        .iter()
+                        .any(|(n, v)| *n == "authorization" && *v == sent);
+                    *record.lock().unwrap() =
+                        Some(matches && header("x-amz-security-token") == "TOKEN");
+                    chunk(serde_json::json!({"type": "message_stop"}))
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let provider = BedrockProvider::new(
+            format!("http://{addr}"),
+            Auth::Signed {
+                credentials,
+                region: "eu-west-2".into(),
+            },
+        );
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "messages": [{"role": "user", "content": "hi"}],
+        }))
+        .expect("request");
+        let _: Vec<_> = provider
+            .chat_completion_stream(&request)
+            .await
+            .expect("stream")
+            .collect()
+            .await;
+        assert_eq!(
+            *verified.lock().unwrap(),
+            Some(true),
+            "the signature did not verify"
+        );
     }
 
     /// A frame that does not add up is the transport failing, said as such,

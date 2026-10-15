@@ -3,6 +3,7 @@ pub mod bedrock;
 pub mod gemini;
 pub mod mock;
 pub mod openai;
+pub mod sigv4;
 
 use futures::stream::BoxStream;
 

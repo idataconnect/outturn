@@ -154,23 +154,26 @@ impl ProviderCache {
                 Arc::new(AnthropicProvider::new(route.base_url.clone(), key))
             }
             "bedrock" => {
-                // A Bedrock API key, sent as a bearer token. No key is a
-                // misconfiguration, as for Anthropic: Bedrock has no
-                // unauthenticated mode, and AWS request signing is not built.
-                let Some(key) = credential else {
-                    tracing::warn!(
-                        base_url = %route.base_url,
-                        credential_ref = ?route.credential_ref,
-                        "bedrock route has no resolvable credential, skipping"
-                    );
-                    return None;
+                // A Bedrock API key where the route names one; otherwise the
+                // AWS keys the gateway was given, signing each request. Neither
+                // is a misconfiguration, as for Anthropic: Bedrock has no
+                // unauthenticated mode.
+                use crate::gateway::llm::provider::bedrock::{Auth, BedrockProvider};
+                let auth = match credential {
+                    Some(key) => Auth::ApiKey(key),
+                    None => match Auth::from_aws_environment(&route.base_url) {
+                        Some(signed) => signed,
+                        None => {
+                            tracing::warn!(
+                                base_url = %route.base_url,
+                                credential_ref = ?route.credential_ref,
+                                "bedrock route has no API key and the gateway no AWS keys, skipping"
+                            );
+                            return None;
+                        }
+                    },
                 };
-                Arc::new(
-                    crate::gateway::llm::provider::bedrock::BedrockProvider::new(
-                        route.base_url.clone(),
-                        key,
-                    ),
-                )
+                Arc::new(BedrockProvider::new(route.base_url.clone(), auth))
             }
             "gemini" => {
                 // Like Anthropic, there is no unauthenticated mode, so a route
