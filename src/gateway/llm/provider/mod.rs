@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod bedrock;
 pub mod gemini;
 pub mod mock;
 pub mod openai;
@@ -18,6 +19,9 @@ use super::types::{
 pub enum Provider {
     OpenAi,
     Anthropic,
+    /// Claude on Amazon Bedrock, through Invoke: Anthropic's body and events
+    /// behind a different door.
+    Bedrock,
     Gemini,
     Mock,
 }
@@ -214,12 +218,14 @@ impl std::fmt::Display for ProviderError {
 /// The provider's own explanation, where its error body has one.
 ///
 /// Anthropic, OpenAI, Gemini and llama.cpp all put it at `error.message`;
-/// ollama sends `error` as a bare string. The body follows the status line in
-/// `detail`, so it is read from the first brace on.
+/// ollama sends `error` as a bare string, and Bedrock a top-level `message`.
+/// The body follows the status line in `detail`, so it is read from the first
+/// brace on.
 fn reason_in(detail: &str) -> Option<String> {
     let body: serde_json::Value = serde_json::from_str(&detail[detail.find('{')?..]).ok()?;
     match &body["error"] {
         serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Null => body["message"].as_str().map(str::to_string),
         error => error["message"].as_str().map(str::to_string),
     }
 }

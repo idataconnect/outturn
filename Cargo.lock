@@ -2193,6 +2193,7 @@ dependencies = [
  "bytes",
  "chrono",
  "chrono-tz",
+ "crc32fast",
  "ed25519-dalek",
  "futures",
  "hex",

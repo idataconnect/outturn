@@ -348,14 +348,20 @@ Each phase leaves the platform working.
    reminders.
 7. **The UI:** the chain editor, per-model settings, then first-run setup and
    recipes.
-8. **Bedrock**, which the "two doors" recipe needs: a protocol of its own (AWS
-   request signing), or Anthropic's Bedrock endpoint behind the Anthropic one.
+8. **Bedrock**, which the "two doors" recipe needs. Begun: a `bedrock` route
+   protocol for Claude through Invoke -- the Anthropic body and events, so the
+   same model behaves the same through either door -- authenticated with a
+   Bedrock API key, and AWS's event-stream framing decoded
+   (`provider/bedrock.rs`). Not yet: AWS request signing for access keys and
+   roles, and a real call against AWS, since everything so far is tested
+   against frames built by hand.
 
 ## Open questions
 
 - **Credentials:** sealed in the database by default, as above -- to confirm.
-- **Bedrock:** which way in, and whether it waits or the recipe is offered once
-  it exists.
+- **Bedrock:** Invoke is the way in, and is begun with API keys. Whether AWS
+  request signing is needed before the recipe is offered, or API keys are
+  enough to start.
 - **The recipe list:** the table above is a first draft.
 - **Who may configure a workspace's models:** a new authority, or the existing
   workspace settings one ([authorities.md](authorities.md)).

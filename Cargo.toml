@@ -62,6 +62,8 @@ hex = "0.4"
 # Data URLs for an image on its way to a model; nothing else here needs it,
 # and the session token that claims to be base64 is hex.
 base64 = "0.22"
+# Checksums in the frames of AWS's event stream, which Bedrock streams in.
+crc32fast = "1.5.1"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 # fail-on-err is in the crate's default set and default-features = false had

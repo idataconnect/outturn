@@ -153,6 +153,25 @@ impl ProviderCache {
                 };
                 Arc::new(AnthropicProvider::new(route.base_url.clone(), key))
             }
+            "bedrock" => {
+                // A Bedrock API key, sent as a bearer token. No key is a
+                // misconfiguration, as for Anthropic: Bedrock has no
+                // unauthenticated mode, and AWS request signing is not built.
+                let Some(key) = credential else {
+                    tracing::warn!(
+                        base_url = %route.base_url,
+                        credential_ref = ?route.credential_ref,
+                        "bedrock route has no resolvable credential, skipping"
+                    );
+                    return None;
+                };
+                Arc::new(
+                    crate::gateway::llm::provider::bedrock::BedrockProvider::new(
+                        route.base_url.clone(),
+                        key,
+                    ),
+                )
+            }
             "gemini" => {
                 // Like Anthropic, there is no unauthenticated mode, so a route
                 // without a resolvable credential is a misconfiguration.
