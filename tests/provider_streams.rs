@@ -83,6 +83,7 @@ fn ask(text: &str) -> ChatCompletionRequest {
             tool_calls: None,
             tool_call_id: None,
             thinking_blocks: Vec::new(),
+            signed_by: None,
         }],
         temperature: None,
         max_tokens: None,

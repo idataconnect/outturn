@@ -241,6 +241,7 @@ async fn run_one(
                 tool_calls: None,
                 tool_call_id: None,
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             },
             Message {
                 role: Role::User,
@@ -249,6 +250,7 @@ async fn run_one(
                 tool_calls: None,
                 tool_call_id: None,
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             },
         ],
         temperature: Some(0.2),

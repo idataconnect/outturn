@@ -83,6 +83,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         skill_files: Vec::new(),
         timezone: None,
         reasoning_effort: None,
+        signed: Vec::new(),
         temperature: None,
         traffic_type: "assistant".into(),
         max_tool_rounds: 100,
@@ -583,7 +584,7 @@ async fn a_signed_reply_goes_back_signed() {
     })
     .await;
 
-    runner()
+    let finished = runner()
         .run(
             &component(),
             user("When?"),
@@ -606,6 +607,14 @@ async fn a_signed_reply_goes_back_signed() {
         serde_json::json!([thinking_block()])
     );
     assert_eq!(reply["tool_calls"][0]["provider_signature"], CALL_SIGNATURE);
+    assert_eq!(
+        reply["signed_by"], "fake",
+        "named for the model that served it, so the gateway can tell"
+    );
+    // Reported, so the reply keeps it for the turns after this one.
+    assert_eq!(finished.signed.len(), 1);
+    assert_eq!(finished.signed[0].first_call, "call_fake_1");
+    assert_eq!(finished.signed[0].thinking, vec![thinking_block()]);
     assert!(
         requests[0]["messages"]
             .as_array()
@@ -613,6 +622,69 @@ async fn a_signed_reply_goes_back_signed() {
             .iter()
             .all(|m| m.get("thinking_blocks").is_none()),
         "nothing is signed before the model has said anything"
+    );
+}
+
+/// A reply from an earlier turn comes back with what it was signed with,
+/// which the API hands in beside the conversation -- and is not reported
+/// again, since the API already keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_earlier_turns_signed_reply_goes_back_signed() {
+    use outturn::runtime::component::{ContentPart, ToolCall};
+    let gateway = FakeGateway::start(Behavior::Reply("Fine.".into())).await;
+    let text = |role: &str, t: &str| Message {
+        role: role.into(),
+        parts: vec![ContentPart::Text(t.into())],
+        tool_call_id: None,
+    };
+    let conversation = vec![
+        text("user", "When?"),
+        Message {
+            role: "assistant".into(),
+            parts: vec![ContentPart::Call(ToolCall {
+                id: "c_earlier".into(),
+                name: "get_current_time".into(),
+                arguments: "{}".into(),
+            })],
+            tool_call_id: None,
+        },
+        Message {
+            role: "tool".into(),
+            parts: vec![ContentPart::Text("noon".into())],
+            tool_call_id: Some("c_earlier".into()),
+        },
+        text("assistant", "Noon."),
+        text("user", "And now?"),
+    ];
+    let mut options = options(&gateway, None);
+    options.signed = vec![outturn::protocol::work::SignedReply {
+        first_call: "c_earlier".into(),
+        model: "claude-sonnet-5-5".into(),
+        thinking: vec![thinking_block()],
+        calls: Default::default(),
+    }];
+
+    let finished = runner()
+        .run(&component(), conversation, String::new(), options)
+        .await
+        .expect("run");
+
+    let requests = gateway.requests();
+    let earlier = requests[0]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["tool_calls"][0]["id"] == "c_earlier")
+        .expect("the earlier reply")
+        .clone();
+    assert_eq!(
+        earlier["thinking_blocks"],
+        serde_json::json!([thinking_block()])
+    );
+    assert_eq!(earlier["signed_by"], "claude-sonnet-5-5");
+    assert!(
+        finished.signed.is_empty(),
+        "handed in, so not reported back"
     );
 }
 

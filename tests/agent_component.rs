@@ -122,6 +122,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 skill_files: Vec::new(),
                 timezone: None,
                 reasoning_effort: None,
+                signed: Vec::new(),
                 temperature: None,
                 traffic_type: "assistant".into(),
                 max_tool_rounds: 100,

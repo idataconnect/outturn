@@ -65,6 +65,7 @@ fn user(text: &str) -> Message {
         tool_calls: None,
         tool_call_id: None,
         thinking_blocks: Vec::new(),
+        signed_by: None,
     }
 }
 
@@ -214,6 +215,7 @@ async fn gemini_survives_a_tool_round_trip() {
         tool_calls: Some(first.calls.clone()),
         tool_call_id: None,
         thinking_blocks: Vec::new(),
+        signed_by: None,
     });
     request.messages.push(Message {
         role: Role::Tool,
@@ -222,6 +224,7 @@ async fn gemini_survives_a_tool_round_trip() {
         tool_calls: None,
         tool_call_id: Some(call.id.clone()),
         thinking_blocks: Vec::new(),
+        signed_by: None,
     });
 
     let second = collect(&provider, &request)
@@ -298,6 +301,7 @@ async fn gemini_accepts_a_history_it_never_signed() {
         }]),
         tool_call_id: None,
         thinking_blocks: Vec::new(),
+        signed_by: None,
     });
     request.messages.push(Message {
         role: Role::Tool,
@@ -306,6 +310,7 @@ async fn gemini_accepts_a_history_it_never_signed() {
         tool_calls: None,
         tool_call_id: Some("c1".into()),
         thinking_blocks: Vec::new(),
+        signed_by: None,
     });
     request
         .messages

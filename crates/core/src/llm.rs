@@ -48,6 +48,12 @@ pub struct Message {
     /// endpoint must not carry a field it never defined.
     #[serde(default, skip_serializing)]
     pub thinking_blocks: Vec<serde_json::Value>,
+    /// The model that wrote this reply's thinking and signed its calls, as the
+    /// gateway named it when it served the reply. A signature is that model's
+    /// alone: Anthropic's API drops a block another model cannot read, but
+    /// Gemini refuses a call signed by another, so it is checked here.
+    #[serde(default, skip_serializing)]
+    pub signed_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

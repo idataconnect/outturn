@@ -151,18 +151,27 @@ the edit is invalid. So:
    `signature_delta`, and the notes between tool calls arrive as small
    thinking blocks shown between the calls. An easy question at medium
    effort may not think at all.
-4. **Keep it.** Within a turn, built. The gateway assembles each signed block
-   and sends it once it closes, as `thinking_block` on a chunk beside the
-   `reasoning` it already streamed; an unsigned one, from a cut stream, is
-   let go. The runtime holds a reply's blocks, and any signatures on its
-   calls, by the reply's first call id, and puts them back when the guest
-   replays that reply -- as `thinking_blocks` on the message and
-   `provider_signature` on each call -- but only when the round asks for the
-   same model. The guest never sees them, so the agent interface did not
-   change, and an agent cannot edit what it would only break. The same path
-   carries Gemini's call signatures, which the runtime used to drop, so a
-   Gemini tool loop gets its calls back as calls instead of rendered as
-   prose. Across turns, not yet: that needs the blocks stored with the reply
-   and the model that served it, which is phase 1 of [models](models.md).
-5. **Place system messages by the rule**, effort as a message, and
-   `drop_block`.
+4. **Keep it.** Built. The gateway assembles each signed block and sends it
+   once it closes, as `thinking_block` on a chunk beside the `reasoning` it
+   already streamed; an unsigned one, from a cut stream, is let go. The
+   runtime holds a reply's blocks and any signatures on its calls, by the
+   reply's first call id, with the model the gateway said served it, and puts
+   them back when the guest replays that reply -- as `thinking_blocks` and
+   `signed_by` on the message and `provider_signature` on each call. The
+   guest never sees them, so the agent interface did not change. A finished
+   turn reports what it signed, the API keeps it on the reply under
+   `metadata.signed`, and the next turn is handed back those whose calls are
+   still in its conversation.
+
+   Which model may read them is the gateway's call, since only it knows where
+   a round is going. Anthropic's API drops a block the receiving model cannot
+   read, unbilled, and asks for blocks to be passed back regardless, so the
+   gateway sends them. Gemini refuses a call another model signed, so the
+   gateway renders that exchange as prose instead. And because a block given
+   back after anything before it changed is a 400 on newer accounts -- a
+   system prompt composed afresh, history trimmed or compacted -- every
+   adaptive request asks for `block_binding.prefix_mismatch_behavior:
+   "drop_block"` under the `thinking-binding-controls-2026-08-01` beta: a
+   stale block costs its own reasoning and nothing more.
+5. **Place system messages by the rule**, and effort as a message.
+   `drop_block` is on already, with step 4.

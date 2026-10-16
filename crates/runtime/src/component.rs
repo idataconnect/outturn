@@ -786,13 +786,13 @@ impl outturn::agent::host::Host for AgentHost {
                 if let Some(id) = &m.tool_call_id {
                     value["tool_call_id"] = serde_json::json!(id);
                 }
-                // Only to the model that signed them. Another refuses or
-                // ignores them, and the reply still reads as text and calls.
-                if let Some(signed) = tool_calls
-                    .first()
-                    .and_then(|c| self.signed.get(&c.id))
-                    .filter(|s| s.model == model)
-                {
+                // With the model that signed them named beside them. Which model
+                // may read them is the gateway's question -- it alone knows
+                // which one this round goes to.
+                if let Some(signed) = tool_calls.first().and_then(|c| self.signed.get(&c.id)) {
+                    if !signed.model.is_empty() {
+                        value["signed_by"] = serde_json::json!(signed.model);
+                    }
                     if !signed.thinking.is_empty() {
                         value["thinking_blocks"] = serde_json::json!(signed.thinking);
                     }
@@ -915,10 +915,9 @@ impl outturn::agent::host::Host for AgentHost {
             .find(|p| matches!(p, ContentPart::Call(_)))
             && (!served.signed.thinking.is_empty() || !served.signed.calls.is_empty())
         {
-            // Keyed to the model asked for, which is what the next round asks
-            // for too; the name a provider answers under can differ from it.
             let signed = Signed {
-                model: model.clone(),
+                first_call: first.id.clone(),
+                model: served.model.clone().unwrap_or_default(),
                 ..served.signed
             };
             self.signed.insert(first.id.clone(), signed);
@@ -1931,19 +1930,7 @@ struct Served {
     signed: Signed,
 }
 
-/// The parts of a reply that go back to the model as they came and are never
-/// shown to the guest: signed thinking blocks, and the signatures a provider
-/// puts on tool calls. Neither means anything to an agent, and an agent that
-/// could edit them could only break them.
-#[derive(Default, Clone)]
-struct Signed {
-    /// The model that signed them, which is the only one that will take
-    /// them back.
-    model: String,
-    thinking: Vec<serde_json::Value>,
-    /// By call id.
-    calls: std::collections::HashMap<String, String>,
-}
+use outturn_core::protocol::work::SignedReply as Signed;
 
 /// Compiled components to keep, keyed by the bytes they came from.
 ///
@@ -2109,6 +2096,8 @@ pub struct Finished {
     /// Whether what stopped it is a question somebody will answer, and so
     /// whether the session should latch. See `ExecuteEvent::Done`.
     pub awaiting_approval: bool,
+    /// What this turn's replies were signed with, for the turns after it.
+    pub signed: Vec<Signed>,
 }
 
 pub struct AgentRunner {
@@ -2147,6 +2136,8 @@ pub struct RunOptions {
     pub timezone: Option<String>,
     /// Passed to providers that support it; ignored by those that do not.
     pub reasoning_effort: Option<String>,
+    /// What earlier replies were signed with, from the API.
+    pub signed: Vec<Signed>,
     /// Applied when the guest names no temperature of its own.
     pub temperature: Option<f32>,
     /// Names the class of traffic, which the gateway resolves to a route.
@@ -2261,6 +2252,12 @@ impl AgentRunner {
 
         // No preopened directories, no environment, no network: everything the
         // guest can reach is an explicit import.
+        // Told apart from what this turn signs, which is all it reports.
+        let handed_in: std::collections::HashSet<String> = options
+            .signed
+            .iter()
+            .map(|s| s.first_call.clone())
+            .collect();
         let host = AgentHost {
             cancelled: false,
             held: None,
@@ -2288,7 +2285,11 @@ impl AgentRunner {
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.
             reasoning_effort: options.reasoning_effort,
-            signed: Default::default(),
+            signed: options
+                .signed
+                .into_iter()
+                .map(|s| (s.first_call.clone(), s))
+                .collect(),
             temperature: options.temperature,
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
@@ -2425,6 +2426,13 @@ impl AgentRunner {
             cost,
             held: host.held.clone(),
             awaiting_approval: host.awaiting_approval,
+            // Only this turn's: what the API handed in is already stored.
+            signed: host
+                .signed
+                .values()
+                .filter(|s| !handed_in.contains(&s.first_call))
+                .cloned()
+                .collect(),
         })
     }
 }

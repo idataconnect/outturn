@@ -46,6 +46,11 @@ pub struct ExecuteRequest {
     /// Resolved from the settings cascade. Absent leaves it to the provider.
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// What earlier replies in the conversation were signed with, so a model
+    /// reading its own past tool calls gets its reasoning back with them.
+    /// Empty from an older API, which replays replies without it.
+    #[serde(default)]
+    pub signed: Vec<SignedReply>,
     /// What this turn is for. The gateway resolves it to a route.
     #[serde(default)]
     pub traffic_type: Option<String>,
@@ -229,6 +234,10 @@ pub enum ExecuteEvent {
         /// False from an older runtime, which is the latching behavior it had.
         #[serde(default)]
         awaiting_approval: bool,
+        /// What this turn's replies that called a tool were signed with, for
+        /// the turns after it. Empty from an older runtime.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        signed: Vec<SignedReply>,
     },
     /// The turn failed.
     Failed {
@@ -247,4 +256,24 @@ pub enum ExecuteEvent {
         #[serde(default)]
         terminal: bool,
     },
+}
+
+/// The part of a reply that only the model that wrote it can read: its signed
+/// thinking blocks, and the signatures a provider put on its calls. Never shown
+/// to the agent -- it means nothing to one, and an agent that could edit it
+/// could only break it -- but kept with the reply, so the reasoning goes back
+/// to the model when the conversation does (docs/thinking.md).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct SignedReply {
+    /// The reply's first call, which is how the reply is recognized when it
+    /// comes back: a reply that signed anything called a tool.
+    pub first_call: String,
+    /// The model that served it, as the gateway named it.
+    pub model: String,
+    /// The thinking blocks, exactly as the provider streamed them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<serde_json::Value>,
+    /// Signatures on calls, by call id.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub calls: std::collections::HashMap<String, String>,
 }

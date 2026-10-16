@@ -11650,6 +11650,74 @@ async fn a_template_agent_takes_the_next_free_slug() {
     finish!(h);
 }
 
+/// What a reply was signed with is kept on it, and handed back with the next
+/// turn's conversation, so the model reads its own past tool calls with the
+/// reasoning that made them.
+#[tokio::test]
+async fn a_signed_reply_is_kept_and_handed_to_the_next_turn() {
+    let h = harness_or_skip!();
+    let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
+
+    let thinking =
+        serde_json::json!({"type": "thinking", "thinking": "Check.", "signature": "c2ln"});
+    let stream = [
+        serde_json::json!({"kind": "tool", "id": "c1", "name": "get_current_time", "action": "Reading the clock", "arguments": "{}"}),
+        serde_json::json!({"kind": "tool_result", "id": "c1", "details": "noon", "content": "noon", "is_error": false}),
+        serde_json::json!({"kind": "delta", "idx": 0, "text": "Noon."}),
+        serde_json::json!({"kind": "done", "content": "Noon.", "prompt_tokens": 1, "completion_tokens": 1,
+                           "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0,
+                           "model": "claude-sonnet-5-5",
+                           "signed": [{"first_call": "c1", "model": "claude-sonnet-5-5", "thinking": [thinking]}]}),
+    ]
+    .map(|line| line.to_string())
+    .join("\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let stored: Value = sqlx::query_scalar(
+        "select metadata->'signed' from agent_messages where session_id = $1 and role = 'assistant'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the reply");
+    assert_eq!(stored[0]["first_call"], "c1", "{stored}");
+    assert_eq!(stored[0]["thinking"][0], thinking);
+
+    let workspace: Uuid =
+        sqlx::query_scalar("select workspace_id from agent_sessions where id = $1")
+            .bind(session_id)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("workspace");
+    let admin = h
+        .login_as("second@acme.example", None, Some((workspace, "admin")))
+        .await;
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"and now?"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let next: Value = serde_json::from_str(&body).expect("assignment");
+    assert_eq!(
+        next["signed"][0]["first_call"], "c1",
+        "the next turn was not handed what the reply was signed with: {body}"
+    );
+    assert_eq!(next["signed"][0]["thinking"][0], thinking);
+}
+
 /// A call held for approval is reported as held, not failed, and what a person
 /// reads of it carries neither the platform's mark nor the line telling the
 /// model not to retry. The model's own copy keeps both: the retraction once

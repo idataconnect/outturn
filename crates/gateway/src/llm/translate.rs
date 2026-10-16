@@ -251,6 +251,9 @@ impl ClaudeTraits {
 /// always-on models refuse, and asks for the least effort the model offers:
 /// on those, leaving it out does not stop it thinking. A level the model does
 /// not offer becomes the highest one it does.
+/// The beta that lets a request say what to do with a stale thinking block.
+pub const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
 fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: Option<&str>) {
     let effort = match effort {
         Some("none") => {
@@ -262,7 +265,17 @@ fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: O
         Some("minimal") => Some("low"),
         other => other,
     };
-    body["thinking"] = serde_json::json!({"type": "adaptive", "display": "summarized"});
+    // A thinking block given back is checked against everything before it,
+    // and refused with a 400 -- for every later turn of the session -- if
+    // any of it changed: a system prompt composed afresh, history trimmed or
+    // compacted. Dropping the stale block instead costs that block's
+    // reasoning and nothing else (docs/thinking.md).
+    body["thinking"] = serde_json::json!({
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    });
+    body["anthropic_beta"] = serde_json::json!([THINKING_BINDING_BETA]);
     let Some(asked) = effort else {
         return;
     };
@@ -363,6 +376,7 @@ pub fn anthropic_to_openai(
         },
         tool_call_id: None,
         thinking_blocks: Vec::new(),
+        signed_by: None,
     };
 
     let finish_reason = match resp["stop_reason"].as_str() {
@@ -551,7 +565,15 @@ mod cache_tests {
         let body = asked("claude-sonnet-5-5", Some("medium"), None);
         assert_eq!(
             body["thinking"],
-            serde_json::json!({"type": "adaptive", "display": "summarized"})
+            serde_json::json!({
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            })
+        );
+        assert_eq!(
+            body["anthropic_beta"],
+            serde_json::json!([THINKING_BINDING_BETA])
         );
         assert_eq!(body["output_config"]["effort"], "medium");
         assert_eq!(body["max_tokens"], 128_000);
@@ -1721,7 +1743,15 @@ pub fn openai_to_gemini_for(
                 // every call does. A turn with none came from a model that is
                 // no longer answering, and replaying its calls is refused.
                 let calls: Vec<&ToolCall> = message.tool_calls.iter().flatten().collect();
-                if !calls.is_empty() && !calls.iter().any(|c| c.provider_signature.is_some()) {
+                // Signed by another model is as good as unsigned: this one
+                // refuses it, and the exchange is rendered instead.
+                let signed_here = message
+                    .signed_by
+                    .as_deref()
+                    .is_none_or(|by| by == target_model);
+                if !calls.is_empty()
+                    && (!signed_here || !calls.iter().any(|c| c.provider_signature.is_some()))
+                {
                     let mut rendered = text.clone();
                     for call in &calls {
                         rendered_calls.insert(call.id.clone());
@@ -2092,6 +2122,7 @@ pub fn gemini_to_openai(
                 tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                 tool_call_id: None,
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             },
             finish_reason,
             parts,
@@ -2483,6 +2514,7 @@ mod gemini_tests {
                 tool_calls: Some(vec![call]),
                 tool_call_id: None,
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             },
             Message {
                 role: Role::Tool,
@@ -2491,6 +2523,7 @@ mod gemini_tests {
                 tool_calls: None,
                 tool_call_id: Some("call_538131".into()),
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             },
         ];
         let request = ChatCompletionRequest {
@@ -2553,6 +2586,31 @@ mod gemini_tests {
         );
     }
 
+    /// A call another model signed is as good as unsigned to this one, which
+    /// would refuse it: the exchange is rendered instead of replayed.
+    #[test]
+    fn a_call_signed_by_another_model_is_rendered() {
+        let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "", "signed_by": "gemini-3.5-pro",
+                 "tool_calls": [{"id": "c1", "type": "function", "provider_signature": "c2ln",
+                                 "function": {"name": "get_weather", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "fog"},
+            ],
+        }))
+        .expect("request");
+        let elsewhere = openai_to_gemini_for(&request, "gemini-3.7-flash")
+            .expect("translate")
+            .to_string();
+        assert!(!elsewhere.contains("functionCall"), "{elsewhere}");
+        let here = openai_to_gemini_for(&request, "gemini-3.5-pro")
+            .expect("translate")
+            .to_string();
+        assert!(here.contains("thoughtSignature"), "{here}");
+    }
+
     /// A conversation that changed models has tool calls whose signatures
     /// belong to a model no longer answering. Replaying them natively is
     /// refused, so the exchange is rendered as prose: every byte of what
@@ -2577,6 +2635,7 @@ mod gemini_tests {
                     }]),
                     tool_call_id: None,
                     thinking_blocks: Vec::new(),
+                    signed_by: None,
                 },
                 Message {
                     role: Role::Tool,
@@ -2585,6 +2644,7 @@ mod gemini_tests {
                     tool_calls: None,
                     tool_call_id: Some("c1".into()),
                     thinking_blocks: Vec::new(),
+                    signed_by: None,
                 },
             ],
             temperature: None,
@@ -2696,6 +2756,7 @@ mod gemini_tests {
                     tool_calls: None,
                     tool_call_id: None,
                     thinking_blocks: Vec::new(),
+                    signed_by: None,
                 },
                 Message {
                     role: Role::System,
@@ -2704,6 +2765,7 @@ mod gemini_tests {
                     tool_calls: None,
                     tool_call_id: None,
                     thinking_blocks: Vec::new(),
+                    signed_by: None,
                 },
                 Message {
                     role: Role::User,
@@ -2712,6 +2774,7 @@ mod gemini_tests {
                     tool_calls: None,
                     tool_call_id: None,
                     thinking_blocks: Vec::new(),
+                    signed_by: None,
                 },
             ],
             temperature: None,
@@ -2754,6 +2817,7 @@ mod gemini_tests {
                 }]),
                 tool_call_id: None,
                 thinking_blocks: Vec::new(),
+                signed_by: None,
             }],
             temperature: None,
             max_tokens: None,

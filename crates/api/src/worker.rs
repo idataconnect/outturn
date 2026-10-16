@@ -119,6 +119,19 @@ fn note_if_cut_off(message: &super::chat::Message, projected: &mut Vec<serde_jso
 }
 
 /// The projection alone, for callers that do not need to name stored messages.
+/// Every signed reply the history's replies carry.
+fn signed_replies(
+    history: &[super::chat::Message],
+) -> Vec<outturn_core::protocol::work::SignedReply> {
+    history
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .filter_map(|m| m.metadata.get("signed"))
+        .filter_map(|s| serde_json::from_value::<Vec<_>>(s.clone()).ok())
+        .flatten()
+        .collect()
+}
+
 #[cfg(test)]
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
     projected_with_sources(messages).0
@@ -696,6 +709,9 @@ pub(super) struct TurnOutcome {
     /// agent asked for: a route may answer with another, and a provider may
     /// quietly serve a newer version under the old name (docs/models.md).
     model: Option<String>,
+    /// What the turn's replies that called a tool were signed with, kept on
+    /// the reply for the turns after it.
+    signed: Vec<outturn_core::protocol::work::SignedReply>,
 }
 
 /// A runtime reported on a turn it no longer holds.
@@ -1269,6 +1285,7 @@ impl Worker {
                         model,
                         held,
                         awaiting_approval,
+                        signed,
                     }) => {
                         // Latched here, where generation actually stopped,
                         // rather than a turn later when the next one is
@@ -1323,6 +1340,7 @@ impl Worker {
                             },
                             provider,
                             model,
+                            signed,
                         });
                     }
                     Ok(ExecuteEvent::Failed {
@@ -1957,7 +1975,7 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("recording skills: {e}"))?;
 
-        let conversation = {
+        let conversation: Vec<outturn_core::protocol::work::ConversationMessage> = {
             // What the conversation may actually have. The system prompt is
             // sent on every round too and nothing can trim it, so it is spent
             // before any of this -- see `trim::room_for_conversation`.
@@ -2004,6 +2022,26 @@ impl Worker {
                 .collect::<Result<_, _>>()?
         };
 
+        // What the replies still in the conversation were signed with -- not
+        // every reply's, since one trimmed or compacted away has nothing left
+        // to attach to.
+        let signed = {
+            let calls: std::collections::HashSet<&str> = conversation
+                .iter()
+                .flat_map(|m| &m.parts)
+                .filter_map(|p| match p {
+                    outturn_core::protocol::work::ConversationPart::Call { call } => {
+                        Some(call.id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            signed_replies(&history)
+                .into_iter()
+                .filter(|s| calls.contains(s.first_call.as_str()))
+                .collect()
+        };
+
         Ok(Prepared::Run(Box::new(
             outturn_core::protocol::work::ExecuteRequest {
                 session_id: payload.session_id,
@@ -2021,6 +2059,7 @@ impl Worker {
                 timezone: payload.timezone.clone(),
                 reasoning_effort: settings.reasoning_effort,
                 temperature: settings.temperature,
+                signed,
                 traffic_type: Some(traffic_type_for(&agent.policy, payload.user_id.is_none())),
                 max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
                 reply_id: placeholder.message.id,
@@ -2820,13 +2859,19 @@ impl Worker {
             .parts
             .iter()
             .any(|p| matches!(p, super::chat::parts::Part::Reasoning { .. }));
-        let metadata = if reply.tools.is_empty() && !thought {
+        let mut metadata = if reply.tools.is_empty() && !thought {
             serde_json::json!({})
         } else if reply.tools.is_empty() {
             serde_json::json!({ "parts": reply.parts })
         } else {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
+        // Beside the parts rather than in them: what is signed goes back to
+        // the model and to nothing else, and a reader is shown the thinking
+        // already, as the parts.
+        if !reply.signed.is_empty() {
+            metadata["signed"] = serde_json::json!(reply.signed);
+        }
 
         let finished = self
             .chat

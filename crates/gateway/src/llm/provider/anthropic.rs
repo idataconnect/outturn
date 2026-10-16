@@ -22,6 +22,29 @@ impl AnthropicProvider {
     }
 }
 
+/// The betas a translated body asks for, moved to the header the API reads
+/// them from. The translation writes them into the body because that is where
+/// Bedrock reads them; sent here, a field the API does not define is a 400.
+/// None asked for means no header at all, rather than an empty one.
+fn take_betas(body: &mut serde_json::Value) -> reqwest::header::HeaderMap {
+    let betas = body
+        .as_object_mut()
+        .and_then(|b| b.remove("anthropic_beta"))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(&betas)
+        && !betas.is_empty()
+    {
+        headers.insert("anthropic-beta", value);
+    }
+    headers
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     fn provider(&self) -> Provider {
@@ -32,14 +55,16 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, ProviderError> {
-        let anthropic_req = translate::openai_to_anthropic(request)
+        let mut anthropic_req = translate::openai_to_anthropic(request)
             .map_err(|e| ProviderError::Translation(e.to_string()))?;
+        let betas = take_betas(&mut anthropic_req);
 
         let resp = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
+            .headers(betas)
             .json(&anthropic_req)
             .send()
             .await
@@ -72,12 +97,14 @@ impl LlmProvider for AnthropicProvider {
         let mut body = translate::openai_to_anthropic(request)
             .map_err(|e| ProviderError::Translation(e.to_string()))?;
         body["stream"] = serde_json::json!(true);
+        let betas = take_betas(&mut body);
 
         let response = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
+            .headers(betas)
             .json(&body)
             .send()
             .await

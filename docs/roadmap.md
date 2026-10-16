@@ -18,14 +18,9 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **Thinking kept across turns**, step 4's remainder in
-   [thinking](thinking.md). Within a turn, done. Across turns, the blocks are
-   stored with the reply and given back only to the model that served it, which the
-   reply now records.
-2. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
-   an effort change sent as a message, and stale blocks dropped rather than
-   refused.
-3. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
+1. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
+   and an effort change sent as a message rather than a parameter.
+2. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
    per-model settings, replacing the name-matching in `ClaudeTraits`.
 
 ## Tier 1 — independent

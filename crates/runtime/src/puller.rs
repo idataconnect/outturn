@@ -309,6 +309,7 @@ impl Puller {
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,
+            signed: request.signed,
             temperature: request.temperature,
             traffic_type: request
                 .traffic_type
@@ -377,6 +378,7 @@ impl Puller {
                     model: done.cost.model,
                     held: done.held,
                     awaiting_approval: done.awaiting_approval,
+                    signed: done.signed,
                 }),
                 Err(e) if e.out_of_fuel() => tx.send(ExecuteEvent::Failed {
                     message: super::component::OUT_OF_FUEL.into(),
