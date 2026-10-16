@@ -2252,7 +2252,7 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         r#"{"kind":"delta","idx":0,"text":"Hi"}"#,
         r#"{"kind":"usage","round":0,"endpoint":"openai:http://vllm:8000","model":"qwen","paid_by":"operator","prompt_tokens":10,"completion_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0,"reasoning_tokens":0}"#,
         r#"{"kind":"usage","round":1,"endpoint":"anthropic:https://api.anthropic.com","model":"claude-sonnet-5","paid_by":"operator","prompt_tokens":20,"completion_tokens":5,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"service_tier":"priority","provider_usage":{"input_tokens":20,"cache_creation":{"ephemeral_1h_input_tokens":7}}}"#,
-        r#"{"kind":"done","content":"Hi","prompt_tokens":30,"completion_tokens":7,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"provider":"anthropic:https://api.anthropic.com"}"#,
+        r#"{"kind":"done","content":"Hi","prompt_tokens":30,"completion_tokens":7,"cache_read_tokens":3,"cache_write_tokens":0,"reasoning_tokens":1,"provider":"anthropic:https://api.anthropic.com","model":"claude-sonnet-5"}"#,
     ]
     .join("\n");
     let req = Request::builder()
@@ -2264,6 +2264,20 @@ async fn each_model_call_is_written_to_the_ledger_and_exported() {
         .expect("request");
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    // The reply names the model that served its last round, not the one the
+    // agent was configured with.
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        body.contains(r#""role":"assistant""#) && body.contains(r#""model":"claude-sonnet-5""#),
+        "the reply was not credited to the model that served it: {body}"
+    );
 
     // Paged one at a time, to prove the cursor.
     let (status, body) = h.get("/v1/usage?limit=1", Some(&admin)).await;

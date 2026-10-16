@@ -374,6 +374,7 @@ impl Puller {
                     cache_write_tokens: done.cost.cache_write_tokens,
                     reasoning_tokens: done.cost.reasoning_tokens,
                     provider: done.cost.provider,
+                    model: done.cost.model,
                     held: done.held,
                     awaiting_approval: done.awaiting_approval,
                 }),

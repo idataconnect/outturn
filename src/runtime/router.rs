@@ -238,6 +238,10 @@ pub enum ExecuteEvent {
         reasoning_tokens: u32,
         #[serde(default)]
         provider: Option<String>,
+        /// The model that served the turn's last round, as the gateway
+        /// reported it. Absent from an older runtime, which stores nothing.
+        #[serde(default)]
+        model: Option<String>,
         /// Why a hold ended this turn, where one did. Absent otherwise, and
         /// absent from an older runtime that does not send it -- which reads
         /// as "a person stopped it", the same thing it read as before.

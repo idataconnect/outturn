@@ -378,6 +378,9 @@ pub struct AgentHost {
     spent: Usage,
     /// Which endpoint served this turn, as the gateway reported it.
     served_by: Option<String>,
+    /// And which model it was, as the gateway reported it: what a route
+    /// actually sent, not what the agent asked for.
+    served_model: Option<String>,
     /// Whether any round of this turn has streamed text yet. Decides whether
     /// the next round's first token is preceded by a paragraph break.
     streamed: bool,
@@ -685,6 +688,10 @@ pub struct TurnCost {
     pub cache_write_tokens: u32,
     pub reasoning_tokens: u32,
     pub provider: Option<String>,
+    /// The model the last round was served by, as the gateway said. None when
+    /// it said nothing -- never the model the agent asked for, which a route
+    /// may have replaced.
+    pub model: Option<String>,
 }
 
 impl WasiView for AgentHost {
@@ -990,6 +997,9 @@ impl outturn::agent::host::Host for AgentHost {
         }
         if served_by.is_some() {
             self.served_by = served_by;
+        }
+        if served.model.is_some() {
+            self.served_model = served.model;
         }
 
         Ok(completion)
@@ -2344,6 +2354,7 @@ impl AgentRunner {
                 reasoning_tokens: 0,
             },
             served_by: None,
+            served_model: None,
             streamed: false,
             storage: options.storage,
             workspace_id: options.workspace_id,
@@ -2452,6 +2463,7 @@ impl AgentRunner {
             cache_write_tokens: host.spent.cache_write_tokens,
             reasoning_tokens: host.spent.reasoning_tokens,
             provider: host.served_by.clone(),
+            model: host.served_model.clone(),
         };
 
         // Beside the cost rather than on it: `TurnCost` is what a turn spent,

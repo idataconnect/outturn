@@ -22,22 +22,18 @@ committed and verified, and new work goes in where it belongs, not at the end.
    compilation off and run LTO for each of five binaries, so a one-line change
    costs a full rebuild. The local overlay builds with a profile that keeps
    incremental compilation and skips LTO; production is unchanged.
-2. **The served model, phase 1 of [models](models.md).** Half done in a stash:
-   the runtime reports the model that answered, and the worker still stores
-   the one asked for. Before the crate split, since the split moves the files
-   the stash touches.
-3. **Split the crate along its tiers.** One 60,000-line crate recompiles whole
+2. **Split the crate along its tiers.** One 60,000-line crate recompiles whole
    for any change. Shared types, then `api`, `gateway` and `runtime` as crates
    of their own, so a gateway change rebuilds the gateway -- and so the
    compiler, not convention, says which tier may reach what.
-4. **Thinking kept across turns**, step 4's remainder in
+3. **Thinking kept across turns**, step 4's remainder in
    [thinking](thinking.md). Within a turn, done. Across turns, the blocks are
-   stored with the reply and given back only to the model that served it, so
-   it needs item 2.
-5. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
+   stored with the reply and given back only to the model that served it, which the
+   reply now records.
+4. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
    an effort change sent as a message, and stale blocks dropped rather than
    refused.
-6. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
+5. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
    per-model settings, replacing the name-matching in `ClaudeTraits`.
 
 ## Tier 1 — independent

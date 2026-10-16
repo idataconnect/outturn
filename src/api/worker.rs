@@ -692,6 +692,10 @@ pub(super) struct TurnOutcome {
     usage: Usage,
     /// The endpoint that served it, for attributing spend.
     provider: Option<String>,
+    /// The model that served it, as the gateway reported it. Not the one the
+    /// agent asked for: a route may answer with another, and a provider may
+    /// quietly serve a newer version under the old name (docs/models.md).
+    model: Option<String>,
 }
 
 /// A runtime reported on a turn it no longer holds.
@@ -1262,6 +1266,7 @@ impl Worker {
                         cache_write_tokens,
                         reasoning_tokens,
                         provider,
+                        model,
                         held,
                         awaiting_approval,
                     }) => {
@@ -1317,6 +1322,7 @@ impl Worker {
                                 reasoning_tokens: Some(reasoning_tokens as i32),
                             },
                             provider,
+                            model,
                         });
                     }
                     Ok(ExecuteEvent::Failed {
@@ -2803,11 +2809,6 @@ impl Worker {
             return Err(LeaseLost.into());
         }
 
-        let (agent, _) = self
-            .agent_for_turn(payload.workspace_id, payload.agent_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("agent: {e}"))?;
-
         // `parts` is kept whenever it says something the flat reply does not:
         // which calls were made, and where the model stopped to think. A reply
         // that is one run of prose needs none of it, and storing it there would
@@ -2829,7 +2830,10 @@ impl Worker {
             .set_message_content(
                 reply_id,
                 &reply.content,
-                model_for(&agent.policy).ok().as_deref(),
+                // What served, or nothing: a runtime that did not say leaves
+                // the reply unattributed rather than credited to whatever
+                // was configured.
+                reply.model.as_deref(),
                 reply.provider.as_deref(),
                 reply.usage,
                 metadata,

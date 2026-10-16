@@ -333,7 +333,12 @@ Most of the risk is in time passing, so most tests are about it.
 
 Each phase leaves the platform working.
 
-1. **Served model.** Record what served on the reply. Small, and independent.
+1. **Served model.** Record what served on the reply. Built: the runtime
+   reports the model the gateway said answered the turn's last round, and the
+   reply stores that or nothing -- never the configured one. The ledger
+   already had it per call. Showing a served model that differs from the
+   configured one is left for the chain editor, which is where the
+   configured one will be visible to compare against.
 2. **Retirement falls over.** The gateway's walk continues past a refused
    model, with its breaker. Independent of everything else, and the thing that
    prevents a retirement from becoming an outage today.
