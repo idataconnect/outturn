@@ -18,18 +18,14 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **Split the crate along its tiers, before any more features.** One 60,000-line crate recompiles whole
-   for any change. Shared types, then `api`, `gateway` and `runtime` as crates
-   of their own, so a gateway change rebuilds the gateway -- and so the
-   compiler, not convention, says which tier may reach what.
-2. **Thinking kept across turns**, step 4's remainder in
+1. **Thinking kept across turns**, step 4's remainder in
    [thinking](thinking.md). Within a turn, done. Across turns, the blocks are
    stored with the reply and given back only to the model that served it, which the
    reply now records.
-3. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
+2. **Step 5 of [thinking](thinking.md):** system messages placed by one rule,
    an effort change sent as a message, and stale blocks dropped rather than
    refused.
-4. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
+3. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
    per-model settings, replacing the name-matching in `ClaudeTraits`.
 
 ## Tier 1 — independent
@@ -222,7 +218,7 @@ of the three, so it waits until titles are not enough.
 
 Stopping is built and suspension is not, in the precise sense that matters:
 **nothing can take a suspended hold.** Both endpoints hardcode
-`Strength::Stopped` (`src/api/router.rs`), so `Strength::Suspended` appears
+`Strength::Stopped` (`crates/api/src/router.rs`), so `Strength::Suspended` appears
 only in the enum, its parser, the verdict mapping and unit tests. The
 `Verdict::Suspended` arm in `worker::inhibited` is reachable only by a row
 written straight to the database.
@@ -447,7 +443,7 @@ the same way. The library's default writes `:command[Name]{name=slug}`, which
 nothing here renders -- so the model received markdown-directive syntax raw,
 said it was not a syntax it responded to, and then invented a fact rather than
 stopping. Replacing it with a sentence then wrote the slug, which reaches the
-model nowhere at all: `src/api/skill/mod.rs` composes each skill into the
+model nowhere at all: `crates/api/src/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
 
@@ -479,7 +475,7 @@ host, and installs a skill describing its API -- so the platform's own
 demonstration is one flag.
 
 The installation is a Job calling the public API rather than anything in the
-platform. The first version was a Rust module in `src/api/` with the skill
+platform. The first version was a Rust module in `crates/api/src/` with the skill
 embedded by `include_str!`, which worked and was the wrong answer: a customer
 wiring up their own service cannot add a module to outturn, and a fork to do it
 loses to every upgrade. What the Job does -- sign in, create a skill, approve
@@ -536,7 +532,7 @@ the server is the origin, so there is nothing local to disagree with it.
 **Replaying what the model was thinking.** Showing it is built: reasoning is
 stored as a part of the reply (`Part::Reasoning`) and drawn in the transcript.
 What is left is the provider half. Anthropic's thinking blocks are still
-dropped at `src/gateway/llm/translate.rs` with their signatures, so a turn
+dropped at `crates/gateway/src/llm/translate.rs` with their signatures, so a turn
 continuing into tool use cannot return them, and nothing gates display: every
 workspace sees reasoning where the model gave it. What a provider will accept
 back is one question and what a person may see is another; only the second is

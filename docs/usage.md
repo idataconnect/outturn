@@ -234,7 +234,7 @@ Edits come from `skill_versions`, where every save is a version.
   versions and how many distinct skills each wrote.
 
 Authors are named by the rule every actor is, written once in
-`src/api/actor.rs` and only repeated by `ui/src/lib/actors.ts`. Anybody is
+`crates/api/src/actor.rs` and only repeated by `ui/src/lib/actors.ts`. Anybody is
 named by their display name, except the operator's staff, who appear as one
 row called the operator with no id -- a platform admin is named to no customer,
 even in a workspace they belong to. A version nobody signed, from an install or

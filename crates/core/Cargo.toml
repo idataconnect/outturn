@@ -1,0 +1,41 @@
+[package]
+name = "outturn-core"
+description = "What every outturn tier shares: storage, the queue, tokens, egress rules and the protocols between tiers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# See the root manifest: rustdoc cannot resolve the component bindings, and
+# there are no doc examples to run.
+doctest = false
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+pasetors = { workspace = true }
+ed25519-dalek = { workspace = true }
+thiserror = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+subtle = { workspace = true }
+chrono = { workspace = true }
+rust-s3 = { workspace = true }
+hpke = { workspace = true }
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

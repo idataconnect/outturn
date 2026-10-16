@@ -76,7 +76,7 @@ check() {
 
   # The signing secret and the public key have to belong to each other. A
   # mismatched pair starts three healthy-looking tiers that reject each
-  # other's tokens -- the failure src/auth/token.rs:149 records having been
+  # other's tokens -- the failure crates/core/src/auth/token.rs:149 records having been
   # through once already.
   local secret public derived
   secret=$(awk '/OUTTURN_TOKEN_SECRET:/ { print $2; exit }' "$secret_file" 2>/dev/null | tr -d '"' || true)

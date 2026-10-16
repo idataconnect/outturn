@@ -1,7 +1,7 @@
 # Settings
 
 How defaults cascade from the operator to workspaces to agents, and who may
-change what. Built: the catalog is `src/api/settings/mod.rs`, the rows are
+change what. Built: the catalog is `crates/api/src/settings/mod.rs`, the rows are
 `setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
 turn in `prepare_turn`. It holds eight settings, listed under
 [What is in it](#what-is-in-it).
@@ -146,7 +146,7 @@ removes it.
 ## Session naming
 
 A conversation nobody has titled is named by a model, as a background job
-queued when a turn finishes (`src/api/naming.rs`). The setting decides when,
+queued when a turn finishes (`crates/api/src/naming.rs`). The setting decides when,
 and how much of the conversation the model is shown:
 
 - **After the first message** (`after_message`): queued when the first turn
@@ -188,7 +188,7 @@ to restate what the model already answered. It is found by its text rather
 than its position, since a turn resumed after an approval does not end on its
 prompt; a prompt nobody typed, such as a wake, is sent once. And it changes
 only what the model is sent, never the stored conversation -- see `repeated`
-in `src/api/worker.rs`.
+in `crates/api/src/worker.rs`.
 
 The cost is the prompt's tokens a second time, on every round of the turn.
 After the first round they are part of a cached prefix where the provider

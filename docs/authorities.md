@@ -6,7 +6,7 @@ Who may do what, and where each half of that answer lives.
 
 **Authorities** name actions the code can take: `agents:create`,
 `sessions:read`, `storage:workspace:write`. They are an enum in
-`src/auth/rbac.rs`, and every handler checks one by name. The list changes when
+`crates/core/src/auth/rbac.rs`, and every handler checks one by name. The list changes when
 the code changes and nowhere else, because an authority nothing checks is
 noise and an action nothing names cannot be granted.
 

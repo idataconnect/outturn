@@ -1,19 +1,8 @@
-pub mod api;
-pub mod auth;
-pub mod breaker;
-pub mod db;
-pub mod egress;
-pub mod events;
-pub mod extract;
-pub mod gateway;
-pub mod http_client;
-pub mod inhibitor;
-pub mod jobs;
-pub mod lifecycle;
-pub mod llm;
-pub mod protocol;
-pub mod runtime;
-pub mod scope;
-pub mod storage;
-pub mod utf8;
-pub mod vision;
+//! The whole platform under one name, for the integration tests and the tools
+//! that drive more than one tier. The tiers themselves are crates of their
+//! own (`crates/`), so a change to one does not rebuild the others.
+
+pub use outturn_api as api;
+pub use outturn_core::*;
+pub use outturn_gateway as gateway;
+pub use outturn_runtime as runtime;

@@ -1,7 +1,7 @@
 # Credential bindings
 
 Which workspace may use a credential the operator set up, and where it may be
-sent. Built: `src/egress/bindings.rs`, enforced in `src/gateway/egress/mod.rs`.
+sent. Built: `crates/core/src/egress/bindings.rs`, enforced in `crates/gateway/src/egress/mod.rs`.
 
 Designed to be replaced: [sealed-credentials.md](sealed-credentials.md) keeps
 the property this document argues for -- nobody who can write the database can
@@ -108,7 +108,7 @@ key an organization shares across its workspaces -- the first arrangement in
 [workspaces.md](workspaces.md) -- one copy of the secret per workspace, and
 the copies are what drift.
 
-**Committing bindings into the turn token**, the way `src/egress/commit.rs`
+**Committing bindings into the turn token**, the way `crates/core/src/egress/commit.rs`
 commits the rules. The commitment exists because the rules travel through the
 runtime, which must not be believed about them. Bindings need not travel at
 all: the one fact the gateway needs from the turn is which workspace it
@@ -134,7 +134,7 @@ whatever the API stores is a request to the operator, not a binding.
 ## Where it is enforced
 
 In the gateway, at the two places a variable is read: the static header in
-`src/gateway/egress/mod.rs`, and the exchange in `src/gateway/egress/client.rs`.
+`crates/gateway/src/egress/mod.rs`, and the exchange in `crates/gateway/src/egress/client.rs`.
 The check sits beside `check_credential_variable` and runs before
 `std::env::var`, so a variable the caller is not bound to is never read into
 memory on its behalf.

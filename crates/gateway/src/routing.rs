@@ -1,0 +1,258 @@
+//! Resolving a class of traffic to the providers that serve it.
+//!
+//! The caller names what the work is for -- "assistant" for a user waiting on
+//! a reply -- and the gateway decides where it goes. That division exists
+//! because only the gateway knows which endpoints are currently healthy, and
+//! because a caller that named a provider directly could not be failed over
+//! without lying to it about what it asked for.
+//!
+//! A route also carries the model, so switching a class of traffic to a
+//! cheaper model is configuration rather than a deployment.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use sqlx::Row;
+use sqlx::postgres::PgPool;
+use uuid::Uuid;
+
+use super::llm::provider::{
+    LlmProvider, anthropic::AnthropicProvider, gemini::GeminiProvider, openai::OpenAiProvider,
+};
+
+pub use outturn_core::protocol::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
+
+/// The class to borrow routes from when this one has none.
+///
+/// Background work is assistant work nobody is watching, so until somebody
+/// routes it separately it goes where assistant traffic goes. Not to the
+/// static providers, which is where an unrouted class otherwise lands: a
+/// deployment that confined its assistant traffic to one provider would find
+/// its scheduled turns at a different vendor the day this class appeared.
+fn borrows_from(traffic_type: &str) -> Option<&'static str> {
+    match traffic_type {
+        BACKGROUND_TRAFFIC_TYPE => Some(DEFAULT_TRAFFIC_TYPE),
+        _ => None,
+    }
+}
+
+/// One attempt: where to go, and what to ask for.
+#[derive(Debug, Clone)]
+pub struct Route {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub credential_ref: Option<String>,
+}
+
+impl Route {
+    /// Matches the key the circuit breaker records health against.
+    pub fn endpoint(&self) -> String {
+        format!("{}:{}", self.provider, self.base_url)
+    }
+}
+
+/// Routes for a traffic type, in the order to try them.
+///
+/// A workspace's own routes replace the system defaults rather than extending
+/// them: a workspace that has configured where its traffic goes should not have
+/// requests quietly fall through to somebody else's endpoint.
+pub async fn routes_for(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    traffic_type: &str,
+) -> Result<Vec<Route>, sqlx::Error> {
+    let routes = routes_of(pool, workspace_id, traffic_type).await?;
+    match borrows_from(traffic_type) {
+        Some(parent) if routes.is_empty() => routes_of(pool, workspace_id, parent).await,
+        _ => Ok(routes),
+    }
+}
+
+/// One class's own routes, with no borrowing.
+async fn routes_of(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    traffic_type: &str,
+) -> Result<Vec<Route>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select provider, base_url, model, credential_ref \
+         from traffic_routes \
+         where enabled and traffic_type = $2 \
+           and workspace_id is not distinct from ( \
+               select case when exists ( \
+                   select 1 from traffic_routes \
+                   where enabled and workspace_id = $1 and traffic_type = $2 \
+               ) then $1 else null end \
+           ) \
+         order by priority",
+    )
+    .bind(workspace_id)
+    .bind(traffic_type)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| Route {
+            provider: r.get("provider"),
+            base_url: r.get("base_url"),
+            model: r.get("model"),
+            credential_ref: r.get("credential_ref"),
+        })
+        .collect())
+}
+
+/// Builds providers from routes, keeping one per endpoint.
+///
+/// Providers own a connection pool, so constructing one per request would
+/// throw away keep-alive and make every call pay a fresh TLS handshake. They
+/// are keyed by endpoint rather than by route because two routes differing
+/// only in model share a connection perfectly well.
+#[derive(Default)]
+pub struct ProviderCache {
+    built: tokio::sync::Mutex<HashMap<String, Arc<dyn LlmProvider>>>,
+}
+
+impl ProviderCache {
+    pub async fn get(&self, route: &Route) -> Option<Arc<dyn LlmProvider>> {
+        let key = route.endpoint();
+        let mut built = self.built.lock().await;
+
+        if let Some(existing) = built.get(&key) {
+            return Some(Arc::clone(existing));
+        }
+
+        // Resolved from the environment at construction, so the secret is
+        // never in the database and never in a log line.
+        let credential = route
+            .credential_ref
+            .as_deref()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
+
+        let provider: Arc<dyn LlmProvider> = match route.provider.as_str() {
+            "openai" => Arc::new(OpenAiProvider::new(route.base_url.clone(), credential)),
+            "anthropic" => {
+                // Anthropic has no unauthenticated mode, so a route without a
+                // resolvable credential is a misconfiguration rather than a
+                // local endpoint. Skipped so the next route is tried.
+                let Some(key) = credential else {
+                    tracing::warn!(
+                        base_url = %route.base_url,
+                        credential_ref = ?route.credential_ref,
+                        "anthropic route has no resolvable credential, skipping"
+                    );
+                    return None;
+                };
+                Arc::new(AnthropicProvider::new(route.base_url.clone(), key))
+            }
+            "bedrock" => {
+                // A Bedrock API key where the route names one; otherwise the
+                // AWS keys the gateway was given, signing each request. Neither
+                // is a misconfiguration, as for Anthropic: Bedrock has no
+                // unauthenticated mode.
+                use crate::llm::provider::bedrock::{Auth, BedrockProvider};
+                let auth = match credential {
+                    Some(key) => Auth::ApiKey(key),
+                    None => match Auth::from_aws_environment(&route.base_url) {
+                        Some(signed) => signed,
+                        None => {
+                            tracing::warn!(
+                                base_url = %route.base_url,
+                                credential_ref = ?route.credential_ref,
+                                "bedrock route has no API key and the gateway no AWS keys, skipping"
+                            );
+                            return None;
+                        }
+                    },
+                };
+                Arc::new(BedrockProvider::new(route.base_url.clone(), auth))
+            }
+            "gemini" => {
+                // Like Anthropic, there is no unauthenticated mode, so a route
+                // without a resolvable credential is a misconfiguration.
+                let Some(key) = credential else {
+                    tracing::warn!(
+                        base_url = %route.base_url,
+                        credential_ref = ?route.credential_ref,
+                        "gemini route has no resolvable credential, skipping"
+                    );
+                    return None;
+                };
+                Arc::new(GeminiProvider::new(
+                    route.base_url.clone(),
+                    key,
+                    route.model.clone(),
+                ))
+            }
+            other => {
+                tracing::warn!(provider = other, "unknown provider in route, skipping");
+                return None;
+            }
+        };
+
+        built.insert(key, Arc::clone(&provider));
+        Some(provider)
+    }
+}
+
+/// A message the user sent while a turn was already running.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Pending {
+    /// Which message this was, so the browser can be told it was taken --
+    /// and, carried on to the runtime, so the reply can record where in it
+    /// the message was handed to the agent.
+    pub id: Uuid,
+    pub content: String,
+    pub delivery: String,
+}
+
+/// Takes anything the user has said since this turn began.
+///
+/// The gateway does this because it is the only tier on the path of every
+/// model call that also has a database: the runtime holds no credentials and
+/// no pool by design, and giving it one would widen what a sandbox escape
+/// reaches. Riding the response it was already sending costs nothing.
+///
+/// Handed over exactly once. The update marks each message with the reply that
+/// took it, so a second call returns nothing and the turn queued for that
+/// message knows it has already been answered.
+///
+/// A message is pending when nothing has replied to it and nothing has
+/// absorbed it. The turn's own prompt is excluded automatically, because the
+/// reply being written already hangs off it.
+pub async fn take_pending(
+    pool: &PgPool,
+    session_id: Uuid,
+    reply_id: Uuid,
+) -> Result<Vec<Pending>, sqlx::Error> {
+    let rows = sqlx::query(
+        "update agent_messages set absorbed_by = $2 \
+         where id in ( \
+             select u.id from agent_messages u \
+             where u.session_id = $1 \
+               and u.role = 'user' \
+               and u.absorbed_by is null \
+               and not exists ( \
+                   select 1 from agent_messages r where r.replies_to = u.id \
+               ) \
+             order by u.id \
+             for update skip locked \
+         ) \
+         returning id, content, delivery",
+    )
+    .bind(session_id)
+    .bind(reply_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| Pending {
+            id: r.get("id"),
+            content: r.get("content"),
+            delivery: r.get("delivery"),
+        })
+        .collect())
+}

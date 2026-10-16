@@ -1,0 +1,933 @@
+pub mod stats;
+mod stats_postgres;
+pub use stats_postgres::PostgresSkillStatsStore;
+mod files;
+mod frontmatter;
+mod postgres;
+pub mod wizard;
+
+pub use files::{
+    DeclaredGate, MAX_FILE_BYTES, MAX_FILES, blob_key, changes, declared_gates, link, prepare,
+};
+
+// The declaration at the top of an operation's file. Named rather than the
+// module made public, as `files` and `postgres` beside it are: a caller wants
+// these four things and not the parser's internals.
+pub use frontmatter::{ApprovalRule, FrontmatterError, Parsed, parse};
+
+pub use postgres::PostgresSkillStore;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::actor::Actor;
+use outturn_core::storage::scope;
+
+/// What a skill is: prose in its own right, or instructions layered over one.
+///
+/// An override is not bound to an agent and never stands alone. It belongs to
+/// the workspace and applies wherever its base is used, the same way a setting
+/// override applies to every agent that has not spoken for itself -- so a
+/// workspace states its variation once rather than per agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillKind {
+    Standalone,
+    Override,
+}
+
+impl SkillKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillKind::Standalone => "standalone",
+            SkillKind::Override => "override",
+        }
+    }
+
+    fn parse(s: &str) -> SkillKind {
+        match s {
+            "override" => SkillKind::Override,
+            _ => SkillKind::Standalone,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Skill {
+    pub id: Uuid,
+    /// The platform workspace for a skill the operator ships to everyone, this
+    /// workspace's own id otherwise. A caller may read both and write only the
+    /// second.
+    pub workspace_id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub kind: SkillKind,
+    pub base_skill_id: Option<Uuid>,
+    pub forked_from_skill_id: Option<Uuid>,
+    pub forked_from_version_id: Option<Uuid>,
+    pub retired_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What the live version says it will reach.
+    pub hosts: Vec<String>,
+    /// The declared hosts this workspace has not allowed.
+    ///
+    /// Computed against the caller's own egress rules, so the operator's skill
+    /// reads as unmet to a workspace that has not opened those hosts even
+    /// though the operator has. Empty means the skill is ready to bind: every
+    /// host it names is one the workspace already permits, whether somebody
+    /// allowed it by hand or approved it here.
+    pub unmet_hosts: Vec<String>,
+    /// The live version, which is the newest. Absent only for the moment
+    /// between a skill being created and its first version landing.
+    pub version_id: Option<Uuid>,
+    pub ordinal: Option<i32>,
+    /// An override whose base has been edited since these instructions were
+    /// written against it.
+    ///
+    /// Nothing breaks when this is true -- which is the problem, and why it is
+    /// reported. Instructions that corrected a passage the operator has since
+    /// rewritten still compose, still reach the model, and quietly say
+    /// something about prose that is no longer there.
+    pub base_moved: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillVersion {
+    pub id: Uuid,
+    pub skill_id: Uuid,
+    pub ordinal: i32,
+    pub body: String,
+    pub note: String,
+    pub based_on_version_id: Option<Uuid>,
+    pub hosts: Vec<String>,
+    pub files: Vec<SkillFile>,
+    /// Files nothing leads an agent to: neither the body nor any file it leads
+    /// to names them, so a turn will never know to read them. `None` when a
+    /// file's links are not yet known, which is not the same as none missing.
+    pub unreached: Option<Vec<String>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Who wrote it, as the workspace reading it should see them. Known only
+    /// where the version was read for the history, so not sent with a version
+    /// read on its own, where it would always say nobody was recorded.
+    #[serde(skip)]
+    pub author: Actor,
+}
+
+/// Who wrote a version, as the workspace reading it may know them.
+///
+/// A version of an operator's skill was written by the operator's staff, so
+/// it is the operator's whoever signed it. Anything else is named by the rules
+/// every actor is named by -- see `api::actor`. A version nobody signed -- an
+/// install, a seed, a generated skill -- says so rather than naming a guess.
+pub fn author_as_seen_by(
+    reader: Uuid,
+    owner: Uuid,
+    name: Option<String>,
+    operator_staff: bool,
+) -> Actor {
+    if owner != reader {
+        return Actor::Operator;
+    }
+    Actor::user(name, operator_staff)
+}
+
+/// A version as the history lists it: what a person needs to choose one, and
+/// none of its prose or file list, which are what made a long history slow to
+/// open -- a version of a generated skill carries hundreds of files. Read the
+/// version itself for those.
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionSummary {
+    pub id: Uuid,
+    pub skill_id: Uuid,
+    pub ordinal: i32,
+    pub note: String,
+    pub based_on_version_id: Option<Uuid>,
+    pub hosts: Vec<String>,
+    pub file_count: usize,
+    /// What this version did to the files of the one before it, compared by
+    /// hash. Empty for a first version, which had nothing to change.
+    pub changed: Vec<FileChange>,
+    pub unreached: Option<Vec<String>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub author: Actor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    /// `added`, `removed` or `changed`.
+    pub change: &'static str,
+}
+
+impl VersionSummary {
+    /// `previous` is the version this one followed, when there is one.
+    pub fn of(version: &SkillVersion, previous: Option<&SkillVersion>) -> Self {
+        Self {
+            id: version.id,
+            skill_id: version.skill_id,
+            ordinal: version.ordinal,
+            note: version.note.clone(),
+            based_on_version_id: version.based_on_version_id,
+            hosts: version.hosts.clone(),
+            file_count: version.files.len(),
+            changed: previous
+                .map(|p| files::changes(&p.files, &version.files))
+                .unwrap_or_default(),
+            unreached: version.unreached.clone(),
+            created_by: version.created_by,
+            created_at: version.created_at,
+            author: version.author.clone(),
+        }
+    }
+}
+
+impl SkillVersion {
+    /// Fills in `unreached` from the body and the files' links.
+    pub fn with_unreached(mut self) -> Self {
+        self.unreached = files::unreached(&self.body, &self.files);
+        self
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSkill {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub body: String,
+    /// Set to write an override of another skill rather than a skill of one's
+    /// own. The base may belong to the operator or to this workspace.
+    #[serde(default)]
+    pub base_skill_id: Option<Uuid>,
+    /// Hosts this skill will reach. Names them; opens nothing.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// Files the first version carries. Stored by the handler, which passes
+    /// the store what it wrote; the store never sees content.
+    #[serde(default)]
+    pub files: Vec<NewFile>,
+}
+
+/// Fields omitted are left unchanged. The body is not here: prose changes by
+/// appending a version, never by overwriting one.
+#[derive(Debug, Deserialize)]
+pub struct UpdateSkill {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewVersion {
+    pub body: String,
+    #[serde(default)]
+    pub note: String,
+    /// The hosts this version reaches. Sent in full rather than as a change,
+    /// so a version that drops one says so by leaving it out.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// The files this version carries, in full. Omitted keeps the previous
+    /// version's, so editing the body alone does not strip them.
+    #[serde(default)]
+    pub files: Option<Vec<NewFile>>,
+}
+
+/// A file as sent. Text, because a skill's files are prose an agent reads.
+#[derive(Debug, Deserialize)]
+pub struct NewFile {
+    pub path: String,
+    pub content: String,
+}
+
+/// A file a version carries. The content is in the object store under
+/// `blob_key` of the owning workspace and this hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFile {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: i32,
+    /// The other files of the version this one names, worked out at publish
+    /// while the content is in hand. `None` for a file published before they
+    /// were recorded, until `files::link` is run over it again.
+    pub links: Option<Vec<String>>,
+}
+
+/// Two files are the same file when their path and content are: `links`
+/// follows from the content and the version's paths, so comparing it as well
+/// would make a file published before links were recorded differ from itself.
+impl PartialEq for SkillFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.sha256 == other.sha256 && self.bytes == other.bytes
+    }
+}
+
+impl Eq for SkillFile {}
+
+#[derive(Debug, Deserialize)]
+pub struct ForkSkill {
+    pub slug: String,
+    pub name: String,
+    /// Which version to take. Omitted takes the live one.
+    #[serde(default)]
+    pub version_id: Option<Uuid>,
+}
+
+/// Which skills an agent is given, and in what order they compose.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Binding {
+    pub skill_id: Uuid,
+    /// Null follows the skill as it is edited, which is what lets an operator
+    /// ship a correction to everyone at once. Set pins this agent to one
+    /// version, for a workspace that wants changes reviewed before they arrive.
+    #[serde(default)]
+    pub version_id: Option<Uuid>,
+    #[serde(default)]
+    pub position: i32,
+}
+
+/// One piece of prose as a turn will actually receive it. Serialized because
+/// a conversation keeps the set its system prompt was composed from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedSkill {
+    pub skill_id: Uuid,
+    pub version_id: Uuid,
+    pub slug: String,
+    /// The workspace that owns the skill, which is whose prefix its files are
+    /// under.
+    pub owner: Uuid,
+    pub name: String,
+    pub kind: SkillKind,
+    pub body: String,
+    pub files: Vec<SkillFile>,
+    pub position: i32,
+}
+
+/// The skills whose files a turn can reach: standalone ones, and of those
+/// sharing a slug -- the operator's and a workspace's own can -- the one bound
+/// first. Overrides carry no files.
+fn with_reachable_files(skills: &[ResolvedSkill]) -> Vec<&ResolvedSkill> {
+    let mut seen = std::collections::HashSet::new();
+    skills
+        .iter()
+        .filter(|s| s.kind == SkillKind::Standalone && !s.files.is_empty())
+        .filter(|s| seen.insert(s.slug.as_str()))
+        .collect()
+}
+
+/// The gates a turn's skills declare, as the API commits to them.
+///
+/// Read from what publishing recorded rather than by parsing the files again: the
+/// declaration is in an operation's frontmatter and its content lives in the
+/// object store by hash, so deriving this per turn would mean reading every bound
+/// skill's every file before the first token. A version is immutable, so what its
+/// files declare cannot change after it was published.
+///
+/// The host comes from the skill's own declared hosts, so a gate on `POST
+/// /charges` does not gate the same path on somebody else's API.
+pub async fn gates_for_turn(
+    pool: &sqlx::PgPool,
+    skills: &[ResolvedSkill],
+) -> Result<outturn_core::egress::gate::Gates, SkillError> {
+    if skills.is_empty() {
+        return Ok(outturn_core::egress::gate::Gates::none());
+    }
+    let versions: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
+    // The bound fields come back with the gate, aggregated in declared order.
+    // Read in one statement rather than two: a gate whose binds arrived
+    // separately could be committed to without them if the second read failed,
+    // and a gate with no binds is one whose grants cover every request to that
+    // path.
+    let rows = sqlx::query(
+        "select g.requires, g.host, g.method, g.path_pattern, g.identified_by, \
+                coalesce( \
+                    array_agg(b.field order by b.position) \
+                        filter (where b.field is not null), \
+                    '{}' \
+                ) as binds \
+         from skill_version_gates g \
+         left join skill_version_gate_binds b \
+                on b.version_id = g.version_id \
+               and b.path = g.path \
+               and b.requires = g.requires \
+         where g.version_id = any($1) \
+         group by g.version_id, g.path, g.requires, g.host, g.method, \
+                  g.path_pattern, g.identified_by \
+         order by g.host, g.method, g.path_pattern, g.requires",
+    )
+    .bind(&versions)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| SkillError::Internal(e.to_string()))?;
+
+    use sqlx::Row as _;
+    let gates = rows
+        .iter()
+        .map(|r| outturn_core::egress::gate::Gate {
+            requires: r.get("requires"),
+            host: r.get("host"),
+            method: r.get("method"),
+            path: r.get("path_pattern"),
+            identified_by: r.try_get("identified_by").ok().flatten(),
+            binds: r.get("binds"),
+        })
+        .filter(|gate: &outturn_core::egress::gate::Gate| {
+            // A declared gate that binds nothing is refused rather than served.
+            // Its grants would be keyed on the act, method, host and path alone
+            // -- the £40-covers-£4,000 hole `egress::grant` exists to close.
+            //
+            // The frontmatter refuses such a declaration now, but a version
+            // published before that rule still has none and a version is
+            // immutable, so the refusal cannot reach back. Dropping the gate
+            // rather than the binds is the safe direction *here* and only here:
+            // this is the skill-declared set, so a dropped gate means the
+            // operation is ungated and the request simply goes out, which is
+            // what it did before the gate was ever declared. A grant that
+            // covered every charge to the path would be worse -- it would look
+            // approved.
+            //
+            // `for_unreviewed_hosts` binds nothing on purpose and does not come
+            // through here: what a person approves there is a host, and
+            // reaching it twice is the same act both times.
+            if gate.binds.is_empty() {
+                tracing::warn!(
+                    requires = %gate.requires,
+                    host = %gate.host,
+                    "a declared gate binds no fields, so it is not applied; \
+                     republish the skill to declare what its approval is about"
+                );
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    Ok(outturn_core::egress::gate::Gates::of(gates))
+}
+
+/// The files of a turn's skills, named as the agent reads them. A skill whose
+/// slug another bound skill already took is logged rather than merged.
+pub fn objects_for_turn(skills: &[ResolvedSkill]) -> Vec<scope::SkillObject> {
+    let reachable = with_reachable_files(skills);
+    for s in skills.iter().filter(|s| !s.files.is_empty()) {
+        if !reachable.iter().any(|r| std::ptr::eq(*r, s)) {
+            tracing::warn!(
+                slug = %s.slug,
+                skill_id = %s.skill_id,
+                "two bound skills share a slug; the later one's files are unreachable"
+            );
+        }
+    }
+    reachable
+        .into_iter()
+        .flat_map(|s| {
+            s.files.iter().map(|f| scope::SkillObject {
+                path: scope::skill_object_path(&s.slug, &f.path),
+                workspace_id: s.owner,
+                sha256: f.sha256.clone(),
+                bytes: f.bytes as u64,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkillError {
+    #[error("skill not found")]
+    NotFound,
+    #[error("slug already in use: {0}")]
+    DuplicateSlug(String),
+    #[error("invalid skill: {0}")]
+    Invalid(String),
+    /// Bound a skill that reaches hosts this workspace has not allowed.
+    ///
+    /// Carries the hosts rather than a sentence about them, so a caller can
+    /// name them, and so the approval flow has something to act on. When there
+    /// is somewhere to send a request for access, this is where it is raised
+    /// from -- see `approve_hosts`, which is the same step taken by somebody
+    /// who already holds the authority.
+    #[error("needs network access to {}", .0.join(", "))]
+    HostsNotAllowed(Vec<String>),
+    #[error("skill store error: {0}")]
+    Internal(String),
+}
+
+/// Every method takes the workspace explicitly, as the other stores do.
+///
+/// Reads admit the operator's skills beside the workspace's own, because a
+/// workspace cannot decide whether to override something it cannot see. Writes
+/// do not: they match on the workspace's own id, so an attempt to edit the
+/// operator's skill finds nothing rather than being refused, and overriding or
+/// forking stays the only way to vary one.
+#[async_trait]
+pub trait SkillStore: Send + Sync {
+    async fn list(
+        &self,
+        workspace_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<Skill>, SkillError>;
+    async fn get(&self, workspace_id: Uuid, id: Uuid) -> Result<Skill, SkillError>;
+    async fn create(
+        &self,
+        workspace_id: Uuid,
+        author: Uuid,
+        input: CreateSkill,
+        files: &[SkillFile],
+        // What those files declare needs approving. Passed in rather than derived
+        // here, because the content is in hand where the files were prepared and
+        // is in the object store by the time this is called.
+        gates: &[DeclaredGate],
+    ) -> Result<Skill, SkillError>;
+    async fn update(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        input: UpdateSkill,
+    ) -> Result<Skill, SkillError>;
+    /// Appends a version, which is how prose changes and how a rollback is
+    /// recorded: the caller sends the old body forward rather than moving
+    /// anything back.
+    ///
+    /// `files` of `None` carries the previous version's forward. A version
+    /// identical to the live one in body, hosts and files is not appended; the
+    /// live one is returned with `false`, so a redeploy grows no history.
+    async fn add_version(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        author: Uuid,
+        input: NewVersion,
+        files: Option<&[SkillFile]>,
+        // What the new files declare. Empty when `files` is `None`, since a
+        // body-only edit carries the previous version's files and its
+        // declarations with them.
+        gates: &[DeclaredGate],
+    ) -> Result<(SkillVersion, bool), SkillError>;
+    async fn versions(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<SkillVersion>, SkillError>;
+    /// Records the links of files published before links were, worked out
+    /// from their content by the caller. Only ever fills a gap: a file whose
+    /// links are already known keeps them.
+    async fn record_links(&self, version_id: Uuid, files: &[SkillFile]) -> Result<(), SkillError>;
+    async fn version(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        version_id: Uuid,
+    ) -> Result<SkillVersion, SkillError>;
+    /// Copies a version's body and file list into a skill of this workspace's
+    /// own, keeping only a record of where it came from. The caller copies the
+    /// file content first when the source belongs to another workspace.
+    async fn fork(
+        &self,
+        workspace_id: Uuid,
+        source_id: Uuid,
+        author: Uuid,
+        input: ForkSkill,
+    ) -> Result<Skill, SkillError>;
+    /// Withdraws a skill without deleting it, so bindings that exist keep
+    /// working and the record of what ran stays whole.
+    async fn retire(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        retired: bool,
+    ) -> Result<Skill, SkillError>;
+    async fn delete(&self, workspace_id: Uuid, id: Uuid) -> Result<(), SkillError>;
+
+    async fn bindings(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Vec<Binding>, SkillError>;
+    /// Replaces the whole list, because that is what the editor edits.
+    async fn set_bindings(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+        bindings: &[Binding],
+    ) -> Result<(), SkillError>;
+
+    /// What this agent's next turn should be given, in composition order.
+    ///
+    /// Each bound skill is followed by this workspace's override of it, if it
+    /// has written one. Overrides are not bound and cannot be: they are the
+    /// workspace's standing variation, and pulling them in here is what keeps
+    /// "we always do it this way" from having to be repeated on every agent.
+    async fn resolve_for_agent(
+        &self,
+        workspace_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Vec<ResolvedSkill>, SkillError>;
+
+    /// Opens the declared hosts this workspace has not allowed yet.
+    ///
+    /// The caller must hold the authority that writes an egress rule: this is
+    /// the ordinary rule-writing act, done in one step and tagged with the
+    /// skill that asked for it. Returns what it opened, which is what an
+    /// approver should be shown afterwards -- and, before approving, is
+    /// exactly `unmet_hosts`, so nobody is asked to re-approve a host they
+    /// already allowed.
+    async fn approve_hosts(
+        &self,
+        workspace_id: Uuid,
+        skill_id: Uuid,
+        actor: Uuid,
+    ) -> Result<Vec<String>, SkillError>;
+
+    /// Records what a reply was composed from, which is what an eval reads and
+    /// what an audit asks for.
+    async fn record_turn(&self, reply_id: Uuid, skills: &[ResolvedSkill])
+    -> Result<(), SkillError>;
+}
+
+pub(super) fn validate_slug(slug: &str) -> Result<(), SkillError> {
+    if slug.trim().is_empty() {
+        return Err(SkillError::Invalid("slug must not be empty".into()));
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(SkillError::Invalid(
+            "slug may contain only lowercase letters, digits and hyphens".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_name(name: &str) -> Result<(), SkillError> {
+    if name.trim().is_empty() {
+        return Err(SkillError::Invalid("name must not be empty".into()));
+    }
+    Ok(())
+}
+
+/// The prose a turn is actually given: the agent's own prompt, then each skill
+/// it was bound, then whatever this workspace had to say about them.
+///
+/// Order is the mechanism. A model reads a later instruction as the one that
+/// still stands, so an override earns its precedence by being composed after
+/// the prose it speaks about rather than by anything in the data saying so.
+/// That is a soft guarantee and worth being honest about: it holds well for a
+/// direct contradiction and less well for a subtle one, which is why the text
+/// that actually ran is recorded rather than inferred from the bindings.
+///
+/// An agent with no skills is given exactly what it was before, with no
+/// heading and no preamble: prose that says "here are your skills" above an
+/// empty list is a worse prompt than silence.
+/// What the platform tells every agent about itself, before anything a
+/// workspace wrote.
+///
+/// Agents were asked what they are and made something up: one said it was
+/// Claude, another denied being the model that was demonstrably serving it and
+/// named a product that does not exist, describing its file scopes and tools
+/// accurately around the invented name. None of that was a workspace's prompt
+/// going wrong -- nothing ever told the agent what it was, so the likeliest
+/// continuation was the answer, and a model with no ground truth writes fluent
+/// nonsense in whichever direction the conversation leans. It also agrees when
+/// challenged, so being corrected does not fix it.
+///
+/// So the facts are supplied rather than demanded. "Say you do not know" is
+/// advice a model cannot follow about something it has no access to; the
+/// product, the version and the model actually serving the turn are all things
+/// this tier knows, and stating them costs a few tokens once per turn.
+///
+/// The rule that follows is deliberately narrow. A broad instruction to ground
+/// every claim would be a different feature with a cost on every answer, and
+/// an agent with no egress rules and no search skill cannot ground anything --
+/// it would be told to refuse most of what it is asked. What is ruled out here
+/// is inventing specifics about itself and this platform, which is the failure
+/// that actually happened.
+fn platform_preamble(product: &str, model: &str) -> String {
+    format!(
+        "You are an agent running on {product} {}, served by the model {model}. \
+         Do not invent facts about yourself, this platform, or what you can do: \
+         if you have not been told something, say so.",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// What this deployment calls itself.
+///
+/// Configuration rather than source, for the same reason the UI reads
+/// `VITE_BRAND_NAME`: this is Apache-2.0 and expects to be run by companies
+/// under their own name, and a deployer who has to edit Rust to rename the
+/// product carries a patch on a hot file forever. A separate variable from the
+/// UI's because that one is compiled into the browser bundle at build time and
+/// never reaches this tier.
+pub fn product_name() -> String {
+    std::env::var("OUTTURN_BRAND_NAME").unwrap_or_else(|_| "outturn".into())
+}
+
+/// The prose a turn is given, with the platform's own preamble at the front.
+///
+/// `model` is what will actually serve this turn, resolved by the caller from
+/// the agent's policy and the deployment's default -- not what an agent's
+/// prompt claims and not what a guest might report about itself.
+pub fn compose_for_turn(system_prompt: &str, skills: &[ResolvedSkill], model: &str) -> String {
+    compose_as(&product_name(), system_prompt, skills, model)
+}
+
+/// As `compose_for_turn`, for a caller that knows what the deployment is
+/// called -- which in practice means a test, so the composition can be checked
+/// without reaching into process-wide environment state that every other test
+/// shares.
+pub fn compose_as(
+    product: &str,
+    system_prompt: &str,
+    skills: &[ResolvedSkill],
+    model: &str,
+) -> String {
+    let composed = compose(system_prompt, skills);
+    let preamble = platform_preamble(product, model);
+    if composed.trim().is_empty() {
+        return preamble;
+    }
+    format!("{preamble}\n\n{composed}")
+}
+
+pub fn compose(system_prompt: &str, skills: &[ResolvedSkill]) -> String {
+    if skills.is_empty() {
+        return system_prompt.to_string();
+    }
+
+    let mut out = String::from(system_prompt.trim_end());
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str("# Skills");
+
+    let with_files = with_reachable_files(skills);
+    for skill in skills {
+        out.push_str("\n\n## ");
+        out.push_str(skill.name.trim());
+        out.push_str("\n\n");
+        if skill.kind == SkillKind::Override {
+            out.push_str(
+                "This workspace's own instructions. Where they conflict with the skill \
+                 above, these are the ones to follow.\n\n",
+            );
+        }
+        out.push_str(skill.body.trim());
+        if with_files.iter().any(|s| std::ptr::eq(*s, skill)) {
+            out.push_str(&format!(
+                "\n\nThis skill's reference files are under `{}`, read-only. Read one \
+                 with read_object when the skill says to.",
+                scope::skill_object_path(&skill.slug, "")
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_author_is_named_only_inside_their_own_workspace() {
+        use super::author_as_seen_by;
+        use crate::actor::Actor;
+        let ours = uuid::Uuid::now_v7();
+        let platform = uuid::Uuid::now_v7();
+        assert_eq!(
+            author_as_seen_by(ours, ours, Some("Ana".into()), false),
+            Actor::Person { name: "Ana".into() }
+        );
+        assert_eq!(
+            author_as_seen_by(ours, ours, None, false),
+            Actor::Unrecorded
+        );
+        assert_eq!(
+            author_as_seen_by(ours, platform, Some("Staff".into()), true),
+            Actor::Operator
+        );
+        // Staff writing in a customer's own workspace are still the operator.
+        assert_eq!(
+            author_as_seen_by(ours, ours, Some("Staff".into()), true),
+            Actor::Operator
+        );
+    }
+
+    use super::*;
+
+    /// An agent asked what it is should find the answer in front of it.
+    ///
+    /// The failure this exists for: with nothing in the prompt, agents
+    /// invented an identity -- one claimed to be Claude, another denied being
+    /// the model serving it and named a product that does not exist. The model
+    /// named here is the one the caller resolved for this turn, so the answer
+    /// is the platform's rather than the model's guess.
+    #[test]
+    fn a_turn_is_told_what_is_serving_it() {
+        let composed = compose_as(
+            "outturn",
+            "You are a helpful assistant.",
+            &[],
+            "qwen3.8:27b-mlx",
+        );
+        assert!(composed.contains("qwen3.8:27b-mlx"), "{composed}");
+        assert!(composed.contains("outturn"), "{composed}");
+        assert!(composed.contains(env!("CARGO_PKG_VERSION")), "{composed}");
+        // And the agent's own prose is still there, after it.
+        assert!(
+            composed.ends_with("You are a helpful assistant."),
+            "{composed}"
+        );
+    }
+
+    /// The preamble leads; the workspace's prose follows.
+    ///
+    /// Same reasoning as the skill ordering below: a model reads a later
+    /// instruction as the one that still stands, so an agent that wants a
+    /// persona can have one without the platform's facts being buried under
+    /// it -- and an agent that contradicts them is at least contradicting
+    /// something present rather than filling a vacuum.
+    #[test]
+    fn the_platform_speaks_before_the_workspace_does() {
+        let composed = compose_as("outturn", "You are a pirate.", &[], "test-model");
+        let preamble_at = composed
+            .find("You are an agent running on")
+            .expect("preamble");
+        let prompt_at = composed.find("You are a pirate.").expect("prompt");
+        assert!(preamble_at < prompt_at, "{composed}");
+    }
+
+    /// An agent with no prompt of its own still gets the facts.
+    #[test]
+    fn an_empty_prompt_is_still_told_what_it_is() {
+        let composed = compose_as("outturn", "", &[], "test-model");
+        assert!(composed.contains("test-model"), "{composed}");
+        assert!(
+            !composed.starts_with('\n'),
+            "no leading blank: {composed:?}"
+        );
+    }
+
+    /// Skills keep their place, after the preamble and the agent's prose.
+    #[test]
+    fn the_preamble_does_not_displace_the_skills() {
+        let skills = vec![skill(
+            "Search",
+            "Use the search API.",
+            SkillKind::Standalone,
+        )];
+        let composed = compose_as("outturn", "You are terse.", &skills, "test-model");
+        let prompt_at = composed.find("You are terse.").expect("prompt");
+        let skills_at = composed.find("# Skills").expect("skills");
+        assert!(prompt_at < skills_at, "{composed}");
+        assert!(composed.contains("Use the search API."), "{composed}");
+    }
+
+    /// A deployer's own name reaches the agent, not just the browser.
+    ///
+    /// The UI reads `VITE_BRAND_NAME`, which is compiled into the bundle and
+    /// never reaches this tier; without its own variable an agent would tell a
+    /// deployer's customers they are talking to outturn.
+    #[test]
+    fn a_deployment_can_say_what_it_is_called() {
+        let composed = compose_as("Hollowbrook", "", &[], "test-model");
+        assert!(composed.contains("Hollowbrook"), "{composed}");
+        assert!(!composed.contains("outturn"), "{composed}");
+    }
+
+    #[test]
+    fn a_skill_with_files_says_where_they_are() {
+        let mut inn = skill("Inn", "Book rooms.", SkillKind::Standalone);
+        inn.files = vec![SkillFile {
+            path: "book.md".into(),
+            sha256: "x".into(),
+            bytes: 1,
+            links: None,
+        }];
+        let plain = skill("Plain", "Be kind.", SkillKind::Standalone);
+        let composed = compose("", &[inn, plain]);
+        assert!(composed.contains("`skill/inn/`"), "{composed}");
+        assert_eq!(composed.matches("reference files").count(), 1, "{composed}");
+    }
+
+    #[test]
+    fn a_shared_slug_reaches_the_skill_bound_first() {
+        let file = |content: &str| SkillFile {
+            path: "call.md".into(),
+            sha256: content.into(),
+            bytes: 1,
+            links: None,
+        };
+        let mut ours = skill("CRM", "", SkillKind::Standalone);
+        ours.owner = Uuid::from_u128(1);
+        ours.files = vec![file("ours")];
+        let mut theirs = skill("CRM", "", SkillKind::Standalone);
+        theirs.owner = Uuid::from_u128(2);
+        theirs.files = vec![file("theirs")];
+
+        let objects = objects_for_turn(&[ours, theirs]);
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].path, "skill/crm/call.md");
+        assert_eq!(objects[0].sha256, "ours");
+        assert_eq!(objects[0].workspace_id, Uuid::from_u128(1));
+    }
+
+    fn skill(name: &str, body: &str, kind: SkillKind) -> ResolvedSkill {
+        ResolvedSkill {
+            skill_id: Uuid::nil(),
+            version_id: Uuid::nil(),
+            slug: name.to_lowercase(),
+            owner: Uuid::nil(),
+            name: name.into(),
+            kind,
+            body: body.into(),
+            files: Vec::new(),
+            position: 0,
+        }
+    }
+
+    /// An agent with nothing bound is given what it always was.
+    #[test]
+    fn no_skills_leaves_the_prompt_alone() {
+        assert_eq!(compose("Be helpful.", &[]), "Be helpful.");
+    }
+
+    #[test]
+    fn a_skill_follows_the_prompt_under_its_own_heading() {
+        let out = compose(
+            "Be helpful.",
+            &[skill("CRM", "Call v1.", SkillKind::Standalone)],
+        );
+        assert_eq!(out, "Be helpful.\n\n# Skills\n\n## CRM\n\nCall v1.");
+    }
+
+    /// The override lands after the prose it corrects, and says so.
+    #[test]
+    fn an_override_is_composed_last_and_claims_precedence() {
+        let out = compose(
+            "Be helpful.",
+            &[
+                skill("CRM", "Call v1.", SkillKind::Standalone),
+                skill("CRM (ours)", "Call v2.", SkillKind::Override),
+            ],
+        );
+        let base = out.find("Call v1.").expect("base");
+        let over = out.find("Call v2.").expect("override");
+        assert!(base < over, "the override must come after its base:\n{out}");
+        assert!(
+            out.contains("these are the ones to follow"),
+            "the override did not claim precedence:\n{out}"
+        );
+    }
+
+    /// An agent may have no prompt of its own and still be given skills.
+    #[test]
+    fn an_empty_prompt_gains_no_leading_blank_lines() {
+        let out = compose("", &[skill("CRM", "Call v1.", SkillKind::Standalone)]);
+        assert!(out.starts_with("# Skills"), "{out:?}");
+    }
+}

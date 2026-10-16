@@ -1,0 +1,466 @@
+//! The action queue: what is waiting for a person to do something about it.
+//!
+//! Distinct from the events feed, which is a log of what happened. An event is
+//! true for ever and is read from a cursor; an action item is true until
+//! somebody settles it, and is read as a set. Conflating them means either
+//! giving the log a state machine or giving the queue a cursor, and both are
+//! worse than two tables.
+//!
+//! Materialised, not derived. The alternative -- computing "what needs me" per
+//! reader per page load by joining pending items against current role
+//! membership -- pays for the answer on every read, and the badge is read by
+//! everyone all the time. Here a change is written once by whoever caused it.
+//!
+//! What that costs is invalidation: anything which changes the answer has to
+//! say so, and a path that forgets leaves a queue that is quietly wrong. The
+//! shape of this module is the answer to that. [`Delivery::Targeted`] is the
+//! ordinary case -- a caller that knows what changed names it, and the write
+//! is proportional to the change. [`Delivery::Invalidate`] recomputes a whole
+//! target's queue and exists for the callers that genuinely cannot work it out
+//! -- a role's authorities changing, a restore, a reconciliation sweep. It is
+//! the fallback rather than the mechanism, because a system that invalidates
+//! by default is one where nobody ever finds out which path was lying.
+
+mod bus;
+mod postgres;
+#[cfg(test)]
+mod tests;
+
+pub use bus::{ActionBus, ActionHint, spawn as spawn_action_bus};
+pub use postgres::{CHANNEL, PostgresActionStore};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// Answering one item: what it becomes, what that releases, and what it grants.
+///
+/// One struct rather than six positional arguments, and more to the point one
+/// transaction. The grant used to be written after this call returned, which left
+/// a window the feature exists to close: `resume_for_scope` puts the turn back on
+/// the queue the moment it commits, so a runtime could claim it and prepare it
+/// before the grant row existed -- and be refused a second time, looking exactly
+/// like a model that retried.
+pub struct Settle<'a> {
+    pub workspace_id: Uuid,
+    pub item_id: Uuid,
+    pub state: State,
+    pub resolved_by: Option<Uuid>,
+    /// Kept rather than logged. See `resolved_note` on `ActionItem`.
+    pub note: Option<&'a str>,
+    /// The hold to lift, which is what lets the turn run again. `None` on a
+    /// decline: nothing has changed about whether the work may proceed.
+    pub hold: Option<Uuid>,
+    /// What the yes is worth, where it is worth something. `None` for an
+    /// approval raised by hand, which holds a conversation rather than standing
+    /// for one request.
+    pub grant: Option<super::grant::NewGrant>,
+    /// The note a sleep wakes with, where the item stands for a sleep. Written
+    /// in the same transaction as the settle and the release, so of two things
+    /// ending one sleep -- somebody pressing Wake now, the timer coming due --
+    /// only the one that wins writes a note, and the queued turns are marked
+    /// answered before they can be resumed.
+    pub wake: Option<super::wake::Note>,
+}
+
+/// Who an item is waiting on.
+///
+/// A role rather than the people in it, because membership outlives the
+/// moment: expanding a role to its members at write time freezes a snapshot,
+/// and every later change to the role is a change the queue never hears about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum Target {
+    Role(Uuid),
+    User(Uuid),
+}
+
+impl Target {
+    pub fn role_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Role(id) => Some(*id),
+            Self::User(_) => None,
+        }
+    }
+
+    pub fn user_id(&self) -> Option<Uuid> {
+        match self {
+            Self::User(id) => Some(*id),
+            Self::Role(_) => None,
+        }
+    }
+}
+
+/// How a change reaches the queue.
+///
+/// Targeted is the ordinary case and invalidation is the last resort. Kept as
+/// one enum rather than two methods so a caller has to say which it is, and so
+/// the cheap path is the one that is easier to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// These exact items changed for these exact targets. Proportional to the
+    /// change.
+    Targeted {
+        item_ids: Vec<Uuid>,
+        targets: Vec<Target>,
+    },
+    /// Something changed that this call cannot map to items -- a role's
+    /// authorities, a bulk import, a reconciliation. Recomputes the target's
+    /// whole queue.
+    ///
+    /// Correct but unbounded: the cost is the size of the target's queue, and
+    /// a caller reaching for this on a hot path has usually mistaken not
+    /// wanting to work out the answer for not being able to.
+    Invalidate { targets: Vec<Target> },
+}
+
+impl Delivery {
+    /// The targets this delivery concerns, whichever kind it is.
+    pub fn targets(&self) -> &[Target] {
+        match self {
+            Self::Targeted { targets, .. } => targets,
+            Self::Invalidate { targets } => targets,
+        }
+    }
+
+    /// Whether this delivery would do nothing.
+    ///
+    /// A targeted delivery naming no items, or either kind naming no targets,
+    /// is a no-op -- and a no-op that reaches the database is a transaction,
+    /// a NOTIFY and a woken client for nothing. Checked here rather than at
+    /// each call site so the answer is the same everywhere.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Targeted { item_ids, targets } => item_ids.is_empty() || targets.is_empty(),
+            Self::Invalidate { targets } => targets.is_empty(),
+        }
+    }
+}
+
+/// An item raised and waiting.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionItem {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub kind: String,
+    pub event_id: Option<Uuid>,
+    /// The hold this item stands for, where it stands for one.
+    pub inhibitor_id: Option<Uuid>,
+    pub payload: serde_json::Value,
+    pub state: State,
+    /// What whoever settled it wanted recorded. Absent on an open item, and on a
+    /// settlement that came with no explanation.
+    pub resolved_note: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Pending,
+    Resolved,
+    Cancelled,
+    Expired,
+}
+
+impl State {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Resolved => "resolved",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+        }
+    }
+
+    /// Parses what the database holds.
+    ///
+    /// The column has a check constraint, so an unknown value here means the
+    /// constraint and this enum have drifted -- which is a bug rather than bad
+    /// input, and `None` lets the caller say so rather than guess.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "resolved" => Some(Self::Resolved),
+            "cancelled" => Some(Self::Cancelled),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+
+    /// Whether an item in this state is still waiting on somebody.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+}
+
+/// What to raise.
+///
+/// `payload` is rendered by the queue without a second fetch, which is the
+/// point of it -- but it is therefore read by everybody the item is targeted
+/// at, and the queue applies no agent narrowing. Narrowing (`outturn_core::scope`)
+/// confines a person to named agents and governs `Sessions*` and
+/// `StorageAgent*`; an action item has no agent, so there is nothing here for
+/// `Reach::covers` to test, and the read is right not to try.
+///
+/// The consequence is a rule for producers rather than a check here: put in
+/// `payload` only what every target may see whatever they are scoped to. What
+/// an agent said belongs behind `event_id`, where the events read applies
+/// `Visible` -- see the comment in `api::events::poll`, which is about exactly
+/// this: a person refused a transcript must not be served the same words by
+/// another route. A producer that copies an agent's question in here is that
+/// route.
+#[derive(Debug, Clone)]
+pub struct NewItem {
+    pub kind: String,
+    pub event_id: Option<Uuid>,
+    /// The hold this item stands for, where it stands for one.
+    ///
+    /// The truth of whether the request is still open lives on the hold, so an
+    /// item that names it can be found by asking about the hold rather than by
+    /// reading its payload -- and `docs/action-queue.md` asks for exactly this
+    /// column, so the queue's lifecycle can eventually be derived rather than
+    /// stored.
+    pub inhibitor_id: Option<Uuid>,
+    pub payload: serde_json::Value,
+    pub targets: Vec<Target>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ActionError {
+    #[error("action item not found")]
+    NotFound,
+    #[error("action item is already {0}")]
+    NotPending(&'static str),
+    #[error("invalid action item: {0}")]
+    Invalid(String),
+    #[error("action store error: {0}")]
+    Internal(String),
+}
+
+/// Checks an item before it is written.
+///
+/// Pure, and separate from the store, so the rules can be tested without a
+/// database and so both the direct raise and the event-driven classifier get
+/// the same answer.
+pub fn validate(item: &NewItem) -> Result<(), ActionError> {
+    if item.kind.trim().is_empty() {
+        return Err(ActionError::Invalid("kind cannot be empty".into()));
+    }
+    // An item nobody is waiting on is not a queue entry. It would insert
+    // cleanly, count towards nobody's badge and never be settled, which is a
+    // leak that only shows up as a table that grows.
+    if item.targets.is_empty() {
+        return Err(ActionError::Invalid(
+            "an action item must have at least one target".into(),
+        ));
+    }
+    if !item.payload.is_object() {
+        return Err(ActionError::Invalid("payload must be a JSON object".into()));
+    }
+    Ok(())
+}
+
+/// Removes repeats from a target list, keeping the order they were given in.
+///
+/// The same person can arrive twice -- named directly and again through a role
+/// they hold -- and the two are not the same target, so this only collapses
+/// exact repeats. The unique indexes would refuse the duplicate anyway; doing
+/// it here means a caller assembling a list from two sources is not writing
+/// error handling for something that is not an error.
+pub fn dedupe_targets(targets: &[Target]) -> Vec<Target> {
+    let mut seen = std::collections::HashSet::new();
+    targets
+        .iter()
+        .filter(|t| seen.insert(**t))
+        .copied()
+        .collect()
+}
+
+#[async_trait]
+pub trait ActionStore: Send + Sync {
+    /// Raises an item and puts it in its targets' queues.
+    ///
+    /// Takes the workspace explicitly rather than reading it from the item so
+    /// that a caller cannot raise into a workspace it did not mean to.
+    async fn raise(&self, workspace_id: Uuid, item: NewItem) -> Result<Uuid, ActionError>;
+
+    /// Settles an item.
+    ///
+    /// Refuses one that is not pending rather than overwriting the settlement,
+    /// so two people answering the same request at once produces one winner
+    /// and one `NotPending` rather than a silently lost decision.
+    async fn settle(
+        &self,
+        workspace_id: Uuid,
+        item_id: Uuid,
+        state: State,
+        resolved_by: Option<Uuid>,
+    ) -> Result<(), ActionError>;
+
+    /// Adds targets to an item that already exists.
+    ///
+    /// Escalation: a request nobody has picked up widens to a second role.
+    /// Idempotent -- a target already there is left alone.
+    async fn add_targets(
+        &self,
+        workspace_id: Uuid,
+        item_id: Uuid,
+        targets: &[Target],
+    ) -> Result<(), ActionError>;
+
+    /// Takes targets off an item without settling it.
+    ///
+    /// The item stays open for whoever else is targeted. Removing the last
+    /// target leaves an item nobody is waiting on, which `orphaned` finds --
+    /// it is not refused here because the caller removing a role may be
+    /// mid-way through moving it to another.
+    async fn remove_targets(
+        &self,
+        workspace_id: Uuid,
+        item_id: Uuid,
+        targets: &[Target],
+    ) -> Result<(), ActionError>;
+
+    /// What is waiting on this user: items targeted at them directly, plus
+    /// items targeted at any role they currently hold.
+    ///
+    /// Role membership is read here rather than stored per user, so a change
+    /// in membership is reflected without touching a single queue row.
+    async fn queue_for_user(
+        &self,
+        workspace_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<ActionItem>, ActionError>;
+
+    /// What is waiting on this role.
+    async fn queue_for_role(
+        &self,
+        workspace_id: Uuid,
+        role_id: Uuid,
+    ) -> Result<Vec<ActionItem>, ActionError>;
+
+    /// How many open items are waiting on this user. The badge.
+    async fn count_for_user(&self, workspace_id: Uuid, user_id: Uuid) -> Result<i64, ActionError>;
+
+    /// What is waiting on this user across every workspace they belong to.
+    ///
+    /// The notification center is global: a decision owed in a workspace the
+    /// reader is not currently looking at is exactly the one that would
+    /// otherwise go unseen, and a badge per workspace is a badge nobody adds
+    /// up. So this is the one read here with no `workspace_id` predicate.
+    ///
+    /// Which makes it the one place a missing filter leaks another tenant's
+    /// work. The workspace set is derived from the reader's role grants and is
+    /// never supplied by the caller -- there is deliberately no argument for
+    /// it, so no handler can widen it by passing the wrong thing. Losing the
+    /// last role in a workspace withdraws that workspace whole, including
+    /// items that named the reader directly: membership is the tenancy
+    /// boundary, not the targeting.
+    /// Bounded by `limit`, oldest first: the queue is read as a screen, and a
+    /// reader with a thousand items owed is not served by all of them.
+    async fn queue_for_user_everywhere(
+        &self,
+        user_id: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<ActionItem>, ActionError>;
+
+    /// The global badge. See `queue_for_user_everywhere` for the tenancy rule.
+    ///
+    /// Bounded by `cap`: a number nobody reads past a point, and an unbounded
+    /// count is a scan whose cost grows with somebody else's backlog. The
+    /// caller renders `cap` as "and more" rather than as a total.
+    async fn count_for_user_everywhere(&self, user_id: Uuid, cap: i64) -> Result<i64, ActionError>;
+
+    /// Settles an item, lifts the hold it was waiting on, and gives back
+    /// whatever that hold had parked -- in one transaction.
+    ///
+    /// Three writes that must not come apart. Done separately, a release that
+    /// failed after the settle committed left the item answered and the turn
+    /// parked with no way back: `settle` refuses anything not pending, so it
+    /// cannot be answered again; the queue reads only open items, so no UI can
+    /// offer it; and nothing else moves a job out of `parked`, since the reaper
+    /// looks only at `running`. The conversation stayed silent and the only route
+    /// out was an operator releasing the hold by id, with nothing anywhere saying
+    /// that was needed.
+    ///
+    /// `hold` is optional because an item may name none -- an approval raised
+    /// before the hold existed, or one whose payload lost the id. Then this is a
+    /// settle and nothing else, which is honest: there is nothing to lift.
+    ///
+    /// Returns how many parked turns were given back.
+    async fn settle_and_release(&self, settle: Settle<'_>) -> Result<u64, ActionError>;
+
+    /// The open approval on a conversation, if there is one.
+    ///
+    /// Found through the hold it names rather than by reading its payload: the
+    /// hold is the truth of whether a request is still open (see
+    /// `docs/action-queue.md`), and `inhibitor_id` is the column that makes
+    /// asking it an index hit. Both readers used to extract JSON out of
+    /// `payload`, which no index covers -- on the path of every held turn,
+    /// including the spend caps and operator stops that are not approvals.
+    async fn approval_on_session(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Option<ActionItem>, ActionError>;
+
+    /// What became of one item that is no longer open, if it was ever this
+    /// person's to answer.
+    ///
+    /// The queue reads only what is open, so an item settled a moment ago is
+    /// absent from it -- and a caller needs "already decided" told apart from
+    /// "never yours", which is what two people answering at once produces. Same
+    /// targeting rule as the queue, because a bare read by id would answer for
+    /// items the caller was never asked about.
+    ///
+    /// `None` means it is not theirs, does not exist, or is still open. The
+    /// first two are one answer on purpose: an item somebody was never asked
+    /// about is one they have no business learning the existence of. The third
+    /// is in there because a still-open item is the queue's answer to give, and
+    /// reporting it here would have a caller whose queue is longer than the scan
+    /// told "this approval was already pending" -- a conflict about a state that
+    /// is not a conflict, on an item they cannot then answer.
+    async fn settled_for_user(
+        &self,
+        user_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Option<State>, ActionError>;
+
+    /// The roles this person currently holds, by workspace, for matching a
+    /// hint against without reading the database per announcement.
+    ///
+    /// Read once when a request parks rather than per hint: a pod fanning one
+    /// announcement out to a hundred waiters must not turn that into a hundred
+    /// queries.
+    async fn roles_of(&self, user_id: Uuid) -> Result<Vec<Uuid>, ActionError>;
+
+    /// Announces a change so connected clients refetch.
+    ///
+    /// Separate from the writes above rather than folded into them: a caller
+    /// inside a transaction must not announce until it commits, and only the
+    /// caller knows when that is. The writes above that take their own
+    /// connection announce for themselves.
+    async fn deliver(&self, workspace_id: Uuid, delivery: Delivery) -> Result<(), ActionError>;
+
+    /// Settles items whose expiry has passed. Returns how many.
+    ///
+    /// Swept rather than filtered on read: an expired item must leave the
+    /// badge count, and a count that filters on expiry cannot use the partial
+    /// index that makes it cheap.
+    async fn sweep_expired(&self, limit: i64) -> Result<u64, ActionError>;
+
+    /// Open items with no targets left.
+    ///
+    /// Reported rather than cleaned up automatically. An item here is waiting
+    /// on nobody, which is a bug in whoever removed the last target -- and
+    /// deleting it quietly would remove the evidence.
+    async fn orphaned(
+        &self,
+        workspace_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ActionItem>, ActionError>;
+}

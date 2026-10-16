@@ -4,7 +4,7 @@
 # a caller can capture it; anything to say to a person goes to stderr.
 
 # The Ed25519 seed the API signs with, as 64 hex characters -- the length
-# `hex_to_bytes` in src/auth/token.rs insists on.
+# `hex_to_bytes` in crates/core/src/auth/token.rs insists on.
 outturn_token_secret() {
   openssl rand -hex 32
 }
@@ -12,7 +12,7 @@ outturn_token_secret() {
 # The public half of a seed, which is what the gateway and runtime verify
 # with. Derived rather than generated: a public key that does not belong to
 # the secret would leave every tier rejecting every token the API minted,
-# which is the failure src/auth/token.rs:149 describes having already been
+# which is the failure crates/core/src/auth/token.rs:149 describes having already been
 # through once.
 #
 # Done by handing OpenSSL a DER-wrapped private key, because there is no
@@ -105,7 +105,7 @@ outturn_seal_key() {
 # Its public half, which the API hands to whoever seals a credential. Derived
 # the same way as the token key above, with the PKCS#8 header for X25519 (OID
 # 1.3.101.110) rather than Ed25519, and checked against the Rust side by
-# `a_seal_key_derives_the_public_key_the_scripts_do` in src/egress/seal.rs.
+# `a_seal_key_derives_the_public_key_the_scripts_do` in crates/core/src/egress/seal.rs.
 outturn_seal_public_key_of() {
   local key="$1" der ssl pub
   ssl=$(outturn_openssl) || return 1

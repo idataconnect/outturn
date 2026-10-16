@@ -1,0 +1,1976 @@
+use std::sync::Arc;
+
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    routing::{get, post},
+};
+use serde::Serialize;
+use uuid::Uuid;
+
+use outturn_core::auth::{self, Authority, SessionClaims, TokenMinter, TokenValidator};
+
+use super::agent::AgentStore;
+use super::chat::ChatStore;
+use super::role::{CreateRole, RoleError, RoleStore, UpdateRole, WorkspaceRole};
+use super::session::SessionStore;
+use super::user::{CreateUser, Identity, User, UserStore, WorkspaceMembership};
+use super::workspace::{CreateWorkspace, Workspace, WorkspaceError, WorkspaceStore};
+
+use super::inhibitor::InhibitorStore as _;
+
+pub struct ApiState {
+    pub(super) workspaces: Arc<dyn WorkspaceStore>,
+    pub(super) users: Arc<dyn UserStore>,
+    pub(super) sessions: Arc<dyn SessionStore>,
+    pub(super) agents: Arc<dyn AgentStore>,
+    /// Agents the operator defines once for every workspace that should have
+    /// them. Built from the pool, like the action store.
+    pub(super) templates: Arc<dyn super::agent_template::AgentTemplateStore>,
+    /// Instructions an agent is given beside its system prompt, and which of
+    /// them each agent gets.
+    pub(super) skills: Arc<dyn super::skill::SkillStore>,
+    pub(super) chat: Arc<dyn ChatStore>,
+    /// What a workspace's roles mean. Consulted on every authorized request.
+    pub(super) roles: Arc<dyn RoleStore>,
+    pub(super) usage: Arc<dyn super::usage::UsageStore>,
+    pub(super) skill_stats: Arc<dyn super::skill::stats::SkillStatsStore>,
+    pub(super) settings: Arc<dyn super::settings::SettingsStore>,
+    /// Which agents a person's narrowed authorities apply to. Consulted on
+    /// every request that names one.
+    pub(super) scopes: Arc<dyn super::scope::ScopeStore>,
+    /// The same bucket the runtime reads and writes, so a file a person
+    /// uploads is one the agent can name. Absent when none is configured.
+    pub(super) storage: Option<Arc<dyn outturn_core::storage::StorageBackend>>,
+    pub(super) auth: TokenValidator,
+    pub(super) minter: TokenMinter,
+    /// What the runtime tier presents. Not a token: see `RuntimeKey`.
+    pub(super) runtime_key: outturn_core::auth::RuntimeKey,
+    pub(super) pool: sqlx::PgPool,
+    pub(super) bus: outturn_core::events::EventBus,
+    /// What is waiting on a person to do something about it. Built from the
+    /// pool rather than injected: it holds nothing but the pool, and the
+    /// constructor already takes a handle per dependency.
+    pub(super) actions: Arc<dyn super::actions::ActionStore>,
+    /// Wakes queue long polls when something concerning their reader lands.
+    pub(super) action_bus: super::actions::ActionBus,
+    /// Fires on shutdown so parked long polls return instead of holding the
+    /// drain open for their full timeout.
+    pub(super) shutdown: Arc<tokio::sync::Notify>,
+    /// How long a long poll parks before answering with what is there: the
+    /// events read and the action queue's alike. `LONG_POLL` but for a test,
+    /// which sets one that suits what it is showing rather than sitting
+    /// through the real one.
+    pub(super) long_poll: std::time::Duration,
+    /// Prepares turns and records what they produce. Set after construction,
+    /// because the worker holds this state and the two would otherwise have to
+    /// be built at once.
+    pub(super) worker: std::sync::OnceLock<Arc<super::worker::Worker>>,
+    /// The gateway's credential bindings, read from the same declaration so a
+    /// rule that could never attach its credential is refused when written.
+    /// Not the enforcement; the gateway's copy is.
+    pub(super) bindings: outturn_core::egress::bindings::Bindings,
+    /// The gateway's seal public key and its id, handed to whoever seals a
+    /// credential. `None` when this deployment has none.
+    pub(super) seal_key: Option<(Vec<u8>, String)>,
+}
+
+impl ApiState {
+    /// Gives this state the worker that serves turns to runtimes.
+    pub fn set_worker(&self, worker: Arc<super::worker::Worker>) {
+        let _ = self.worker.set(worker);
+    }
+}
+
+impl ApiState {
+    pub fn new(
+        workspaces: Arc<dyn WorkspaceStore>,
+        users: Arc<dyn UserStore>,
+        sessions: Arc<dyn SessionStore>,
+        agents: Arc<dyn AgentStore>,
+        skills: Arc<dyn super::skill::SkillStore>,
+        chat: Arc<dyn ChatStore>,
+        roles: Arc<dyn RoleStore>,
+        usage: Arc<dyn super::usage::UsageStore>,
+        settings: Arc<dyn super::settings::SettingsStore>,
+        // Passed in rather than built here, like the role store and for the
+        // same reason: its cache is only invalidated by the listener started
+        // beside it, and a second store built here would hold a second cache
+        // that nothing ever cleared. A test gets one without a listener, which
+        // is what keeps seventy of them from holding seventy connections.
+        scopes: Arc<dyn super::scope::ScopeStore>,
+        storage: Option<Arc<dyn outturn_core::storage::StorageBackend>>,
+        auth: TokenValidator,
+        minter: TokenMinter,
+        runtime_key: outturn_core::auth::RuntimeKey,
+        pool: sqlx::PgPool,
+        bus: outturn_core::events::EventBus,
+        shutdown: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            // Built here rather than passed in: it holds no cache and nothing
+            // invalidates it, so a second one is the same store. The pool is
+            // already a parameter for the same reason.
+            skill_stats: Arc::new(super::skill::PostgresSkillStatsStore::new(pool.clone())),
+            templates: Arc::new(super::agent_template::PostgresAgentTemplateStore::new(
+                pool.clone(),
+            )),
+            workspaces,
+            users,
+            sessions,
+            agents,
+            skills,
+            chat,
+            roles,
+            usage,
+            settings,
+            scopes,
+            storage,
+            auth,
+            minter,
+            runtime_key,
+            actions: Arc::new(super::actions::PostgresActionStore::new(pool.clone())),
+            action_bus: super::actions::spawn_action_bus(pool.clone()),
+            pool,
+            bus,
+            shutdown,
+            long_poll: LONG_POLL,
+            worker: std::sync::OnceLock::new(),
+            bindings: outturn_core::egress::bindings::Bindings::from_env(),
+            seal_key: super::credentials::seal_key_from_env(),
+        }
+    }
+
+    /// The seal public key to hand out, for a test that seals its own.
+    pub fn with_seal_key(mut self, public: Vec<u8>) -> Self {
+        let id = outturn_core::egress::seal::key_id(&public);
+        self.seal_key = Some((public, id));
+        self
+    }
+
+    /// How long a long poll parks, for a test: one that shows a poll was woken
+    /// gives it a park nothing reaches, and one that shows it answers on
+    /// timeout gives it a short one.
+    pub fn with_long_poll(mut self, park: std::time::Duration) -> Self {
+        self.long_poll = park;
+        self
+    }
+
+    /// The action queue's bus, so a test can wait for its listener and for a
+    /// request to park rather than sleeping and hoping both had happened.
+    pub fn action_bus(&self) -> &super::actions::ActionBus {
+        &self.action_bus
+    }
+
+    /// The credential bindings to check rules against, for a test that needs
+    /// some.
+    pub fn with_bindings(mut self, bindings: outturn_core::egress::bindings::Bindings) -> Self {
+        self.bindings = bindings;
+        self
+    }
+}
+
+/// How long a long poll parks before answering with what is there. Short
+/// enough to stay well inside proxy idle timeouts, long enough that an idle
+/// client is not constantly reconnecting.
+pub const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(25);
+
+pub(super) type ApiError = (StatusCode, String);
+
+pub(super) fn authenticate(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+) -> Result<SessionClaims, ApiError> {
+    // Browsers send the HttpOnly session cookie; service-to-service callers
+    // send a bearer token. The cookie is preferred so a stale Authorization
+    // header cannot shadow a fresh session.
+    if let Some(token) = auth::session_from_cookies(headers) {
+        return state
+            .auth
+            .validate(token)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()));
+    }
+
+    let bearer = auth::extract_bearer(headers)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "not authenticated".to_string()))?;
+
+    // The runtime's shared key is accepted only here, on the bearer path. It
+    // is not a token and is never parsed as one; a match means exactly one
+    // thing, which is what the claims it maps to say.
+    if state.runtime_key.accepts(bearer) {
+        return Ok(auth::RuntimeKey::claims());
+    }
+
+    state
+        .auth
+        .validate(bearer)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
+}
+
+/// Everything the caller may do, resolved for this request.
+///
+/// Platform roles resolve in code; workspace roles resolve through the role
+/// store, which caches per workspace. Done per request rather than at mint so an
+/// edit to a role takes effect on the next click, not at the next refresh.
+pub(super) async fn authorities_of(
+    state: &ApiState,
+    claims: &SessionClaims,
+) -> Result<std::collections::HashSet<Authority>, ApiError> {
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(claims.workspace_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    Ok(granted)
+}
+
+/// Refuses the request unless the caller holds `authority`: `Ok` to go on,
+/// 403 otherwise.
+pub(super) async fn require(
+    state: &ApiState,
+    claims: &SessionClaims,
+    authority: Authority,
+) -> Result<(), ApiError> {
+    if authorities_of(state, claims).await?.contains(&authority) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
+    }
+}
+
+/// `require`, against a workspace other than the token's.
+///
+/// Every other route acts on the workspace its token names, so `require` reads
+/// `claims.workspace_id` and that is the whole of it. The action queue is the
+/// exception: it reads across every workspace the person belongs to, so an item
+/// it hands back may be one the token was not minted for -- and resolving the
+/// authority against the token would mean holding it in one workspace
+/// authorized the act in all of them.
+///
+/// Roles are resolved per workspace by name (`authorities_for`), so the same
+/// role name carrying different authorities in two workspaces is the ordinary
+/// case rather than a corner: this asks what those names mean *there*.
+///
+/// Platform authorities still count, because they are not a workspace's to
+/// grant or withhold.
+pub(super) async fn require_in(
+    state: &ApiState,
+    claims: &SessionClaims,
+    workspace_id: Uuid,
+    authority: Authority,
+) -> Result<(), ApiError> {
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(workspace_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    if granted.contains(&authority) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
+    }
+}
+
+/// `require`, for an action on one agent: 403 unless the caller holds
+/// `authority` and may reach `agent_id`.
+///
+/// Two checks rather than one: whether the caller holds the authority at all,
+/// and whether anybody narrowed them to a set of agents this one is not in. An
+/// authority that is not narrowed by a scope -- `agents:read`, and everything
+/// that is not about an agent -- takes the first check alone, and never pays
+/// for reading the scope.
+pub(super) async fn require_for_agent(
+    state: &ApiState,
+    claims: &SessionClaims,
+    authority: Authority,
+    agent_id: Uuid,
+) -> Result<(), ApiError> {
+    let held = authorities_of(state, claims).await?;
+    // Not holding it at all settles it, before the scope is read: a refusal
+    // should not cost a query, nor turn into a 500 when that query fails.
+    let reach = if !held.contains(&authority) || !super::scope::is_narrowed(authority) {
+        super::scope::Reach::default()
+    } else {
+        reach_of(state, claims).await?
+    };
+
+    if may_for_agent(&held, &reach, authority, agent_id) {
+        Ok(())
+    } else {
+        // Forbidden rather than not-found: the roster is workspace-public, so
+        // the caller already knows this agent exists and pretending otherwise
+        // would only be confusing.
+        Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ))
+    }
+}
+
+/// The rule `require_for_agent` enforces, for a listing that says rather than
+/// refuses. One statement of it, so a page offering an action and the request
+/// that performs it cannot come to disagree.
+pub(super) fn may_for_agent(
+    held: &std::collections::HashSet<Authority>,
+    reach: &super::scope::Reach,
+    authority: Authority,
+    agent_id: Uuid,
+) -> bool {
+    held.contains(&authority) && (!super::scope::is_narrowed(authority) || reach.covers(agent_id))
+}
+
+/// What this caller may reach, for a listing that filters rather than refuses.
+pub(super) async fn reach_of(
+    state: &ApiState,
+    claims: &SessionClaims,
+) -> Result<super::scope::Reach, ApiError> {
+    state
+        .scopes
+        .reach(claims.workspace_id, claims.subject)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+pub(super) async fn authorize(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    authority: Authority,
+) -> Result<SessionClaims, ApiError> {
+    let claims = authenticate(state, headers)?;
+    require(state, &claims, authority).await?;
+    Ok(claims)
+}
+
+impl From<RoleError> for ApiError {
+    fn from(e: RoleError) -> Self {
+        let status = match e {
+            RoleError::NotFound => StatusCode::NOT_FOUND,
+            RoleError::Duplicate(_) | RoleError::InUse(_) => StatusCode::CONFLICT,
+            RoleError::Invalid(_) => StatusCode::BAD_REQUEST,
+            RoleError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+impl From<super::egress::RuleError> for ApiError {
+    fn from(e: super::egress::RuleError) -> Self {
+        use super::egress::RuleError;
+        match e {
+            // The message is written for whoever typed the rule, so it is the
+            // response body rather than something only a log sees.
+            RuleError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+            RuleError::Duplicate(m) => (StatusCode::CONFLICT, m),
+            RuleError::Database(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        }
+    }
+}
+
+impl From<super::skill::SkillError> for ApiError {
+    fn from(e: super::skill::SkillError) -> Self {
+        use super::skill::SkillError;
+        let status = match e {
+            SkillError::NotFound => StatusCode::NOT_FOUND,
+            SkillError::DuplicateSlug(_) => StatusCode::CONFLICT,
+            SkillError::Invalid(_) => StatusCode::BAD_REQUEST,
+            // Not forbidden to this caller so much as not yet allowed to
+            // anyone here: the workspace has not opened those hosts.
+            SkillError::HostsNotAllowed(_) => StatusCode::CONFLICT,
+            SkillError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+impl From<WorkspaceError> for ApiError {
+    fn from(e: WorkspaceError) -> Self {
+        let status = match e {
+            WorkspaceError::NotFound => StatusCode::NOT_FOUND,
+            WorkspaceError::DuplicateSlug(_) => StatusCode::CONFLICT,
+            WorkspaceError::Invalid(_) => StatusCode::BAD_REQUEST,
+            WorkspaceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+/// Everything the UI needs to restore a session on a cold load.
+///
+/// Deliberately includes the display name and memberships, not just ids: a
+/// reload has only this endpoint to work from, and a client left to stitch the
+/// identity together from several calls renders a signed-in user as nameless
+/// and workspaceless until they all land -- which is precisely what it did.
+#[derive(Debug, Serialize)]
+struct SessionInfo {
+    session_id: Uuid,
+    workspace_id: Uuid,
+    display_name: String,
+    roles: Vec<String>,
+    authorities: Vec<String>,
+    workspaces: Vec<WorkspaceMembership>,
+    /// Whether the message box offers a microphone in this workspace. Here
+    /// rather than read from the settings, which not everybody who chats may
+    /// read.
+    dictation: bool,
+}
+
+async fn session_info(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<SessionInfo>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let mut authorities: Vec<String> = authorities_of(&state, &claims)
+        .await?
+        .iter()
+        .map(|a| a.as_str().to_string())
+        .collect();
+    authorities.sort();
+
+    // The session id is the account id, which is what the login response is
+    // built from too.
+    let user = state.users.get(claims.subject).await?;
+    let workspaces = state.users.memberships(claims.subject).await?;
+    let dictation = state
+        .settings
+        .view(Level::Workspace(claims.workspace_id))
+        .await?
+        .into_iter()
+        .any(|e| e.setting.key == "dictation" && e.value == "on");
+
+    Ok(Json(SessionInfo {
+        session_id: claims.subject,
+        workspace_id: claims.workspace_id,
+        display_name: user.display_name,
+        roles: claims.roles.clone(),
+        authorities,
+        workspaces,
+        dictation,
+    }))
+}
+
+async fn list_workspaces(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<Workspace>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    authorize(&state, &headers, Authority::WorkspacesRead).await?;
+    let items = state.workspaces.list(query.after, limit + 1).await?;
+    Ok(Json(super::Page::from_rows(items, limit, |w| w.id)))
+}
+
+async fn create_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<CreateWorkspace>,
+) -> Result<(StatusCode, Json<Workspace>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesCreate).await?;
+    let workspace = state.workspaces.create(input).await?;
+    // A workspace with no roles is one nobody can be given access to.
+    state.roles.seed_defaults(workspace.id).await?;
+    // And one with none of the agents the operator gives everyone is not the
+    // product it was sold as. A failure here is logged rather than failing the
+    // workspace: reading the workspace's catalog provisions it again, and the
+    // agents page reads it every time it opens.
+    if let Err(e) = state.templates.provision(Some(workspace.id), None).await {
+        tracing::warn!(workspace_id = %workspace.id, error = %e, "could not provision template agents");
+    }
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %workspace.id,
+        slug = %workspace.slug,
+        "workspace created"
+    );
+    Ok((StatusCode::CREATED, Json(workspace)))
+}
+
+/// The platform workspace is not one to open, rename or delete.
+///
+/// It is a reserved row rather than a tenant: what the operator's own work
+/// bills to, and what owns the platform's defaults and skills -- both edited
+/// through their own routes, never by treating this as a workspace. Listed
+/// beside the customers it read as one of them, and renaming it or trying to
+/// delete it was a way to break something that looks like it should allow it.
+/// Deleting was already refused by a trigger, as a database error.
+fn not_the_platform(id: Uuid) -> Result<(), ApiError> {
+    if id == super::usage::PLATFORM_WORKSPACE {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "the platform workspace is managed under Platform, not as a workspace".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn get_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Workspace>, ApiError> {
+    authorize(&state, &headers, Authority::WorkspacesRead).await?;
+    not_the_platform(id)?;
+    Ok(Json(state.workspaces.get(id).await?))
+}
+
+async fn update_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::workspace::UpdateWorkspace>,
+) -> Result<Json<Workspace>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesUpdate).await?;
+    not_the_platform(id)?;
+    let workspace = state.workspaces.rename(id, &input.name).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace renamed");
+    Ok(Json(workspace))
+}
+
+async fn delete_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesDelete).await?;
+    not_the_platform(id)?;
+    state.workspaces.delete(id).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %id, "workspace deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GrantRole {
+    /// The name of one of the workspace's roles.
+    role: String,
+}
+
+/// The hosts this workspace's agents may reach.
+///
+/// Scoped to the caller's own workspace throughout, taken from the token rather
+/// than from a path: an egress list is the shape of what a workspace's agents can
+/// reach, and reading somebody else's tells you where to aim an injection.
+async fn list_egress_rules(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<super::egress::Rule>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
+    let items = super::egress::list(
+        &state.pool,
+        &state.bindings,
+        claims.workspace_id,
+        query.after,
+        limit + 1,
+    )
+    .await?;
+    Ok(Json(super::Page::from_rows(items, limit, |r| r.id)))
+}
+
+async fn create_egress_rule(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<super::egress::CreateRule>,
+) -> Result<(StatusCode, Json<super::egress::Rule>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    // Sending a key to the host is a second decision, beside allowing it.
+    if input.credential.is_some() {
+        authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    }
+    let rule =
+        super::egress::create(&state.pool, &state.bindings, claims.workspace_id, input).await?;
+    // Worth a line in the log on its own: this is the moment a workspace's agents
+    // gained somewhere new to send things.
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        host = %rule.host,
+        "egress rule added"
+    );
+    Ok((StatusCode::CREATED, Json(rule)))
+}
+
+/// Puts a sealed credential on an existing rule, or takes it off. Needs both
+/// halves of the decision: allowing the host is `settings:update`, and sending
+/// a key to it is `credentials:write`.
+async fn set_rule_credential(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::egress::SetCredential>,
+) -> Result<Json<super::egress::Rule>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    let rule = super::egress::set_credential(
+        &state.pool,
+        claims.workspace_id,
+        id,
+        input.header.map(|h| h.trim().to_ascii_lowercase()),
+        input.credential,
+    )
+    .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        host = %rule.host,
+        credential = ?rule.credential,
+        "egress rule credential set"
+    );
+    Ok(Json(rule))
+}
+
+async fn delete_egress_rule(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    if !super::egress::delete(&state.pool, claims.workspace_id, id).await? {
+        return Err((StatusCode::NOT_FOUND, "no such rule".into()));
+    }
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        rule_id = %id,
+        "egress rule removed"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_users(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<User>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    // A workspace's administrator sees the accounts in their workspace. Every
+    // account on the platform is a system administrator's view alone: the
+    // workspace is the isolation boundary, and a user list that crossed it
+    // named every other customer's staff.
+    let users = if claims.is_system_admin() {
+        state.users.list(query.after, limit + 1).await?
+    } else {
+        state
+            .users
+            .list_for_workspace(claims.workspace_id, query.after, limit + 1)
+            .await?
+    };
+    Ok(Json(super::Page::from_rows(users, limit, |u| u.id)))
+}
+
+/// A user, with where they belong.
+///
+/// Memberships are narrowed to what the caller may know about: their own
+/// workspace, or every workspace for a system administrator.
+#[derive(Debug, serde::Serialize)]
+struct UserDetail {
+    #[serde(flatten)]
+    user: User,
+    memberships: Vec<WorkspaceMembership>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateUser {
+    display_name: String,
+}
+
+async fn update_user(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpdateUser>,
+) -> Result<Json<User>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if claims.subject != id {
+        require(&state, &claims, Authority::UsersUpdate).await?;
+    }
+    let user = state.users.rename(id, &input.display_name).await?;
+    tracing::info!(actor = %claims.subject, user_id = %id, "user renamed");
+    Ok(Json(user))
+}
+
+/// A new account, and optionally a role for it in the creator's workspace.
+///
+/// The role rides in the same request because the user list is scoped to the
+/// workspace: an account created without a role there is one its creator can no
+/// longer see, and two requests left a window for exactly that.
+#[derive(Debug, serde::Deserialize)]
+struct CreateUserRequest {
+    #[serde(flatten)]
+    user: CreateUser,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+async fn create_user(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<CreateUserRequest>,
+) -> Result<(StatusCode, Json<User>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsersCreate).await?;
+    let CreateUserRequest { user: input, role } = input;
+    if role.is_some() {
+        require(&state, &claims, Authority::RolesAssign).await?;
+    }
+    let user = state.users.create(input).await?;
+    if let Some(role) = role {
+        state
+            .users
+            .grant_workspace_role(user.id, claims.workspace_id, &role)
+            .await?;
+    }
+    tracing::info!(actor = %claims.subject, user_id = %user.id, "user created");
+    Ok((StatusCode::CREATED, Json(user)))
+}
+
+async fn get_user(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<UserDetail>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    let user = state.users.get(id).await?;
+    let mut memberships = state.users.memberships(id).await?;
+    if !claims.is_system_admin() {
+        memberships.retain(|m| m.workspace_id == claims.workspace_id);
+    }
+    Ok(Json(UserDetail { user, memberships }))
+}
+
+async fn delete_user(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsersDelete).await?;
+    if claims.subject == id {
+        return Err((StatusCode::BAD_REQUEST, "cannot delete yourself".into()));
+    }
+    state.users.delete(id).await?;
+    tracing::info!(actor = %claims.subject, user_id = %id, "user deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AddIdentity {
+    email: String,
+    password: String,
+}
+
+async fn add_identity(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Json(input): Json<AddIdentity>,
+) -> Result<(StatusCode, Json<Identity>), ApiError> {
+    // Users may add sign-in methods to their own account; managing anyone
+    // else's needs the user-management authority.
+    let claims = authenticate(&state, &headers)?;
+    if claims.subject != user_id {
+        require(&state, &claims, Authority::UsersUpdate).await?;
+    }
+
+    let identity = state
+        .users
+        .add_password_identity(user_id, &input.email, &input.password)
+        .await?;
+    tracing::info!(actor = %claims.subject, user_id = %user_id, "identity added");
+    Ok((StatusCode::CREATED, Json(identity)))
+}
+
+async fn remove_identity(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((user_id, identity_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if claims.subject != user_id {
+        require(&state, &claims, Authority::UsersUpdate).await?;
+    }
+
+    state.users.remove_identity(user_id, identity_id).await?;
+    tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct SetScope {
+    /// The agents this person's narrowed authorities apply to. Empty removes
+    /// the narrowing and returns them to the whole workspace, which is a
+    /// widening and so needs the same authority as everything else here.
+    agents: Vec<Uuid>,
+}
+
+/// Which agents each narrowed person in this workspace may reach.
+///
+/// Only the narrowed appear. Somebody absent from this list holds their
+/// authorities across the workspace, which is the default and not a state to
+/// enumerate -- listing every unnarrowed person as "all agents" would make the
+/// common case look like a decision somebody took.
+async fn list_scopes(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<ScopeRow>>, ApiError> {
+    // Seeing who is confined to what is part of administering people, so it
+    // rides with the authority that assigns them.
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+    let rows = state
+        .scopes
+        .listing(claims.workspace_id)
+        .await
+        .map_err(scope_error)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(user_id, agents)| ScopeRow { user_id, agents })
+            .collect(),
+    ))
+}
+
+#[derive(serde::Serialize)]
+struct ScopeRow {
+    user_id: Uuid,
+    agents: Vec<Uuid>,
+}
+
+/// Replaces what one person may reach.
+async fn set_scope(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<Uuid>,
+    Json(input): Json<SetScope>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+
+    // Narrowing somebody who is not in this workspace would write a row that
+    // no query here would ever find, and would read as having worked.
+    let memberships = state.users.memberships(user_id).await?;
+    if !memberships
+        .iter()
+        .any(|m| m.workspace_id == claims.workspace_id)
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no such user in this workspace".into(),
+        ));
+    }
+
+    state
+        .scopes
+        .set(claims.workspace_id, user_id, &input.agents)
+        .await
+        .map_err(scope_error)?;
+
+    tracing::info!(
+        actor = %claims.subject,
+        user_id = %user_id,
+        workspace_id = %claims.workspace_id,
+        agents = input.agents.len(),
+        "agent scope set"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn scope_error(e: super::scope::ScopeError) -> ApiError {
+    use super::scope::ScopeError;
+    let status = match e {
+        ScopeError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ScopeError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, e.to_string())
+}
+
+async fn grant_workspace_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((user_id, workspace_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<GrantRole>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+    // A workspace admin may only grant within their own workspace; a system admin
+    // carries the authority in whichever workspace they are scoped to.
+    if claims.workspace_id != workspace_id && !claims.is_system_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot grant outside your workspace".into(),
+        ));
+    }
+    state
+        .users
+        .grant_workspace_role(user_id, workspace_id, &input.role)
+        .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        user_id = %user_id,
+        workspace_id = %workspace_id,
+        role = %input.role,
+        "workspace role granted"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn revoke_workspace_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((user_id, workspace_id, role)): Path<(Uuid, Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesAssign).await?;
+    if claims.workspace_id != workspace_id && !claims.is_system_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cannot revoke outside your workspace".into(),
+        ));
+    }
+    state
+        .users
+        .revoke_workspace_role(user_id, workspace_id, &role)
+        .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        user_id = %user_id,
+        workspace_id = %workspace_id,
+        role = %role,
+        "workspace role revoked"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// -- Roles --------------------------------------------------------------------
+
+/// The vocabulary a role can be built from, for the role editor.
+#[derive(Debug, serde::Serialize)]
+struct AuthorityInfo {
+    name: &'static str,
+    description: &'static str,
+}
+
+async fn list_authorities(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<AuthorityInfo>>, ApiError> {
+    authenticate(&state, &headers)?;
+    Ok(Json(
+        Authority::ALL
+            .iter()
+            .filter(|a| a.workspace_assignable())
+            .map(|a| AuthorityInfo {
+                name: a.as_str(),
+                description: a.describe(),
+            })
+            .collect(),
+    ))
+}
+
+/// Seeing the roles takes either the authority to hand them out or the
+/// authority to define them: both jobs need the list.
+async fn list_roles(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<WorkspaceRole>>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let claims = authenticate(&state, &headers)?;
+    let granted = authorities_of(&state, &claims).await?;
+    if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ));
+    }
+    let items = state
+        .roles
+        .list(claims.workspace_id, query.after, limit + 1)
+        .await?;
+    Ok(Json(super::Page::from_rows(items, limit, |r| r.id)))
+}
+
+async fn get_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<WorkspaceRole>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let granted = authorities_of(&state, &claims).await?;
+    if !granted.contains(&Authority::RolesAssign) && !granted.contains(&Authority::RolesManage) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            auth::AuthError::Forbidden.to_string(),
+        ));
+    }
+    Ok(Json(state.roles.get(claims.workspace_id, id).await?))
+}
+
+/// A role may bundle only what its editor already holds.
+///
+/// Otherwise `roles:manage` is a ladder: define a role with everything, grant
+/// it to yourself, climb. The check is against the editor's resolved
+/// authorities, which for a system administrator is everything a workspace may
+/// hold anyway.
+fn within_reach(
+    granted: &std::collections::HashSet<Authority>,
+    wanted: &[String],
+) -> Result<(), ApiError> {
+    for name in wanted {
+        let Some(a) = Authority::parse(name.trim()) else {
+            // The store reports the bad name properly; this check only cares
+            // about reach.
+            continue;
+        };
+        if !granted.contains(&a) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("you cannot put {a} in a role because you do not hold it yourself"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn create_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<CreateRole>,
+) -> Result<(StatusCode, Json<WorkspaceRole>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    // Reserved-to-the-platform first, so the answer names the real reason:
+    // nobody holds `workspaces:create` in a workspace, and "you do not hold it"
+    // would send the editor looking for someone who does.
+    super::role::validate_authorities(&input.authorities)?;
+    within_reach(&authorities_of(&state, &claims).await?, &input.authorities)?;
+    let role = state.roles.create(claims.workspace_id, input).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role = %role.name, "role created");
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+async fn update_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpdateRole>,
+) -> Result<Json<WorkspaceRole>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    if let Some(authorities) = &input.authorities {
+        super::role::validate_authorities(authorities)?;
+        within_reach(&authorities_of(&state, &claims).await?, authorities)?;
+    }
+    let role = state.roles.update(claims.workspace_id, id, input).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role = %role.name, "role updated");
+    Ok(Json(role))
+}
+
+async fn delete_role(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authorize(&state, &headers, Authority::RolesManage).await?;
+    state.roles.delete(claims.workspace_id, id).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, role_id = %id, "role deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// -- Usage --------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct UsageQuery {
+    /// Inclusive start, RFC 3339.
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive end, RFC 3339. A closed month is `from` the first and `to`
+    /// the first of the next.
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    /// The `next` of the previous page.
+    after: Option<Uuid>,
+    limit: Option<i64>,
+    /// System administrators may name a workspace; everyone else gets their own.
+    workspace_id: Option<Uuid>,
+}
+
+/// The window summed, for the dashboard.
+///
+/// The same authority as the export, and the same scoping rule: a system
+/// administrator may ask across every workspace, and everybody else gets their
+/// own however they ask. `scope=all` is how the operator says so -- an absent
+/// scope means the caller's own workspace, so a dashboard cannot widen itself
+/// by forgetting a parameter.
+/// What the workspace's skills are doing, over a window.
+///
+/// `SkillsRead` rather than `UsageRead`: these are facts about skills, and
+/// somebody who may read the skills themselves learns nothing new from a count
+/// of the turns they served. Spend is not among the figures -- nothing
+/// attributes tokens to a skill, and a number that looked like it did would be
+/// a guess presented as a fact.
+///
+/// One workspace only, and deliberately no platform-wide cut. Usage figures
+/// aggregate to a number; a list of every workspace's skill names is their
+/// content rather than a statistic about it.
+async fn skill_statistics(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
+) -> Result<Json<super::skill::stats::SkillStats>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SkillsRead).await?;
+
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your workspace's skills".into()));
+            }
+            other
+        }
+        Some(own) => own,
+        None => claims.workspace_id,
+    };
+
+    // The same window rules the usage summary applies, for the same reasons:
+    // closed so the figures mean something without knowing when they were
+    // asked for, and bounded so nobody asks for everything by accident.
+    let to = query.to.unwrap_or_else(|| {
+        let now = chrono::Utc::now();
+        now.date_naive()
+            .succ_opt()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc())
+            .unwrap_or(now)
+    });
+    let from = query
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::days(30));
+    if from >= to {
+        return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
+    }
+    if to - from > chrono::Duration::days(370) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "window may not exceed 370 days".into(),
+        ));
+    }
+
+    let stats = state
+        .skill_stats
+        .stats(workspace_id, from, to, 20)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(stats))
+}
+
+async fn summarize_usage(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
+) -> Result<Json<super::usage::UsageSummary>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsageRead).await?;
+
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your workspace's ledger".into()));
+            }
+            Some(other)
+        }
+        Some(own) => Some(own),
+        None if query.scope.as_deref() == Some("all") => {
+            if !claims.is_system_admin() {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "only a system administrator sees every workspace".into(),
+                ));
+            }
+            None
+        }
+        None => Some(claims.workspace_id),
+    };
+
+    // A window is always closed, so the figures mean something without the
+    // reader knowing when the call was made. The default is the last 30 days
+    // ending at the next midnight, which makes today a whole bucket rather than
+    // a partial one that reads as a collapse in traffic.
+    let to = query.to.unwrap_or_else(|| {
+        let now = chrono::Utc::now();
+        now.date_naive()
+            .succ_opt()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc())
+            .unwrap_or(now)
+    });
+    let from = query
+        .from
+        .unwrap_or_else(|| to - chrono::Duration::days(30));
+    if from >= to {
+        return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
+    }
+    // A window is bounded, because the statement behind it scans every
+    // partition of the ledger and an unbounded one is a way to ask the database
+    // for everything by accident.
+    if to - from > chrono::Duration::days(370) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "window may not exceed 370 days".into(),
+        ));
+    }
+
+    let summary = state
+        .usage
+        .summarize(workspace_id, from, to)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(summary))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SummaryQuery {
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    /// `all` for every workspace, which only a system administrator may ask.
+    scope: Option<String>,
+    workspace_id: Option<Uuid>,
+}
+
+/// The ledger, paged. What a bill is built from.
+async fn export_usage(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<UsageQuery>,
+) -> Result<Json<super::usage::UsagePage>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::UsageRead).await?;
+    let workspace_id = match query.workspace_id {
+        Some(other) if other != claims.workspace_id => {
+            if !claims.is_system_admin() {
+                return Err((StatusCode::FORBIDDEN, "not your workspace's ledger".into()));
+            }
+            other
+        }
+        _ => claims.workspace_id,
+    };
+    let page = state
+        .usage
+        .export(
+            workspace_id,
+            query.from,
+            query.to,
+            query.after,
+            query.limit.unwrap_or(500).clamp(1, 5000),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(page))
+}
+
+// -- Settings -----------------------------------------------------------------
+
+use super::settings::{Level, Owner, SettingsError};
+
+impl From<SettingsError> for ApiError {
+    fn from(e: SettingsError) -> Self {
+        let status = match e {
+            SettingsError::Unknown(_) => StatusCode::NOT_FOUND,
+            SettingsError::Invalid(_) => StatusCode::BAD_REQUEST,
+            SettingsError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SetSetting {
+    value: serde_json::Value,
+}
+
+/// Whether the caller may write at `level`, and whether the setting allows it.
+async fn may_write(
+    state: &ApiState,
+    claims: &SessionClaims,
+    level: Level,
+    key: &str,
+) -> Result<(), ApiError> {
+    let setting = super::settings::find(key).ok_or(SettingsError::Unknown(key.to_string()))?;
+    match level {
+        Level::Operator => {
+            if !claims.is_system_admin() {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "only the operator sets platform defaults".into(),
+                ));
+            }
+        }
+        Level::Workspace(_) | Level::Agent { .. } => {
+            require(state, claims, Authority::SettingsUpdate).await?;
+            if setting.owner == Owner::OperatorOnly {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "{} is set by the operator and cannot be overridden here",
+                        setting.label
+                    ),
+                ));
+            }
+            if setting.owner == Owner::OperatorCeiling && matches!(level, Level::Agent { .. }) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{} is set per workspace, not per agent", setting.label),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a workspace value looser than the operator's ceiling.
+///
+/// Checked here as well as bounded when read, so somebody choosing it is told
+/// why it will not take rather than seeing their choice saved and ignored.
+async fn within_ceiling(
+    state: &ApiState,
+    level: Level,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), ApiError> {
+    let Some(setting) = super::settings::find(key) else {
+        return Ok(());
+    };
+    if setting.owner != Owner::OperatorCeiling || !matches!(level, Level::Workspace(_)) {
+        return Ok(());
+    }
+    let operator = state
+        .settings
+        .view(Level::Operator)
+        .await?
+        .into_iter()
+        .find(|e| e.setting.key == key)
+        .map(|e| e.value)
+        .unwrap_or(setting.default.clone());
+    if super::settings::stricter(&setting, &operator, value) != *value {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("{} is turned off by the platform operator", setting.label),
+        ));
+    }
+    Ok(())
+}
+
+async fn view_operator_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    if !claims.is_system_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only the operator sees platform defaults".into(),
+        ));
+    }
+    Ok(Json(state.settings.view(Level::Operator).await?))
+}
+
+async fn set_operator_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims, Level::Operator, &key).await?;
+    state
+        .settings
+        .set(Level::Operator, &key, input.value)
+        .await?;
+    tracing::info!(actor = %claims.subject, key = %key, "platform setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_operator_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims, Level::Operator, &key).await?;
+    state.settings.clear(Level::Operator, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What is holding this workspace, and what is holding each of its agents.
+///
+/// One call rather than one per agent: the panel that shows this shows all of
+/// it at once, and a page that had to ask per agent would show a workspace
+/// halfway held while it walked the list.
+async fn list_inhibitors(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<super::PageQuery>,
+) -> Result<Json<super::Page<super::inhibitor::Held>>, ApiError> {
+    // Seeing what is stopped is not the same as being able to stop it.
+    // `agents:read` rather than either inhibit authority: a viewer watching a
+    // silent agent is owed the reason, and withholding it is how "why is
+    // nothing happening" becomes a support ticket.
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let items = store
+        .in_workspace(claims.workspace_id, query.after, limit + 1)
+        .await?;
+    let page = super::Page::from_rows(items, limit, |i| i.id);
+    // Who holds each, in words: `held_by` is an id or a machine's name, and the
+    // operator's staff are not named to a customer.
+    let items = super::inhibitor::with_holders(&state.pool, page.items).await?;
+    Ok(Json(super::Page {
+        items,
+        next: page.next,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct StopRequest {
+    /// Why, in the holder's words. Required: a hold nobody can act on is worse
+    /// than none, because the conversation it stops says only that it stopped.
+    reason: String,
+}
+
+async fn stop_workspace(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<StopRequest>,
+) -> Result<(StatusCode, Json<super::inhibitor::Inhibitor>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::WorkspacesInhibit).await?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store
+        .take(super::inhibitor::TakeInhibitor {
+            scope: super::inhibitor::Scope::Workspace {
+                workspace_id: claims.workspace_id,
+            },
+            strength: super::inhibitor::Strength::Stopped,
+            reason: request.reason,
+            held_by: claims.subject.to_string(),
+        })
+        .await?;
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        actor = %claims.subject,
+        reason = %held.reason,
+        "a workspace was stopped"
+    );
+    Ok((StatusCode::CREATED, Json(held)))
+}
+
+async fn stop_agent(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<Uuid>,
+    Json(request): Json<StopRequest>,
+) -> Result<(StatusCode, Json<super::inhibitor::Inhibitor>), ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsInhibit).await?;
+    // Read first, so stopping an agent in somebody else's workspace is a 404
+    // rather than a hold on an id that means nothing here.
+    state.agents.get(claims.workspace_id, agent_id).await?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store
+        .take(super::inhibitor::TakeInhibitor {
+            scope: super::inhibitor::Scope::Agent {
+                workspace_id: claims.workspace_id,
+                agent_id,
+            },
+            strength: super::inhibitor::Strength::Stopped,
+            reason: request.reason,
+            held_by: claims.subject.to_string(),
+        })
+        .await?;
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        agent_id = %agent_id,
+        actor = %claims.subject,
+        reason = %held.reason,
+        "an agent was stopped"
+    );
+    Ok((StatusCode::CREATED, Json(held)))
+}
+
+/// Lifts one hold, by the handle taking it returned.
+///
+/// By id rather than by scope, because several holds can cover the same work
+/// and releasing "the workspace's" would be ambiguous about which -- the whole
+/// reason this is a set. Authorized by what the hold covers: releasing an
+/// agent's hold needs `agents:inhibit`, a workspace's needs the wider one.
+async fn release_inhibitor(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let store = super::inhibitor::PostgresInhibitorStore::new(state.pool.clone());
+    let held = store.get(id).await?;
+
+    if held.scope.workspace_id() != Some(claims.workspace_id) {
+        // Not "forbidden": a hold in another workspace is one this caller has
+        // no business knowing exists.
+        return Err((StatusCode::NOT_FOUND, "no such inhibitor".to_string()));
+    }
+    let needed = match held.scope {
+        super::inhibitor::Scope::Agent { .. } => Authority::AgentsInhibit,
+        _ => Authority::WorkspacesInhibit,
+    };
+    require(&state, &claims, needed).await?;
+
+    store.release(id).await?;
+
+    // Turns this hold parked are given back now, rather than waiting for
+    // somebody to say something. That is what `resumable` promised on the
+    // `chat.held` event, and until parking existed nothing kept it.
+    //
+    // Scoped the way the hold was, and re-evaluated when the turn runs: a turn
+    // another hold still covers parks again, which costs a claim and is the
+    // right way round to be wrong.
+    let resumed = outturn_core::jobs::resume_for_scope(&state.pool, &held.scope)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tracing::warn!(
+        workspace_id = %claims.workspace_id,
+        actor = %claims.subject,
+        resumed,
+        "a hold was released"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn view_workspace_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
+    Ok(Json(
+        state
+            .settings
+            .view(Level::Workspace(claims.workspace_id))
+            .await?,
+    ))
+}
+
+async fn set_workspace_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = Level::Workspace(claims.workspace_id);
+    may_write(&state, &claims, level, &key).await?;
+    within_ceiling(&state, level, &key, &input.value).await?;
+    state.settings.set(level, &key, input.value).await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, key = %key, "workspace setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_workspace_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = Level::Workspace(claims.workspace_id);
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.clear(level, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The agent must be the caller's workspace's, or the level would let a workspace
+/// write settings onto somebody else's agent.
+async fn agent_level(
+    state: &ApiState,
+    claims: &SessionClaims,
+    agent_id: Uuid,
+) -> Result<Level, ApiError> {
+    state.agents.get(claims.workspace_id, agent_id).await?;
+    Ok(Level::Agent {
+        workspace_id: claims.workspace_id,
+        agent_id,
+    })
+}
+
+async fn view_agent_settings(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    Ok(Json(state.settings.view(level).await?))
+}
+
+async fn set_agent_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((agent_id, key)): Path<(Uuid, String)>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.set(level, &key, input.value).await?;
+    tracing::info!(actor = %claims.subject, agent_id = %agent_id, key = %key, "agent setting set");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_agent_setting(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((agent_id, key)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let level = agent_level(&state, &claims, agent_id).await?;
+    may_write(&state, &claims, level, &key).await?;
+    state.settings.clear(level, &key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub fn routes(state: Arc<ApiState>) -> Router {
+    Router::new()
+        .route("/v1/login", post(super::login::login))
+        .route(
+            "/v1/session/workspace",
+            post(super::login::select_workspace),
+        )
+        .route("/v1/logout", post(super::login::logout))
+        .route("/v1/session/refresh", post(super::login::refresh))
+        .route(
+            "/v1/agents",
+            get(super::agents::list_agents).post(super::agents::create_agent),
+        )
+        .route(
+            "/v1/agent-sessions",
+            get(super::sessions::list_sessions).post(super::sessions::create_session),
+        )
+        .route(
+            "/v1/agent-sessions/{id}",
+            get(super::sessions::get_session)
+                .delete(super::sessions::delete_session)
+                .patch(super::sessions::rename_session),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/messages",
+            get(super::sessions::get_messages).post(super::sessions::send_message),
+        )
+        // A person's verdict on a reply or on the whole conversation, under
+        // the right to read it.
+        .route(
+            "/v1/agent-sessions/{id}/feedback",
+            get(super::feedback::list)
+                .put(super::feedback::give)
+                .delete(super::feedback::withdraw),
+        )
+        // Stopping a turn, rather than a resource of its own: what is being
+        // acted on is the conversation, and which job is answering it is the
+        // platform's business rather than the caller's.
+        .route(
+            "/v1/agent-sessions/{id}/compact",
+            post(super::compact::request),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/prompt",
+            get(super::compact::status),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/cancel",
+            post(super::sessions::cancel_turn),
+        )
+        // Ending a sleep early. Also the conversation's rather than the
+        // sleep's: a conversation has at most one.
+        .route("/v1/agent-sessions/{id}/wake", post(super::wake::wake_now))
+        // Running a failed turn again. Under the message rather than the
+        // session, unlike cancel: stopping means the turn in flight, of which
+        // there is one, and retrying means a particular prompt that failed,
+        // of which a session may hold several.
+        .route(
+            "/v1/agent-sessions/{id}/messages/{message_id}/retry",
+            post(super::sessions::retry_turn),
+        )
+        .route(
+            "/v1/agents/{id}",
+            get(super::agents::get_agent)
+                .patch(super::agents::update_agent)
+                .delete(super::agents::delete_agent),
+        )
+        .route(
+            "/v1/schedules",
+            get(super::schedules::list_schedules).post(super::schedules::create_schedule),
+        )
+        .route(
+            "/v1/schedules/{id}",
+            get(super::schedules::get_schedule)
+                .patch(super::schedules::update_schedule)
+                .delete(super::schedules::delete_schedule),
+        )
+        // What an expression would do, without saving it. A preview rather
+        // than a resource: nothing is created, and the editor asks while
+        // somebody is still typing.
+        .route(
+            "/v1/schedules/preview",
+            post(super::schedules::preview_schedule),
+        )
+        .route(
+            "/v1/webhook-triggers",
+            get(super::webhooks::list_triggers).post(super::webhooks::create_trigger),
+        )
+        .route(
+            "/v1/webhook-triggers/{id}",
+            get(super::webhooks::get_trigger)
+                .patch(super::webhooks::update_trigger)
+                .delete(super::webhooks::delete_trigger),
+        )
+        .route(
+            "/v1/webhook-triggers/{id}/rotate",
+            post(super::webhooks::rotate_secret),
+        )
+        // The public half. Reachable by whoever holds the URL, which is why
+        // it sits apart from everything above it and refuses for a living.
+        .route(
+            "/v1/hooks/{path}",
+            post(super::webhooks::deliver).layer(axum::extract::DefaultBodyLimit::max(
+                // A layer rather than a check inside the handler, which is
+                // where this started: the handler takes `Bytes`, so a body has
+                // already been buffered whole by the time it could be
+                // measured, and the declared limit was not the enforced one.
+                super::webhook::MAX_BODY_BYTES,
+            )),
+        )
+        .route("/v1/session", get(session_info))
+        .route("/v1/events", get(super::events::poll))
+        .route("/v1/approvals", post(super::approvals::request))
+        .route("/v1/approvals/{id}/answer", post(super::approvals::answer))
+        .route("/v1/action-items", get(super::actions_api::queue))
+        .route("/v1/action-items/count", get(super::actions_api::badge))
+        .route(
+            "/v1/egress-rules",
+            get(list_egress_rules).post(create_egress_rule),
+        )
+        .route(
+            "/v1/credentials",
+            get(super::credentials::list).post(super::credentials::create),
+        )
+        .route(
+            "/v1/credentials/seal-key",
+            get(super::credentials::seal_key_for),
+        )
+        .route(
+            "/v1/credentials/{id}",
+            axum::routing::put(super::credentials::rotate).delete(super::credentials::revoke),
+        )
+        .route("/v1/credentials/{id}/test", post(super::credentials::test))
+        .route(
+            "/v1/egress-rules/{id}",
+            axum::routing::delete(delete_egress_rule).patch(set_rule_credential),
+        )
+        // Runtimes ask here for work and report back what it produced. Both
+        // require GatewayInvoke, which is the platform's own tier rather than
+        // a workspace's.
+        .route("/v1/work/gated", post(super::gated::raise))
+        .route("/v1/work/wait", post(super::wake::wait))
+        .route("/v1/work", post(super::work::take))
+        .route("/v1/work/{job_id}/events", post(super::work::report))
+        .route("/v1/work/{job_id}/abandon", post(super::work::abandon))
+        .route("/v1/work/{job_id}/token", post(super::work::refresh_token))
+        .route("/v1/agent-sessions/{id}/files", get(super::files::list))
+        // Looking at a file rather than keeping it: served inline, for a short
+        // allowlist of types decided by the bytes. Separate from the download
+        // below, which stays an attachment for everything.
+        .route(
+            "/v1/agent-sessions/{id}/files/preview/{scope}/{*path}",
+            get(super::files::preview),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/files/{scope}/{*path}",
+            get(super::files::download)
+                .put(super::files::upload)
+                .delete(super::files::delete)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    super::files::MAX_UPLOAD_BYTES,
+                )),
+        )
+        .route("/v1/usage", get(export_usage))
+        .route("/v1/usage/summary", get(summarize_usage))
+        .route("/v1/skills/stats", get(skill_statistics))
+        .route("/v1/inhibitors", get(list_inhibitors))
+        .route(
+            "/v1/inhibitors/{id}",
+            axum::routing::delete(release_inhibitor),
+        )
+        .route("/v1/workspace/stop", post(stop_workspace))
+        .route("/v1/agents/{id}/stop", post(stop_agent))
+        .route("/v1/agents/activity", get(super::sessions::agent_activity))
+        .route("/v1/settings", get(view_workspace_settings))
+        .route(
+            "/v1/settings/{key}",
+            axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
+        )
+        .route(
+            "/v1/platform/skills",
+            post(super::skills::create_platform_skill),
+        )
+        // A specification arrives inline, and a real one is megabytes: the
+        // default two would refuse a document the wizard itself accepts.
+        .route(
+            "/v1/platform/skills/from-openapi",
+            post(super::skills::create_platform_skill_from_openapi).layer(
+                axum::extract::DefaultBodyLimit::max(
+                    super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+                ),
+            ),
+        )
+        .route(
+            "/v1/platform/skills/from-openapi/preview",
+            post(super::skills::preview_platform_skill_from_openapi).layer(
+                axum::extract::DefaultBodyLimit::max(
+                    super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+                ),
+            ),
+        )
+        .route(
+            "/v1/platform/skills/{id}",
+            axum::routing::patch(super::skills::update_platform_skill)
+                .delete(super::skills::delete_platform_skill),
+        )
+        .route(
+            "/v1/platform/skills/{id}/versions",
+            post(super::skills::add_platform_version),
+        )
+        .route(
+            "/v1/platform/skills/{id}/annotations",
+            post(super::skill_sources::annotate),
+        )
+        .route(
+            "/v1/platform/skills/{id}/annotations/{annotation}",
+            axum::routing::delete(super::skill_sources::retire),
+        )
+        // A new specification may come with it, and a real one is megabytes.
+        .route(
+            "/v1/platform/skills/{id}/regenerate",
+            post(super::skill_sources::regenerate).layer(axum::extract::DefaultBodyLimit::max(
+                super::skill::wizard::MAX_SPEC_BYTES + 64 * 1024,
+            )),
+        )
+        .route(
+            "/v1/platform/skills/{id}/retired",
+            axum::routing::put(super::skills::retire_platform_skill),
+        )
+        .route(
+            "/v1/platform/agent-templates",
+            get(super::agent_templates::list_templates)
+                .post(super::agent_templates::create_template),
+        )
+        .route(
+            "/v1/platform/agent-templates/{id}",
+            get(super::agent_templates::get_template)
+                .patch(super::agent_templates::update_template),
+        )
+        .route(
+            "/v1/platform/agent-templates/{id}/versions",
+            get(super::agent_templates::list_template_versions)
+                .post(super::agent_templates::publish_template),
+        )
+        .route(
+            "/v1/agents/{id}/template-versions",
+            get(super::agents::list_template_versions),
+        )
+        .route(
+            "/v1/agents/{id}/template-version",
+            axum::routing::put(super::agents::pin_template_version),
+        )
+        .route("/v1/agent-templates", get(super::agent_templates::catalog))
+        .route(
+            "/v1/agent-templates/{id}/install",
+            post(super::agent_templates::install),
+        )
+        .route("/v1/platform/settings", get(view_operator_settings))
+        .route(
+            "/v1/platform/settings/{key}",
+            axum::routing::put(set_operator_setting).delete(clear_operator_setting),
+        )
+        .route(
+            "/v1/skills",
+            get(super::skills::list_skills).post(super::skills::create_skill),
+        )
+        .route(
+            "/v1/skills/{id}",
+            get(super::skills::get_skill)
+                .patch(super::skills::update_skill)
+                .delete(super::skills::delete_skill),
+        )
+        .route(
+            "/v1/skills/{id}/retired",
+            axum::routing::put(super::skills::retire_skill),
+        )
+        .route("/v1/skills/{id}/source", get(super::skill_sources::get))
+        .route(
+            "/v1/skills/{id}/versions",
+            get(super::skills::list_versions).post(super::skills::add_version),
+        )
+        .route(
+            "/v1/skills/{id}/versions/{version_id}",
+            get(super::skills::get_version),
+        )
+        .route(
+            "/v1/skills/{id}/versions/{version_id}/files/{*path}",
+            get(super::skills::get_version_file),
+        )
+        .route("/v1/skills/{id}/fork", post(super::skills::fork_skill))
+        .route(
+            "/v1/skills/{id}/hosts/approve",
+            post(super::skills::approve_skill_hosts),
+        )
+        .route(
+            "/v1/agents/{id}/skills",
+            get(super::skills::list_agent_skills).put(super::skills::set_agent_skills),
+        )
+        .route("/v1/agents/{id}/settings", get(view_agent_settings))
+        .route(
+            "/v1/agents/{id}/settings/{key}",
+            axum::routing::put(set_agent_setting).delete(clear_agent_setting),
+        )
+        .route("/v1/authorities", get(list_authorities))
+        .route("/v1/scopes", get(list_scopes))
+        .route("/v1/scopes/{user_id}", axum::routing::put(set_scope))
+        .route("/v1/roles", get(list_roles).post(create_role))
+        .route(
+            "/v1/roles/{id}",
+            get(get_role).patch(update_role).delete(delete_role),
+        )
+        .route("/v1/users", get(list_users).post(create_user))
+        .route(
+            "/v1/users/{id}",
+            get(get_user).patch(update_user).delete(delete_user),
+        )
+        .route("/v1/users/{user_id}/identities", post(add_identity))
+        .route(
+            "/v1/users/{user_id}/identities/{identity_id}",
+            axum::routing::delete(remove_identity),
+        )
+        .route(
+            "/v1/users/{user_id}/workspaces/{workspace_id}/roles",
+            post(grant_workspace_role),
+        )
+        .route(
+            "/v1/users/{user_id}/workspaces/{workspace_id}/roles/{role}",
+            axum::routing::delete(revoke_workspace_role),
+        )
+        .route(
+            "/v1/workspaces",
+            get(list_workspaces).post(create_workspace),
+        )
+        .route(
+            "/v1/workspaces/{id}",
+            get(get_workspace)
+                .patch(update_workspace)
+                .delete(delete_workspace),
+        )
+        .with_state(state)
+}

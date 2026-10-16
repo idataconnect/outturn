@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 FROM rust:1 AS builder
 WORKDIR /app
-COPY Cargo.toml Cargo.lock build.rs ./
+COPY Cargo.toml Cargo.lock ./
+# The tiers are crates of their own; the root package holds the tools and tests.
+COPY crates/ crates/
 COPY src/ src/
 # Cargo validates every [[test]] path when parsing the manifest, even for a
 # binary-only build and even for targets behind a feature nobody asked for.

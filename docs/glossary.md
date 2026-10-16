@@ -198,7 +198,7 @@ pairs still name variables. [sealed-credentials.md](sealed-credentials.md).
 **Commitment** — the API's signed hash over a turn's egress rules, carried in
 the turn token. A request offers a rule and a proof; the gateway checks it
 against the root inside the token, so a runtime that rewrote its own copy gets
-nowhere. Could not verify means refused. `src/egress/commit.rs`.
+nowhere. Could not verify means refused. `crates/core/src/egress/commit.rs`.
 
 **Operator allowlist** — `OUTTURN_INTERNAL_HOSTS`. Cluster-internal addresses
 are refused by default; this is how somebody outside the workspace names the

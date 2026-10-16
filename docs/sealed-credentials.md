@@ -2,9 +2,9 @@
 
 A secret somebody types into the platform, stored where anyone can read it and
 nobody but the gateway can use it -- and bound, inside the seal, to where it may
-go. Built for static header credentials: `src/egress/seal.rs`, the
-`credentials` table, the gateway's read in `src/gateway/egress/sealed.rs`, the
-API in `src/api/credentials.rs`, sealing in the browser (`ui/src/lib/seal.ts`)
+go. Built for static header credentials: `crates/core/src/egress/seal.rs`, the
+`credentials` table, the gateway's read in `crates/gateway/src/egress/sealed.rs`, the
+API in `crates/api/src/credentials.rs`, sealing in the browser (`ui/src/lib/seal.ts`)
 and with `outturn-seal`. Client-credentials pairs are not yet; see *Order of
 work*.
 
@@ -303,7 +303,7 @@ end without touching a deployment.
 
 **Phase 1 -- the gateway uses a sealed credential.** Built.
 
-1. `src/egress/seal.rs`: the binding type, its exact bytes, and opening under
+1. `crates/core/src/egress/seal.rs`: the binding type, its exact bytes, and opening under
    the fixed label, with HPKE from the `hpke` crate (X25519, HKDF-SHA256,
    AES-256-GCM). Tests for a tampered binding, a seal moved onto another id, a
    wrong kind and a wrong key.

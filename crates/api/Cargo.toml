@@ -1,0 +1,50 @@
+[package]
+name = "outturn-api"
+description = "The outturn HTTP API, auth, transcripts, and the job queue worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# See the root manifest: rustdoc cannot resolve the component bindings, and
+# there are no doc examples to run.
+doctest = false
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
+
+[dependencies]
+outturn-core = { path = "../core" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+serde-saphyr = { workspace = true }
+
+[features]
+# The root's `slow-tests`, passed down: one of this crate's own tests is
+# expensive enough to wait to be asked for.
+slow-tests = []
+
+[lints]
+workspace = true

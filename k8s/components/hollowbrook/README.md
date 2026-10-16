@@ -17,7 +17,7 @@ doing it this way. `install.sh` signs in, creates a skill, approves its host
 and uploads its files, using the endpoints outturn already publishes — nothing
 privileged, and nothing patched into the platform.
 
-The first version of this was a Rust module in `src/api/`. It worked, and it
+The first version of this was a Rust module in `crates/api/src/`. It worked, and it
 was the wrong answer: a customer wiring up their own API cannot add a module to
 outturn, and a fork to do it loses to every upgrade. The same argument
 `ui/src/themes/README.md` makes about skinning holds here.

@@ -114,7 +114,7 @@ that resolves inside the cluster is still refused. Names are resolved once and
 the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
 nobody checked. All of it happens in the gateway, which is where the request is
-made from; `src/egress/rule.rs` still holds the rule matching and the
+made from; `crates/core/src/egress/rule.rs` still holds the rule matching and the
 address vetting, and the gateway calls it.
 
 **The agent interface has generated files committed beside it.** Change
@@ -150,7 +150,7 @@ grew a socket still reaches nothing. It needs a CNI that enforces
 NetworkPolicy; kind's default does not.
 
 **The commitment is what makes a rule a rule.** The API hashes a turn's egress
-rules into one root -- `src/egress/commit.rs`, one hash whatever the list's
+rules into one root -- `crates/core/src/egress/commit.rs`, one hash whatever the list's
 length -- and signs it into the turn token. A request carries the rule it wants
 and a proof, which is the whole set for a short list and an inclusion path for
 a long one, and the gateway rebuilds the root and compares. The empty set has a

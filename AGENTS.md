@@ -15,6 +15,15 @@ Three binaries, deployed as three services:
 | `gateway` | Talks to model providers, and makes an agent's outbound requests. Holds the credentials; nothing else does |
 | `runtime` | Runs agent components in a WASM sandbox |
 
+Each tier is a crate under `crates/` -- `api`, `gateway`, `runtime` -- over
+`crates/core`, which holds what they share: storage, the queue and event log,
+tokens, egress rules and their commitment, and the protocols the tiers speak
+to one another. A tier depends on `core` and never on another tier, so the
+compiler refuses a reach across the boundary, and a change to one tier
+rebuilds that tier alone. When two tiers need the same thing, it moves down
+into `core`. The root package holds the integration tests and the small tools,
+and re-exports the crates under one name for them.
+
 The split is a security boundary, not a packaging one. An agent runs in the
 runtime with no filesystem, no sockets and no credentials — every capability it
 has is an explicit host import declared in `wit/agent.wit`. When it wants a
@@ -23,7 +32,7 @@ host asks the gateway, because the tier running workspace code is the wrong
 place to hold a credential or to decide what may be reached. A compromised
 agent can spend its session's allowance and nothing more.
 
-The gateway speaks *protocols*, not vendors. `src/gateway/llm/provider/openai.rs`
+The gateway speaks *protocols*, not vendors. `crates/gateway/src/llm/provider/openai.rs`
 is the OpenAI chat-completions protocol, which ollama, Groq, OpenRouter and most
 others also speak — they differ in base URL and credential, which is
 configuration. Two vendors earn their own file: Anthropic, because its wire

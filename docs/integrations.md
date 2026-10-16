@@ -217,7 +217,7 @@ add hosts is permitted to add *public* hosts.
 
 Today a credential cannot be aimed anywhere. The gateway reads the named
 environment variable and attaches the header
-(`src/gateway/egress/mod.rs`), and both halves of that rule -- the host and the
+(`crates/gateway/src/egress/mod.rs`), and both halves of that rule -- the host and the
 variable naming the secret -- are set by an operator editing manifests. The
 guest never holds the value, the runtime never holds it, and a request's own
 headers are refused if they carry one.

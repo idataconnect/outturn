@@ -6,7 +6,7 @@
 # an `anthropic.*` model id, so the path, the body, the framing and the events
 # are tested against something that is not ours. It does not check a request's
 # signature -- it reads one to find the caller and accepts any -- so signing
-# is proved offline instead (src/gateway/llm/provider/sigv4.rs), and only a
+# is proved offline instead (crates/gateway/src/llm/provider/sigv4.rs), and only a
 # real account can show AWS accepting real keys. See docs/models.md.
 #
 # Its replies are canned unless MINISTACK_BEDROCK_PROXY_URL names an

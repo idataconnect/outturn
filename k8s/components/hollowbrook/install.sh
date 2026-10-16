@@ -51,7 +51,7 @@ done
 # does not store over plain http at all, so a cookie jar here stays empty and
 # every call afterwards is a 401. The API expects this: "browsers send the
 # HttpOnly session cookie; service-to-service callers send a bearer token"
-# (src/api/router.rs). The token is the cookie's value, read out of the header.
+# (crates/api/src/router.rs). The token is the cookie's value, read out of the header.
 #
 # The first call asks which workspaces there are, because naming one is what
 # makes the second call return a session rather than a list.
