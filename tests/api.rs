@@ -11681,15 +11681,24 @@ async fn a_signed_reply_is_kept_and_handed_to_the_next_turn() {
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
 
-    let stored: Value = sqlx::query_scalar(
-        "select metadata->'signed' from agent_messages where session_id = $1 and role = 'assistant'",
+    let (first_call, stored): (String, Value) =
+        sqlx::query_as("select first_call, thinking from reply_signatures where session_id = $1")
+            .bind(session_id)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("kept");
+    assert_eq!(first_call, "c1");
+    assert_eq!(stored[0], thinking);
+    // Kept beside the reply, never in it: a person reading the transcript
+    // has the thinking already, and nothing to do with a signature.
+    let metadata: Value = sqlx::query_scalar(
+        "select metadata from agent_messages where session_id = $1 and role = 'assistant'",
     )
     .bind(session_id)
     .fetch_one(&h.db.pool)
     .await
     .expect("the reply");
-    assert_eq!(stored[0]["first_call"], "c1", "{stored}");
-    assert_eq!(stored[0]["thinking"][0], thinking);
+    assert!(metadata.get("signed").is_none(), "{metadata}");
 
     let workspace: Uuid =
         sqlx::query_scalar("select workspace_id from agent_sessions where id = $1")

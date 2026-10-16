@@ -119,17 +119,51 @@ fn note_if_cut_off(message: &super::chat::Message, projected: &mut Vec<serde_jso
 }
 
 /// The projection alone, for callers that do not need to name stored messages.
-/// Every signed reply the history's replies carry.
-fn signed_replies(
-    history: &[super::chat::Message],
-) -> Vec<outturn_core::protocol::work::SignedReply> {
-    history
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .filter_map(|m| m.metadata.get("signed"))
-        .filter_map(|s| serde_json::from_value::<Vec<_>>(s.clone()).ok())
-        .flatten()
-        .collect()
+/// Keeps what a reply's tool calls were signed with, for the turns after it.
+async fn keep_signatures(
+    pool: &sqlx::PgPool,
+    session_id: Uuid,
+    message_id: Uuid,
+    signed: &[outturn_core::protocol::work::SignedReply],
+) -> Result<(), sqlx::Error> {
+    for s in signed {
+        sqlx::query(
+            "insert into reply_signatures (message_id, session_id, first_call, model, thinking, calls) \
+             values ($1, $2, $3, $4, $5, $6) on conflict (message_id, first_call) do nothing",
+        )
+        .bind(message_id)
+        .bind(session_id)
+        .bind(&s.first_call)
+        .bind(&s.model)
+        .bind(serde_json::json!(s.thinking))
+        .bind(serde_json::json!(s.calls))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Everything a session's replies were signed with.
+async fn signed_replies(
+    pool: &sqlx::PgPool,
+    session_id: Uuid,
+) -> anyhow::Result<Vec<outturn_core::protocol::work::SignedReply>> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "select first_call, model, thinking, calls from reply_signatures where session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| outturn_core::protocol::work::SignedReply {
+            first_call: r.get("first_call"),
+            model: r.get("model"),
+            thinking: serde_json::from_value(r.get("thinking")).unwrap_or_default(),
+            calls: serde_json::from_value(r.get("calls")).unwrap_or_default(),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -2036,7 +2070,8 @@ impl Worker {
                     _ => None,
                 })
                 .collect();
-            signed_replies(&history)
+            signed_replies(&self.pool, payload.session_id)
+                .await?
                 .into_iter()
                 .filter(|s| calls.contains(s.first_call.as_str()))
                 .collect()
@@ -2859,19 +2894,13 @@ impl Worker {
             .parts
             .iter()
             .any(|p| matches!(p, super::chat::parts::Part::Reasoning { .. }));
-        let mut metadata = if reply.tools.is_empty() && !thought {
+        let metadata = if reply.tools.is_empty() && !thought {
             serde_json::json!({})
         } else if reply.tools.is_empty() {
             serde_json::json!({ "parts": reply.parts })
         } else {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
-        // Beside the parts rather than in them: what is signed goes back to
-        // the model and to nothing else, and a reader is shown the thinking
-        // already, as the parts.
-        if !reply.signed.is_empty() {
-            metadata["signed"] = serde_json::json!(reply.signed);
-        }
 
         let finished = self
             .chat
@@ -2888,6 +2917,14 @@ impl Worker {
             )
             .await
             .map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
+
+        // Not fatal: without them the next turn starts without this reply's
+        // reasoning, which is how every turn started before they were kept.
+        if let Err(e) =
+            keep_signatures(&self.pool, payload.session_id, finished.id, &reply.signed).await
+        {
+            tracing::warn!(error = %e, "could not keep what the reply was signed with");
+        }
 
         events::append(
             &self.pool,

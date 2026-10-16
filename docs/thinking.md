@@ -159,9 +159,10 @@ the edit is invalid. So:
    them back when the guest replays that reply -- as `thinking_blocks` and
    `signed_by` on the message and `provider_signature` on each call. The
    guest never sees them, so the agent interface did not change. A finished
-   turn reports what it signed, the API keeps it on the reply under
-   `metadata.signed`, and the next turn is handed back those whose calls are
-   still in its conversation.
+   turn reports what it signed, the API keeps it in `reply_signatures` --
+   beside the reply rather than in it, so a transcript read never carries
+   what only the model can use -- and the next turn is handed back those
+   whose calls are still in its conversation.
 
    Which model may read them is the gateway's call, since only it knows where
    a round is going. Anthropic's API drops a block the receiving model cannot
