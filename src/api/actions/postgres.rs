@@ -563,7 +563,7 @@ impl ActionStore for PostgresActionStore {
             // A hold somebody already released by hand is not an error: what this
             // call is for -- the work no longer being held -- is already true.
             if let Some(row) = row {
-                let scope = crate::api::inhibitor::postgres::read_scope(&row)
+                let scope = crate::inhibitor::postgres::read_scope(&row)
                     .map_err(|e| ActionError::Internal(e.to_string()))?;
 
                 sqlx::query("delete from inhibitors where id = $1")

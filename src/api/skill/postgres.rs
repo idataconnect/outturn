@@ -30,7 +30,7 @@ fn clean_hosts(hosts: &[String]) -> Result<Vec<String>, SkillError> {
         if h.trim().is_empty() {
             continue;
         }
-        let host = crate::runtime::egress::normalize_host(h).map_err(SkillError::Invalid)?;
+        let host = crate::egress::rule::normalize_host(h).map_err(SkillError::Invalid)?;
         if !out.contains(&host) {
             out.push(host);
         }

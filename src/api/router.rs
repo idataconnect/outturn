@@ -42,7 +42,7 @@ pub struct ApiState {
     pub(super) scopes: Arc<dyn super::scope::ScopeStore>,
     /// The same bucket the runtime reads and writes, so a file a person
     /// uploads is one the agent can name. Absent when none is configured.
-    pub(super) storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    pub(super) storage: Option<Arc<dyn crate::storage::StorageBackend>>,
     pub(super) auth: TokenValidator,
     pub(super) minter: TokenMinter,
     /// What the runtime tier presents. Not a token: see `RuntimeKey`.
@@ -100,7 +100,7 @@ impl ApiState {
         // that nothing ever cleared. A test gets one without a listener, which
         // is what keeps seventy of them from holding seventy connections.
         scopes: Arc<dyn super::scope::ScopeStore>,
-        storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+        storage: Option<Arc<dyn crate::storage::StorageBackend>>,
         auth: TokenValidator,
         minter: TokenMinter,
         runtime_key: crate::auth::RuntimeKey,

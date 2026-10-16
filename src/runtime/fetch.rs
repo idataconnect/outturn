@@ -117,8 +117,8 @@ mod tests {
         // whole list would be sending something nobody reads. An inclusion
         // proof keeps a large list off every request.
         let workspace = uuid::Uuid::now_v7();
-        let rules: Vec<crate::runtime::egress::EgressRule> = (0..50)
-            .map(|i| crate::runtime::egress::EgressRule {
+        let rules: Vec<crate::egress::rule::EgressRule> = (0..50)
+            .map(|i| crate::egress::rule::EgressRule {
                 host: format!("host{i}.example.com"),
                 header: None,
                 credential_env: None,

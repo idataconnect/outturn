@@ -20,7 +20,7 @@
 //! nothing of this table -- see its docs for why a 500 from one caller is not
 //! the same evidence as a 500 from five.
 
-pub mod policy;
+pub use crate::breaker as policy;
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -290,17 +290,4 @@ pub async fn observe(
     }
 }
 
-/// Deletes evidence too old to be evidence of anything current.
-///
-/// Nothing else would ever remove these rows, and a table that only grows is
-/// one somebody meets at 3am. Called on whatever schedule the caller likes;
-/// deleting nothing is not an error.
-pub async fn forget_stale_sightings(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let deleted = sqlx::query(
-        "delete from breaker_sightings where seen_at < now() - make_interval(secs => $1)",
-    )
-    .bind(policy::BREADTH_WINDOW.as_secs_f64() * 10.0)
-    .execute(pool)
-    .await?;
-    Ok(deleted.rows_affected())
-}
+pub use crate::breaker::forget_stale_sightings;

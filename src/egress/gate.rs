@@ -103,7 +103,7 @@ impl Gate {
         // charge went out unapproved. Not a forgery: an ordinary configuration
         // that silently produced an ungated operation, which is the failure this
         // whole mechanism is arranged against. Trailing dots and case come free.
-        if !crate::runtime::egress::host_matches(&self.host, host)
+        if !crate::egress::rule::host_matches(&self.host, host)
             || !method.eq_ignore_ascii_case(&self.method)
         {
             return false;

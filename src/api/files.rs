@@ -22,7 +22,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::auth::Authority;
-use crate::runtime::storage::scope::{self, Scope, Space};
+use crate::storage::scope::{self, Scope, Space};
 
 use super::router::{ApiError, ApiState, authorities_of, authorize};
 
@@ -100,15 +100,15 @@ async fn space_for(
 
 pub(super) fn storage(
     state: &ApiState,
-) -> Result<Arc<dyn crate::runtime::storage::StorageBackend>, ApiError> {
+) -> Result<Arc<dyn crate::storage::StorageBackend>, ApiError> {
     state.storage.clone().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "object storage is not configured".into(),
     ))
 }
 
-pub(super) fn storage_failed(e: crate::runtime::storage::StorageError) -> ApiError {
-    use crate::runtime::storage::StorageError;
+pub(super) fn storage_failed(e: crate::storage::StorageError) -> ApiError {
+    use crate::storage::StorageError;
     match e {
         StorageError::NotFound => (StatusCode::NOT_FOUND, "no such file".into()),
         StorageError::PermissionDenied => {
@@ -331,12 +331,12 @@ pub const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 /// The extension is never consulted. `notes.txt` holding a PNG is a PNG, and
 /// `photo.png` holding HTML is refused rather than believed.
 fn previewable(bytes: &[u8]) -> Option<&'static str> {
-    if let Some(image) = crate::runtime::vision::media_type(bytes) {
+    if let Some(image) = crate::vision::media_type(bytes) {
         return Some(image);
     }
     // Text, by the same reasoning `describe_binary` uses: something with a NUL
     // or a stretch of control characters is not prose, whatever it is called.
-    if crate::runtime::component::describe_binary(bytes).is_some() {
+    if crate::utf8::describe_binary(bytes).is_some() {
         return None;
     }
     // Valid UTF-8 or nothing. A preview that renders replacement characters

@@ -47,10 +47,10 @@ pub fn failed_key(object_key: &str) -> String {
 /// Called on every write and delete. Otherwise a re-uploaded report serves the
 /// old one's text until the new job runs, and a deleted one keeps its words
 /// readable by anyone who names it. Absence is not an error here.
-pub async fn invalidate(storage: &dyn crate::runtime::storage::StorageBackend, key: &str) {
+pub async fn invalidate(storage: &dyn crate::storage::StorageBackend, key: &str) {
     for stale in [text_key(key), failed_key(key)] {
         if let Err(e) = storage.delete(&stale).await
-            && !matches!(e, crate::runtime::storage::StorageError::NotFound)
+            && !matches!(e, crate::storage::StorageError::NotFound)
         {
             tracing::warn!(key = %stale, error = %e, "could not remove stale extraction");
         }
@@ -62,7 +62,7 @@ pub async fn invalidate(storage: &dyn crate::runtime::storage::StorageBackend, k
 /// The runtime resolves keys before it reports them, so an honest runtime
 /// never sends one that is not. This is for the other kind.
 pub fn belongs_to(key: &str, workspace_id: Uuid) -> bool {
-    use crate::runtime::storage::scope::Scope;
+    use crate::storage::scope::Scope;
     Scope::ALL.iter().any(|s| {
         let root = format!("{}{workspace_id}/", s.bucket_prefix());
         key.starts_with(&root)
@@ -150,7 +150,7 @@ where
 /// asking twice before the first finishes does not read the same file twice.
 pub async fn backfill(
     pool: &sqlx::PgPool,
-    storage: &dyn crate::runtime::storage::StorageBackend,
+    storage: &dyn crate::storage::StorageBackend,
     workspace_id: Uuid,
     keys: impl IntoIterator<Item = String>,
 ) {
@@ -190,7 +190,7 @@ pub async fn backfill(
 /// the next listing that finds it idle.
 pub fn backfill_later(
     pool: sqlx::PgPool,
-    storage: Arc<dyn crate::runtime::storage::StorageBackend>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
     workspace_id: Uuid,
     root: String,
     keys: Vec<String>,
@@ -226,7 +226,7 @@ pub fn backfill_later(
 /// cluster, and this is not work a turn is waiting on.
 pub fn spawn(
     pool: sqlx::PgPool,
-    storage: Arc<dyn crate::runtime::storage::StorageBackend>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
     shutdown: Arc<tokio::sync::Notify>,
 ) {
     let Some(url) = tika_url() else {
@@ -296,7 +296,7 @@ pub fn spawn(
 async fn run_one(
     client: &reqwest::Client,
     url: &str,
-    storage: &dyn crate::runtime::storage::StorageBackend,
+    storage: &dyn crate::storage::StorageBackend,
     job: &jobs::Job,
 ) -> Result<usize, String> {
     let payload: ExtractPayload =

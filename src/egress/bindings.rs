@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use crate::runtime::egress::{ClientCredentials, EgressRule};
+use crate::egress::rule::{ClientCredentials, EgressRule};
 
 /// Where the operator writes them. Deliberately outside `OUTTURN_EGRESS_`, so
 /// no rule can name the bindings as its credential.
@@ -72,7 +72,7 @@ impl Bindings {
             serde_json::from_str(raw).map_err(|e| format!("{VARIABLE} is not readable: {e}"))?;
         let mut by_variable = HashMap::new();
         for (variable, entry) in entries {
-            crate::runtime::egress::check_credential_variable(&variable)?;
+            crate::egress::rule::check_credential_variable(&variable)?;
             let binding = Binding::read(&variable, entry)?;
             by_variable.insert(variable, binding);
         }
@@ -106,7 +106,7 @@ impl Bindings {
     /// is a list to read rather than a refusal to trace. Names only.
     fn report_unbound(&self, names: impl Iterator<Item = String>) {
         let mut unbound: Vec<String> = names
-            .filter(|n| n.starts_with(crate::runtime::egress::CREDENTIAL_PREFIX))
+            .filter(|n| n.starts_with(crate::egress::rule::CREDENTIAL_PREFIX))
             .filter(|n| !self.by_variable.contains_key(n))
             .collect();
         unbound.sort();
@@ -171,7 +171,7 @@ impl Bindings {
         let host = |b: &Binding| {
             b.hosts
                 .iter()
-                .find(|h| crate::runtime::egress::host_matches(&rule.host, h))
+                .find(|h| crate::egress::rule::host_matches(&rule.host, h))
                 .cloned()
         };
         if let Some(variable) = &rule.credential_env {
@@ -267,7 +267,7 @@ impl Binding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::egress::ClientAuth;
+    use crate::egress::rule::ClientAuth;
 
     const ACME: &str = "01920000-0000-7000-8000-00000000000a";
     const OTHER: &str = "01920000-0000-7000-8000-00000000000b";

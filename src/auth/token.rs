@@ -732,7 +732,7 @@ mod tests {
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
         let committed = commit::root(
             Uuid::now_v7(),
-            &[crate::runtime::egress::EgressRule {
+            &[crate::egress::rule::EgressRule {
                 host: "api.example.com".into(),
                 header: None,
                 credential_env: None,

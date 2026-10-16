@@ -1098,7 +1098,7 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
 /// component that tries to climb out is refused rather than quietly corrected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let ours = scope::Space {
@@ -1173,7 +1173,7 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
 /// correction: it names the three prefixes and shows the path under each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scopeless_path_is_corrected_not_just_refused() {
-    use outturn::runtime::storage::MemoryStorage;
+    use outturn::storage::MemoryStorage;
 
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "write_object".into(),
@@ -1208,7 +1208,7 @@ async fn a_scopeless_path_is_corrected_not_just_refused() {
 /// Writing to a scope the cascade did not allow is refused, with a way out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writes_outside_the_allowed_scopes_are_refused() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1274,7 +1274,7 @@ async fn writes_outside_the_allowed_scopes_are_refused() {
 /// the panel went on listing a zero-byte file. Nothing listed is the test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deleting_removes_the_object_rather_than_emptying_it() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1329,7 +1329,7 @@ async fn deleting_removes_the_object_rather_than_emptying_it() {
 /// would be read-only in name only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deleting_outside_the_allowed_scopes_is_refused() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1371,7 +1371,7 @@ async fn deleting_outside_the_allowed_scopes_is_refused() {
 /// because a tool answered "fine" to a path it never found.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deleting_a_path_that_names_nothing_says_so() {
-    use outturn::runtime::storage::MemoryStorage;
+    use outturn::storage::MemoryStorage;
 
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "delete_object".into(),
@@ -1415,7 +1415,7 @@ async fn deleting_a_path_that_names_nothing_says_so() {
 /// is described precisely enough to go and fetch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_file_is_read_from_both_ends() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1479,7 +1479,7 @@ async fn a_large_file_is_read_from_both_ends() {
 // -- Egress -------------------------------------------------------------------
 
 /// Runs one scripted tool call and returns what the tool produced.
-async fn tool_result(arguments: &str, egress: Vec<outturn::runtime::egress::EgressRule>) -> String {
+async fn tool_result(arguments: &str, egress: Vec<outturn::egress::rule::EgressRule>) -> String {
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "fetch_url".into(),
         arguments: arguments.into(),
@@ -1559,7 +1559,7 @@ async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
 
     let mut options = options(&gateway, None);
     options.on_tool_result = Some(on_tool_result);
-    options.egress = vec![outturn::runtime::egress::EgressRule {
+    options.egress = vec![outturn::egress::rule::EgressRule {
         host: "example.com".into(),
         header: None,
         credential_env: None,
@@ -1590,7 +1590,7 @@ async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
 async fn the_node_metadata_service_is_not_reachable() {
     let result = tool_result(
         r#"{"url":"http://169.254.169.254/latest/meta-data/","action":"Looking something up"}"#,
-        vec![outturn::runtime::egress::EgressRule {
+        vec![outturn::egress::rule::EgressRule {
             host: "169.254.169.254".into(),
             header: None,
             credential_env: None,
@@ -1611,7 +1611,7 @@ async fn the_node_metadata_service_is_not_reachable() {
 async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
     let result = tool_result(
         r#"{"url":"file:///etc/passwd","action":"Looking something up"}"#,
-        vec![outturn::runtime::egress::EgressRule {
+        vec![outturn::egress::rule::EgressRule {
             host: "example.com".into(),
             header: None,
             credential_env: None,
@@ -1635,7 +1635,7 @@ async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
 /// file, and sends the model looking for a problem that does not exist.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tail_that_begins_mid_character_is_still_text() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1716,7 +1716,7 @@ async fn a_tail_that_begins_mid_character_is_still_text() {
 /// of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_single_enormous_line_is_refused_rather_than_cut() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1779,7 +1779,7 @@ async fn a_single_enormous_line_is_refused_rather_than_cut() {
 /// so short of a second workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scope_it_may_not_read_is_refused() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1844,7 +1844,7 @@ async fn a_scope_it_may_not_read_is_refused() {
 /// the thing the setting was turned on to protect.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listing_everything_omits_a_scope_it_may_not_read() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -1911,7 +1911,7 @@ async fn listing_everything_omits_a_scope_it_may_not_read() {
 /// by name and is handed the listing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listing_a_scope_it_may_not_read_is_refused() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
@@ -2213,12 +2213,12 @@ async fn an_eager_tool_needs_no_loading() {
 /// under a workspace other than the turn's -- the operator's case -- and
 /// returns what the tool answered.
 async fn with_skill_file(
-    store: Arc<outturn::runtime::storage::MemoryStorage>,
+    store: Arc<outturn::storage::MemoryStorage>,
     tool: &str,
     arguments: &str,
     read_scopes: Vec<String>,
 ) -> String {
-    use outturn::runtime::storage::{StorageBackend, scope};
+    use outturn::storage::{StorageBackend, scope};
 
     let operator = Uuid::now_v7();
     store
@@ -2267,7 +2267,7 @@ async fn with_skill_file(
 /// scopes, from under the workspace that owns the skill.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bound_skills_file_is_read_by_its_skill_path() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "read_object",
@@ -2281,7 +2281,7 @@ async fn a_bound_skills_file_is_read_by_its_skill_path() {
 /// Listing `skill/` shows the bound files, as the agent names them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_files_are_listed_under_skill() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "list_objects",
@@ -2295,9 +2295,9 @@ async fn skill_files_are_listed_under_skill() {
 /// A skill file is part of what the agent was told, and cannot be rewritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_skill_file_cannot_be_written() {
-    use outturn::runtime::storage::StorageBackend;
+    use outturn::storage::StorageBackend;
 
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store.clone(),
         "write_object",
@@ -2320,7 +2320,7 @@ async fn a_skill_file_cannot_be_written() {
 /// is refused, and the refusal says what is there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_skill_path_not_bound_is_refused() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "read_object",
@@ -2338,7 +2338,7 @@ async fn a_skill_path_not_bound_is_refused() {
 /// broken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loading_a_skill_operation_points_at_its_file() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "load_tools",
@@ -2356,7 +2356,7 @@ async fn loading_a_skill_operation_points_at_its_file() {
 /// tool spelt out again after it, when the result's fields already carry them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loading_several_skill_operations_names_them_once() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "load_tools",
@@ -2378,7 +2378,7 @@ async fn loading_several_skill_operations_names_them_once() {
 /// were a tool.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn calling_a_skill_operation_points_at_its_file() {
-    let store = Arc::new(outturn::runtime::storage::MemoryStorage::new());
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
     let result = with_skill_file(
         store,
         "book",
@@ -2486,7 +2486,7 @@ async fn fake_renderer() -> (String, Arc<Mutex<Vec<String>>>) {
 /// said, without passing through the guest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let (renderer, seen) = fake_renderer().await;
     let store = Arc::new(MemoryStorage::new());
@@ -2535,7 +2535,7 @@ async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
 /// Where no renderer is deployed, the agent is told so plainly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn render_pdf_without_a_renderer_says_it_is_not_available() {
-    use outturn::runtime::storage::MemoryStorage;
+    use outturn::storage::MemoryStorage;
 
     let gateway = FakeGateway::start(Behavior::ToolThenReply {
         name: "render_pdf".into(),
@@ -2559,7 +2559,7 @@ async fn render_pdf_without_a_renderer_says_it_is_not_available() {
 /// A model can store a small binary file byte for byte.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn write_object_stores_base64_as_the_bytes_it_encodes() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     // A PNG signature and a NUL: nothing that survives being taken for text.
@@ -2596,7 +2596,7 @@ async fn write_object_stores_base64_as_the_bytes_it_encodes() {
 /// An archive is streamed from its inputs into storage, and is a zip of them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_archive_streams_its_inputs_into_one_zip() {
-    use outturn::runtime::storage::{MemoryStorage, StorageBackend, scope};
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
 
     let store = Arc::new(MemoryStorage::new());
     let gateway = FakeGateway::start(Behavior::ToolThenReply {

@@ -31,7 +31,7 @@ use outturn::gateway::llm::provider::LlmProvider;
 use outturn::gateway::llm::provider::anthropic::AnthropicProvider;
 use outturn::gateway::llm::provider::gemini::GeminiProvider;
 use outturn::gateway::llm::provider::openai::OpenAiProvider;
-use outturn::gateway::llm::types::*;
+use outturn::llm::*;
 
 /// The key for a provider, or a failure saying which one is missing.
 ///

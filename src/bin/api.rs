@@ -20,7 +20,7 @@ use outturn::auth::{TokenMinter, TokenValidator};
 use outturn::db;
 use outturn::events::EventBus;
 use outturn::lifecycle::{self, Health};
-use outturn::runtime::storage::{S3Storage, StorageBackend};
+use outturn::storage::{S3Storage, StorageBackend};
 
 /// Credentialed requests cannot use a wildcard origin, so allowed origins are
 /// listed explicitly. OUTTURN_CORS_ORIGINS is a comma-separated list; the
@@ -77,9 +77,9 @@ async fn main() {
     // The same for agent scopes. The store handed to the state is the one the
     // listener clears, which is the whole point: a second store would hold a
     // second cache that nothing ever invalidated.
-    let scope_store = outturn::api::scope::PostgresScopeStore::new(pool.clone());
+    let scope_store = outturn::scope::PostgresScopeStore::new(pool.clone());
     scope_store.spawn_invalidation();
-    let scopes: Arc<dyn outturn::api::scope::ScopeStore> = Arc::new(scope_store);
+    let scopes: Arc<dyn outturn::scope::ScopeStore> = Arc::new(scope_store);
     let usage: Arc<dyn UsageStore> = Arc::new(PostgresUsageStore::new(pool.clone()));
     let settings: Arc<dyn SettingsStore> = Arc::new(PostgresSettingsStore::new(pool.clone()));
 
@@ -172,7 +172,7 @@ async fn main() {
         chat: chat.clone(),
         usage,
         settings,
-        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+        inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
         // A summary is a model call, so it needs both a way to reach the
@@ -203,7 +203,7 @@ async fn main() {
     // Documents become readable in the background, where they are configured
     // to. Absent OUTTURN_TIKA_URL this logs once and does nothing further.
     if let Some(store) = storage_for_extraction.clone() {
-        outturn::api::extract::spawn(pool.clone(), store, health.shutdown_signal());
+        outturn::extract::spawn(pool.clone(), store, health.shutdown_signal());
     }
     // Unnamed conversations are given a title after their first turn, by a
     // model reached through the gateway. Absent OUTTURN_GATEWAY_URL this

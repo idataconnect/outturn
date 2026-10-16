@@ -21,9 +21,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::auth::TokenMinter;
-use crate::gateway::llm::types::{
-    ChatCompletionRequest, ChatCompletionResponse, Message, MessageContent, Role,
-};
+use crate::llm::{ChatCompletionRequest, ChatCompletionResponse, Message, MessageContent, Role};
 use crate::{events, jobs};
 
 use super::chat::{AgentSession, ChatStore};
@@ -263,14 +261,14 @@ async fn run_one(
     let response = client
         .post(format!("{gateway_url}/v1/chat/completions"))
         .bearer_auth(token)
-        .header(crate::gateway::TRAFFIC_HEADER, TRAFFIC_TYPE)
+        .header(crate::protocol::TRAFFIC_HEADER, TRAFFIC_TYPE)
         .json(&request)
         .send()
         .await?;
     let status = response.status();
     if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(crate::gateway::gateway_failure(status, &detail));
+        return Err(crate::protocol::gateway_failure(status, &detail));
     }
     // Read before the body is consumed, and the only place the endpoint and
     // payer are named: the completion itself does not say.
@@ -364,7 +362,7 @@ async fn run_one(
             MessageContent::Parts(parts) => parts
                 .iter()
                 .filter_map(|p| match p {
-                    crate::gateway::llm::types::ContentPart::Text { text } => Some(text.as_str()),
+                    crate::llm::ContentPart::Text { text } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()

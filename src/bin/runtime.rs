@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use outturn::lifecycle::{self, Health};
 use outturn::runtime::component::AgentRunner;
 use outturn::runtime::router::RuntimeState;
-use outturn::runtime::storage::{MemoryStorage, S3Storage, StorageBackend};
+use outturn::storage::{MemoryStorage, S3Storage, StorageBackend};
 
 #[tokio::main]
 async fn main() {

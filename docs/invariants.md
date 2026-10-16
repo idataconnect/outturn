@@ -114,7 +114,7 @@ that resolves inside the cluster is still refused. Names are resolved once and
 the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
 nobody checked. All of it happens in the gateway, which is where the request is
-made from; `src/runtime/egress.rs` still holds the rule matching and the
+made from; `src/egress/rule.rs` still holds the rule matching and the
 address vetting, and the gateway calls it.
 
 **The agent interface has generated files committed beside it.** Change

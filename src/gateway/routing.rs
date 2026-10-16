@@ -20,13 +20,7 @@ use super::llm::provider::{
     LlmProvider, anthropic::AnthropicProvider, gemini::GeminiProvider, openai::OpenAiProvider,
 };
 
-/// The class of work a request belongs to, when the caller does not say.
-pub const DEFAULT_TRAFFIC_TYPE: &str = "assistant";
-
-/// A turn nobody is waiting on -- a schedule's, a webhook's -- so an operator
-/// can send it somewhere cheaper or slower than a person's, and the ledger can
-/// tell the two apart.
-pub const BACKGROUND_TRAFFIC_TYPE: &str = "background";
+pub use crate::protocol::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
 
 /// The class to borrow routes from when this one has none.
 ///

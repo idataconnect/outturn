@@ -9,7 +9,7 @@
 use futures::stream::{BoxStream, Stream, StreamExt, TryStreamExt};
 
 use super::{LlmProvider, Provider, ProviderError};
-use crate::gateway::llm::types::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
+use crate::llm::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
 
 pub struct OpenAiProvider {
     base_url: String,
@@ -90,7 +90,7 @@ impl LlmProvider for OpenAiProvider {
         // otherwise -- and a turn that cannot say what it cost is a turn
         // nobody can be billed for. The final chunk carries it with an empty
         // `choices`, which readers of the stream already tolerate.
-        streaming.stream_options = Some(crate::gateway::llm::types::StreamOptions {
+        streaming.stream_options = Some(crate::llm::StreamOptions {
             include_usage: true,
         });
 

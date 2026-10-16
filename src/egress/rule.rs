@@ -202,7 +202,7 @@ pub fn host_matches(rule: &str, host: &str) -> bool {
 /// is the distinction docs/egress.md draws and the reason the list is
 /// configuration rather than a table.
 fn opened_by_operator(host: &str) -> bool {
-    crate::gateway::egress::internal::Internal::shared().names(host)
+    crate::egress::internal::Internal::shared().names(host)
 }
 
 /// Turns what someone typed into a rule, or explains why it is not one.

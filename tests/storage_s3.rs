@@ -6,8 +6,8 @@
 //!
 //!   TEST_S3_URL=http://localhost:19000 cargo test --features integration-tests --test storage_s3
 
-use outturn::runtime::storage::s3::PART_BYTES;
-use outturn::runtime::storage::{S3Storage, StorageBackend, StorageError};
+use outturn::storage::s3::PART_BYTES;
+use outturn::storage::{S3Storage, StorageBackend, StorageError};
 
 async fn store() -> S3Storage {
     let url = std::env::var("TEST_S3_URL")

@@ -152,28 +152,31 @@ impl GatewayState {
     /// very next turn.
     async fn held_for(&self, workspace_id: uuid::Uuid, session_id: uuid::Uuid) -> Option<String> {
         let pool = self.health.as_ref()?;
-        let held =
-            match crate::api::inhibitor::postgres::covering_session(pool, workspace_id, session_id)
-                .await
-            {
-                Ok(held) => held,
-                Err(e) => {
-                    tracing::warn!(error = %e, "could not check whether a turn was held");
-                    return None;
-                }
-            };
+        let held = match crate::inhibitor::postgres::covering_session(
+            pool,
+            workspace_id,
+            session_id,
+        )
+        .await
+        {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not check whether a turn was held");
+                return None;
+            }
+        };
 
         // Through `decide`, like every other checkpoint, so the reason a
         // mid-stream cut reports is the same one the next turn's refusal would
         // report. Two holds at once otherwise name one of them here and both
         // there, and whoever reads the stopped session releases the one they
         // were shown and wonders why it is still stopped.
-        let decision = crate::api::inhibitor::decide(held);
+        let decision = crate::inhibitor::decide(held);
 
         // Only a stop cuts a stream. A suspended turn is one that will be
         // picked up again, and cutting it mid-token is how a resumable turn
         // becomes a broken one.
-        if decision.verdict != crate::api::inhibitor::Verdict::Stopped {
+        if decision.verdict != crate::inhibitor::Verdict::Stopped {
             return None;
         }
         Some(decision.why())
@@ -264,7 +267,7 @@ impl GatewayState {
         // become workspace-writable, and worth closing then by giving the
         // gateway its siblings' names rather than by resolving.
         match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
-            Ok(addr) if crate::runtime::egress::is_forbidden(addr) => {
+            Ok(addr) if crate::egress::rule::is_forbidden(addr) => {
                 tracing::warn!(
                     base_url = %route.base_url,
                     "a route points inside the network and no operator opened that host; skipping it"
@@ -386,13 +389,6 @@ impl GatewayState {
         .await;
     }
 }
-
-/// The class of traffic this request belongs to.
-///
-/// A header rather than a body field: the request body is serialized straight
-/// through to the provider, so anything added there leaks upstream. Routing is
-/// also not something a model should be told about.
-pub const TRAFFIC_HEADER: &str = "x-outturn-traffic";
 
 /// The reply the caller is writing, so a message taken mid-turn can name what
 /// absorbed it.
@@ -792,18 +788,6 @@ pub fn failure_message(last_error: Option<&ProviderError>) -> String {
     }
 }
 
-/// What a caller makes of a failed response from the gateway: its body, which
-/// is already the sentence `failure_message` wrote, passed on as it is -- a
-/// status in front of it adds nothing a person can use. An empty body says
-/// only the status. One rule for every caller, so a turn and a session's title
-/// read the same failure the same way.
-pub fn gateway_failure(status: StatusCode, body: &str) -> anyhow::Error {
-    match body.trim() {
-        "" => anyhow::anyhow!("the gateway answered {status}"),
-        said => anyhow::anyhow!("{said}"),
-    }
-}
-
 /// A message as a sentence: capitalized, and ended if it was not already.
 fn sentence(message: &str) -> String {
     let mut chars = message.chars();
@@ -817,11 +801,7 @@ fn sentence(message: &str) -> String {
     out
 }
 
-/// Names what kind of failure a 502 from the streaming route is, where it is
-/// one the caller should treat differently from the provider being down.
-pub const FAILURE_HEADER: &str = "x-outturn-failure";
-/// The model answered, and its answer was unusable. See `is_malformed_reply`.
-pub const MALFORMED_REPLY: &str = "malformed-reply";
+use crate::protocol::{FAILURE_HEADER, MALFORMED_REPLY, TRAFFIC_HEADER};
 
 pub fn routes(state: Arc<GatewayState>) -> Router {
     Router::new()
@@ -836,7 +816,7 @@ pub fn routes(state: Arc<GatewayState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::egress::internal::Internal;
+    use crate::egress::internal::Internal;
 
     fn route(base_url: &str) -> routing::Route {
         routing::Route {

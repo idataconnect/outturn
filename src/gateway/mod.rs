@@ -5,7 +5,5 @@ pub mod routing;
 
 pub mod egress;
 
-pub use router::{
-    FAILURE_HEADER, GatewayState, MALFORMED_REPLY, TRAFFIC_HEADER, failure_message,
-    gateway_failure, routes,
-};
+pub use crate::protocol::{FAILURE_HEADER, MALFORMED_REPLY, TRAFFIC_HEADER, gateway_failure};
+pub use router::{GatewayState, failure_message, routes};

@@ -26,7 +26,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::egress::commit;
-use crate::runtime::egress::{self as rules, ClientAuth, ClientCredentials, EgressRule};
+use crate::egress::rule::{self as rules, ClientAuth, ClientCredentials, EgressRule};
 
 use super::internal::Internal;
 use super::transport::{EgressTransport, TransportError, VettedRequest};
@@ -224,7 +224,7 @@ async fn exchange(
     // Checked before either is read: a rule written before the namespace
     // existed, or by hand, must not reach the operator's own secrets.
     for variable in [&client.client_id_env, &client.client_secret_env] {
-        crate::runtime::egress::check_credential_variable(variable)
+        crate::egress::rule::check_credential_variable(variable)
             .map_err(ExchangeError::Unnamable)?;
     }
     let id = std::env::var(&client.client_id_env)

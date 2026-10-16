@@ -199,7 +199,7 @@ impl State {
 ///
 /// `payload` is rendered by the queue without a second fetch, which is the
 /// point of it -- but it is therefore read by everybody the item is targeted
-/// at, and the queue applies no agent narrowing. Narrowing (`api::scope`)
+/// at, and the queue applies no agent narrowing. Narrowing (`crate::scope`)
 /// confines a person to named agents and governs `Sessions*` and
 /// `StorageAgent*`; an action item has no agent, so there is nothing here for
 /// `Reach::covers` to test, and the read is right not to try.

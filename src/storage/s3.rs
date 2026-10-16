@@ -154,10 +154,7 @@ impl S3Storage {
             sweep("sweep-session-files", session.clone()),
             // The text read out of session documents lives under its own
             // prefix and would otherwise outlive what it was read from.
-            sweep(
-                "sweep-session-text",
-                crate::api::extract::text_key(&session),
-            ),
+            sweep("sweep-session-text", crate::extract::text_key(&session)),
         ];
         // Parts of an upload no writer completed or aborted -- a pod that died
         // mid-write. Invisible, but stored and billed until removed.

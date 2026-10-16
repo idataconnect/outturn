@@ -46,7 +46,7 @@ struct Harness {
     /// The same instance the app holds. A second store would have a second
     /// cache, and without the listener a test runs without, writing through
     /// one would leave the other answering from before the write.
-    scopes: Arc<dyn outturn::api::scope::ScopeStore>,
+    scopes: Arc<dyn outturn::scope::ScopeStore>,
 }
 
 /// What the test's pretend runtime presents to the work endpoints.
@@ -112,8 +112,8 @@ async fn harness_parking_for(park: std::time::Duration) -> Harness {
     // No invalidation listener: one per test would hold a connection each
     // against a server the whole suite shares, and a test writing through this
     // same instance clears the cache the app reads without needing one.
-    let scopes: Arc<dyn outturn::api::scope::ScopeStore> =
-        Arc::new(outturn::api::scope::PostgresScopeStore::new(pool.clone()));
+    let scopes: Arc<dyn outturn::scope::ScopeStore> =
+        Arc::new(outturn::scope::PostgresScopeStore::new(pool.clone()));
 
     let state = Arc::new(ApiState::new(
         workspaces.clone(),
@@ -126,7 +126,7 @@ async fn harness_parking_for(park: std::time::Duration) -> Harness {
         usage.clone(),
         settings.clone(),
         scopes.clone(),
-        Some(Arc::new(outturn::runtime::storage::MemoryStorage::new())),
+        Some(Arc::new(outturn::storage::MemoryStorage::new())),
         validator,
         minter,
         runtime_key,
@@ -163,7 +163,7 @@ async fn harness_parking_for(park: std::time::Duration) -> Harness {
         chat: chat.clone(),
         usage: usage.clone(),
         settings: settings.clone(),
-        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+        inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
         // No gateway, so no summarizing: the trim underneath carries the
@@ -1506,10 +1506,7 @@ async fn a_client_credentials_rule_is_kept_and_reaches_the_turn() {
         Some("bookings.read bookings.write")
     );
     assert_eq!(client.client_id_env, "OUTTURN_EGRESS_BOOKING_CLIENT_ID");
-    assert_eq!(
-        client.client_auth,
-        outturn::runtime::egress::ClientAuth::Post
-    );
+    assert_eq!(client.client_auth, outturn::egress::rule::ClientAuth::Post);
     assert!(rules[0].header.is_none());
 }
 
@@ -4065,7 +4062,7 @@ async fn only_a_new_host_asks_for_approval_again() {
 /// what stopped it -- see docs/inhibitors.md.
 #[tokio::test]
 async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
-    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+    use outturn::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -4100,7 +4097,7 @@ async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
     let runtime = h.runtime_token(acme);
 
     // The customer's spend cap trips.
-    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    let inhibitors = outturn::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
     inhibitors
         .take(TakeInhibitor {
             scope: Scope::Workspace { workspace_id: acme },
@@ -4156,7 +4153,7 @@ async fn a_kill_switch_stops_a_turn_and_latches_the_session() {
 /// broke. See docs/inhibitors.md.
 #[tokio::test]
 async fn a_held_turn_is_announced_as_held_rather_than_as_a_failure() {
-    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+    use outturn::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -4177,7 +4174,7 @@ async fn a_held_turn_is_announced_as_held_rather_than_as_a_failure() {
         .parse()
         .unwrap();
 
-    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    let inhibitors = outturn::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
     inhibitors
         .take(TakeInhibitor {
             scope: Scope::Workspace { workspace_id: acme },
@@ -4238,7 +4235,7 @@ async fn a_held_turn_is_announced_as_held_rather_than_as_a_failure() {
 /// restarts.
 #[tokio::test]
 async fn a_released_kill_switch_does_not_resume_by_itself() {
-    use outturn::api::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
+    use outturn::inhibitor::{InhibitorStore, Scope, Strength, TakeInhibitor};
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -4269,7 +4266,7 @@ async fn a_released_kill_switch_does_not_resume_by_itself() {
         .unwrap()
         .to_string();
 
-    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    let inhibitors = outturn::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
     let hold = inhibitors
         .take(TakeInhibitor {
             scope: Scope::Workspace { workspace_id: acme },
@@ -4495,7 +4492,7 @@ async fn a_hold_without_a_reason_is_refused() {
 /// runaway turn that keeps generating past a cap that has already tripped.
 #[tokio::test]
 async fn the_gateway_sees_a_hold_at_any_level() {
-    use outturn::api::inhibitor::{
+    use outturn::inhibitor::{
         InhibitorStore, Scope, Strength, TakeInhibitor, decide, postgres::covering_session,
     };
 
@@ -4530,7 +4527,7 @@ async fn the_gateway_sees_a_hold_at_any_level() {
         .parse()
         .unwrap();
 
-    let inhibitors = outturn::api::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
+    let inhibitors = outturn::inhibitor::PostgresInhibitorStore::new(h.db.pool.clone());
 
     // Nothing held: nothing to report.
     assert!(
@@ -4558,10 +4555,7 @@ async fn the_gateway_sees_a_hold_at_any_level() {
             .await
             .expect("query"),
     );
-    assert_eq!(
-        decision.verdict,
-        outturn::api::inhibitor::Verdict::Suspended
-    );
+    assert_eq!(decision.verdict, outturn::inhibitor::Verdict::Suspended);
 
     // A stop anywhere outranks it, and its reason is the one reported.
     inhibitors
@@ -4578,7 +4572,7 @@ async fn the_gateway_sees_a_hold_at_any_level() {
             .await
             .expect("query"),
     );
-    assert_eq!(decision.verdict, outturn::api::inhibitor::Verdict::Stopped);
+    assert_eq!(decision.verdict, outturn::inhibitor::Verdict::Stopped);
     // The deciding hold's reason, and only it: the suspended one is not what
     // stopped this, so naming it would send somebody to release the wrong hold.
     assert_eq!(decision.why(), "spend cap reached");
@@ -4872,7 +4866,7 @@ async fn a_turn_that_finished_normally_does_not_latch() {
 /// talk to it. See docs/authorities.md.
 #[tokio::test]
 async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -4993,7 +4987,7 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
 /// read whoever else may not. See docs/authorities.md.
 #[tokio::test]
 async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -5225,7 +5219,7 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
 /// in URLs, so "they would have to guess the id" was never the guarantee.
 #[tokio::test]
 async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -5457,7 +5451,7 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
 /// refuse the history and stream the present. See docs/authorities.md.
 #[tokio::test]
 async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -6629,7 +6623,7 @@ async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() 
     // `agents:update` is deliberately not narrowed per agent, so creating a
     // schedule or a hook was a way around the narrowing rather than a use of
     // it. Two reviews raised this before it was fixed.
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -8608,7 +8602,7 @@ async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
 
 #[tokio::test]
 async fn the_roster_says_which_agents_a_caller_may_talk_to() {
-    use outturn::api::scope::ScopeStore;
+    use outturn::scope::ScopeStore;
 
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
@@ -10137,7 +10131,7 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
                     .with_pool(h.db.pool.clone()),
             ),
     ));
-    let fetch = |workspace: Uuid, rule: outturn::runtime::egress::EgressRule| {
+    let fetch = |workspace: Uuid, rule: outturn::egress::rule::EgressRule| {
         let rules = vec![rule.clone()];
         let token = minter
             .mint_turn(
@@ -10751,7 +10745,7 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
         settings: Arc::new(outturn::api::settings::PostgresSettingsStore::new(
             h.db.pool.clone(),
         )),
-        inhibitors: Arc::new(outturn::api::inhibitor::PostgresInhibitorStore::new(
+        inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
             h.db.pool.clone(),
         )),
         minter: None,

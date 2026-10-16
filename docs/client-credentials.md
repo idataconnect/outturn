@@ -65,7 +65,7 @@ provider demands it.
 
 In the schema these are nullable columns on `egress_rules`
 (`migrations/0021_client_credentials.sql`) with check constraints saying
-exactly one shape, or neither, is present. In `runtime::egress::EgressRule`
+exactly one shape, or neither, is present. In `egress::rule::EgressRule`
 the exchange is one optional `client` field holding all of its parts, so half
 an exchange is unrepresentable; a rule carrying both shapes is refused by the
 API when written and by the gateway if a row edited by hand ever says so. An

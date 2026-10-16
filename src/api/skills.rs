@@ -528,7 +528,7 @@ async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<
         .to_string();
 
     let workspace = crate::api::usage::PLATFORM_WORKSPACE;
-    let rules = vec![crate::runtime::egress::EgressRule {
+    let rules = vec![crate::egress::rule::EgressRule {
         host,
         header: None,
         credential_env: None,

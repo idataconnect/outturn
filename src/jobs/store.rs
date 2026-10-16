@@ -772,12 +772,12 @@ where
 /// nothing reaches this with one.
 pub async fn resume_for_scope<'e, E>(
     executor: E,
-    scope: &crate::api::inhibitor::Scope,
+    scope: &crate::inhibitor::Scope,
 ) -> Result<u64, JobError>
 where
     E: Executor<'e, Database = Postgres>,
 {
-    use crate::api::inhibitor::Scope;
+    use crate::inhibitor::Scope;
     match scope {
         Scope::Platform => Ok(0),
         Scope::Workspace { workspace_id } => {

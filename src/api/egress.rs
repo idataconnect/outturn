@@ -9,7 +9,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
-use crate::runtime::egress::{ClientAuth, ClientCredentials, EgressRule};
+use crate::egress::rule::{ClientAuth, ClientCredentials, EgressRule};
 
 /// The columns a rule is read from, everywhere one is read. A macro because the
 /// queries are static strings, which is what keeps them out of reach of input.
@@ -121,8 +121,8 @@ pub struct Rule {
 }
 
 impl Rule {
-    fn as_egress_rule(&self) -> crate::runtime::egress::EgressRule {
-        crate::runtime::egress::EgressRule {
+    fn as_egress_rule(&self) -> crate::egress::rule::EgressRule {
+        crate::egress::rule::EgressRule {
             host: self.host.clone(),
             header: self.header.clone(),
             credential_env: self.credential_env.clone(),
@@ -204,7 +204,7 @@ pub async fn create(
     workspace_id: Uuid,
     input: CreateRule,
 ) -> Result<Rule, RuleError> {
-    let host = crate::runtime::egress::normalize_host(&input.host).map_err(RuleError::Invalid)?;
+    let host = crate::egress::rule::normalize_host(&input.host).map_err(RuleError::Invalid)?;
 
     // A header without a variable would attach nothing; a variable without a
     // header has nowhere to go. Either alone is a rule that looks configured
@@ -255,7 +255,7 @@ pub async fn create(
     }
 
     if let Some(variable) = &input.credential_env {
-        crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
+        crate::egress::rule::check_credential_variable(variable).map_err(RuleError::Invalid)?;
     }
 
     // A sealed credential is checked against what it was sealed to go to: this
@@ -290,7 +290,7 @@ pub async fn create(
     bindings
         .check_rule(
             workspace_id,
-            &crate::runtime::egress::EgressRule {
+            &crate::egress::rule::EgressRule {
                 host: host.clone(),
                 header: input.header.clone(),
                 credential_env: input.credential_env.clone(),
@@ -481,7 +481,7 @@ fn check_client(client: &ClientCredentials) -> Result<(), RuleError> {
         ));
     }
     let port = url.port_or_known_default().unwrap_or(0);
-    let opened = crate::gateway::egress::internal::Internal::shared().allows(host, port);
+    let opened = crate::egress::internal::Internal::shared().allows(host, port);
     match url.scheme() {
         "https" => {}
         "http" if opened => {}
@@ -493,7 +493,7 @@ fn check_client(client: &ClientCredentials) -> Result<(), RuleError> {
     }
 
     for variable in [&client.client_id_env, &client.client_secret_env] {
-        crate::runtime::egress::check_credential_variable(variable).map_err(RuleError::Invalid)?;
+        crate::egress::rule::check_credential_variable(variable).map_err(RuleError::Invalid)?;
     }
 
     if let Some(scope) = &client.scope {

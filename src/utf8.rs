@@ -102,3 +102,89 @@ mod tests {
         assert_eq!(out, "");
     }
 }
+
+/// What a byte string is, when it is plainly not text -- or None when it may be.
+///
+/// Magic numbers first, because a name helps: told it holds a zip, a model
+/// reaches for `expand_archive`; told "binary", it can only apologize. Then a
+/// coarse test for the rest: a NUL, or a window that is mostly control
+/// characters, is not something anyone wanted to read.
+pub fn describe_binary(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        return Some("a zip archive; use expand_archive to unpack it");
+    }
+    if bytes.starts_with(b"%PDF") {
+        return Some(
+            "a PDF, and document extraction is not configured here, so its text cannot be read",
+        );
+    }
+    if bytes.starts_with(b"\x89PNG") {
+        return Some("a PNG image");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("a JPEG image");
+    }
+    if bytes.starts_with(b"GIF8") {
+        return Some("a GIF image");
+    }
+    if bytes.starts_with(b"\x1f\x8b") {
+        return Some("gzip-compressed data");
+    }
+    let window = &bytes[..bytes.len().min(8192)];
+    if window.contains(&0) {
+        return Some("binary data");
+    }
+    let control = window
+        .iter()
+        .filter(|b| **b < 0x20 && !matches!(**b, b'\t' | b'\n' | b'\r'))
+        .count();
+    if control * 10 > window.len() {
+        return Some("binary data");
+    }
+    None
+}
+
+#[cfg(test)]
+mod binary_guard {
+    use super::describe_binary;
+
+    #[test]
+    fn text_is_not_described() {
+        assert_eq!(describe_binary(b"invoice 7 paid in full"), None);
+        assert_eq!(
+            describe_binary("caf\u{e9} \u{1f600}\n".as_bytes()),
+            None,
+            "utf-8 is text"
+        );
+        assert_eq!(describe_binary(b"a,b\r\n1,2\r\n"), None);
+        assert_eq!(describe_binary(b""), None);
+    }
+
+    #[test]
+    fn known_formats_are_named() {
+        assert!(
+            describe_binary(b"PK\x03\x04rest")
+                .unwrap()
+                .contains("expand_archive")
+        );
+        assert!(
+            describe_binary(b"%PDF-1.4")
+                .unwrap()
+                .contains("not configured")
+        );
+        assert_eq!(describe_binary(b"\x89PNG\r\n"), Some("a PNG image"));
+        assert_eq!(describe_binary(b"\xff\xd8\xff\xe0"), Some("a JPEG image"));
+    }
+
+    #[test]
+    fn a_nul_or_mostly_control_bytes_is_binary() {
+        assert_eq!(describe_binary(b"abc\x00def"), Some("binary data"));
+        let noisy: Vec<u8> = (0..100u8)
+            .map(|i| if i % 2 == 0 { 0x01 } else { b'a' })
+            .collect();
+        assert_eq!(describe_binary(&noisy), Some("binary data"));
+    }
+}

@@ -16,7 +16,7 @@ use std::time::Duration;
 use outturn::gateway::llm::provider::LlmProvider;
 use outturn::gateway::llm::provider::anthropic::AnthropicProvider;
 use outturn::gateway::llm::provider::gemini::GeminiProvider;
-use outturn::gateway::llm::types::{ChatCompletionRequest, Message, MessageContent, Role};
+use outturn::llm::{ChatCompletionRequest, Message, MessageContent, Role};
 
 /// The mock, running for as long as the test needs it.
 struct Mock {

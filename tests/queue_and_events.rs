@@ -1530,7 +1530,7 @@ async fn an_abandoned_reply_refuses_further_messages() {
 
 // -- Provider circuit breaker --------------------------------------------------
 
-use outturn::gateway::breaker::policy::{Caller, Observation};
+use outturn::breaker::{Caller, Observation};
 use outturn::gateway::breaker::{self, Verdict};
 
 /// These circuits are the platform's own, which is what `None` means: one
@@ -1778,7 +1778,7 @@ async fn a_workspaces_circuit_is_its_own() {
 /// Being told off is not the same as being down, and a 500 is neither.
 #[tokio::test]
 async fn what_a_provider_error_is_evidence_of() {
-    use outturn::gateway::breaker::policy::Observation;
+    use outturn::breaker::Observation;
     use outturn::gateway::llm::provider::ProviderError;
 
     let evidence = outturn::gateway::breaker::observation_for;
@@ -3265,7 +3265,7 @@ async fn a_narrowed_caller_is_never_shown_another_agents_events() {
     .expect("append");
 
     let visible = events::Visible::of(
-        &outturn::api::scope::Reach::of([mine_agent].into_iter().collect()),
+        &outturn::scope::Reach::of([mine_agent].into_iter().collect()),
         subject,
     )
     .expect("narrowed to one agent");
@@ -3412,29 +3412,24 @@ impl outturn::gateway::llm::provider::LlmProvider for Silent {
 
     async fn chat_completion(
         &self,
-        _: &outturn::gateway::llm::types::ChatCompletionRequest,
-    ) -> Result<
-        outturn::gateway::llm::types::ChatCompletionResponse,
-        outturn::gateway::llm::provider::ProviderError,
-    > {
+        _: &outturn::llm::ChatCompletionRequest,
+    ) -> Result<outturn::llm::ChatCompletionResponse, outturn::gateway::llm::provider::ProviderError>
+    {
         Err(outturn::gateway::llm::provider::ProviderError::Unavailable)
     }
 
     async fn chat_completion_stream(
         &self,
-        _: &outturn::gateway::llm::types::ChatCompletionRequest,
+        _: &outturn::llm::ChatCompletionRequest,
     ) -> Result<
         futures::stream::BoxStream<
             'static,
-            Result<
-                outturn::gateway::llm::types::StreamChunk,
-                outturn::gateway::llm::provider::ProviderError,
-            >,
+            Result<outturn::llm::StreamChunk, outturn::gateway::llm::provider::ProviderError>,
         >,
         outturn::gateway::llm::provider::ProviderError,
     > {
         use futures::StreamExt;
-        use outturn::gateway::llm::types::{Delta, StreamChoice, StreamChunk};
+        use outturn::llm::{Delta, StreamChoice, StreamChunk};
         if !self.after_first_chunk {
             self.quiet.notify_one();
             futures::future::pending::<()>().await;

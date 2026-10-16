@@ -40,7 +40,7 @@
 
 use serde_json::Value;
 
-use crate::gateway::llm::types::{Message, MessageContent, Role};
+use crate::llm::{Message, MessageContent, Role};
 
 /// The traffic type a summary is asked for under.
 ///

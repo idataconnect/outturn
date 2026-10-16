@@ -68,7 +68,7 @@ pub enum AnnotationKind {
     Approval(String),
 }
 
-pub const MAX_SPEC_BYTES: usize = 16 * 1024 * 1024;
+pub use crate::protocol::MAX_SPEC_BYTES;
 const MANIFEST_THRESHOLD: usize = 30;
 
 pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {

@@ -444,7 +444,7 @@ async fn fetch(
     claims: &crate::auth::SessionClaims,
     gateway: &str,
     url: &str,
-    rule: crate::runtime::egress::EgressRule,
+    rule: crate::egress::rule::EgressRule,
 ) -> Result<Fetched, ApiError> {
     let rules = vec![rule];
     let gates = crate::egress::gate::Gates::none();

@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
 use super::{LlmProvider, Provider, ProviderError};
-use crate::gateway::llm::types::*;
+use crate::llm::*;
 
 pub struct MockProvider;
 

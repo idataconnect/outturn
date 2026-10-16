@@ -1,0 +1,250 @@
+//! What the API and a runtime say to each other about a turn: the turn handed
+//! out, and the events a runtime posts back while it runs. Both tiers build
+//! and read these, so they live below both.
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// Header a runtime quotes its lease in.
+pub const LEASE_HEADER: &str = "x-outturn-lease";
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExecuteRequest {
+    pub session_id: Uuid,
+    pub workspace_id: Uuid,
+    /// Whose files the agent/ scope is. Nil for a turn nobody attributed to
+    /// an agent, which should not happen and resolves to a space nothing
+    /// else uses.
+    #[serde(default)]
+    pub agent_id: Uuid,
+    /// Storage scopes this turn may write to. Absent means session only.
+    #[serde(default)]
+    pub write_scopes: Vec<String>,
+    /// Storage scopes this turn may read. Absent means session only -- but a
+    /// job queued before reads were gated carries none, and the puller reads
+    /// that as the scopes it would have had.
+    #[serde(default)]
+    pub read_scopes: Vec<String>,
+    /// The files of the skills this turn was bound to, which the agent reads
+    /// as `skill/<slug>/<path>` whatever its scopes: they are part of what it
+    /// was told.
+    #[serde(default)]
+    pub skill_files: Vec<crate::storage::scope::SkillObject>,
+    pub conversation: Vec<ConversationMessage>,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// IANA zone of the user this turn belongs to, e.g. "Europe/London".
+    /// Absent means the guest's clock answers in UTC.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Resolved from the settings cascade. "none" disables thinking where
+    /// supported.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Resolved from the settings cascade. Absent leaves it to the provider.
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// What this turn is for. The gateway resolves it to a route.
+    #[serde(default)]
+    pub traffic_type: Option<String>,
+    /// Model calls permitted in this turn. Zero or negative disables the
+    /// limit, for work that legitimately runs long.
+    #[serde(default)]
+    pub max_tool_rounds: Option<i64>,
+    /// The reply this turn is writing, so a message absorbed mid-turn can
+    /// name what took it.
+    pub reply_id: Uuid,
+    /// Hosts this workspace's agents may reach. Sent with the turn because the
+    /// runtime holds no database; absent means the agent reaches nothing.
+    #[serde(default)]
+    pub egress: Vec<crate::egress::rule::EgressRule>,
+    /// What the API committed to for `egress`, minted into the turn token
+    /// alongside it. Carried here so whatever mints the token reads it off the
+    /// same request it is signing for, rather than recomputing it from a rule
+    /// list it might have obtained separately.
+    ///
+    /// The runtime itself never checks anything against this, and must not be
+    /// given a reason to: it is the tier running workspace code, so a check it
+    /// performed on data it was handed would prove nothing. The gateway reads
+    /// the committed root out of the signed token instead.
+    pub egress_commitment: crate::egress::commit::Hash,
+    /// What this tier committed to over the turn's gates -- the requests it may
+    /// not make without somebody's word. Travels beside the egress commitment
+    /// and is signed into the same token; see `egress::gate`.
+    pub gate_commitment: crate::egress::commit::Hash,
+    /// The gates themselves, for the gateway to check against that commitment.
+    ///
+    /// Sent rather than proven one at a time, because a request has to be shown
+    /// to match *none* of them and a Merkle proof cannot show absence.
+    pub gates: crate::egress::gate::Gates,
+    /// Tools to offer from the first round, by name: a template agent's,
+    /// which its operator chose. Empty -- an agent made by hand, or a request
+    /// from an older API -- defers every tool to the guest's loader.
+    #[serde(default)]
+    pub eager_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConversationPart {
+    Text { text: String },
+    Call { call: ConversationToolCall },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationMessage {
+    pub role: String,
+    /// The message in the order it was produced: prose and the calls that sat
+    /// between it. A user's is a single text part.
+    #[serde(default)]
+    pub parts: Vec<ConversationPart>,
+    /// On a tool message, which call it answers.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConversationToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// One line of the response stream.
+///
+/// Newline-delimited JSON rather than Server-Sent Events: the caller is the
+/// API, not a browser, and the deltas it receives are written to the event feed
+/// rather than forwarded as-is.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecuteEvent {
+    /// A fragment of the reply, in order.
+    Delta { idx: i64, text: String },
+    /// A fragment of the model's thinking, where it produces it.
+    ///
+    /// Carries no index, because it is not part of the reply and nothing
+    /// reassembles it into stored content -- the browser shows it while the turn
+    /// runs and the transcript keeps it beside the reply rather than in it.
+    Reasoning { text: String },
+    /// The model began writing a call to `name`, the `index`th of its round.
+    /// Only the name: the arguments are not whole until the round ends, and
+    /// the call is reported as `Tool` when the guest starts it.
+    Writing {
+        index: u32,
+        name: String,
+        /// Bytes of arguments written so far. Absent from an older runtime,
+        /// which only ever said a call had begun.
+        #[serde(default)]
+        bytes: u64,
+    },
+    /// The guest wrote an object. Reported so the tier with the database can
+    /// treat it exactly as it treats an upload -- a document landing is a
+    /// document to extract, whoever put it there. The runtime cannot enqueue
+    /// that itself: it holds no database, on purpose.
+    Wrote { path: String, key: String },
+    /// The guest started a tool, with the model's own label for what it is
+    /// doing.
+    Tool {
+        id: String,
+        name: String,
+        action: String,
+        /// What the model asked with. Stored so a later turn can be shown the
+        /// call rather than only the prose that followed it.
+        #[serde(default)]
+        arguments: String,
+    },
+    /// A tool finished. Carries what the reader may look at, which the model
+    /// was never sent, and separately what the model was given.
+    ToolResult {
+        id: String,
+        details: String,
+        /// The result as the model received it, already truncated. Kept so a
+        /// later turn replays what was actually said rather than a fuller
+        /// version of it.
+        #[serde(default)]
+        content: String,
+        is_error: bool,
+    },
+    /// The guest took messages the user sent mid-turn, at a round boundary.
+    /// Reported where it happened, so the reply can record the point its
+    /// course changed and the reader can see the message there rather than
+    /// below a reply that answered it.
+    Absorbed { ids: Vec<uuid::Uuid> },
+    /// One model call finished, and this is what it cost. Emitted per call
+    /// rather than summed at the end, so a turn that fails after three calls
+    /// still bills for three, and a turn that fell back mid-way names both
+    /// providers.
+    Usage {
+        /// Which call within the turn, from zero.
+        round: u32,
+        endpoint: String,
+        model: String,
+        /// Whose credential paid, as the gateway said.
+        paid_by: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_read_tokens: u32,
+        cache_write_tokens: u32,
+        reasoning_tokens: u32,
+        /// The provider's usage object verbatim, for re-pricing later.
+        #[serde(default)]
+        provider_usage: Option<serde_json::Value>,
+        #[serde(default)]
+        service_tier: Option<String>,
+    },
+    /// Generation finished; the reply is complete, and this is what it cost.
+    Done {
+        content: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        #[serde(default)]
+        cache_read_tokens: u32,
+        #[serde(default)]
+        cache_write_tokens: u32,
+        #[serde(default)]
+        reasoning_tokens: u32,
+        #[serde(default)]
+        provider: Option<String>,
+        /// The model that served the turn's last round, as the gateway
+        /// reported it. Absent from an older runtime, which stores nothing.
+        #[serde(default)]
+        model: Option<String>,
+        /// Why a hold ended this turn, where one did. Absent otherwise, and
+        /// absent from an older runtime that does not send it -- which reads
+        /// as "a person stopped it", the same thing it read as before.
+        #[serde(default)]
+        held: Option<String>,
+        /// Whether what stopped it is something somebody will answer.
+        ///
+        /// A hold that ends a turn ordinarily *latches* the session: a spend cap
+        /// or an operator's stop is meant to need a person to lift it, and a
+        /// session that answered the next message as though nothing happened
+        /// would be a kill switch that silently did not take. An approval is the
+        /// opposite -- answering it is what resumes the turn, and latching would
+        /// leave the conversation stopped after the yes.
+        ///
+        /// False from an older runtime, which is the latching behavior it had.
+        #[serde(default)]
+        awaiting_approval: bool,
+    },
+    /// The turn failed.
+    Failed {
+        message: String,
+        /// Why a hold cut it, where one did.
+        ///
+        /// A failure and a stop both end a turn without a reply, and they are
+        /// not the same: a failure is retried, and a stop that is retried runs
+        /// the work the stop existed to prevent as soon as the hold is lifted.
+        #[serde(default)]
+        held: Option<String>,
+        /// Whether a retry would only fail the same way, spending again on
+        /// every model call made before it did.
+        ///
+        /// False from an older runtime, which is the retrying it had.
+        #[serde(default)]
+        terminal: bool,
+    },
+}

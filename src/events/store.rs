@@ -108,7 +108,7 @@ impl Visible {
     /// hand from `reach.agents()`, an unnarrowed caller becomes a filter that
     /// hides every session, the long poll returns empty forever, and the reader
     /// watches a conversation that has stopped arriving.
-    pub fn of(reach: &crate::api::scope::Reach, subject: Uuid) -> Option<Self> {
+    pub fn of(reach: &crate::scope::Reach, subject: Uuid) -> Option<Self> {
         reach.is_narrowed().then(|| Self {
             agents: reach.agents().iter().copied().collect(),
             subject,

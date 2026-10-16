@@ -64,7 +64,7 @@ pub struct Assignment {
     pub job_id: Uuid,
     /// Exactly what used to be POSTed to a runtime, traveling the other way.
     #[serde(flatten)]
-    pub request: crate::runtime::router::ExecuteRequest,
+    pub request: crate::protocol::work::ExecuteRequest,
     /// Minted per turn rather than held by the runtime, so what a turn may
     /// reach is bounded by what this tier granted for it.
     pub gateway_token: String,
@@ -78,8 +78,7 @@ pub struct Assignment {
     pub lease_token: Uuid,
 }
 
-/// Header a runtime quotes its lease in.
-pub const LEASE_HEADER: &str = "x-outturn-lease";
+pub use crate::protocol::work::LEASE_HEADER;
 
 pub(super) fn lease_from(headers: &axum::http::HeaderMap) -> Result<Uuid, ApiError> {
     headers

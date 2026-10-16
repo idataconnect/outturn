@@ -18,7 +18,7 @@ use futures::{StreamExt, TryStreamExt};
 
 use super::{BoxStream, LlmProvider, Provider, ProviderError};
 use crate::gateway::llm::translate::{self, AnthropicStream};
-use crate::gateway::llm::types::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
+use crate::llm::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
 
 /// The Messages version Bedrock speaks, sent in the body rather than as a
 /// header.

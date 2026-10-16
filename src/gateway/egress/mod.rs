@@ -27,7 +27,7 @@
 //! See `transport`.
 
 pub mod client;
-pub mod internal;
+pub use crate::egress::internal;
 pub mod sealed;
 pub mod transport;
 
@@ -39,7 +39,7 @@ use axum::http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::egress::commit;
-use crate::runtime::egress::{self as rules};
+use crate::egress::rule::{self as rules};
 
 use transport::{TransportError, VettedRequest};
 
@@ -52,7 +52,7 @@ const FETCH_BODY_LIMIT: usize = 256 * 1024;
 /// How much of a document the API fetches comes back: as much as the OpenAPI
 /// wizard will read, which is the only thing that asks. A turn's limit would
 /// cut every real specification short.
-const DOCUMENT_BODY_LIMIT: usize = crate::api::skill::wizard::MAX_SPEC_BYTES;
+const DOCUMENT_BODY_LIMIT: usize = crate::protocol::MAX_SPEC_BYTES;
 
 /// What the runtime asks for.
 ///
@@ -308,7 +308,7 @@ pub async fn fetch(
     if let (Some(header), Some(variable)) = (&rule.header, &rule.credential_env) {
         // Again here, not only where the rule was written: a row written before
         // the namespace existed, or by hand, must not reach the operator's own.
-        crate::runtime::egress::check_credential_variable(variable)
+        crate::egress::rule::check_credential_variable(variable)
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         // And bound to this workspace and this host by the operator, before it
         // is read: the namespace is shared, so naming a variable says nothing
@@ -494,7 +494,7 @@ pub async fn fetch(
 /// and including the credential is a function of the token, the proof and the
 /// URL.
 #[cfg(test)]
-pub(crate) fn credential_for(rule: &crate::runtime::egress::EgressRule) -> Option<(&str, &str)> {
+pub(crate) fn credential_for(rule: &crate::egress::rule::EgressRule) -> Option<(&str, &str)> {
     match (&rule.header, &rule.credential_env) {
         (Some(header), Some(env)) => Some((header.as_str(), env.as_str())),
         _ => None,
@@ -505,7 +505,7 @@ pub(crate) fn credential_for(rule: &crate::runtime::egress::EgressRule) -> Optio
 mod tests {
     use super::*;
 
-    use crate::runtime::egress::EgressRule;
+    use crate::egress::rule::EgressRule;
 
     fn rule(host: &str) -> EgressRule {
         EgressRule {
@@ -828,7 +828,7 @@ mod gating {
 mod client_credentials {
     use super::*;
 
-    use crate::runtime::egress::EgressRule;
+    use crate::egress::rule::EgressRule;
 
     /// The whole path, as a turn sees it: a token exchanged and attached as a
     /// bearer, held for the next request, and forgotten when the host says it
@@ -892,12 +892,12 @@ mod client_credentials {
             host: "93.184.215.14".into(),
             header: None,
             credential_env: None,
-            client: Some(crate::runtime::egress::ClientCredentials {
+            client: Some(crate::egress::rule::ClientCredentials {
                 token_url: "https://93.184.215.15/token".into(),
                 scope: None,
                 client_id_env: "OUTTURN_EGRESS_TEST_FETCH_CC_ID".into(),
                 client_secret_env: "OUTTURN_EGRESS_TEST_FETCH_CC_SECRET".into(),
-                client_auth: crate::runtime::egress::ClientAuth::Basic,
+                client_auth: crate::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
         };
@@ -1073,12 +1073,12 @@ mod client_credentials {
             host: host.into(),
             header: None,
             credential_env: None,
-            client: Some(crate::runtime::egress::ClientCredentials {
+            client: Some(crate::egress::rule::ClientCredentials {
                 token_url: token_url.into(),
                 scope: None,
                 client_id_env: "OUTTURN_EGRESS_TEST_ACME_ID".into(),
                 client_secret_env: "OUTTURN_EGRESS_TEST_ACME_SECRET".into(),
-                client_auth: crate::runtime::egress::ClientAuth::Basic,
+                client_auth: crate::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
         };

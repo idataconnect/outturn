@@ -2,7 +2,7 @@ use futures::{StreamExt, TryStreamExt};
 
 use super::{BoxStream, LlmProvider, Provider, ProviderError};
 use crate::gateway::llm::translate::{self, GeminiStream};
-use crate::gateway::llm::types::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
+use crate::llm::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
 
 /// Gemini, over its own API rather than its OpenAI-compatible endpoint.
 ///

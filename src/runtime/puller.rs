@@ -312,7 +312,7 @@ impl Puller {
             temperature: request.temperature,
             traffic_type: request
                 .traffic_type
-                .unwrap_or_else(|| crate::gateway::routing::DEFAULT_TRAFFIC_TYPE.to_string()),
+                .unwrap_or_else(|| crate::protocol::DEFAULT_TRAFFIC_TYPE.to_string()),
             max_tool_rounds: match request.max_tool_rounds {
                 Some(n) if n <= 0 => 0,
                 Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
@@ -413,7 +413,7 @@ impl Puller {
             .reporting
             .post(format!("{}/v1/work/{job_id}/events", self.api_url))
             .bearer_auth(self.token()?)
-            .header(crate::api::work::LEASE_HEADER, lease.to_string())
+            .header(crate::protocol::work::LEASE_HEADER, lease.to_string())
             .body(reqwest::Body::wrap_stream(stream))
             .send()
             .await?;
@@ -444,7 +444,7 @@ impl Puller {
         let sent = self
             .http
             .post(format!("{}/v1/work/{job_id}/abandon", self.api_url))
-            .header(crate::api::work::LEASE_HEADER, lease.to_string())
+            .header(crate::protocol::work::LEASE_HEADER, lease.to_string())
             .bearer_auth(match self.token() {
                 Ok(token) => token,
                 Err(e) => {
@@ -495,7 +495,7 @@ async fn refresh_token(
             api_url.trim_end_matches('/')
         ))
         .bearer_auth(runtime_key)
-        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .header(crate::protocol::work::LEASE_HEADER, lease.to_string())
         .json(&serde_json::json!({ "gateway_token": current }))
         .send()
         .await
@@ -546,7 +546,7 @@ async fn report_wait(
     let response = http
         .post(format!("{}/v1/work/wait", api_url.trim_end_matches('/')))
         .bearer_auth(runtime_key)
-        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .header(crate::protocol::work::LEASE_HEADER, lease.to_string())
         .json(&body)
         .send()
         .await
@@ -587,7 +587,7 @@ async fn report_gated(
         // runtime tier"; the lease is what says this pod is the one running this
         // turn, without which the API would take a runtime's word for which
         // conversation it was speaking about.
-        .header(crate::api::work::LEASE_HEADER, lease.to_string())
+        .header(crate::protocol::work::LEASE_HEADER, lease.to_string())
         .json(&serde_json::json!({
             "session_id": session_id,
             "job_id": job_id,

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::events;
 use crate::jobs;
-use crate::runtime::router::ExecuteEvent;
+use crate::protocol::work::ExecuteEvent;
 
 use super::actions::ActionStore as _;
 use super::agent::AgentStore;
@@ -770,7 +770,7 @@ pub struct StaleSkill {
 #[derive(Debug)]
 pub(super) enum Prepared {
     /// Hand this to a runtime.
-    Run(Box<crate::runtime::router::ExecuteRequest>),
+    Run(Box<crate::protocol::work::ExecuteRequest>),
     /// Complete the job: there is nothing left to answer.
     Nothing,
     /// Keep the job. A hold refused it, and releasing the hold gives it back.
@@ -1447,7 +1447,7 @@ impl Worker {
                         // thing that already sweeps tables on a schedule; the
                         // gateway shares the database.
                         let _ =
-                            crate::gateway::breaker::forget_stale_sightings(&self.pool).await;
+                            crate::breaker::forget_stale_sightings(&self.pool).await;
 
                         // Deltas exist to assemble a reply that is still
                         // streaming and to let a browser catch up on one. Once
@@ -2005,7 +2005,7 @@ impl Worker {
         };
 
         Ok(Prepared::Run(Box::new(
-            crate::runtime::router::ExecuteRequest {
+            crate::protocol::work::ExecuteRequest {
                 session_id: payload.session_id,
                 workspace_id: payload.workspace_id,
                 agent_id: payload.agent_id,
@@ -2350,7 +2350,7 @@ impl Worker {
         model: &str,
     ) -> Option<Vec<serde_json::Value>> {
         use super::chat::summarize;
-        use crate::gateway::llm::types::{
+        use crate::llm::{
             ChatCompletionRequest, ChatCompletionResponse, ContentPart, MessageContent,
         };
 
@@ -2399,7 +2399,7 @@ impl Worker {
         let response = reqwest::Client::new()
             .post(format!("{gateway_url}/v1/chat/completions"))
             .bearer_auth(token)
-            .header(crate::gateway::TRAFFIC_HEADER, summarize::TRAFFIC_TYPE)
+            .header(crate::protocol::TRAFFIC_HEADER, summarize::TRAFFIC_TYPE)
             .json(&body)
             .send()
             .await
@@ -2948,7 +2948,7 @@ impl Worker {
 /// it. Otherwise a turn nobody sent -- a schedule's or a webhook's, which carry
 /// no user -- is background, the same judgment that queues it behind people.
 fn traffic_type_for(policy: &serde_json::Value, nobody_waiting: bool) -> String {
-    use crate::gateway::routing::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
+    use crate::protocol::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
     match policy.get("traffic_type").and_then(|t| t.as_str()) {
         Some(named) => named.to_string(),
         None if nobody_waiting => BACKGROUND_TRAFFIC_TYPE.to_string(),
@@ -4078,7 +4078,7 @@ pub async fn assemble_gates(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
     skills: &[super::skill::ResolvedSkill],
-    egress: &[crate::runtime::egress::EgressRule],
+    egress: &[crate::egress::rule::EgressRule],
     approve_new_hosts: bool,
 ) -> anyhow::Result<Vec<crate::egress::gate::Gate>> {
     let mut gates = super::skill::gates_for_turn(pool, skills)

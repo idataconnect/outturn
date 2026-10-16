@@ -271,7 +271,7 @@ impl Kind {
 fn credential_env(slug: &str) -> String {
     let stem = slug.to_ascii_uppercase().replace('-', "_");
     let stem = stem.strip_suffix("_API").unwrap_or(&stem);
-    let prefix = crate::runtime::egress::CREDENTIAL_PREFIX;
+    let prefix = crate::egress::rule::CREDENTIAL_PREFIX;
     if stem.is_empty() {
         format!("{prefix}API_KEY")
     } else {

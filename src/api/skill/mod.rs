@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::actor::Actor;
-use crate::runtime::storage::scope;
+use crate::storage::scope;
 
 /// What a skill is: prose in its own right, or instructions layered over one.
 ///

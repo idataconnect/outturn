@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::runtime::egress::EgressRule;
+use crate::egress::rule::EgressRule;
 
 /// A 32-byte SHA-256 output: a leaf, a node, or the root the token carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -330,7 +330,7 @@ impl Proof {
     ///
     /// Named so that using it without verifying reads oddly. For a whole-set
     /// proof the caller still has to find its host among the rules, which is
-    /// the existing matching in `runtime::egress`, so this answers only for the
+    /// the existing matching in `egress::rule`, so this answers only for the
     /// shape that names one.
     pub fn unverified_rule(&self) -> Option<&EgressRule> {
         match self {
@@ -580,12 +580,12 @@ mod tests {
             host: host.into(),
             header: None,
             credential_env: None,
-            client: Some(crate::runtime::egress::ClientCredentials {
+            client: Some(crate::egress::rule::ClientCredentials {
                 token_url: "https://login.example.com/tenant-a/oauth2/token".into(),
                 scope: Some("bookings.read bookings.write".into()),
                 client_id_env: "BOOKING_CLIENT_ID".into(),
                 client_secret_env: "BOOKING_CLIENT_SECRET".into(),
-                client_auth: crate::runtime::egress::ClientAuth::Basic,
+                client_auth: crate::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
         }
@@ -595,12 +595,12 @@ mod tests {
     fn every_field_of_a_client_credentials_rule_is_committed() {
         // Each of these decides where a secret goes or what it buys. One left
         // out of the leaf is one a runtime may rewrite in flight.
-        use crate::runtime::egress::ClientAuth;
+        use crate::egress::rule::ClientAuth;
         let ws = Uuid::now_v7();
         let set = vec![with_client("api.example.com"), rule("docs.example.com")];
         let committed = root(ws, &set);
 
-        type Edit = fn(&mut crate::runtime::egress::ClientCredentials);
+        type Edit = fn(&mut crate::egress::rule::ClientCredentials);
         let edits: Vec<(&str, Edit)> = vec![
             ("token url", |c| {
                 c.token_url = "https://login.example.com/tenant-b/oauth2/token".into()

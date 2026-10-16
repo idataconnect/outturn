@@ -23,18 +23,18 @@ wasmtime::component::bindgen!({
 
 /// An object a guest is writing, as the host holds it.
 pub struct WriterState {
-    inner: Box<dyn crate::runtime::storage::ObjectWriter>,
+    inner: Box<dyn crate::storage::ObjectWriter>,
     /// As the guest named it, for what it is told back.
     path: String,
     resolved: String,
-    storage: Arc<dyn crate::runtime::storage::StorageBackend>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
     /// The part this writer may hold, charged to admission while it is open.
     _charge: Option<crate::runtime::admission::Charge>,
 }
 
 /// An object a guest is reading, as the host holds it.
 pub struct ReaderState {
-    inner: Box<dyn crate::runtime::storage::ObjectReader>,
+    inner: Box<dyn crate::storage::ObjectReader>,
 }
 
 /// Writers one turn may hold open at once. Each is charged a part to
@@ -50,49 +50,7 @@ pub use outturn::agent::host::{
     Message, ObjectInfo, TimerDue, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
 };
 
-/// What a byte string is, when it is plainly not text -- or None when it may be.
-///
-/// Magic numbers first, because a name helps: told it holds a zip, a model
-/// reaches for `expand_archive`; told "binary", it can only apologize. Then a
-/// coarse test for the rest: a NUL, or a window that is mostly control
-/// characters, is not something anyone wanted to read.
-pub(crate) fn describe_binary(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.is_empty() {
-        return None;
-    }
-    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
-        return Some("a zip archive; use expand_archive to unpack it");
-    }
-    if bytes.starts_with(b"%PDF") {
-        return Some(
-            "a PDF, and document extraction is not configured here, so its text cannot be read",
-        );
-    }
-    if bytes.starts_with(b"\x89PNG") {
-        return Some("a PNG image");
-    }
-    if bytes.starts_with(b"\xff\xd8\xff") {
-        return Some("a JPEG image");
-    }
-    if bytes.starts_with(b"GIF8") {
-        return Some("a GIF image");
-    }
-    if bytes.starts_with(b"\x1f\x8b") {
-        return Some("gzip-compressed data");
-    }
-    let window = &bytes[..bytes.len().min(8192)];
-    if window.contains(&0) {
-        return Some("binary data");
-    }
-    let control = window
-        .iter()
-        .filter(|b| **b < 0x20 && !matches!(**b, b'\t' | b'\n' | b'\r'))
-        .count();
-    if control * 10 > window.len() {
-        return Some("binary data");
-    }
-    None
-}
+use crate::utf8::describe_binary;
 
 /// The OpenAI-shaped projection of an ordered message: the text joined, the
 /// calls listed after it.
@@ -387,23 +345,23 @@ pub struct AgentHost {
     /// Object storage, and the space this turn may touch within it. Absent
     /// leaves the guest with no storage at all rather than with somebody
     /// else's.
-    storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    storage: Option<Arc<dyn crate::storage::StorageBackend>>,
     workspace_id: uuid::Uuid,
-    space: crate::runtime::storage::scope::Space,
+    space: crate::storage::scope::Space,
     /// Scopes the guest may write, resolved above the runtime. Always a subset
     /// of `read_scopes`: the setting that grants a write grants the read with
     /// it.
-    write_scopes: Vec<crate::runtime::storage::scope::Scope>,
+    write_scopes: Vec<crate::storage::scope::Scope>,
     /// Scopes the guest may read, resolved above the runtime. Always a
     /// superset of `write_scopes`: the setting that grants a write grants the
     /// read with it, because a write extracts the file's text straight back
     /// out and "write but not read" would be a promise the host cannot keep.
-    read_scopes: Vec<crate::runtime::storage::scope::Scope>,
+    read_scopes: Vec<crate::storage::scope::Scope>,
     /// The bound skills' files, by the name the guest reads them under.
-    skill_files: Vec<crate::runtime::storage::scope::SkillObject>,
+    skill_files: Vec<crate::storage::scope::SkillObject>,
     /// Hosts this workspace's agents may reach. Empty means none, which is what a
     /// workspace who has not thought about it has consented to.
-    egress: Vec<crate::runtime::egress::EgressRule>,
+    egress: Vec<crate::egress::rule::EgressRule>,
     /// What the guest may grow to. Consulted by wasmtime on every memory or
     /// table growth; a request past it fails inside the guest rather than
     /// being granted and killing the pod.
@@ -448,7 +406,7 @@ impl AgentHost {
     /// transcript reaches one. Everything else is the workspace's outcome: the
     /// transcript already records it as a failed tool, and putting it in the
     /// process log would page the operator for somebody else's typo.
-    fn storage_failed(&self, what: &str, e: crate::runtime::storage::StorageError) -> String {
+    fn storage_failed(&self, what: &str, e: crate::storage::StorageError) -> String {
         if e.is_platform_fault() {
             tracing::warn!(
                 session_id = %self.session_id,
@@ -470,16 +428,15 @@ impl AgentHost {
     fn object_at(
         &self,
         path: &str,
-    ) -> Result<(Arc<dyn crate::runtime::storage::StorageBackend>, String), String> {
-        use crate::runtime::storage::StorageError;
+    ) -> Result<(Arc<dyn crate::storage::StorageBackend>, String), String> {
+        use crate::storage::StorageError;
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
-        if let Some(tidied) = crate::runtime::storage::scope::skill_path(path) {
+        if let Some(tidied) = crate::storage::scope::skill_path(path) {
             let tidied = tidied.map_err(|_| format!("path is not allowed: {path}"))?;
             let file = self.skill_file(&tidied)?;
-            let key =
-                crate::runtime::storage::scope::skill_blob_key(file.workspace_id, &file.sha256);
+            let key = crate::storage::scope::skill_blob_key(file.workspace_id, &file.sha256);
             return Ok((storage, key));
         }
         // Here rather than in each caller: every way the guest reaches a file
@@ -487,25 +444,21 @@ impl AgentHost {
         // bytes to something else -- `describe_image` would otherwise let a
         // vision model read what the agent may not.
         self.may_read(path)?;
-        let resolved =
-            crate::runtime::storage::scope::resolve(&self.space, path).map_err(|e| match e {
-                // Said in full: this is the one a model will hit, and the message
-                // tells it how to correct itself.
-                StorageError::Refused(m) => m,
-                _ => format!("path is not allowed: {path}"),
-            })?;
+        let resolved = crate::storage::scope::resolve(&self.space, path).map_err(|e| match e {
+            // Said in full: this is the one a model will hit, and the message
+            // tells it how to correct itself.
+            StorageError::Refused(m) => m,
+            _ => format!("path is not allowed: {path}"),
+        })?;
         Ok((storage, resolved))
     }
 
     /// A bound skill's file, or an answer that says what is there instead.
-    fn skill_file(
-        &self,
-        path: &str,
-    ) -> Result<&crate::runtime::storage::scope::SkillObject, String> {
+    fn skill_file(&self, path: &str) -> Result<&crate::storage::scope::SkillObject, String> {
         if let Some(f) = self.skill_files.iter().find(|f| f.path == path) {
             return Ok(f);
         }
-        use crate::runtime::storage::scope;
+        use crate::storage::scope;
         let slug = scope::skill_slug(path).unwrap_or("");
         let dir = scope::skill_object_path(slug, "");
         let siblings: Vec<&str> = self
@@ -534,7 +487,7 @@ impl AgentHost {
 
     /// Whether this turn may read at `path`, by the scope it names.
     fn may_read(&self, path: &str) -> Result<(), String> {
-        let (scope, _) = crate::runtime::storage::scope::split(path).map_err(|e| e.to_string())?;
+        let (scope, _) = crate::storage::scope::split(path).map_err(|e| e.to_string())?;
         if self.read_scopes.contains(&scope) {
             Ok(())
         } else {
@@ -571,11 +524,11 @@ impl AgentHost {
     /// there, so whatever acts on it finds them.
     async fn stored(
         &mut self,
-        storage: &dyn crate::runtime::storage::StorageBackend,
+        storage: &dyn crate::storage::StorageBackend,
         path: &str,
         resolved: &str,
     ) {
-        crate::api::extract::invalidate(storage, resolved).await;
+        crate::extract::invalidate(storage, resolved).await;
         if let Some(sink) = &self.on_write {
             sink(path, resolved);
         }
@@ -583,14 +536,14 @@ impl AgentHost {
 
     /// Whether this turn may write at `path`, by the scope it names.
     fn may_write(&self, path: &str) -> Result<(), String> {
-        if crate::runtime::storage::scope::skill_path(path).is_some() {
+        if crate::storage::scope::skill_path(path).is_some() {
             return Err(
                 "skill/ holds the files of this agent's skills and is read-only. Write under \
                  session/ or agent/ instead."
                     .to_string(),
             );
         }
-        let (scope, _) = crate::runtime::storage::scope::split(path).map_err(|e| e.to_string())?;
+        let (scope, _) = crate::storage::scope::split(path).map_err(|e| e.to_string())?;
         if self.write_scopes.contains(&scope) {
             Ok(())
         } else {
@@ -1013,7 +966,7 @@ impl outturn::agent::host::Host for AgentHost {
     /// about the workspace's settings, and that one resolves inside the cluster is
     /// a fact it already had to guess to ask.
     async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
-        use crate::runtime::egress;
+        use crate::egress::rule as egress;
 
         // This tier makes no outbound request of its own. It runs workspace
         // code, so a socket here is a socket a compromised guest's host could
@@ -1140,7 +1093,7 @@ impl outturn::agent::host::Host for AgentHost {
     /// what it wants is the answer rather than the pixels -- the same trade
     /// `read_object` already makes for a document.
     async fn describe_image(&mut self, path: String, question: String) -> Result<String, String> {
-        use crate::runtime::vision;
+        use crate::vision;
 
         let (storage, resolved) = self.object_at(&path)?;
 
@@ -1234,11 +1187,9 @@ impl outturn::agent::host::Host for AgentHost {
         // Only where something is reading documents at all. Without it a PDF
         // is bytes like any other, and is said to be, rather than "not yet"
         // for a job nothing will ever run.
-        if crate::api::extract::tika_url().is_some()
-            && crate::api::extract::is_extractable(&resolved)
-        {
-            use crate::runtime::storage::StorageError;
-            let text = crate::api::extract::text_key(&resolved);
+        if crate::extract::tika_url().is_some() && crate::extract::is_extractable(&resolved) {
+            use crate::storage::StorageError;
+            let text = crate::extract::text_key(&resolved);
             return match storage.read(&text, offset, len).await {
                 // Extracted, and there was nothing in it. Said outright: an
                 // empty read is indistinguishable from an empty document, and
@@ -1250,7 +1201,7 @@ impl outturn::agent::host::Host for AgentHost {
                 Err(StorageError::NotFound) => {
                     // "Never" and "not yet" are different answers, and only
                     // one of them should have a reader come back later.
-                    let failed = crate::api::extract::failed_key(&resolved);
+                    let failed = crate::extract::failed_key(&resolved);
                     match storage.read(&failed, 0, 4096).await {
                         Ok(why) => Err(format!(
                             "{path} could not be read: {}",
@@ -1299,18 +1250,18 @@ impl outturn::agent::host::Host for AgentHost {
         // document read as text is the text's length, not the document's --
         // reporting the bytes of a PDF whose words are a tenth of that would
         // have a model page through a file it could have read whole.
-        let extracting = crate::api::extract::tika_url().is_some()
-            && crate::api::extract::is_extractable(&resolved);
+        let extracting =
+            crate::extract::tika_url().is_some() && crate::extract::is_extractable(&resolved);
         let stat_at = if extracting {
-            crate::api::extract::text_key(&resolved)
+            crate::extract::text_key(&resolved)
         } else {
             resolved.clone()
         };
 
         let found = match storage.stat(&stat_at).await {
             Ok(f) => f,
-            Err(crate::runtime::storage::StorageError::NotFound) if extracting => {
-                let failed = crate::api::extract::failed_key(&resolved);
+            Err(crate::storage::StorageError::NotFound) if extracting => {
+                let failed = crate::extract::failed_key(&resolved);
                 return Err(match storage.read(&failed, 0, 4096).await {
                     Ok(why) => format!(
                         "{path} could not be read: {}",
@@ -1353,7 +1304,7 @@ impl outturn::agent::host::Host for AgentHost {
             ));
         }
         let charge = self.charge(
-            crate::runtime::storage::s3::PART_BYTES as u64,
+            crate::storage::s3::PART_BYTES as u64,
             "open a file for writing",
         )?;
         let inner = storage
@@ -1416,19 +1367,19 @@ impl outturn::agent::host::Host for AgentHost {
         storage.delete(&resolved).await.map_err(|e| match e {
             // Named, because "not found" alone leaves a model guessing which
             // of the paths it just listed it got wrong.
-            crate::runtime::storage::StorageError::NotFound => {
+            crate::storage::StorageError::NotFound => {
                 format!("there is no file at {path}")
             }
             other => self.storage_failed("delete", other),
         })?;
         // Or the words of a deleted document stay readable to anyone who
         // names it, which is the deletion not having happened.
-        crate::api::extract::invalidate(storage.as_ref(), &resolved).await;
+        crate::extract::invalidate(storage.as_ref(), &resolved).await;
         Ok(())
     }
 
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
-        use crate::runtime::storage::scope::{self, Scope};
+        use crate::storage::scope::{self, Scope};
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
@@ -1467,7 +1418,7 @@ impl outturn::agent::host::Host for AgentHost {
             self.may_read(&prefix)?;
             vec![
                 scope::resolve_prefix(&self.space, &prefix).map_err(|e| match e {
-                    crate::runtime::storage::StorageError::Refused(m) => m,
+                    crate::storage::StorageError::Refused(m) => m,
                     other => other.to_string(),
                 })?,
             ]
@@ -1483,13 +1434,13 @@ impl outturn::agent::host::Host for AgentHost {
             // The text of any documents under here, listed once rather than
             // stat'd one by one, so a listing costs two calls however many
             // files it holds.
-            let text: std::collections::HashMap<String, u64> = if crate::api::extract::tika_url()
+            let text: std::collections::HashMap<String, u64> = if crate::extract::tika_url()
                 .is_none()
             {
                 Default::default()
             } else {
                 storage
-                .list(&crate::api::extract::text_key(&resolved))
+                .list(&crate::extract::text_key(&resolved))
                 .await
                 .map(|f| {
                     f.into_iter()
@@ -1695,13 +1646,13 @@ async fn stream_completion(
         let status = response.status();
         let malformed = response
             .headers()
-            .get(crate::gateway::FAILURE_HEADER)
-            .is_some_and(|v| v == crate::gateway::MALFORMED_REPLY);
+            .get(crate::protocol::FAILURE_HEADER)
+            .is_some_and(|v| v == crate::protocol::MALFORMED_REPLY);
         let detail = response.text().await.unwrap_or_default();
         if malformed {
             return Err(MalformedReply(detail).into());
         }
-        return Err(crate::gateway::gateway_failure(status, &detail));
+        return Err(crate::protocol::gateway_failure(status, &detail));
     }
 
     // Named by the gateway, so spend attaches to the endpoint that billed
@@ -2210,9 +2161,9 @@ pub struct RunOptions {
     /// The reply being written, so messages absorbed mid-turn can name it.
     pub reply_id: uuid::Uuid,
     /// Object storage the guest may reach, within its workspace's own space.
-    pub storage: Option<Arc<dyn crate::runtime::storage::StorageBackend>>,
+    pub storage: Option<Arc<dyn crate::storage::StorageBackend>>,
     /// Hosts this turn may reach, from the workspace's own rules.
-    pub egress: Vec<crate::runtime::egress::EgressRule>,
+    pub egress: Vec<crate::egress::rule::EgressRule>,
     /// Whose space that is. The guest is never told.
     pub workspace_id: uuid::Uuid,
     pub agent_id: uuid::Uuid,
@@ -2221,7 +2172,7 @@ pub struct RunOptions {
     /// Scopes the guest may read. A superset of `write_scopes`.
     pub read_scopes: Vec<String>,
     /// The bound skills' files, readable as `skill/<slug>/<path>`.
-    pub skill_files: Vec<crate::runtime::storage::scope::SkillObject>,
+    pub skill_files: Vec<crate::storage::scope::SkillObject>,
     /// How long the gateway's stream may go silent before the turn is
     /// abandoned. A parameter so a test can prove it fires.
     pub idle_timeout: std::time::Duration,
@@ -2358,7 +2309,7 @@ impl AgentRunner {
             streamed: false,
             storage: options.storage,
             workspace_id: options.workspace_id,
-            space: crate::runtime::storage::scope::Space {
+            space: crate::storage::scope::Space {
                 workspace_id: options.workspace_id,
                 agent_id: options.agent_id,
                 session_id: options.session_id,
@@ -2366,7 +2317,7 @@ impl AgentRunner {
             write_scopes: options
                 .write_scopes
                 .iter()
-                .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
+                .filter_map(|s| crate::storage::scope::Scope::parse(s))
                 .collect(),
             // Unioned with the writes rather than trusted as given. The
             // cascade already resolves reads as a superset, and this is the
@@ -2376,7 +2327,7 @@ impl AgentRunner {
                 .read_scopes
                 .iter()
                 .chain(options.write_scopes.iter())
-                .filter_map(|s| crate::runtime::storage::scope::Scope::parse(s))
+                .filter_map(|s| crate::storage::scope::Scope::parse(s))
                 .collect(),
             skill_files: options.skill_files,
             egress: options.egress,
@@ -2605,48 +2556,6 @@ mod compiled_cache_tests {
             assert_eq!(c.get(&key(1)), Some(11));
         }
         assert_eq!(c.entries.lock().expect("lock").len(), 1);
-    }
-}
-
-#[cfg(test)]
-mod binary_guard {
-    use super::describe_binary;
-
-    #[test]
-    fn text_is_not_described() {
-        assert_eq!(describe_binary(b"invoice 7 paid in full"), None);
-        assert_eq!(
-            describe_binary("caf\u{e9} \u{1f600}\n".as_bytes()),
-            None,
-            "utf-8 is text"
-        );
-        assert_eq!(describe_binary(b"a,b\r\n1,2\r\n"), None);
-        assert_eq!(describe_binary(b""), None);
-    }
-
-    #[test]
-    fn known_formats_are_named() {
-        assert!(
-            describe_binary(b"PK\x03\x04rest")
-                .unwrap()
-                .contains("expand_archive")
-        );
-        assert!(
-            describe_binary(b"%PDF-1.4")
-                .unwrap()
-                .contains("not configured")
-        );
-        assert_eq!(describe_binary(b"\x89PNG\r\n"), Some("a PNG image"));
-        assert_eq!(describe_binary(b"\xff\xd8\xff\xe0"), Some("a JPEG image"));
-    }
-
-    #[test]
-    fn a_nul_or_mostly_control_bytes_is_binary() {
-        assert_eq!(describe_binary(b"abc\x00def"), Some("binary data"));
-        let noisy: Vec<u8> = (0..100u8)
-            .map(|i| if i % 2 == 0 { 0x01 } else { b'a' })
-            .collect();
-        assert_eq!(describe_binary(&noisy), Some("binary data"));
     }
 }
 
