@@ -1,4 +1,7 @@
 target/
+# Any crate's, not only the root's: a local build of the PDF renderer or the
+# agent leaves gigabytes beside its source, and all of it was sent as context.
+**/target/
 .git/
 k8s/
 ui/
