@@ -32,6 +32,21 @@ describe('how an inbox item reads', () => {
     expect(d.summary).toBe('Waiting for the deposit')
   })
 
+  it('names a model upgrade by the model and the versions', () => {
+    const d = describeItem(
+      item('model.upgrade', {
+        name: 'Claude Sonnet',
+        from: 'claude-sonnet-4-5',
+        to: 'claude-sonnet-5-5',
+        reason: 'this model is pinned to its version',
+      }),
+    )
+    expect(d.kind).toBe('model')
+    expect(d.label).toBe('Model upgrade to approve')
+    expect(d.summary).toBe('Claude Sonnet: claude-sonnet-4-5 to claude-sonnet-5-5')
+    expect(d.sessionId).toBeNull()
+  })
+
   it('still shows a kind nobody has described, rather than a blank row', () => {
     const d = describeItem(item('review_needed', { question: 'Is this right?' }))
     expect(d.kind).toBe('other')

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { AlarmClock, ArrowLeft, Clock, Inbox as InboxIcon, MessageSquare } from 'lucide-react'
+import { AlarmClock, ArrowLeft, ArrowUpCircle, Boxes, Clock, Inbox as InboxIcon, MessageSquare } from 'lucide-react'
 
 import ApprovalPrompt, { type Bound } from '../components/ApprovalPrompt'
 import type { ActionItem } from '../lib/actions'
@@ -9,6 +9,7 @@ import { wakeSession } from '../lib/chat'
 import { waitingFor } from '../lib/elapsed'
 import { useInbox } from '../lib/inbox'
 import { describeItem } from '../lib/inboxKinds'
+import { approveUpgrade } from '../lib/models'
 import { paths } from '../lib/paths'
 import { useSession, useSessionActions } from '../lib/session'
 import { remaining } from '../lib/sleep'
@@ -171,6 +172,7 @@ function Detail({ item, workspace, here }: { item: ActionItem; workspace: string
       )}
 
       {kind === 'approval' && <ApprovalDetail item={item} onAnswered={settled} />}
+      {kind === 'model' && <UpgradeDetail item={item} onUpgraded={settled} />}
       {kind === 'sleep' && sessionId && (
         <SleepDetail
           item={item}
@@ -188,6 +190,67 @@ function Detail({ item, workspace, here }: { item: ActionItem; workspace: string
           workspace={workspace}
           here={here}
         />
+      )}
+    </div>
+  )
+}
+
+/** What approving a model's upgrade would change, and the button that does. */
+function UpgradeDetail({ item, onUpgraded }: { item: ActionItem; onUpgraded: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const modelId = typeof item.payload.model_id === 'string' ? item.payload.model_id : null
+  const reason = typeof item.payload.reason === 'string' ? item.payload.reason : null
+  const changes = Array.isArray(item.payload.adjustments)
+    ? (item.payload.adjustments as { key: string; from: unknown; to: unknown }[])
+    : []
+  const shown = (v: unknown) => (v === null || v === undefined ? 'unset' : typeof v === 'string' ? v : JSON.stringify(v))
+  return (
+    <div className="space-y-3">
+      {reason && <p className="text-sm text-surface-600 dark:text-surface-400">Waiting because {reason}.</p>}
+      {changes.length > 0 && (
+        <div className="text-sm text-surface-800 dark:text-surface-200">
+          <p>Upgrading changes these values, which the new version would refuse:</p>
+          <ul className="mt-1 list-disc pl-5">
+            {changes.map((c, i) => (
+              <li key={i}>
+                {c.key.replace(/_/g, ' ')}: {shown(c.from)} becomes {shown(c.to)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-4">
+        {modelId && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              setFailed(null)
+              try {
+                await approveUpgrade(modelId)
+                onUpgraded()
+              } catch (e) {
+                setFailed(e instanceof ApiError ? e.message : 'Could not upgrade')
+                setBusy(false)
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
+          >
+            <ArrowUpCircle size={14} aria-hidden />
+            {changes.length > 0 ? 'Upgrade with these changes' : 'Upgrade'}
+          </button>
+        )}
+        <Link to={paths.platformModels} className={linkish}>
+          <Boxes size={14} aria-hidden />
+          Open the Models page
+        </Link>
+      </div>
+      {failed && (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+          {failed}
+        </p>
       )}
     </div>
   )

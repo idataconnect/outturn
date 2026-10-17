@@ -1,4 +1,4 @@
-import { CircleUser, Moon, ShieldQuestion, type LucideIcon } from 'lucide-react'
+import { ArrowUpCircle, CircleUser, Moon, ShieldQuestion, type LucideIcon } from 'lucide-react'
 
 import type { ActionItem } from './actions'
 
@@ -9,7 +9,7 @@ import type { ActionItem } from './actions'
  * component that shows an item. A kind nobody has described still renders, as
  * its own name and whatever reason it carries, rather than as a blank row.
  */
-export type ItemKind = 'approval' | 'sleep' | 'other'
+export type ItemKind = 'approval' | 'sleep' | 'model' | 'other'
 
 export type Described = {
   kind: ItemKind
@@ -41,6 +41,20 @@ export function describeItem(item: ActionItem): Described {
       icon: ShieldQuestion,
       summary: text(item, 'reason'),
       sessionId,
+    }
+  }
+  if (item.kind === 'model.upgrade') {
+    // Names the model by what the operator called it, and the versions by
+    // their ids, which are what the catalog and the page show.
+    const name = text(item, 'name')
+    const from = text(item, 'from')
+    const to = text(item, 'to')
+    return {
+      kind: 'model',
+      label: 'Model upgrade to approve',
+      icon: ArrowUpCircle,
+      summary: name && from && to ? `${name}: ${from} to ${to}` : text(item, 'reason'),
+      sessionId: null,
     }
   }
   if (item.kind === 'sleep') {
