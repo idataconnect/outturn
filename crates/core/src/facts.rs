@@ -16,6 +16,8 @@ pub struct ModelFacts {
     pub sampling: bool,
     /// The most it may write in one reply, used where a request names none.
     pub output_limit: Option<u32>,
+    /// How many tokens it reads at once.
+    pub context_window: Option<u32>,
     /// The effort levels it offers, lowest first.
     pub efforts: Vec<String>,
     /// Thinks adaptively, with effort as its control.
@@ -35,6 +37,7 @@ impl Default for ModelFacts {
         Self {
             sampling: true,
             output_limit: None,
+            context_window: None,
             efforts: Vec::new(),
             adaptive_thinking: false,
             thinking_binding: false,
@@ -82,6 +85,9 @@ impl ModelFacts {
         Self {
             sampling: merged["temperature"].as_bool().unwrap_or(defaults.sampling),
             output_limit: merged["limit"]["output"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok()),
+            context_window: merged["limit"]["context"]
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok()),
             efforts,

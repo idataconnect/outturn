@@ -445,7 +445,7 @@ async fn session_info(
     let workspaces = state.users.memberships(claims.subject).await?;
     let dictation = state
         .settings
-        .view(Level::Workspace(claims.workspace_id))
+        .view(Level::Workspace(claims.workspace_id), None)
         .await?
         .into_iter()
         .any(|e| e.setting.key == "dictation" && e.value == "on");
@@ -1344,7 +1344,7 @@ async fn within_ceiling(
     }
     let operator = state
         .settings
-        .view(Level::Operator)
+        .view(Level::Operator, None)
         .await?
         .into_iter()
         .find(|e| e.setting.key == key)
@@ -1359,9 +1359,17 @@ async fn within_ceiling(
     Ok(())
 }
 
+/// Which model a settings request is about, if one: `?model=<id>`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ForModel {
+    #[serde(default)]
+    model: Option<Uuid>,
+}
+
 async fn view_operator_settings(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authenticate(&state, &headers)?;
     if !claims.is_system_admin() {
@@ -1370,12 +1378,18 @@ async fn view_operator_settings(
             "only the operator sees platform defaults".into(),
         ));
     }
-    Ok(Json(state.settings.view(Level::Operator).await?))
+    Ok(Json(
+        state
+            .settings
+            .view(Level::Operator, for_model.model)
+            .await?,
+    ))
 }
 
 async fn set_operator_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path(key): Path<String>,
     Json(input): Json<SetSetting>,
 ) -> Result<StatusCode, ApiError> {
@@ -1383,7 +1397,7 @@ async fn set_operator_setting(
     may_write(&state, &claims, Level::Operator, &key).await?;
     state
         .settings
-        .set(Level::Operator, &key, input.value)
+        .set(Level::Operator, for_model.model, &key, input.value)
         .await?;
     tracing::info!(actor = %claims.subject, key = %key, "platform setting set");
     Ok(StatusCode::NO_CONTENT)
@@ -1392,11 +1406,15 @@ async fn set_operator_setting(
 async fn clear_operator_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path(key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     may_write(&state, &claims, Level::Operator, &key).await?;
-    state.settings.clear(Level::Operator, &key).await?;
+    state
+        .settings
+        .clear(Level::Operator, for_model.model, &key)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1546,12 +1564,13 @@ async fn release_inhibitor(
 async fn view_workspace_settings(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SettingsRead).await?;
     Ok(Json(
         state
             .settings
-            .view(Level::Workspace(claims.workspace_id))
+            .view(Level::Workspace(claims.workspace_id), for_model.model)
             .await?,
     ))
 }
@@ -1559,6 +1578,7 @@ async fn view_workspace_settings(
 async fn set_workspace_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path(key): Path<String>,
     Json(input): Json<SetSetting>,
 ) -> Result<StatusCode, ApiError> {
@@ -1566,7 +1586,10 @@ async fn set_workspace_setting(
     let level = Level::Workspace(claims.workspace_id);
     may_write(&state, &claims, level, &key).await?;
     within_ceiling(&state, level, &key, &input.value).await?;
-    state.settings.set(level, &key, input.value).await?;
+    state
+        .settings
+        .set(level, for_model.model, &key, input.value)
+        .await?;
     tracing::info!(actor = %claims.subject, workspace_id = %claims.workspace_id, key = %key, "workspace setting set");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1574,12 +1597,13 @@ async fn set_workspace_setting(
 async fn clear_workspace_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path(key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     let level = Level::Workspace(claims.workspace_id);
     may_write(&state, &claims, level, &key).await?;
-    state.settings.clear(level, &key).await?;
+    state.settings.clear(level, for_model.model, &key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1600,23 +1624,28 @@ async fn agent_level(
 async fn view_agent_settings(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsRead).await?;
     let level = agent_level(&state, &claims, agent_id).await?;
-    Ok(Json(state.settings.view(level).await?))
+    Ok(Json(state.settings.view(level, for_model.model).await?))
 }
 
 async fn set_agent_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path((agent_id, key)): Path<(Uuid, String)>,
     Json(input): Json<SetSetting>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     let level = agent_level(&state, &claims, agent_id).await?;
     may_write(&state, &claims, level, &key).await?;
-    state.settings.set(level, &key, input.value).await?;
+    state
+        .settings
+        .set(level, for_model.model, &key, input.value)
+        .await?;
     tracing::info!(actor = %claims.subject, agent_id = %agent_id, key = %key, "agent setting set");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1624,12 +1653,13 @@ async fn set_agent_setting(
 async fn clear_agent_setting(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(for_model): axum::extract::Query<ForModel>,
     Path((agent_id, key)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     let level = agent_level(&state, &claims, agent_id).await?;
     may_write(&state, &claims, level, &key).await?;
-    state.settings.clear(level, &key).await?;
+    state.settings.clear(level, for_model.model, &key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1824,6 +1854,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/platform/catalog/refresh",
             post(super::catalog::refresh),
         )
+        .route("/v1/models", get(super::models::offered))
         .route(
             "/v1/platform/models",
             get(super::models::view).post(super::models::create_model),

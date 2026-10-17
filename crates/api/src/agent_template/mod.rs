@@ -263,12 +263,7 @@ pub trait AgentTemplateStore: Send + Sync {
 /// agent's version: the turn's prompt and policy, its skills and its fixed
 /// settings. Written once, so a turn cannot compose one version's prompt with
 /// another's skills.
-pub const RUNNING_VERSION: &str = "join agent_templates t on t.id = a.template_id \
-     join lateral (select * from agent_template_versions tv \
-                    where tv.template_id = a.template_id \
-                      and (not t.allow_pinning or a.template_version_id is null \
-                           or tv.id = a.template_version_id) \
-                    order by tv.ordinal desc limit 1) v on true";
+pub const RUNNING_VERSION: &str = outturn_core::model_settings::RUNNING_VERSION;
 
 /// The size a workspace's section of a prompt may be. A section a business
 /// writes about how it works is a few paragraphs; anything longer is trying to

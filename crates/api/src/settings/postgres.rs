@@ -38,13 +38,19 @@ fn address(level: Level) -> (Uuid, Uuid) {
 }
 
 impl PostgresSettingsStore {
-    async fn rows_at(&self, level: Level) -> Result<Rows, SettingsError> {
+    /// A level's rows: those for every model, with those for `model` over
+    /// them, which is how the cascade orders them within a level.
+    async fn rows_at(&self, level: Level, model: Option<Uuid>) -> Result<Rows, SettingsError> {
         let (workspace_id, agent_id) = address(level);
         let rows = sqlx::query(
-            "select key, value from setting_overrides where workspace_id = $1 and agent_id = $2",
+            "select key, value from setting_overrides \
+             where workspace_id = $1 and agent_id = $2 and model_id in ($3, $4) \
+             order by model_id = $3 desc",
         )
         .bind(workspace_id)
         .bind(agent_id)
+        .bind(Uuid::nil())
+        .bind(model.unwrap_or(Uuid::nil()))
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -59,19 +65,51 @@ impl PostgresSettingsStore {
             .collect())
     }
 
+    /// What a model the caller can see accepts: a platform model, or one of
+    /// the workspace's own. None for a model it cannot.
+    async fn facts_of(
+        &self,
+        level: Level,
+        model: Uuid,
+    ) -> Result<Option<outturn_core::facts::ModelFacts>, SettingsError> {
+        let workspace = match level {
+            Level::Operator => None,
+            Level::Workspace(w)
+            | Level::Agent {
+                workspace_id: w, ..
+            } => Some(w),
+        };
+        let row: Option<(Option<serde_json::Value>, serde_json::Value)> = sqlx::query_as(
+            "select facts, overrides from models \
+             where id = $1 and (workspace_id is null or workspace_id = $2)",
+        )
+        .bind(model)
+        .bind(workspace)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(|(facts, overrides)| {
+            outturn_core::facts::ModelFacts::of(facts.as_ref(), Some(&overrides))
+        }))
+    }
+
     /// The levels above `level`, nearest first, and then `level` itself.
-    async fn chain(&self, level: Level) -> Result<Vec<(super::Source, Rows)>, SettingsError> {
+    async fn chain(
+        &self,
+        level: Level,
+        model: Option<Uuid>,
+    ) -> Result<Vec<(super::Source, Rows)>, SettingsError> {
         let mut out = Vec::new();
         out.push((
             super::Source::Operator,
-            self.rows_at(Level::Operator).await?,
+            self.rows_at(Level::Operator, model).await?,
         ));
         match level {
             Level::Operator => {}
             Level::Workspace(t) => {
                 out.push((
                     super::Source::Workspace,
-                    self.rows_at(Level::Workspace(t)).await?,
+                    self.rows_at(Level::Workspace(t), model).await?,
                 ));
             }
             Level::Agent {
@@ -80,14 +118,17 @@ impl PostgresSettingsStore {
             } => {
                 out.push((
                     super::Source::Workspace,
-                    self.rows_at(Level::Workspace(workspace_id)).await?,
+                    self.rows_at(Level::Workspace(workspace_id), model).await?,
                 ));
                 out.push((
                     super::Source::Agent,
-                    self.rows_at(Level::Agent {
-                        workspace_id,
-                        agent_id,
-                    })
+                    self.rows_at(
+                        Level::Agent {
+                            workspace_id,
+                            agent_id,
+                        },
+                        model,
+                    )
                     .await?,
                 ));
                 // Last, so it wins: a value a workspace or agent could change
@@ -139,8 +180,12 @@ fn walk(
 
 #[async_trait]
 impl SettingsStore for PostgresSettingsStore {
-    async fn view(&self, level: Level) -> Result<Vec<Effective>, SettingsError> {
-        let chain = self.chain(level).await?;
+    async fn view(
+        &self,
+        level: Level,
+        model: Option<Uuid>,
+    ) -> Result<Vec<Effective>, SettingsError> {
+        let chain = self.chain(level, model).await?;
         // This level's own rows, and everything else: the levels above it, and
         // a template's fixed values, which apply whether or not it has a row.
         let own = match level {
@@ -195,11 +240,32 @@ impl SettingsStore for PostgresSettingsStore {
     async fn set(
         &self,
         level: Level,
+        model: Option<Uuid>,
         key: &str,
         value: serde_json::Value,
     ) -> Result<(), SettingsError> {
         let setting = find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
         validate(&setting, &value)?;
+        // A value for one model is checked against what that model accepts,
+        // so only values that mean something to it can be saved.
+        if let Some(model) = model {
+            if !setting.per_model {
+                return Err(SettingsError::Invalid(format!(
+                    "{} is not set per model",
+                    setting.label
+                )));
+            }
+            let facts = self
+                .facts_of(level, model)
+                .await?
+                .ok_or_else(|| SettingsError::Invalid("no such model".into()))?;
+            if !outturn_core::model_settings::valid_for(key, &value, &facts) {
+                return Err(SettingsError::Invalid(format!(
+                    "{} cannot be {value} for this model",
+                    setting.label
+                )));
+            }
+        }
         if let Level::Agent { agent_id, .. } = level
             && self.fixed_by_template(agent_id).await?.contains_key(key)
         {
@@ -210,30 +276,38 @@ impl SettingsStore for PostgresSettingsStore {
         }
         let (workspace_id, agent_id) = address(level);
         sqlx::query(
-            "insert into setting_overrides (workspace_id, agent_id, key, value) \
-             values ($1, $2, $3, $4) \
-             on conflict (workspace_id, agent_id, key) \
+            "insert into setting_overrides (workspace_id, agent_id, model_id, key, value) \
+             values ($1, $2, $5, $3, $4) \
+             on conflict (workspace_id, agent_id, model_id, key) \
              do update set value = excluded.value, updated_at = now()",
         )
         .bind(workspace_id)
         .bind(agent_id)
         .bind(key)
         .bind(value)
+        .bind(model.unwrap_or(Uuid::nil()))
         .execute(&self.pool)
         .await
         .map_err(internal)?;
         Ok(())
     }
 
-    async fn clear(&self, level: Level, key: &str) -> Result<(), SettingsError> {
+    async fn clear(
+        &self,
+        level: Level,
+        model: Option<Uuid>,
+        key: &str,
+    ) -> Result<(), SettingsError> {
         find(key).ok_or_else(|| SettingsError::Unknown(key.to_string()))?;
         let (workspace_id, agent_id) = address(level);
         sqlx::query(
-            "delete from setting_overrides where workspace_id = $1 and agent_id = $2 and key = $3",
+            "delete from setting_overrides \
+             where workspace_id = $1 and agent_id = $2 and key = $3 and model_id = $4",
         )
         .bind(workspace_id)
         .bind(agent_id)
         .bind(key)
+        .bind(model.unwrap_or(Uuid::nil()))
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -242,10 +316,13 @@ impl SettingsStore for PostgresSettingsStore {
 
     async fn resolve(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError> {
         let chain = self
-            .chain(Level::Agent {
-                workspace_id,
-                agent_id,
-            })
+            .chain(
+                Level::Agent {
+                    workspace_id,
+                    agent_id,
+                },
+                None,
+            )
             .await?;
         let get = |key: &str| {
             let setting = find(key).expect("catalog key");

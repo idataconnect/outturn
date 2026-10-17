@@ -1949,11 +1949,22 @@ impl Worker {
         // Resolved here, above the runtime, so the guest is handed values
         // and never learns whether the operator, the workspace or the agent
         // chose them.
-        let settings = self
+        let mut settings = self
             .settings
             .resolve(payload.workspace_id, payload.agent_id)
             .await
             .map_err(|e| anyhow::anyhow!("settings: {e}"))?;
+        // Two of the settings that belong to a model are decided before any
+        // model is asked, so they are decided for the chain: the conversation
+        // has to fit whichever model ends up answering, and whether the
+        // prompt is repeated is the first model's choice, since it is the one
+        // expected to answer. Effort and temperature are the gateway's, per
+        // model as it walks (docs/models.md).
+        let traffic = traffic_type_for(&agent.policy, payload.user_id.is_none());
+        let (budget, repeat) =
+            sized_for_chain(&self.pool, payload.workspace_id, payload.agent_id, &traffic).await?;
+        settings.context_budget = budget;
+        settings.repeat_prompt = repeat;
 
         // Composed here rather than in the runtime, for the same reason the
         // settings are: the guest is handed prose and never learns which of it
@@ -2168,10 +2179,11 @@ impl Worker {
                 system_prompt,
                 model: Some(model.clone()),
                 timezone: payload.timezone.clone(),
-                reasoning_effort: settings.reasoning_effort,
-                temperature: settings.temperature,
+                // Left to the gateway, which knows which model it is asking.
+                reasoning_effort: None,
+                temperature: None,
                 signed,
-                traffic_type: Some(traffic_type_for(&agent.policy, payload.user_id.is_none())),
+                traffic_type: Some(traffic),
                 max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
                 reply_id: placeholder.message.id,
                 egress,
@@ -3102,6 +3114,56 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// The conversation budget a turn on `traffic` can hold to, and whether its
+/// prompt is repeated: the smallest budget any model on the chain resolves
+/// to, so a fallback to a smaller window never finds the conversation too
+/// long for it -- a refusal that would end the walk -- and the first model's
+/// choice of repetition. A class with no chain is sized by the settings for
+/// every model.
+async fn sized_for_chain(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    agent_id: Uuid,
+    traffic: &str,
+) -> anyhow::Result<(usize, bool)> {
+    use outturn_core::model_settings::resolve;
+    let links = outturn_core::chains::links_for(pool, workspace_id, traffic).await?;
+    let mut each = Vec::with_capacity(links.len().max(1));
+    for link in &links {
+        each.push(
+            resolve(
+                pool,
+                workspace_id,
+                Some(agent_id),
+                Some(link.model_id),
+                &link.facts,
+            )
+            .await?,
+        );
+    }
+    if each.is_empty() {
+        each.push(
+            resolve(
+                pool,
+                workspace_id,
+                Some(agent_id),
+                None,
+                &Default::default(),
+            )
+            .await?,
+        );
+    }
+    let budget = each
+        .iter()
+        .map(|s| s.context_budget)
+        .min()
+        .unwrap_or_default();
+    Ok((
+        usize::try_from(budget).unwrap_or(usize::MAX),
+        each[0].repeat_prompt,
+    ))
 }
 
 /// Model name from the agent's policy, falling back to the deployment default.

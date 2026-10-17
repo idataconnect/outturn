@@ -53,6 +53,8 @@ struct Attempt {
     /// What the route's model accepts; none for the caller's own choice,
     /// which nobody described.
     facts: Option<Arc<outturn_core::facts::ModelFacts>>,
+    /// The configured model, for its settings; none for the caller's choice.
+    model_id: Option<uuid::Uuid>,
 }
 
 impl GatewayState {
@@ -311,6 +313,7 @@ impl GatewayState {
                                 provider,
                                 model: Some(route.model),
                                 facts: Some(route.facts),
+                                model_id: Some(route.model_id),
                             });
                         }
                     }
@@ -350,8 +353,65 @@ impl GatewayState {
                 provider: Arc::clone(p),
                 model: None,
                 facts: None,
+                model_id: None,
             })
             .collect()
+    }
+
+    /// Fills in what the caller left to the settings: the temperature and
+    /// effort chosen for this attempt's model, as the turn's agent has them
+    /// (docs/models.md). Here, per attempt, because a fallback is asked with
+    /// its own model's settings, never the first's. What the caller named
+    /// itself -- a guest's own temperature, the namer's "none" -- stands.
+    ///
+    /// The agent is looked up from the session the token names, not taken
+    /// from anything the runtime sent. With no database the request goes as
+    /// it came.
+    async fn apply_settings(
+        &self,
+        request: &mut ChatCompletionRequest,
+        claims: &SessionClaims,
+        model_id: Option<uuid::Uuid>,
+    ) {
+        let Some(pool) = &self.health else {
+            return;
+        };
+        if request.temperature.is_some() && request.reasoning_effort.is_some() {
+            return;
+        }
+        let agent: Option<uuid::Uuid> = sqlx::query_scalar(
+            "select agent_id from agent_sessions where id = $1 and workspace_id = $2",
+        )
+        .bind(claims.subject)
+        .bind(claims.workspace_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the session's agent; its own settings are not applied");
+            None
+        });
+        let facts = request.facts.as_deref().cloned().unwrap_or_default();
+        match outturn_core::model_settings::resolve(
+            pool,
+            claims.workspace_id,
+            agent,
+            model_id,
+            &facts,
+        )
+        .await
+        {
+            Ok(settings) => {
+                if request.temperature.is_none() {
+                    request.temperature = settings.temperature;
+                }
+                if request.reasoning_effort.is_none() {
+                    request.reasoning_effort = Some(settings.reasoning_effort);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read settings; the request goes as it came")
+            }
+        }
     }
 
     /// Whether this provider may be called, and who owns the next probe.
@@ -524,6 +584,9 @@ async fn chat_completions(
             request.model = model.clone();
         }
         request.facts = attempt.facts.clone();
+        state
+            .apply_settings(&mut request, &claims, attempt.model_id)
+            .await;
 
         match provider.chat_completion(&request).await {
             Ok(response) => {
@@ -741,6 +804,9 @@ async fn chat_completions_stream(
             request.model = model.clone();
         }
         request.facts = attempt.facts.clone();
+        state
+            .apply_settings(&mut request, &claims, attempt.model_id)
+            .await;
 
         // Dropping the call is the stop: it closes the connection, which is
         // the only "never mind" a provider understands.
@@ -879,6 +945,7 @@ mod tests {
 
     fn route(base_url: &str) -> routing::Route {
         routing::Route {
+            model_id: uuid::Uuid::nil(),
             account: uuid::Uuid::nil(),
             credential_id: None,
             provider: "openai".into(),

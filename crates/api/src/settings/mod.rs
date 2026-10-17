@@ -98,15 +98,26 @@ pub struct Setting {
     pub kind: Kind,
     pub default: serde_json::Value,
     pub owner: Owner,
+    /// About a model, and so may be chosen for one model as well as for all
+    /// of them (`model_settings::PER_MODEL`).
+    pub per_model: bool,
 }
 
 /// The `reasoning_effort` value that turns thinking off and repeats the
 /// turn's prompt to the model. Never reaches a provider: it resolves to
 /// "none" and `Resolved::repeat_prompt`.
-pub const REPEAT_PROMPT: &str = "none_repeat_prompt";
+pub const REPEAT_PROMPT: &str = outturn_core::model_settings::REPEAT_PROMPT;
 
 /// Every setting there is.
 pub fn catalog() -> Vec<Setting> {
+    let mut all = settings();
+    for setting in &mut all {
+        setting.per_model = outturn_core::model_settings::PER_MODEL.contains(&setting.key);
+    }
+    all
+}
+
+fn settings() -> Vec<Setting> {
     vec![
         Setting {
             key: "temperature",
@@ -122,6 +133,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::Value::Null,
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         Setting {
             key: "reasoning_effort",
@@ -157,8 +169,9 @@ pub fn catalog() -> Vec<Setting> {
                     },
                 ],
             },
-            default: serde_json::json!("low"),
+            default: serde_json::json!(outturn_core::model_settings::DEFAULT_REASONING_EFFORT),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         // One ordered choice per scope rather than a read flag beside a write
         // flag. Prevents strange combinations, such as write but not read.
@@ -186,6 +199,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("read_write"),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         Setting {
             key: "workspace_file_access",
@@ -210,6 +224,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         // A ceiling rather than an addition, which is why it is a setting and not
         // a declaration in a skill. The per-operation gates in docs/approvals.md
@@ -241,6 +256,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("reach_freely"),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         Setting {
             key: "max_tool_rounds",
@@ -253,6 +269,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!(100),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         Setting {
             key: "context_budget",
@@ -273,8 +290,9 @@ pub fn catalog() -> Vec<Setting> {
                 min: 1_000,
                 max: 100_000_000,
             },
-            default: serde_json::json!(400_000),
+            default: serde_json::json!(outturn_core::model_settings::DEFAULT_CONTEXT_BUDGET),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         Setting {
             key: "session_naming",
@@ -304,6 +322,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("after_first_turn"),
             owner: Owner::WorkspaceOverridable,
+            per_model: false,
         },
         // The browser's own speech recognition, which in most browsers sends
         // the audio to the browser's maker to transcribe. On by default, since
@@ -331,6 +350,7 @@ pub fn catalog() -> Vec<Setting> {
             },
             default: serde_json::json!("on"),
             owner: Owner::OperatorCeiling,
+            per_model: false,
         },
     ]
 }
@@ -425,17 +445,31 @@ pub enum SettingsError {
 #[async_trait]
 pub trait SettingsStore: Send + Sync {
     /// Every setting as seen from `level`.
-    async fn view(&self, level: Level) -> Result<Vec<Effective>, SettingsError>;
+    ///
+    /// With a model, as that model sees it: its own values over those for
+    /// every model, level by level.
+    async fn view(
+        &self,
+        level: Level,
+        model: Option<Uuid>,
+    ) -> Result<Vec<Effective>, SettingsError>;
     /// Turns the override on at `level` with `value`, validated against the
-    /// catalog. The caller has already decided the level may.
+    /// catalog -- and, for one model, against what that model accepts. The
+    /// caller has already decided the level may.
     async fn set(
         &self,
         level: Level,
+        model: Option<Uuid>,
         key: &str,
         value: serde_json::Value,
     ) -> Result<(), SettingsError>;
     /// Turns the override off at `level`.
-    async fn clear(&self, level: Level, key: &str) -> Result<(), SettingsError>;
+    async fn clear(
+        &self,
+        level: Level,
+        model: Option<Uuid>,
+        key: &str,
+    ) -> Result<(), SettingsError>;
     /// The values a turn of `agent_id` in `workspace_id` runs with.
     async fn resolve(&self, workspace_id: Uuid, agent_id: Uuid) -> Result<Resolved, SettingsError>;
 }

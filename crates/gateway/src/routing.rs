@@ -29,23 +29,11 @@ use super::llm::provider::{
 
 pub use outturn_core::protocol::{BACKGROUND_TRAFFIC_TYPE, DEFAULT_TRAFFIC_TYPE};
 
-/// The class to borrow routes from when this one has none.
-///
-/// Background work is assistant work nobody is watching, so until somebody
-/// routes it separately it goes where assistant traffic goes. Not to the
-/// static providers, which is where an unrouted class otherwise lands: a
-/// deployment that confined its assistant traffic to one provider would find
-/// its scheduled turns at a different vendor the day this class appeared.
-fn borrows_from(traffic_type: &str) -> Option<&'static str> {
-    match traffic_type {
-        BACKGROUND_TRAFFIC_TYPE => Some(DEFAULT_TRAFFIC_TYPE),
-        _ => None,
-    }
-}
-
 /// One attempt: where to go, what to ask for, and what it accepts.
 #[derive(Debug, Clone)]
 pub struct Route {
+    /// The configured model, whose settings this attempt is sent with.
+    pub model_id: Uuid,
     /// The provider account: what a built provider is kept under.
     pub account: Uuid,
     pub provider: String,
@@ -66,64 +54,27 @@ impl Route {
 }
 
 /// Routes for a traffic type, in the order to try them: its chain's links.
-///
-/// A workspace's own chain replaces the platform's rather than extending it:
-/// a workspace that has configured where its traffic goes should not have
-/// requests quietly fall through to somebody else's endpoint.
 pub async fn routes_for(
     pool: &PgPool,
     workspace_id: Uuid,
     traffic_type: &str,
 ) -> Result<Vec<Route>, sqlx::Error> {
-    let routes = routes_of(pool, workspace_id, traffic_type).await?;
-    match borrows_from(traffic_type) {
-        Some(parent) if routes.is_empty() => routes_of(pool, workspace_id, parent).await,
-        _ => Ok(routes),
-    }
-}
-
-/// One class's own chain, with no borrowing.
-async fn routes_of(
-    pool: &PgPool,
-    workspace_id: Uuid,
-    traffic_type: &str,
-) -> Result<Vec<Route>, sqlx::Error> {
-    let rows = sqlx::query(
-        "select a.id as account, a.protocol, a.base_url, a.credential_env, a.credential_id, m.model, m.facts, m.overrides \
-         from chain_assignments c \
-         join chain_links l on l.chain_id = c.chain_id \
-         join models m on m.id = l.model_id \
-         join provider_accounts a on a.id = m.account_id \
-         where c.traffic_type = $2 \
-           and c.workspace_id is not distinct from ( \
-               select case when exists ( \
-                   select 1 from chain_assignments \
-                   where workspace_id = $1 and traffic_type = $2 \
-               ) then $1 else null end \
-           ) \
-         order by l.position",
+    Ok(
+        outturn_core::chains::links_for(pool, workspace_id, traffic_type)
+            .await?
+            .into_iter()
+            .map(|link| Route {
+                model_id: link.model_id,
+                account: link.account,
+                provider: link.protocol,
+                base_url: link.base_url,
+                model: link.model,
+                credential_ref: link.credential_env,
+                credential_id: link.credential_id,
+                facts: link.facts,
+            })
+            .collect(),
     )
-    .bind(workspace_id)
-    .bind(traffic_type)
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|r| {
-            let facts: Option<serde_json::Value> = r.get("facts");
-            let overrides: serde_json::Value = r.get("overrides");
-            Route {
-                account: r.get("account"),
-                provider: r.get("protocol"),
-                base_url: r.get("base_url"),
-                model: r.get("model"),
-                credential_ref: r.get("credential_env"),
-                credential_id: r.get("credential_id"),
-                facts: Arc::new(ModelFacts::of(facts.as_ref(), Some(&overrides))),
-            }
-        })
-        .collect())
 }
 
 /// Builds providers from routes, keeping one per account.

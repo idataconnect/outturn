@@ -1990,9 +1990,13 @@ async fn prompt_repetition_reaches_the_model_and_not_the_transcript() {
     let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let assignment: serde_json::Value = serde_json::from_str(&body).expect("assignment");
-    assert_eq!(
-        assignment["reasoning_effort"], "none",
-        "a provider is told thinking is off, never the setting's own value"
+    // Effort is the gateway's to send, per model; the setting's own value
+    // never travels, and the gateway sends "none" for it
+    // (model_settings::tests::a_template_wins_where_it_is_valid).
+    assert!(
+        assignment["reasoning_effort"].is_null(),
+        "effort travelled with the turn: {}",
+        assignment["reasoning_effort"]
     );
     let sent = assignment["conversation"].to_string();
     assert!(
@@ -12253,4 +12257,90 @@ async fn an_accounts_key_is_sealed_for_its_host_alone() {
     let held: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(held["accounts"][0]["credential_id"], id.to_string());
     assert!(held["accounts"][0]["credential_env"].is_null());
+}
+
+/// A value for one model is checked against what that model accepts: Sonnet
+/// takes no temperature and offers no "minimal" effort, but a budget it can
+/// hold is fine, and a setting that is not about a model is not set per
+/// model. The workspace sees the platform's models to choose for.
+#[tokio::test]
+async fn a_setting_for_one_model_is_one_that_model_accepts() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, admin) = template_people(&h).await;
+    let (_, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"Anthropic","protocol":"anthropic","base_url":"https://api.anthropic.com"}"#,
+        )
+        .await;
+    let account: Value = serde_json::from_str(&body).unwrap();
+    let (_, body) = h
+        .post(
+            "/v1/platform/models",
+            Some(&operator),
+            &serde_json::json!({"account_id": account["id"], "model": "claude-sonnet-5-5"})
+                .to_string(),
+        )
+        .await;
+    let sonnet = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = h.get("/v1/models", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("claude-sonnet-5-5"), "{body}");
+
+    let put = |key: &str, value: Value| {
+        let uri = format!("/v1/settings/{key}?model={sonnet}");
+        let body = serde_json::json!({ "value": value }).to_string();
+        let h = &h;
+        let admin = admin.clone();
+        async move { send_as(h, "PUT", &uri, &admin, &body).await.0 }
+    };
+    assert_eq!(
+        put("temperature", serde_json::json!(0.5)).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        put("temperature", Value::Null).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put("reasoning_effort", serde_json::json!("high")).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put("context_budget", serde_json::json!(800_000)).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put("max_tool_rounds", serde_json::json!(5)).await,
+        StatusCode::BAD_REQUEST,
+        "not a setting about a model"
+    );
+    // The same temperature for every model is a preference, not an error: a
+    // model that refuses it is passed over when it is asked.
+    let (status, _) = send_as(
+        &h,
+        "PUT",
+        "/v1/settings/temperature",
+        &admin,
+        r#"{"value": 0.5}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, body) = h
+        .get(&format!("/v1/settings?model={sonnet}"), Some(&admin))
+        .await;
+    let view: Vec<Value> = serde_json::from_str(&body).unwrap();
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .unwrap();
+    assert_eq!(effort["value"], "high", "{effort}");
+    assert_eq!(effort["per_model"], true);
 }

@@ -697,3 +697,46 @@ pub async fn unassign(
     tracing::info!(%actor, %traffic_type, "traffic class unassigned");
     Ok(StatusCode::NO_CONTENT)
 }
+
+// -- What a workspace sees -----------------------------------------------------
+
+/// A model as a workspace sees it: enough to choose settings for it, and
+/// nothing about the account behind it or its key.
+#[derive(Debug, Serialize)]
+pub struct Offered {
+    pub id: Uuid,
+    pub name: String,
+    pub model: String,
+    pub facts: Option<serde_json::Value>,
+}
+
+/// The models a workspace may set values for: the platform's, and its own.
+pub async fn offered(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<Offered>>, ApiError> {
+    let claims = super::router::authorize(
+        &state,
+        &headers,
+        outturn_core::auth::Authority::SettingsRead,
+    )
+    .await?;
+    let rows = sqlx::query(
+        "select id, name, model, facts from models \
+         where workspace_id is null or workspace_id = $1 order by name, id",
+    )
+    .bind(claims.workspace_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| Offered {
+                id: r.get("id"),
+                name: r.get("name"),
+                model: r.get("model"),
+                facts: r.get("facts"),
+            })
+            .collect(),
+    ))
+}

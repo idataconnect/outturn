@@ -4641,3 +4641,118 @@ async fn a_sealed_provider_key_is_sent_only_as_one() {
 
     finish!(db);
 }
+
+// Settings that belong to a model ---------------------------------------------
+
+/// An OpenAI-protocol upstream on loopback that answers `status` and records
+/// each request body it was sent.
+async fn body_recorder(
+    status: u16,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let kept = kept.clone();
+            async move {
+                kept.lock().unwrap().push(body);
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    axum::Json(serde_json::json!({
+                        "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                        "choices": [{"index": 0, "finish_reason": "stop",
+                                     "message": {"role": "assistant", "content": "ok"}}],
+                    })),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, seen)
+}
+
+async fn set_override(
+    pool: &PgPool,
+    workspace: Uuid,
+    model: Option<&str>,
+    key: &str,
+    value: serde_json::Value,
+) {
+    sqlx::query(
+        "insert into setting_overrides (workspace_id, agent_id, model_id, key, value) \
+         values ($1, '00000000-0000-0000-0000-000000000000', \
+                 coalesce((select id from models where model = $2), \
+                          '00000000-0000-0000-0000-000000000000'), $3, $4)",
+    )
+    .bind(workspace)
+    .bind(model)
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    .expect("override");
+}
+
+/// A turn that falls over is asked of the next model with that model's own
+/// settings, not the first's: each link is resolved for its own model, with
+/// the workspace's value for every model beneath the platform's for one.
+#[tokio::test]
+async fn a_fallback_is_asked_with_its_own_models_settings() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (down, first) = body_recorder(503).await;
+    let (up, second) = body_recorder(200).await;
+    add_route(pool, None, "assistant", 10, &down, "primary").await;
+    add_route(pool, None, "assistant", 20, &up, "fallback").await;
+    let platform = outturn::model_settings::PLATFORM_WORKSPACE;
+    set_override(
+        pool,
+        platform,
+        Some("primary"),
+        "temperature",
+        serde_json::json!(0.9),
+    )
+    .await;
+    set_override(
+        pool,
+        platform,
+        Some("fallback"),
+        "temperature",
+        serde_json::json!(0.2),
+    )
+    .await;
+    set_override(
+        pool,
+        workspace,
+        None,
+        "reasoning_effort",
+        serde_json::json!("high"),
+    )
+    .await;
+    set_override(
+        pool,
+        workspace,
+        Some("fallback"),
+        "reasoning_effort",
+        serde_json::json!("medium"),
+    )
+    .await;
+
+    assert_eq!(ask_gateway(pool, workspace).await, 200);
+    let first = first.lock().unwrap().clone();
+    let second = second.lock().unwrap().clone();
+    assert!(!first.is_empty(), "the primary was never asked");
+    assert_eq!(first[0]["temperature"], 0.9);
+    assert_eq!(first[0]["reasoning_effort"], "high");
+    let temperature = second[0]["temperature"].as_f64().unwrap();
+    assert!((temperature - 0.2).abs() < 1e-6, "{}", second[0]);
+    assert_eq!(second[0]["reasoning_effort"], "medium");
+
+    finish!(db);
+}
