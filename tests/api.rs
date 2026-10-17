@@ -11947,3 +11947,69 @@ async fn a_catalog_is_kept_only_when_it_says_something_new() {
         "price was kept: {stored}"
     );
 }
+
+/// A catalog is checked conditionally: the first check keeps what came and
+/// remembers the source's validator, and the next asks with it -- so an
+/// unchanged catalog costs the source a "not modified" and is not kept again.
+#[tokio::test]
+async fn a_catalog_check_asks_whether_anything_changed() {
+    use axum::{Json, Router, routing::post};
+    let h = harness_or_skip!();
+    let pool = &h.db.pool;
+    outturn::api::catalog::at_startup(pool).await;
+
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let log = asked.clone();
+    let app = Router::new().route(
+        "/v1/egress",
+        post(move |Json(request): Json<Value>| {
+            let log = log.clone();
+            async move {
+                let conditional = request["headers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|h| h[0] == "if-none-match" && h[1] == "\"v1\"");
+                log.lock().unwrap().push(request);
+                Json(if conditional {
+                    serde_json::json!({"status": 304, "headers": [], "body": "", "truncated": false})
+                } else {
+                    serde_json::json!({
+                        "status": 200,
+                        "headers": [["ETag", "\"v1\""]],
+                        "body": r#"{"acme-ai": {"name": "Acme AI", "models": {"m1": {"name": "M1"}}}}"#,
+                        "truncated": false,
+                    })
+                })
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let minter = outturn::auth::TokenMinter::new(&[5u8; 32]).unwrap();
+
+    let first = outturn::api::catalog::check(pool, &minter, &gateway, Uuid::nil()).await;
+    assert_eq!(first, Ok(outturn::api::catalog::Checked::Kept));
+    let second = outturn::api::catalog::check(pool, &minter, &gateway, Uuid::nil()).await;
+    assert_eq!(second, Ok(outturn::api::catalog::Checked::Unchanged));
+
+    assert_eq!(asked.lock().unwrap().len(), 2);
+    let kept: i64 = sqlx::query_scalar("select count(*) from catalog_snapshots")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        kept, 2,
+        "the shipped catalog and the fetched one, and nothing for the 304"
+    );
+    let (next, checked): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("select next_check_at, checked_at from catalog_checks")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(
+        next - checked >= chrono::Duration::days(7),
+        "checked again before the week is up"
+    );
+}

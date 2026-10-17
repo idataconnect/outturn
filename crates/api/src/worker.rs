@@ -1569,6 +1569,14 @@ impl Worker {
                         let _ =
                             outturn_core::breaker::forget_stale_sightings(&self.pool).await;
 
+                        // The model catalog, when its week is up. Here for the
+                        // same reason as the sweeps: the tick is already the
+                        // thing that runs on a schedule. Off the turn path --
+                        // a fetch that hangs holds up a sweep, never a reply.
+                        if let (Some(minter), Some(gateway)) = (&self.minter, &self.gateway_url) {
+                            crate::catalog::check_if_due(&self.pool, minter, gateway).await;
+                        }
+
                         // Deltas exist to assemble a reply that is still
                         // streaming and to let a browser catch up on one. Once
                         // the reply is stored they are copies of text held

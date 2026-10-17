@@ -82,6 +82,8 @@ forgot to set one.
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
 | `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`; the UI's is `VITE_BRAND_NAME`, set at build time |
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
+| `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |
+| `OUTTURN_CATALOG_FETCH` | api | `off` stops fetching the catalog; the deployment keeps what it shipped with and what it is given |
 | `OUTTURN_CATALOG_FILE` | api | A model catalog to load at startup, as the site's JSON or reduced, gzipped or not -- a mounted ConfigMap, say. Unset, the deployment starts from the catalog its release shipped; see [models.md](docs/models.md) |
 | `OUTTURN_AGENT_MODULE` | runtime | Path of the agent component. Default `/usr/local/share/outturn/agent_default.wasm`, the one in the image |
 

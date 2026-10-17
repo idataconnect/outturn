@@ -1814,6 +1814,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/platform/catalog", get(super::catalog::view))
         .route(
+            "/v1/platform/catalog/refresh",
+            post(super::catalog::refresh),
+        )
+        .route(
             "/v1/platform/skills",
             post(super::skills::create_platform_skill),
         )

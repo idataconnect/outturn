@@ -484,25 +484,7 @@ pub async fn preview_platform_skill_from_openapi(
     Ok(Json(PreviewResponse { preview, spec }))
 }
 
-#[derive(serde::Deserialize)]
-struct Fetched {
-    status: u16,
-    body: String,
-    truncated: bool,
-}
-
-/// Fetches a specification through the gateway, the way an agent's
-/// `fetch_url` reaches a host -- never with a client of the API's own, which
-/// would be a URL field that reaches `outturn-api` and everything else in the
-/// cluster.
-///
-/// The API has no turn to borrow a token from, so it mints one for this
-/// request: committing to the one host the URL names, with no credential, no
-/// gates, the `document_fetch` role and a minute to live. The gateway then
-/// does what it does for every request -- refuses a private address unless
-/// the operator opened it, pins what it resolved, follows no redirect -- and
-/// the token is dropped here. Unauthenticated by construction: the rule names
-/// no credential, so none is attached.
+/// Fetches a specification through the gateway (`crate::fetch`).
 async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<u8>, ApiError> {
     let gateway = std::env::var("OUTTURN_GATEWAY_URL").map_err(|_| {
         (
@@ -511,77 +493,25 @@ async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<
                 .to_string(),
         )
     })?;
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "only http and https URLs are fetched".into(),
-        ));
-    }
-    let host = parsed
-        .host_str()
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            "that URL names no host".to_string(),
-        ))?
-        .to_string();
-
-    let workspace = crate::usage::PLATFORM_WORKSPACE;
-    let rules = vec![outturn_core::egress::rule::EgressRule {
-        host,
-        header: None,
-        credential_env: None,
-        client: None,
-        credential: None,
-    }];
-    let gates = outturn_core::egress::gate::Gates::none();
-    let token = state
-        .minter
-        .mint_document_fetch(
-            actor,
-            workspace,
-            outturn_core::egress::commit::root(workspace, &rules),
-            gates.root(workspace),
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let response = outturn_core::http_client::reporting_client()
-        .post(format!("{gateway}/v1/egress"))
-        .bearer_auth(token)
-        .json(&serde_json::json!({
-            "method": "GET",
-            "url": url,
-            "gates": gates,
-            "headers": [[
-                "accept",
-                "application/json, application/yaml, text/yaml;q=0.9, */*;q=0.1",
-            ]],
-            "proof": outturn_core::egress::commit::Proof::WholeSet { rules },
-        }))
-        .send()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("could not reach the gateway: {e}"),
-            )
-        })?;
-    let status = response.status();
-    if !status.is_success() {
-        // The gateway's refusals are written to be read: a private address,
-        // an unresolvable name, a host that did not answer.
-        let detail = response.text().await.unwrap_or_default();
-        return Err((
+    let fetched = crate::fetch::get(
+        &state.minter,
+        &gateway,
+        actor,
+        url,
+        &[(
+            "accept",
+            "application/json, application/yaml, text/yaml;q=0.9, */*;q=0.1",
+        )],
+    )
+    .await
+    .map_err(|e| match e {
+        crate::fetch::FetchError::BadUrl(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+        crate::fetch::FetchError::Refused(detail) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("could not fetch {url}: {detail}"),
-        ));
-    }
-    let fetched: Fetched = response.json().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("the gateway's answer was unreadable: {e}"),
-        )
+        ),
+        crate::fetch::FetchError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        _ => (StatusCode::BAD_GATEWAY, e.to_string()),
     })?;
     if !(200..300).contains(&fetched.status) {
         return Err((

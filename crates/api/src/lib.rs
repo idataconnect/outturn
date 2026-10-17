@@ -12,6 +12,7 @@ pub mod compact;
 mod credentials;
 pub mod egress;
 mod events;
+pub mod fetch;
 pub use outturn_core::extract;
 mod feedback;
 mod files;
