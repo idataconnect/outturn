@@ -589,6 +589,38 @@ system prompt is composed once per conversation and again only at compaction
 banner when a conversation is behind what is published) -- and that is what a
 catalog of installable contributors would be built on.
 
+**Instructions as data, and experiments on them.** Undesigned. A system
+prompt is a list of instructions, each with its own reason, and trying one
+should be a switch rather than a code change and a deploy. One contributor
+holding instructions as rows -- text, placement, and when it applies: always,
+never, per model, or one variant of an experiment -- would make each one
+something an operator turns on where it earns its place. Two details decide
+whether it measures anything:
+
+- *Sticky per conversation.* A conversation has one system prompt, so it has
+  one variant, chosen when it starts and kept: switching between turns
+  costs the cache and drops thinking blocks as stale. Chosen at random, or
+  from a hash of the person who started it, so a person always sees the same
+  one -- the second is the stratifying choice, at the cost that the variant
+  follows who starts conversations.
+- *Recorded on each reply,* with who took part, so a comparison is a query
+  against outcomes already stored (`feedback`) rather than reading
+  transcripts.
+
+The first candidate is the preamble's rule that instructions come from the
+system prompt alone (d5765c5). Tried by hand, two runs a case, it moved both
+models the same way: an override styled as a new system prompt, asking for
+a pirate poet, held 0 of 2 on qwen3.5 and 1 of 2 on Sonnet 5.5 without it,
+and 1 of 2 and 2 of 2 with it; one asking for recipes as part of the job
+held 1 and 2 of 2 without, 2 and 2 with; "shorter, please" was followed
+every time. So it is on for every model until an operator's own numbers say
+otherwise -- the knowledge of which models need it is the deployment's, not
+a list shipped here.
+
+Open beside it, for when several people can share a conversation: whose
+`person` contributions -- a voice -- apply, since a conversation has one
+prompt. The starter's, probably, and settled once for both features.
+
 ### Personalities
 
 [personalities.md](personalities.md).
