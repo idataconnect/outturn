@@ -81,6 +81,31 @@ pub fn valid_for(key: &str, value: &Value, facts: &ModelFacts) -> bool {
     }
 }
 
+/// The nearest value of `key` a model with these facts takes, for a value
+/// it refuses: the closest effort level it offers, the lower on a tie; no
+/// temperature; the largest budget it could hold.
+pub fn adjust(key: &str, value: &Value, facts: &ModelFacts) -> Value {
+    match key {
+        "temperature" => Value::Null,
+        "reasoning_effort" => {
+            const ORDER: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+            let at = |level: &str| ORDER.iter().position(|l| *l == level);
+            let asked = value.as_str().and_then(at).unwrap_or(0);
+            facts
+                .efforts
+                .iter()
+                .filter_map(|e| at(e).map(|i| (i.abs_diff(asked), i, e)))
+                .min_by_key(|(distance, i, _)| (*distance, *i))
+                .map_or(Value::from("none"), |(_, _, e)| Value::from(e.as_str()))
+        }
+        "context_budget" => match facts.context_window {
+            Some(tokens) => Value::from(u64::from(tokens) * 4),
+            None => value.clone(),
+        },
+        _ => value.clone(),
+    }
+}
+
 /// Resolves the three for `model` -- none for a model nobody configured --
 /// as `workspace`'s `agent` would have them, where there is an agent.
 pub async fn resolve(
@@ -238,6 +263,25 @@ mod tests {
         let on_gemini = cascade(rows, None, &gemini);
         assert_eq!(on_gemini.temperature, Some(0.3));
         assert_eq!(on_gemini.reasoning_effort, DEFAULT_REASONING_EFFORT);
+    }
+
+    #[test]
+    fn a_refused_value_is_moved_to_the_nearest_one_taken() {
+        let two = ModelFacts {
+            efforts: vec!["low".into(), "high".into()],
+            context_window: Some(1000),
+            ..ModelFacts::default()
+        };
+        assert_eq!(
+            adjust("reasoning_effort", &json!("medium"), &two),
+            json!("low")
+        );
+        assert_eq!(
+            adjust("reasoning_effort", &json!("max"), &two),
+            json!("high")
+        );
+        assert_eq!(adjust("temperature", &json!(0.4), &two), Value::Null);
+        assert_eq!(adjust("context_budget", &json!(9000), &two), json!(4000));
     }
 
     #[test]

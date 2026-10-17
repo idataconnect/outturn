@@ -174,6 +174,72 @@ pub fn entry<'a>(
     catalog.get(provider)?.get("models")?.get(model)
 }
 
+/// The newest version in `current`'s line at `provider`, for a model that
+/// tracks "Latest" (docs/models.md). `current` itself when nothing is newer;
+/// None when the catalog no longer has it.
+///
+/// A line is narrower than a family. The catalog's families are coarse --
+/// Gemini Pro's holds image and translation models beside the chat ones -- so
+/// a candidate must also be what the current model is: the same output, at
+/// least the same input, tools and reasoning where it has them, and the same
+/// id up to the family's name, which keeps Bedrock's `us.` ids among `us.`
+/// ones. Not a provider's own moving alias (`-latest`), whose meaning shifts
+/// without the catalog saying; not a preview, unless the current one is.
+/// Alpha, beta and deprecated versions are passed over while anything else
+/// is left. Ties on release date go to the shorter id: the alias over its
+/// dated twin.
+pub fn newest_in_line(
+    catalog: &serde_json::Value,
+    provider: &str,
+    current: &str,
+) -> Option<String> {
+    let models = catalog.get(provider)?.get("models")?.as_object()?;
+    let this = models.get(current)?;
+    let family = this["family"].as_str()?;
+    let prefix = current.find(family).map_or("", |at| &current[..at]);
+    let preview = current.contains("preview");
+    let set = |v: &serde_json::Value| -> std::collections::BTreeSet<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.as_str().map(str::to_string))
+            .collect()
+    };
+    let output = set(&this["modalities"]["output"]);
+    let input = set(&this["modalities"]["input"]);
+    let wants = |field: &str, m: &serde_json::Value| this[field] != true || m[field] == true;
+
+    let in_line: Vec<(&String, &serde_json::Value)> = models
+        .iter()
+        .filter(|(id, m)| {
+            m["family"] == family
+                && id.starts_with(prefix)
+                && (prefix.is_empty() || id[prefix.len()..].starts_with(family))
+                && set(&m["modalities"]["output"]) == output
+                && set(&m["modalities"]["input"]).is_superset(&input)
+                && wants("tool_call", m)
+                && wants("reasoning", m)
+                && !id.ends_with("-latest")
+                && (preview || !id.contains("preview"))
+        })
+        .collect();
+    let settled = |m: &serde_json::Value| {
+        !matches!(m["status"].as_str(), Some("alpha" | "beta" | "deprecated"))
+    };
+    let pool: Vec<_> = if in_line.iter().any(|(_, m)| settled(m)) {
+        in_line.into_iter().filter(|(_, m)| settled(m)).collect()
+    } else {
+        in_line
+    };
+    pool.into_iter()
+        .max_by(|(a_id, a), (b_id, b)| {
+            let date = |m: &serde_json::Value| m["release_date"].as_str().unwrap_or("").to_string();
+            date(a).cmp(&date(b)).then(b_id.len().cmp(&a_id.len()))
+        })
+        .map(|(id, _)| id.clone())
+        .or_else(|| Some(current.to_string()))
+}
+
 fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = rest.split(['/', ':']).next()?;
@@ -182,6 +248,37 @@ fn host_of(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Against the shipped catalog: each line moves to its own newest and
+    /// nowhere else.
+    #[test]
+    fn a_line_moves_to_its_own_newest() {
+        let held = super::shipped();
+        let newest = |provider, id| super::newest_in_line(&held, provider, id).unwrap();
+        assert_eq!(
+            newest("anthropic", "claude-sonnet-4-5"),
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(
+            newest("anthropic", "claude-sonnet-5-5"),
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(newest("anthropic", "claude-opus-4-8"), "claude-opus-5-5");
+        assert_eq!(
+            newest("amazon-bedrock", "us.anthropic.claude-sonnet-5"),
+            "us.anthropic.claude-sonnet-5-5",
+            "a us. id stays among us. ids"
+        );
+        assert_eq!(newest("google", "gemini-3.7-flash"), "gemini-3.8-flash");
+        // Gemini Pro's family holds image, research and translation models,
+        // and its only newer chat model is a preview: none of them is next.
+        assert_eq!(newest("google", "gemini-2.5-pro"), "gemini-2.5-pro");
+        assert_eq!(
+            newest("google", "gemini-3.1-pro-preview"),
+            "gemini-3.1-pro-preview"
+        );
+        assert!(super::newest_in_line(&held, "anthropic", "no-such-model").is_none());
+    }
+
     #[test]
     fn an_account_finds_its_provider() {
         let catalog = serde_json::json!({
