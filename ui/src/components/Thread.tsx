@@ -28,7 +28,7 @@ import {
   X,
 } from 'lucide-react'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 
 import { useMessageAge } from '../lib/useMessageAge'
@@ -109,6 +109,10 @@ function heldLabel(status: MessageStatus): string | null {
  * usually helps -- a conversation without this one in it -- is one click away.
  * The provider's own words and category are there for whoever wants them.
  */
+/** Where a new conversation with this agent starts, for a refusal card
+ *  wherever in the thread it is drawn. */
+const NewSessionHref = createContext<string | undefined>(undefined)
+
 function RefusalCard({
   refusal,
   newSessionHref,
@@ -119,7 +123,7 @@ function RefusalCard({
   return (
     <div
       role="status"
-      className="mt-2 w-full max-w-md self-end rounded-lg border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-surface-800 dark:text-surface-100"
+      className="mt-2 w-full max-w-md rounded-lg border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-surface-800 dark:text-surface-100"
     >
       <p className="flex items-start gap-2">
         <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
@@ -173,6 +177,7 @@ function StatusLine({
   if (status.kind === 'refused') {
     return <RefusalCard refusal={status.refusal} newSessionHref={newSessionHref} />
   }
+
   if (status.kind === 'failed') {
     return (
       // Wrapped in an alert rather than left as a button somebody has to
@@ -402,6 +407,12 @@ function AssistantMessage() {
   // A reply whose turn was cut off and started again. Said under it, because
   // what follows is the retry's answer and not a second thought.
   const interrupted = useAuiState((s) => s.message.metadata.custom?.interrupted === true)
+  // Cut off by the provider declining, rather than by anything failing: the
+  // card says so where the note would have said "interrupted".
+  const refusal = useAuiState(
+    (s) => s.message.metadata.custom?.refusal as Refusal | null | undefined,
+  )
+  const newSessionHref = useContext(NewSessionHref)
   const restarted = useAuiState((s) => s.message.metadata.custom?.restarted === true)
 
   const id = useAuiState((s) => s.message.id)
@@ -475,7 +486,12 @@ function AssistantMessage() {
           }}
         />
       </div>
-      {interrupted && (
+      {refusal && (
+        <div className="flex w-full justify-start">
+          <RefusalCard refusal={refusal} newSessionHref={newSessionHref} />
+        </div>
+      )}
+      {interrupted && !refusal && (
         <p className="mt-1 text-xs italic text-surface-500 dark:text-surface-400">
           {/* Only promising a reply below when there is one: a retry can run
               to the end and say nothing, and then there is nothing to find. */}
@@ -810,212 +826,214 @@ export default function Thread({
   )
 
   return (
-    <ThreadPrimitive.Root className="flex flex-col h-full">
-      <ThreadPrimitive.Viewport className="flex-1 overflow-auto p-6 space-y-4">
-        <ThreadPrimitive.Empty>
-          <p className="text-sm text-surface-600 dark:text-surface-400">
-            {disabled ? 'Start a session to begin chatting.' : 'Send a message to begin.'}
-          </p>
-        </ThreadPrimitive.Empty>
+    <NewSessionHref.Provider value={newSessionHref}>
+      <ThreadPrimitive.Root className="flex flex-col h-full">
+        <ThreadPrimitive.Viewport className="flex-1 overflow-auto p-6 space-y-4">
+          <ThreadPrimitive.Empty>
+            <p className="text-sm text-surface-600 dark:text-surface-400">
+              {disabled ? 'Start a session to begin chatting.' : 'Send a message to begin.'}
+            </p>
+          </ThreadPrimitive.Empty>
 
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage: UserMessageWithRetry,
-            AssistantMessage,
-          }}
-        />
-      </ThreadPrimitive.Viewport>
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage: UserMessageWithRetry,
+              AssistantMessage,
+            }}
+          />
+        </ThreadPrimitive.Viewport>
 
-      {/* Floats at whatever was selected, in whichever reply. The primitive
-          does the detection, keeps the selection from being cleared by its
-          own mousedown, and refuses a selection spanning two messages --
-          which would quote a question and an answer as though the agent had
-          said both. */}
-      <SelectionToolbarPrimitive.Root className="z-50 flex items-center rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-0.5">
-        <SelectionToolbarPrimitive.Quote className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-700">
-          <Quote size={12} aria-hidden />
-          Quote
-        </SelectionToolbarPrimitive.Quote>
-      </SelectionToolbarPrimitive.Root>
+        {/* Floats at whatever was selected, in whichever reply. The primitive
+            does the detection, keeps the selection from being cleared by its
+            own mousedown, and refuses a selection spanning two messages --
+            which would quote a question and an answer as though the agent had
+            said both. */}
+        <SelectionToolbarPrimitive.Root className="z-50 flex items-center rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-0.5">
+          <SelectionToolbarPrimitive.Quote className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-700">
+            <Quote size={12} aria-hidden />
+            Quote
+          </SelectionToolbarPrimitive.Quote>
+        </SelectionToolbarPrimitive.Root>
 
-      {/* The passage waiting to go with the next message. Shown because a
-          quote taken and then forgotten is a quote somebody sends by
-          accident, and the composer otherwise looks exactly as it did. */}
-      <ComposerPrimitive.Quote>
-        <div className="flex items-start gap-2 px-4 pt-3 text-xs text-surface-600 dark:text-surface-400">
-          <span className="mt-0.5 w-0.5 self-stretch rounded bg-surface-300 dark:bg-surface-600 shrink-0" />
-          <ComposerPrimitive.QuoteText className="flex-1 line-clamp-3 italic" />
-          <ComposerPrimitive.QuoteDismiss
-            aria-label="Drop the quote"
-            title="Drop the quote"
-            className="shrink-0 p-0.5 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800"
-          >
-            <X size={12} aria-hidden />
-          </ComposerPrimitive.QuoteDismiss>
-        </div>
-      </ComposerPrimitive.Quote>
+        {/* The passage waiting to go with the next message. Shown because a
+            quote taken and then forgotten is a quote somebody sends by
+            accident, and the composer otherwise looks exactly as it did. */}
+        <ComposerPrimitive.Quote>
+          <div className="flex items-start gap-2 px-4 pt-3 text-xs text-surface-600 dark:text-surface-400">
+            <span className="mt-0.5 w-0.5 self-stretch rounded bg-surface-300 dark:bg-surface-600 shrink-0" />
+            <ComposerPrimitive.QuoteText className="flex-1 line-clamp-3 italic" />
+            <ComposerPrimitive.QuoteDismiss
+              aria-label="Drop the quote"
+              title="Drop the quote"
+              className="shrink-0 p-0.5 rounded text-surface-400 hover:text-surface-700 dark:hover:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800"
+            >
+              <X size={12} aria-hidden />
+            </ComposerPrimitive.QuoteDismiss>
+          </div>
+        </ComposerPrimitive.Quote>
 
-      {attached.length > 0 && (
-        <div className="flex gap-2 flex-wrap px-4 pt-3 border-t border-surface-200 dark:border-surface-800">
-          {attached.map((image) => (
-            <div key={image.path} className="relative group">
-              {image.preview ? (
-                <img
-                  src={image.preview}
-                  alt={`Pasted, stored as ${image.path}`}
-                  className="h-16 w-16 object-cover rounded-md border border-surface-300 dark:border-surface-700"
-                />
-              ) : (
-                // The same square an image would occupy, so a mixed row lines
-                // up. The name is what identifies it, truncated rather than
-                // wrapped: a chip that grew to fit a long filename would push
-                // the others around.
-                <div
-                  title={image.name}
-                  className="h-16 w-16 flex flex-col items-center justify-center gap-1 p-1 rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-800"
-                >
-                  <FileText
-                    size={20}
-                    className="text-surface-500 dark:text-surface-400 shrink-0"
-                    aria-hidden
+        {attached.length > 0 && (
+          <div className="flex gap-2 flex-wrap px-4 pt-3 border-t border-surface-200 dark:border-surface-800">
+            {attached.map((image) => (
+              <div key={image.path} className="relative group">
+                {image.preview ? (
+                  <img
+                    src={image.preview}
+                    alt={`Pasted, stored as ${image.path}`}
+                    className="h-16 w-16 object-cover rounded-md border border-surface-300 dark:border-surface-700"
                   />
-                  <span className="w-full text-[10px] leading-tight text-center truncate text-surface-600 dark:text-surface-300">
-                    {image.name}
-                  </span>
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => void removeAttachment(image)}
-                aria-label={`Remove ${image.path}`}
-                title="Remove, and delete the stored file"
-                className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-800 dark:bg-surface-200 text-white dark:text-surface-900 p-0.5 opacity-90 hover:opacity-100"
-              >
-                <X size={12} aria-hidden />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                ) : (
+                  // The same square an image would occupy, so a mixed row lines
+                  // up. The name is what identifies it, truncated rather than
+                  // wrapped: a chip that grew to fit a long filename would push
+                  // the others around.
+                  <div
+                    title={image.name}
+                    className="h-16 w-16 flex flex-col items-center justify-center gap-1 p-1 rounded-md border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-800"
+                  >
+                    <FileText
+                      size={20}
+                      className="text-surface-500 dark:text-surface-400 shrink-0"
+                      aria-hidden
+                    />
+                    <span className="w-full text-[10px] leading-tight text-center truncate text-surface-600 dark:text-surface-300">
+                      {image.name}
+                    </span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void removeAttachment(image)}
+                  aria-label={`Remove ${image.path}`}
+                  title="Remove, and delete the stored file"
+                  className="absolute -top-1.5 -right-1.5 rounded-full bg-surface-800 dark:bg-surface-200 text-white dark:text-surface-900 p-0.5 opacity-90 hover:opacity-100"
+                >
+                  <X size={12} aria-hidden />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
-      {/* Wraps the composer rather than sitting inside it: the root is a
-          provider that watches what is typed, so the input has to be within
-          it. Draws nothing until a `/` is typed, and nothing at all when the
-          agent has no skills. */}
-      <SkillMenu
-        commands={skills}
-        actions={
-          sessionId
-            ? [
-                {
-                  id: 'compact',
-                  label: 'Compact',
-                  description: 'Summarize conversation to reduce context usage.',
-                  run: () => void compactSession(sessionId),
-                },
-              ]
-            : []
-        }
-      >
-      <ComposerPrimitive.Root
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}${
-          // An outline round the whole box rather than a full-pane overlay:
-          // the drop lands here, and saying so where it lands is less startling
-          // than covering the conversation to say it.
-          dragging ? ' ring-2 ring-inset ring-brand-500 rounded-md' : ''
-        }`}
-      >
-        <ComposerPrimitive.Input
-          ref={input}
-          autoFocus
-          disabled={disabled}
-          // Handled here rather than by the composer's own attachment path,
-          // which this project does not use: an image is stored as a session
-          // file and named by path, not carried along with the message.
-          addAttachmentOnPaste={false}
-          onPaste={onPaste}
-          // Nothing for a reader who may not send: the box is disabled, which
-          // says so on its own, and a placeholder explaining why is an
-          // explanation nobody asked for in the place they would have typed.
-          // The Read-only badge beside the sessions carries the reason once.
-          placeholder={
-            pasting
-              ? 'Storing the image…'
-              : readOnly
-                ? undefined
-                : disabled
-                  ? 'Start a session first'
-                  : 'Message the agent…'
+        {/* Wraps the composer rather than sitting inside it: the root is a
+            provider that watches what is typed, so the input has to be within
+            it. Draws nothing until a `/` is typed, and nothing at all when the
+            agent has no skills. */}
+        <SkillMenu
+          commands={skills}
+          actions={
+            sessionId
+              ? [
+                  {
+                    id: 'compact',
+                    label: 'Compact',
+                    description: 'Summarize conversation to reduce context usage.',
+                    run: () => void compactSession(sessionId),
+                  },
+                ]
+              : []
           }
-          className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
-        />
-        {dictation && (
-          <>
-            {/* The browser's speech recognition, on where the workspace
-                allows it. Two buttons sharing one square, as send and stop
-                do, chosen by whether it is listening. */}
-            <ComposerPrimitive.If dictation={false}>
-              <ComposerPrimitive.Dictate
-                aria-label="Dictate"
-                title="Dictate"
-                disabled={disabled}
-                className="flex items-center px-3 py-2 rounded-md border border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-700 disabled:opacity-50"
-              >
-                <Mic size={16} aria-hidden />
-              </ComposerPrimitive.Dictate>
-            </ComposerPrimitive.If>
-            <ComposerPrimitive.If dictation>
-              <ComposerPrimitive.StopDictation
-                aria-label="Stop dictating"
-                title="Stop dictating"
-                className="flex items-center px-3 py-2 rounded-md border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 animate-pulse"
-              >
-                <Mic size={16} aria-hidden />
-              </ComposerPrimitive.StopDictation>
-            </ComposerPrimitive.If>
-          </>
-        )}
-        {/* One square of screen, two jobs, chosen by what is in the box
-            rather than by the run state alone. An empty composer mid-reply
-            has nothing to send, so it offers the stop; anything typed or
-            pasted is worth sending even mid-reply, because a message sent
-            then steers the turn at its next round boundary rather than
-            waiting for a runtime. Send is what that person is reaching for,
-            and clearing the box brings the stop back. */}
-        {showSend ? (
-          <ComposerPrimitive.Send
-            // Named, because the icon is the only thing in it and this square
-            // changes which button it is: somebody listening rather than
-            // looking is told what it became.
-            aria-label="Send"
-            disabled={disabled || composerEmpty}
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
-          >
-            <Send size={16} />
-          </ComposerPrimitive.Send>
-        ) : (
-          <ComposerPrimitive.Cancel
-            aria-label={stopping ? 'Stopping' : 'Stop'}
-            disabled={stopping}
-            title={
-              stopping
-                ? 'Stopping at the end of the current step'
-                : 'Stop this reply'
+        >
+        <ComposerPrimitive.Root
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}${
+            // An outline round the whole box rather than a full-pane overlay:
+            // the drop lands here, and saying so where it lands is less startling
+            // than covering the conversation to say it.
+            dragging ? ' ring-2 ring-inset ring-brand-500 rounded-md' : ''
+          }`}
+        >
+          <ComposerPrimitive.Input
+            ref={input}
+            autoFocus
+            disabled={disabled}
+            // Handled here rather than by the composer's own attachment path,
+            // which this project does not use: an image is stored as a session
+            // file and named by path, not carried along with the message.
+            addAttachmentOnPaste={false}
+            onPaste={onPaste}
+            // Nothing for a reader who may not send: the box is disabled, which
+            // says so on its own, and a placeholder explaining why is an
+            // explanation nobody asked for in the place they would have typed.
+            // The Read-only badge beside the sessions carries the reason once.
+            placeholder={
+              pasting
+                ? 'Storing the image…'
+                : readOnly
+                  ? undefined
+                  : disabled
+                    ? 'Start a session first'
+                    : 'Message the agent…'
             }
-            className="flex items-center gap-2 px-4 py-2 rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-700 text-surface-700 dark:text-surface-100 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-600 disabled:opacity-60"
-          >
-            {/* The square is the universal "stop", and it keeps spinning while
-                the request is in flight: the turn ends at its next step, not the
-                instant the button is pressed, and a control that went still
-                immediately would promise something the system cannot do. */}
-            {stopping ? <Loader size={16} className="animate-spin" /> : <Square size={16} />}
-          </ComposerPrimitive.Cancel>
-        )}
-      </ComposerPrimitive.Root>
-      </SkillMenu>
-    </ThreadPrimitive.Root>
+            className="flex-1 px-3 py-2 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 text-surface-900 dark:text-surface-100 resize-none disabled:opacity-50"
+          />
+          {dictation && (
+            <>
+              {/* The browser's speech recognition, on where the workspace
+                  allows it. Two buttons sharing one square, as send and stop
+                  do, chosen by whether it is listening. */}
+              <ComposerPrimitive.If dictation={false}>
+                <ComposerPrimitive.Dictate
+                  aria-label="Dictate"
+                  title="Dictate"
+                  disabled={disabled}
+                  className="flex items-center px-3 py-2 rounded-md border border-surface-300 dark:border-surface-600 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-700 disabled:opacity-50"
+                >
+                  <Mic size={16} aria-hidden />
+                </ComposerPrimitive.Dictate>
+              </ComposerPrimitive.If>
+              <ComposerPrimitive.If dictation>
+                <ComposerPrimitive.StopDictation
+                  aria-label="Stop dictating"
+                  title="Stop dictating"
+                  className="flex items-center px-3 py-2 rounded-md border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 animate-pulse"
+                >
+                  <Mic size={16} aria-hidden />
+                </ComposerPrimitive.StopDictation>
+              </ComposerPrimitive.If>
+            </>
+          )}
+          {/* One square of screen, two jobs, chosen by what is in the box
+              rather than by the run state alone. An empty composer mid-reply
+              has nothing to send, so it offers the stop; anything typed or
+              pasted is worth sending even mid-reply, because a message sent
+              then steers the turn at its next round boundary rather than
+              waiting for a runtime. Send is what that person is reaching for,
+              and clearing the box brings the stop back. */}
+          {showSend ? (
+            <ComposerPrimitive.Send
+              // Named, because the icon is the only thing in it and this square
+              // changes which button it is: somebody listening rather than
+              // looking is told what it became.
+              aria-label="Send"
+              disabled={disabled || composerEmpty}
+              className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
+            >
+              <Send size={16} />
+            </ComposerPrimitive.Send>
+          ) : (
+            <ComposerPrimitive.Cancel
+              aria-label={stopping ? 'Stopping' : 'Stop'}
+              disabled={stopping}
+              title={
+                stopping
+                  ? 'Stopping at the end of the current step'
+                  : 'Stop this reply'
+              }
+              className="flex items-center gap-2 px-4 py-2 rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-700 text-surface-700 dark:text-surface-100 text-sm font-medium hover:bg-surface-50 dark:hover:bg-surface-600 disabled:opacity-60"
+            >
+              {/* The square is the universal "stop", and it keeps spinning while
+                  the request is in flight: the turn ends at its next step, not the
+                  instant the button is pressed, and a control that went still
+                  immediately would promise something the system cannot do. */}
+              {stopping ? <Loader size={16} className="animate-spin" /> : <Square size={16} />}
+            </ComposerPrimitive.Cancel>
+          )}
+        </ComposerPrimitive.Root>
+        </SkillMenu>
+      </ThreadPrimitive.Root>
+    </NewSessionHref.Provider>
   )
 }

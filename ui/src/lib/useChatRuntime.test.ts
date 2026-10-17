@@ -106,11 +106,19 @@ describe('a prompt whose reply never arrives', () => {
         job_state: 'failed',
         metadata: { refused: refusal },
       }),
-      // Declined partway through: what it had said is kept, and the prompt
-      // still says it was refused.
-      message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'Let me' }),
     ]
     expect(statusOf(msgs, 'u1')).toEqual({ kind: 'refused', refusal })
+  })
+
+  it('draws a refusal after the reply it cut off, not above it', () => {
+    const refusal = { reason: 'Blocked.', category: 'cyber', model: 'm' }
+    const msgs = [
+      message({ id: 'u1', role: 'user', content: 'go', job_state: 'failed', metadata: { refused: refusal } }),
+      message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'Let me' }),
+    ]
+    const annotated = annotate(msgs, new Set(), new Map())
+    expect(annotated.find((m) => m.id === 'u1')?.status).toBeNull()
+    expect(annotated.find((m) => m.id === 'a1')?.refusal).toEqual(refusal)
   })
 })
 

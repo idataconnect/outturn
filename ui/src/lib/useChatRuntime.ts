@@ -88,6 +88,9 @@ export type Annotated = Message & {
    *  something, or is still being written. What lets the thread promise the
    *  agent "started again below" only when there is something below. */
   restarted?: boolean
+  /** On the reply a refusal cut off: the refusal, drawn after what it had
+   *  said, in place of the note that would call it interrupted. */
+  refusal?: Refusal
 }
 
 /**
@@ -252,6 +255,19 @@ export function annotate(
         (hasContent(later) || inProgress.has(later.id) || !later.finished_at),
     )
 
+  // The prompts a provider declined, and the reply each refusal cut off --
+  // its latest attempt. The card goes after what the reply had said, which is
+  // where the turn stopped; only a refusal before any reply sits on the prompt.
+  const refusedBy = new Map<string, Refusal>()
+  for (const m of messages) {
+    const refusal = m.role === 'user' ? (m.metadata?.refused as Refusal | undefined) : undefined
+    const reply = refusal ? replyFor.get(m.id) : undefined
+    if (refusal && reply && hasContent(reply)) refusedBy.set(reply.id, refusal)
+  }
+  const cutOff = new Set(
+    [...replyFor.entries()].filter(([, r]) => refusedBy.has(r.id)).map(([prompt]) => prompt),
+  )
+
   return messages.map((m) => {
     if (m.role === 'assistant') {
       return {
@@ -259,6 +275,7 @@ export function annotate(
         live: inProgress.has(m.id),
         newest: m.id === newest,
         restarted: m.metadata.interrupted === true && restarted(m),
+        refusal: refusedBy.get(m.id),
       }
     }
     if (m.role !== 'user') return m
@@ -271,7 +288,9 @@ export function annotate(
     // prompt may look answered; and its job ends `failed`, which is the least
     // true thing about it. Either check would claim it before this one.
     const refusal = m.metadata?.refused as Refusal | undefined
-    if (refusal) return { ...m, status: { kind: 'refused', refusal } }
+    if (refusal) {
+      return { ...m, status: cutOff.has(m.id) ? null : { kind: 'refused', refusal } }
+    }
 
     const reply = replyFor.get(m.id)
     // Any attempt saying something is the prompt being answered. Judging only
@@ -365,6 +384,7 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // second, unrelated one.
       interrupted: message.metadata.interrupted === true,
       restarted: message.restarted === true,
+      refusal: message.refusal ?? null,
       // What somebody decided about an approval, drawn as the boundary it is
       // rather than as speech. Stored as a `system` message because the
       // platform recorded it and the agent did not say it -- and without it a
