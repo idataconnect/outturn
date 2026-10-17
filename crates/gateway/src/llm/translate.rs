@@ -829,8 +829,6 @@ pub struct AnthropicStream {
     /// Thinking blocks being assembled, by index, until they close: the text
     /// streams in many deltas and the signature after it in one more.
     thinking: std::collections::HashMap<u32, (String, String)>,
-    /// The category a refusal was filed under, once one has been.
-    refusal_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -860,9 +858,6 @@ pub struct PartialUsage {
     /// the translation below is lossy by design and a dimension this type does
     /// not model is still there to price later.
     pub raw: serde_json::Map<String, serde_json::Value>,
-    /// What the gateway did to get this answer that a bill should know about,
-    /// kept beside the provider's own object under `outturn`.
-    pub note: Option<serde_json::Value>,
 }
 
 impl PartialUsage {
@@ -931,7 +926,6 @@ impl PartialUsage {
                 serde_json::Value::Object(self.raw.clone()),
             )]
             .into_iter()
-            .chain(self.note.clone().map(|note| ("outturn".to_string(), note)))
             .collect(),
         }
     }
@@ -940,17 +934,6 @@ impl PartialUsage {
 impl AnthropicStream {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// The category of the refusal this stream ended with, if it did.
-    pub fn refusal_category(&self) -> Option<&str> {
-        self.refusal_category.as_deref()
-    }
-
-    /// Records, on the usage every chunk carries, something the gateway did
-    /// to get this answer.
-    pub fn note(&mut self, note: serde_json::Value) {
-        self.usage.note = Some(note);
     }
 
     /// What has been learned about this call's cost so far.
@@ -1139,16 +1122,8 @@ impl AnthropicStream {
                 let stop_reason = event["delta"]["stop_reason"].as_str();
                 let reason = stop_reason.map(finish_reason_of).unwrap_or("stop");
                 self.finish_reason = Some(reason.to_string());
-                let refusal = (stop_reason == Some("refusal")).then(|| {
-                    let details = &event["delta"]["stop_details"];
-                    self.refusal_category = Some(
-                        details["category"]
-                            .as_str()
-                            .unwrap_or("unspecified")
-                            .to_string(),
-                    );
-                    refusal_of(details)
-                });
+                let refusal = (stop_reason == Some("refusal"))
+                    .then(|| refusal_of(&event["delta"]["stop_details"]));
                 Some(self.chunk(
                     Delta {
                         refusal,
