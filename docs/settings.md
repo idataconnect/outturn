@@ -28,7 +28,10 @@ agent       (Invoicer)   --                    override off: no row, inherits
 ```
 
 Resolution walks up: the agent's row, else the workspace's, else the system's,
-else the catalog default. An agent made from a template has one level more,
+else the catalog default. Three settings are about a model -- temperature,
+effort and the conversation's size -- and may also be chosen for one model at
+any level; how that cascades, and why the gateway resolves two of them, is in
+[models.md](models.md#settings-belong-to-a-model). An agent made from a template has one level more,
 and it wins over all of these: the values its template fixes
 ([agent-templates.md](agent-templates.md)). Turning an override off deletes the row, so that
 level falls back to whatever is above it. There is no "copy the default down"

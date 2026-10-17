@@ -169,9 +169,14 @@ agent     × model      Invoicer, Sonnet (Latest): --   (inherits medium)
 ```
 
 The same cascade as [settings.md](settings.md) -- agent, else workspace, else
-platform, else the model's own default -- with the model as part of the key.
-`setting_overrides` gains a `model_id`, null for settings that are not about a
-model. Which settings are model-scoped is part of the setting's catalog entry:
+platform, else the default -- with the model as part of the key, and a value
+for every model still possible at each level. Within a level the model's own
+value wins; between levels the nearer wins: agent and model, agent, workspace
+and model, workspace, platform and model, platform. A value for every model
+that one model cannot take -- a temperature, on a model that refuses one -- is
+passed over for that model, and the next value down is used.
+`setting_overrides` gains a `model_id`, nil (as `agent_id` is) for a value that
+holds for every model, which is every row that existed before. Which settings are model-scoped is part of the setting's catalog entry:
 `temperature`, `reasoning_effort` and `context_budget` are; `max_tool_rounds`,
 `session_naming` and the rest are not.
 
@@ -408,8 +413,25 @@ Each phase leaves the platform working.
      still falls to the static providers with the requested model, as an
      unrouted class always has. `traffic_routes` is kept, unread, for a
      release.
-5. **Model-scoped settings,** with the migration of today's overrides and
-   validation against the catalog.
+5. **Model-scoped settings.** Built. `?model=<id>` on the settings routes
+   reads and writes one model's values, and a value saved for one model is
+   checked against its facts (`model_settings::valid_for`); `/v1/models`
+   lists the models a workspace may choose for. Today's overrides were not
+   copied onto each model, as first planned: they stay, as values for every
+   model, which leaves the settings page working until it can name a model
+   (phase 7) and gives a model configured later the deployment's preference
+   rather than nothing.
+
+   Resolved where the model is known. The gateway resolves effort and
+   temperature per attempt (`outturn_core::model_settings`), for the agent
+   the session belongs to, so a fallback is asked with its own model's
+   values; the API no longer sends either, and what a caller names itself
+   still stands. The conversation's size is decided before any model is
+   asked, so it is the smallest budget any model on the chain resolves to --
+   a fallback to a smaller window never finds the conversation too long --
+   and prompt repetition is the first model's. A template's fixed value wins
+   wherever the model can take it. "The model's own default" is the
+   setting's: the catalog says nothing about default efforts.
 6. **Tracking "Latest"**, upgrades with validation and approval, and the
    reminders.
 7. **The UI:** the chain editor, per-model settings, then first-run setup and
