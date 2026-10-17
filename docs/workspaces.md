@@ -54,9 +54,9 @@ the organization offers its credential downward at all. With it off, a workspace
 without its own key cannot run — which is the second arrangement, and is a
 refusal rather than a surprise bill.
 
-This fits what exists. `traffic_routes.credential_ref` already names a secret
-rather than holding one, so what changes is which ref is chosen, not how
-credentials are stored or reached.
+This fits what exists. A provider account already names its key -- a
+variable or a sealed credential -- rather than holding one, so what changes
+is which account is chosen, not how credentials are stored or reached.
 
 ## Defaults, and who gets to set them
 

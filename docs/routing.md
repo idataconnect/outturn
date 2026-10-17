@@ -3,10 +3,11 @@
 Which model answers, whose key pays, and what happens when it fails. Part
 built, part designed; each section says which.
 
-Being replaced: [models.md](models.md) moves routes, their credentials and the
-models they name into a database-driven configuration of provider accounts,
-models and chains. Traffic classes, the breakers and attribution below carry
-over; `traffic_routes` and its environment-variable credentials do not.
+Replaced in part: [models.md](models.md) moved routes, their credentials and
+the models they name into provider accounts, models and chains. Traffic
+classes, the breakers and attribution below carry over, and where this says
+"route" or "row" it now means a link in a class's chain; `traffic_routes`
+itself is no longer read.
 
 ## Who this serves
 
@@ -31,7 +32,7 @@ which one paid for which call.
 
 Built. Nothing above the gateway names a model. An agent's policy names a
 *traffic type* -- `assistant` today -- and the gateway resolves it through
-`traffic_routes` to an ordered list of attempts: protocol, base URL, model,
+its chain to an ordered list of attempts: protocol, base URL, model,
 credential. A skill will name a class the same way. The workspace and the
 workspace's customers never learn which model served them unless the workspace is
 the one holding the key.

@@ -38,7 +38,7 @@ pub fn media_type(bytes: &[u8]) -> Option<&'static str> {
 
 /// The traffic type a look at an image travels under.
 ///
-/// Its own class, so which model sees is a row in `traffic_routes` rather than
+/// Its own class, so which model sees is the chain assigned to it rather than
 /// anything in code: the model holding a conversation and the model that can
 /// look at a picture need not be the same one, and on most deployments they
 /// are not.

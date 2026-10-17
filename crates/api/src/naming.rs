@@ -8,8 +8,8 @@
 //!
 //! The request goes through the gateway under its own traffic class,
 //! `session-name`, so an operator can route it to a small, cheap model with
-//! a row in `traffic_routes` rather than a deployment. Nothing here names a
-//! model: absent a route the gateway's default serves it, which is the same
+//! a chain of its own rather than a deployment. Nothing here names a
+//! model: absent a chain the gateway's default serves it, which is the same
 //! model that answered the turn.
 //!
 //! Runs in the API tier, like extraction: it is not work a turn is waiting

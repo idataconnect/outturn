@@ -164,11 +164,11 @@ not on the list is refused on either path. That is the whole of the abstraction
 paying for itself -- it is not a new policy beside an old one, it is one policy
 where there were two, and one of those two was "no policy".
 
-It also settles a question before it is asked. `traffic_routes` has a nullable
-`workspace_id`, so a workspace's own routes are already a shape the schema
-allows; nothing writes one today because routes are managed by hand. The moment
-routes get an API, a workspace pointing one at `http://outturn-api:8080` is a
-question somebody has to remember. Vetting the route path now means nobody has
+It also settles a question before it is asked. Provider accounts have a
+nullable `workspace_id`, so a workspace's own are already a shape the schema
+allows; nothing writes one today because only the operator's have an API. The
+moment a workspace's do, a workspace pointing one at `http://outturn-api:8080`
+is a question somebody has to remember. Vetting the route path now means nobody has
 to remember.
 
 **Entries are hosts as written, names or literal addresses.** A literal address

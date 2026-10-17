@@ -18,8 +18,8 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **Phases 2 to 8 of [models](models.md):** the catalog, chains and
-   per-model settings, replacing the name-matching in `ClaudeTraits`.
+1. **Phases 5 to 8 of [models](models.md):** per-model settings, tracking
+   "Latest", the chain editor and first-run setup, and Bedrock.
 
 ## Tier 1 — independent
 

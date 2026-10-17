@@ -380,9 +380,34 @@ Each phase leaves the platform working.
    worker's tick checks `OUTTURN_CATALOG_URL` weekly, conditionally, through
    the gateway, unless `OUTTURN_CATALOG_FETCH=off`; Platform → Models shows
    what is held, checks on request at most hourly, and imports a file.
-4. **Accounts, models, chains** in the database, with the migration from
-   `traffic_routes` and `OUTTURN_DEFAULT_MODEL`, and sealed provider keys.
-   The gateway reads chains; `ClaudeTraits` goes.
+4. **Accounts, models, chains.** Built. Migration 0041 gives each its table
+   and carries `traffic_routes` over -- each endpoint and credential an
+   account, each enabled row a model, each class's rows a chain in priority
+   order -- and at startup a model nobody has described takes the newest
+   catalog's entry, found by the account's host (`catalog::provider_for`).
+   The gateway walks the chain for the request's class; each link carries
+   its model's facts (`outturn_core::facts`), which replace `ClaudeTraits`:
+   sampling, the output limit and the effort levels from the catalog, and
+   adaptive thinking and `block_binding` as the Claude family's defaults by
+   release date, since the catalog does not say them and Opus 4.5 lists
+   effort levels but thinks by budget. An account's key is a variable in the
+   gateway's environment or sealed as a `provider` key -- a seal kind the
+   egress path refuses, so a platform key cannot be attached to an agent's
+   request -- bound to the account's host; `outturn-seal --provider` makes
+   one. The operator configures all of it under `/v1/platform`.
+
+   Left for later, and why:
+
+   - **A workspace's own** accounts, models and chains: the schema has them,
+     the API waits on who may configure them (*Open questions*).
+   - **An agent naming a chain**, which replaces `policy.model`: an agent can
+     already name a traffic class, and a class can be given any chain, so
+     nothing is lost meanwhile.
+   - **`OUTTURN_DEFAULT_MODEL`** and the gateway's static providers stay
+     until first-run setup (phase 7) can replace them. A class with no chain
+     still falls to the static providers with the requested model, as an
+     unrouted class always has. `traffic_routes` is kept, unread, for a
+     release.
 5. **Model-scoped settings,** with the migration of today's overrides and
    validation against the catalog.
 6. **Tracking "Latest"**, upgrades with validation and approval, and the
@@ -419,7 +444,6 @@ Each phase leaves the platform working.
 
 ## Open questions
 
-- **Credentials:** sealed in the database by default, as above -- to confirm.
 - **Bedrock:** Invoke is the way in, and is begun with API keys. Whether AWS
   request signing is needed before the recipe is offered, or API keys are
   enough to start.

@@ -13,7 +13,7 @@ Two things spoil it.
 
 **Every route in a chain must be able to see.** A fallback that drops to a
 text-only model does not degrade, it breaks: the conversation contains
-something the model cannot read. `traffic_routes` exists to make failover
+something the model cannot read. Chains exist to make failover
 routine, and this would make it dangerous.
 
 **A pass over an image is directed.** Asking "what is in this screenshot" and
@@ -50,7 +50,7 @@ to know about it". The second is what a directed pass needs, and it is what
 makes asking twice sensible rather than redundant.
 
 **The model is a routing decision.** The call goes out under the `vision`
-traffic type, so which model serves it is a row in `traffic_routes` rather than
+traffic type, so which model serves it is the chain assigned to that class rather than
 anything in code -- an operator on qwen3.8 locally, a workspace pointing at
 something else, the same cascade as everything. A deployment with no vision
 route configured gets a refusal that says so, rather than a model being asked
