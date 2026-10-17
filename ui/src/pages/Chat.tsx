@@ -32,6 +32,7 @@ import { useSession } from '../lib/session'
 import { startedByPhrase } from '../lib/triggers'
 import TriggerIcon from '../components/TriggerIcon'
 import { ConversationVerdicts, FeedbackProvider } from '../components/Feedback'
+import { ModelChangesProvider } from '../components/ModelChange'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 import { iconButtonLarge } from '../lib/buttons'
@@ -413,6 +414,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
 
   return (
     <FeedbackProvider sessionId={active ?? null}>
+    <ModelChangesProvider sessionId={active ?? null}>
       <div className="flex h-full relative">
         <aside
           className={`${sessionsOpen ? 'flex' : 'hidden'} flex-col ${
@@ -719,6 +721,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
 
         {active && <SidePane tabs={paneTabs} storageKey="chat.pane" />}
       </div>
+    </ModelChangesProvider>
     </FeedbackProvider>
   )
 }

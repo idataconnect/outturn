@@ -8,6 +8,7 @@ import {
 } from '@assistant-ui/react'
 import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
+import { ReplyModelChange } from './ModelChange'
 import TriggerIcon from './TriggerIcon'
 import type { StartedBy } from '../lib/chat'
 import { Link } from 'react-router'
@@ -537,6 +538,7 @@ function AssistantMessage() {
             click, and a verdict here asks first what it is about. */}
         <ReplyThumbs shown={shown} />
       </div>
+      <ReplyModelChange />
       <ReplyFeedback />
       {/* Kept mounted after the turn ends so the mark can finish: it draws its
           dots together into a line rather than vanishing, which is what
