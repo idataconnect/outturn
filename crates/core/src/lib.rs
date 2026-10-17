@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod breaker;
+pub mod catalog;
 pub mod db;
 pub mod egress;
 pub mod events;

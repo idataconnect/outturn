@@ -1812,6 +1812,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/settings/{key}",
             axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
         )
+        .route("/v1/platform/catalog", get(super::catalog::view))
         .route(
             "/v1/platform/skills",
             post(super::skills::create_platform_skill),

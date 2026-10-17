@@ -26,6 +26,8 @@ COPY wit/ wit/
 # The agent component the runtime executes. Committed as a build artifact so
 # the image does not need the wasm toolchain.
 COPY assets/agent_default.wasm /agent_default.wasm
+# The model catalog the API starts from, compiled into the core crate.
+COPY assets/catalog.json.gz assets/catalog.json.gz
 # `release` unless told otherwise; local development asks for `local`, which
 # keeps incremental compilation and skips LTO (Cargo.toml says why).
 ARG PROFILE=release

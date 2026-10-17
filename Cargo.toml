@@ -57,6 +57,8 @@ hex = "0.4"
 base64 = "0.22"
 # Checksums in the frames of AWS's event stream, which Bedrock streams in.
 crc32fast = "1.5.1"
+# The model catalog ships gzipped in the image (crates/core/src/catalog.rs).
+flate2 = "1.1.10"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 # fail-on-err is in the crate's default set and default-features = false had
@@ -89,6 +91,7 @@ description = "A fast and secure foundation for building and running agent platf
 doctest = false
 
 [dependencies]
+flate2 = { workspace = true }
 outturn-core = { path = "crates/core" }
 outturn-api = { path = "crates/api" }
 outturn-gateway = { path = "crates/gateway" }
@@ -212,6 +215,10 @@ required-features = ["slow-tests"]
 [[test]]
 name = "provider_live"
 required-features = ["live-providers"]
+
+[[bin]]
+name = "outturn-catalog"
+path = "src/bin/outturn-catalog.rs"
 
 [[bin]]
 name = "outturn-seal"

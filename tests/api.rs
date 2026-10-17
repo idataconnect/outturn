@@ -11872,3 +11872,78 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
     );
     assert_eq!(shown["url"], "http://x.example/charges");
 }
+
+/// A deployment holds a catalog from its first start, with nothing outside
+/// reachable: the one the release shipped. Starting again keeps no second
+/// copy of it, and only the operator sees what is held.
+#[tokio::test]
+async fn a_deployment_starts_with_the_shipped_catalog() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h.get("/v1/platform/catalog", Some(&operator)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let held: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(held["source"], "shipped");
+    assert_eq!(held["snapshots"], 1, "started twice, kept twice: {body}");
+    assert!(held["models"].as_u64().unwrap() > 1000, "{body}");
+
+    let admin = h
+        .login_as("a@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, _) = h.get("/v1/platform/catalog", Some(&admin)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A catalog arriving as a file is kept as a snapshot like any other, and
+/// one that says nothing new is not kept again.
+#[tokio::test]
+async fn a_catalog_is_kept_only_when_it_says_something_new() {
+    let h = harness_or_skip!();
+    let pool = &h.db.pool;
+    let one = outturn::catalog::read(
+        br#"{"acme-ai": {"name": "Acme AI", "models": {"m1": {"name": "M1", "cost": {"input": 1}}}}}"#,
+    )
+    .unwrap();
+    assert!(
+        outturn::api::catalog::keep(pool, "file:/etc/catalog.json", None, &one)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        outturn::api::catalog::keep(pool, "https://example.com/api.json", Some("\"e1\""), &one)
+            .await
+            .unwrap()
+            .is_none(),
+        "the same catalog was kept twice"
+    );
+    let two = outturn::catalog::read(
+        br#"{"acme-ai": {"name": "Acme AI", "models": {"m1": {"name": "M1"}, "m2": {"name": "M2"}}}}"#,
+    )
+    .unwrap();
+    assert!(
+        outturn::api::catalog::keep(pool, "https://example.com/api.json", Some("\"e2\""), &two)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let stored: Value =
+        sqlx::query_scalar("select models from catalog_snapshots order by fetched_at desc limit 1")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(
+        stored["acme-ai"]["models"]["m1"].get("cost").is_none(),
+        "price was kept: {stored}"
+    );
+}

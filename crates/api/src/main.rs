@@ -62,6 +62,9 @@ async fn main() {
 
     // The API owns the schema: it is the only service that migrates.
     db::migrate(&pool).await.expect("migrations");
+    // Before anything could ask which models exist: a deployment always holds
+    // a catalog, from its first start and with nothing outside reachable.
+    outturn_api::catalog::at_startup(&pool).await;
     tracing::info!("migrations applied");
 
     let workspaces: Arc<dyn WorkspaceStore> = Arc::new(PostgresWorkspaceStore::new(pool.clone()));
