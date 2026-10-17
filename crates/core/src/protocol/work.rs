@@ -296,3 +296,32 @@ pub struct SignedReply {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub calls: std::collections::HashMap<String, String>,
 }
+
+#[cfg(test)]
+mod refusal_wire {
+    use super::*;
+
+    /// What a runtime posts is what the API reads, refusal and all.
+    #[test]
+    fn a_refusal_survives_the_wire() {
+        let sent = ExecuteEvent::Failed {
+            message: "declined".into(),
+            held: None,
+            terminal: true,
+            refusal: Some(Refusal {
+                reason: "declined".into(),
+                category: Some("reasoning_extraction".into()),
+                model: Some("m".into()),
+            }),
+        };
+        let line = serde_json::to_string(&sent).unwrap();
+        let ExecuteEvent::Failed { refusal, .. } = serde_json::from_str(&line).unwrap() else {
+            panic!("{line}")
+        };
+        assert_eq!(
+            refusal.unwrap().category.as_deref(),
+            Some("reasoning_extraction"),
+            "{line}"
+        );
+    }
+}

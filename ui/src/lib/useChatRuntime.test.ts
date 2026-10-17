@@ -91,6 +91,27 @@ describe('a prompt whose reply never arrives', () => {
     ]
     expect(statusOf(msgs, 'u1')).toEqual({ kind: 'failed', message: 'the turn failed' })
   })
+
+  it('reports a refusal as a refusal, not as the failure its job records', () => {
+    const refusal = {
+      reason: 'This request was blocked.',
+      category: 'reasoning_extraction',
+      model: 'claude-sonnet-5-5',
+    }
+    const msgs = [
+      message({
+        id: 'u1',
+        role: 'user',
+        content: 'why?',
+        job_state: 'failed',
+        metadata: { refused: refusal },
+      }),
+      // Declined partway through: what it had said is kept, and the prompt
+      // still says it was refused.
+      message({ id: 'a1', role: 'assistant', replies_to: 'u1', content: 'Let me' }),
+    ]
+    expect(statusOf(msgs, 'u1')).toEqual({ kind: 'refused', refusal })
+  })
 })
 
 describe('quoting a passage out of a reply', () => {

@@ -705,6 +705,7 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                 readOnly={!!active && !canSend}
                 skills={skills}
                 onRetry={retry}
+                newSessionHref={current ? `/sessions/new?agent=${current.agent_id}` : undefined}
                 stopping={stopping}
                 focusRequest={focusRequest}
                 sessionId={active}

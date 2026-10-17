@@ -51,6 +51,20 @@ export type MessageStatus =
    *  owed an explanation rather than a spinner that never stops. */
   | { kind: 'silent' }
   | { kind: 'failed'; message: string }
+  /** The model's provider declined to answer: its safety checks tripped. Not
+   *  a failure, and not drawn as one -- trying again gets the same answer,
+   *  and what helps is a conversation that does not have this one in it. */
+  | { kind: 'refused'; refusal: Refusal }
+
+/** A provider declining to answer, as the API keeps it on the prompt. */
+export type Refusal = {
+  /** The provider's own sentence about why. */
+  reason: string
+  /** What it filed the refusal under, where it said. */
+  category?: string | null
+  /** The model that declined. */
+  model?: string | null
+}
 
 /** An approval waiting on somebody, as the held event named it. */
 export type PendingApproval = {
@@ -252,6 +266,12 @@ export function annotate(
     if (m.absorbed_by) {
       return { ...m, status: inProgress.has(m.absorbed_by) ? { kind: 'absorbed' } : null }
     }
+
+    // First of all. A refusal can come after the reply has begun, so the
+    // prompt may look answered; and its job ends `failed`, which is the least
+    // true thing about it. Either check would claim it before this one.
+    const refusal = m.metadata?.refused as Refusal | undefined
+    if (refusal) return { ...m, status: { kind: 'refused', refusal } }
 
     const reply = replyFor.get(m.id)
     // Any attempt saying something is the prompt being answered. Judging only
@@ -1204,11 +1224,22 @@ export function useChatRuntime(
 
           const failed = result.events.find((e) => e.kind === 'chat.error')
           if (failed) {
-            const { message, message_id } = failed.payload as {
+            const { message, message_id, refusal } = failed.payload as {
               message: string
               message_id?: string
+              refusal?: Refusal
             }
-            setError(message)
+            // Kept where a reload finds it, on the prompt, and shown there
+            // rather than as an error: nothing is broken.
+            if (refusal && message_id) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === message_id ? { ...m, metadata: { ...m.metadata, refused: refusal } } : m,
+                ),
+              )
+            } else {
+              setError(message)
+            }
             setSending(false)
             setStopping(false)
             if (message_id) {

@@ -94,6 +94,11 @@ struct Config {
     /// reached the model: a test can assert on the database afterwards and
     /// still be asserting on its own idea of what was sent.
     log_bodies: bool,
+    /// Declines every streamed reply after its text, as a provider's safety
+    /// checks do, filed under this category. Unset or empty, it never does:
+    /// a real refusal cannot be had on demand, and the card that shows one is
+    /// worth seeing without trying to trip a real classifier.
+    refuse: Option<String>,
 }
 
 impl Config {
@@ -112,6 +117,7 @@ impl Config {
             hang_rate: num("MOCK_HANG_RATE", 0.0),
             tool_calls: num::<u8>("MOCK_TOOL_CALLS", 1) != 0,
             log_bodies: num::<u8>("MOCK_LOG_BODIES", 0) != 0,
+            refuse: std::env::var("MOCK_REFUSE").ok().filter(|c| !c.is_empty()),
         }
     }
 }
@@ -507,6 +513,7 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
     }
 
     let per_token = Duration::from_secs_f64(1.0 / state.config.tokens_per_sec.max(1.0));
+    let refuse = state.config.refuse.clone();
     let guard_state = Arc::clone(&state);
     let stream = async_stream::stream! {
         let mut guard = StreamGuard::new(&guard_state);
@@ -528,9 +535,17 @@ async fn completions(State(state): State<Arc<AppState>>, Json(req): Json<ChatReq
                     "choices": [{"index": 0, "delta": {"content": word}}]
                 })));
             }
-            yield Ok(sse(&serde_json::json!({
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
-            })));
+            match &refuse {
+                Some(category) => yield Ok(sse(&serde_json::json!({
+                    "choices": [{"index": 0, "delta": {
+                        "refusal": "This request was declined by the mock model's pretend safety checks.",
+                        "refusal_category": category,
+                    }, "finish_reason": "content_filter"}]
+                }))),
+                None => yield Ok(sse(&serde_json::json!({
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                }))),
+            }
         }
         // After `finish_reason`, not on it. A stream cut before this point
         // carries no usage at all, which is the case worth being able to test.
@@ -1327,6 +1342,7 @@ mod tests {
                 hang_rate: 0.0,
                 tool_calls: true,
                 log_bodies: false,
+                refuse: None,
             },
             metrics: Metrics::default(),
             seen: Mutex::new(HashMap::new()),

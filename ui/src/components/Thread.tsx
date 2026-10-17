@@ -10,6 +10,7 @@ import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import TriggerIcon from './TriggerIcon'
 import type { StartedBy } from '../lib/chat'
+import { Link } from 'react-router'
 import {
   Check,
   CircleSlash,
@@ -22,6 +23,7 @@ import {
   Quote,
   RotateCw,
   Send,
+  ShieldAlert,
   Square,
   X,
 } from 'lucide-react'
@@ -30,7 +32,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 
 import { useMessageAge } from '../lib/useMessageAge'
-import type { MessageStatus } from '../lib/useChatRuntime'
+import type { MessageStatus, Refusal } from '../lib/useChatRuntime'
 import MarkdownText, { UserMarkdownText } from './MarkdownText'
 import MessageAge from './MessageAge'
 import Reasoning from './Reasoning'
@@ -101,7 +103,76 @@ function heldLabel(status: MessageStatus): string | null {
  * on its own, and a refresh retried it once by accident rather than because
  * anybody asked. Choosing when to try again is the reader's to make.
  */
-function StatusLine({ status, onRetry }: { status: MessageStatus; onRetry?: () => void }) {
+/**
+ * A turn the model's provider declined. A card rather than the red failure
+ * line: nothing broke, trying again would be declined the same way, and what
+ * usually helps -- a conversation without this one in it -- is one click away.
+ * The provider's own words and category are there for whoever wants them.
+ */
+function RefusalCard({
+  refusal,
+  newSessionHref,
+}: {
+  refusal: Refusal
+  newSessionHref?: string
+}) {
+  return (
+    <div
+      role="status"
+      className="mt-2 w-full max-w-md self-end rounded-lg border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-surface-800 dark:text-surface-100"
+    >
+      <p className="flex items-start gap-2">
+        <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+        <span>
+          This conversation tripped the model's safety checks. It may be a false positive;
+          starting a new session usually clears it.
+        </span>
+      </p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <details className="text-xs text-surface-600 dark:text-surface-400">
+          <summary className="cursor-pointer select-none">Details</summary>
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            {refusal.category && (
+              <>
+                <dt className="text-surface-500">Category</dt>
+                <dd className="font-mono">{refusal.category}</dd>
+              </>
+            )}
+            {refusal.model && (
+              <>
+                <dt className="text-surface-500">Model</dt>
+                <dd className="font-mono">{refusal.model}</dd>
+              </>
+            )}
+            <dt className="text-surface-500">Reason</dt>
+            <dd>{refusal.reason}</dd>
+          </dl>
+        </details>
+        {newSessionHref && (
+          <Link
+            to={newSessionHref}
+            className="shrink-0 self-start rounded-md bg-amber-600 hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-400 px-3 py-1.5 text-xs font-medium text-white dark:text-surface-950"
+          >
+            New session
+          </Link>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StatusLine({
+  status,
+  onRetry,
+  newSessionHref,
+}: {
+  status: MessageStatus
+  onRetry?: () => void
+  newSessionHref?: string
+}) {
+  if (status.kind === 'refused') {
+    return <RefusalCard refusal={status.refusal} newSessionHref={newSessionHref} />
+  }
   if (status.kind === 'failed') {
     return (
       // Wrapped in an alert rather than left as a button somebody has to
@@ -180,7 +251,13 @@ function describe(status: MessageStatus): {
   }
 }
 
-function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
+function UserMessage({
+  onRetry,
+  newSessionHref,
+}: {
+  onRetry?: (messageId: string) => void
+  newSessionHref?: string
+}) {
   const status = useAuiState(
     (s) => (s.message.metadata.custom?.status as MessageStatus | null | undefined) ?? null,
   )
@@ -228,6 +305,7 @@ function UserMessage({ onRetry }: { onRetry?: (messageId: string) => void }) {
         <StatusLine
           status={status}
           onRetry={onRetry && id ? () => onRetry(id) : undefined}
+          newSessionHref={newSessionHref}
         />
       )}
       {/* In flight, the mark goes to the left instead: it is the same mark the
@@ -487,6 +565,7 @@ export default function Thread({
   takeAttachments,
   skills = [],
   onRetry,
+  newSessionHref,
 }: {
   disabled?: boolean
   /** There is a session, but this reader may not say anything in it. Told
@@ -517,6 +596,9 @@ export default function Thread({
    *  is what makes the mark change under the hand that pressed the button,
    *  rather than a poll cycle later. */
   onRetry?: (messageId: string) => void
+  /** Where a new conversation with this agent starts, offered when one is
+   *  what would help -- after a refusal. */
+  newSessionHref?: string
 }) {
   // `autoFocus` only speaks for the first mount, and the thread outlives
   // every change of session -- so a session chosen from the sidebar left
@@ -722,9 +804,9 @@ export default function Thread({
   // a new component identity each time this one renders.
   const UserMessageWithRetry = useMemo(
     () => function Bound() {
-      return <UserMessage onRetry={onRetry} />
+      return <UserMessage onRetry={onRetry} newSessionHref={newSessionHref} />
     },
-    [onRetry],
+    [onRetry, newSessionHref],
   )
 
   return (

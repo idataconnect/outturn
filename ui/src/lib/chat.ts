@@ -137,6 +137,10 @@ export type Message = {
      *  lease reaped -- and started again. What it streamed is kept, because the
      *  reader watched it happen; the attempt after it is the answer. */
     interrupted?: boolean
+    /** Present on a prompt the model's provider declined to answer: its
+     *  safety checks tripped. Kept here so a reload shows the same card the
+     *  live event did. */
+    refused?: { reason: string; category?: string | null; model?: string | null }
     /** Present when this message records somebody answering an approval.
      *  Drawn as a boundary rather than as speech: the agent did not say it,
      *  the platform recorded what a person decided. */
@@ -256,7 +260,15 @@ export type ChatEvent =
   | { id: string; kind: 'chat.steer'; payload: { message_id: string; id: string } }
   | { id: string; kind: 'chat.done'; payload: { message_id: string } }
   /** The turn failed. `message_id` names the user message it was answering. */
-  | { id: string; kind: 'chat.error'; payload: { message: string; message_id?: string } }
+  | {
+      id: string
+      kind: 'chat.error'
+      payload: {
+        message: string
+        message_id?: string
+        refusal?: { reason: string; category?: string | null; model?: string | null }
+      }
+    }
   /** The turn did not run because something is holding it. Not an error: a
    *  failure is retried and a stop is not, and a reader shown an error for a
    *  deliberate pause is told the system broke. `resumable` is true when the
