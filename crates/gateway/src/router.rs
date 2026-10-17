@@ -502,6 +502,89 @@ fn model_circuit(provider: &Arc<dyn LlmProvider>, model: &str) -> String {
 /// absorbed it.
 const REPLY_HEADER: &str = "x-outturn-reply";
 
+/// The model a chain tried first, and why it was passed over, so a reply
+/// answered by another can say so (`reply_fallbacks`).
+#[derive(Default)]
+struct Passed {
+    first: Option<(Option<uuid::Uuid>, String)>,
+    why: Option<&'static str>,
+}
+
+impl Passed {
+    fn trying(&mut self, attempt: &Attempt, model: &str) {
+        if self.first.is_none() {
+            self.first = Some((attempt.model_id, model.to_string()));
+        }
+    }
+
+    /// Why a model was passed over, as a clause after its name. The first
+    /// reason is the one kept: it is what moved the request off the first.
+    fn because(&mut self, why: &'static str) {
+        self.why.get_or_insert(why);
+    }
+
+    /// Records the change on the reply, when the model that answered is not
+    /// the one tried first. Only on a reply of the token's own session: the
+    /// reply id is the runtime's word, and a reply elsewhere is not its to
+    /// annotate.
+    async fn record(
+        &self,
+        state: &GatewayState,
+        headers: &axum::http::HeaderMap,
+        session: uuid::Uuid,
+        served: &Attempt,
+        model: &str,
+    ) {
+        let (Some(pool), Some(reply), Some((first_id, first))) =
+            (&state.health, reply_id(headers), &self.first)
+        else {
+            return;
+        };
+        if first == model {
+            return;
+        }
+        let result = sqlx::query(
+            "insert into reply_fallbacks (reply_id, session_id, configured_model, configured_name, \
+                 served_model, served_name, reason) \
+             select $1, $2, $3, (select name from models where id = $4), \
+                    $5, (select name from models where id = $6), $7 \
+             where exists (select 1 from agent_messages where id = $1 and session_id = $2) \
+             on conflict (reply_id) do nothing",
+        )
+        .bind(reply)
+        .bind(session)
+        .bind(first)
+        .bind(*first_id)
+        .bind(model)
+        .bind(served.model_id)
+        .bind(self.why.unwrap_or("was unavailable"))
+        .execute(pool)
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not record that a reply changed model");
+        }
+    }
+}
+
+/// Why a model's failure moved the request along, as a clause.
+fn passed_because(e: &ProviderError) -> &'static str {
+    if e.is_model_gone() {
+        "is no longer offered"
+    } else if matches!(e, ProviderError::RateLimited)
+        || matches!(
+            e,
+            ProviderError::Upstream {
+                status: Some(429),
+                ..
+            }
+        )
+    {
+        "was rate limited"
+    } else {
+        "was unavailable"
+    }
+}
+
 fn reply_id(headers: &axum::http::HeaderMap) -> Option<uuid::Uuid> {
     headers
         .get(REPLY_HEADER)
@@ -580,6 +663,7 @@ async fn chat_completions(
     let mut last_error = None;
     let traffic = traffic_type(&headers);
 
+    let mut passed = Passed::default();
     for attempt in state
         .attempts(claims.workspace_id, &traffic, turn_began(&headers))
         .await
@@ -590,7 +674,9 @@ async fn chat_completions(
             .as_deref()
             .unwrap_or(&request.model)
             .to_string();
+        passed.trying(&attempt, &model);
         if !state.admits(provider, &model).await {
+            passed.because("has been failing, and is being rested");
             continue;
         }
 
@@ -608,6 +694,9 @@ async fn chat_completions(
         match provider.chat_completion(&request).await {
             Ok(response) => {
                 state.observe(provider, &model, caller, Ok(())).await;
+                passed
+                    .record(&state, &headers, claims.subject, &attempt, &model)
+                    .await;
                 // The same two the streamed path sets. A caller that does not
                 // stream still has to write a ledger row, and it cannot name
                 // the endpoint it reached or who paid for it from the body.
@@ -638,6 +727,7 @@ async fn chat_completions(
                 // A model that is gone is this route's failure, not the
                 // request's: the next route may have one that is not.
                 let fatal = e.is_client_error() && !e.is_model_gone();
+                passed.because(passed_because(&e));
                 last_error = Some(e);
                 if fatal {
                     break;
@@ -805,6 +895,7 @@ async fn chat_completions_stream(
 
     let mut last_error = None;
 
+    let mut passed = Passed::default();
     for attempt in state
         .attempts(claims.workspace_id, &traffic, turn_began(&headers))
         .await
@@ -815,7 +906,9 @@ async fn chat_completions_stream(
             .as_deref()
             .unwrap_or(&request.model)
             .to_string();
+        passed.trying(&attempt, &model);
         if !state.admits(provider, &model).await {
+            passed.because("has been failing, and is being rested");
             continue;
         }
 
@@ -850,6 +943,9 @@ async fn chat_completions_stream(
                 // the body is handed to the caller and this scope ends -- so
                 // the breaker measures reachability, not completion.
                 state.observe(provider, &model, caller, Ok(())).await;
+                passed
+                    .record(&state, &headers, claims.subject, &attempt, &model)
+                    .await;
                 let body = chunks.map(|chunk| match chunk {
                     Ok(chunk) => serde_json::to_string(&chunk)
                         .map(|mut line| {
@@ -886,6 +982,7 @@ async fn chat_completions_stream(
                 // A model that is gone is this route's failure, not the
                 // request's: the next route may have one that is not.
                 let fatal = e.is_client_error() && !e.is_model_gone();
+                passed.because(passed_because(&e));
                 last_error = Some(e);
                 if fatal {
                     break;

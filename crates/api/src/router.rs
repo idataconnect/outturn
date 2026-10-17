@@ -1693,6 +1693,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // A person's verdict on a reply or on the whole conversation, under
         // the right to read it.
         .route(
+            "/v1/agent-sessions/{id}/model-changes",
+            get(super::model_changes::list),
+        )
+        .route(
             "/v1/agent-sessions/{id}/feedback",
             get(super::feedback::list)
                 .put(super::feedback::give)

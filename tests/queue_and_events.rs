@@ -4564,6 +4564,16 @@ async fn seal_provider_key(
 
 /// Asks the gateway for one completion as `workspace`, and says how it went.
 async fn ask_gateway(pool: &PgPool, workspace: Uuid) -> u16 {
+    ask_gateway_for(pool, workspace, Uuid::now_v7(), None).await
+}
+
+/// As `ask_gateway`, as a turn of `session` writing `reply`.
+async fn ask_gateway_for(
+    pool: &PgPool,
+    workspace: Uuid,
+    session: Uuid,
+    reply: Option<Uuid>,
+) -> u16 {
     use tower::ServiceExt;
     let seed = [12u8; 32];
     let validator = outturn::auth::TokenValidator::new(
@@ -4574,7 +4584,7 @@ async fn ask_gateway(pool: &PgPool, workspace: Uuid) -> u16 {
     let token = outturn::auth::TokenMinter::new(&seed)
         .expect("minter")
         .mint_turn(
-            Uuid::now_v7(),
+            session,
             workspace,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace),
@@ -4587,8 +4597,12 @@ async fn ask_gateway(pool: &PgPool, workspace: Uuid) -> u16 {
                 .with_keys(outturn::egress::seal::Keys::parse(SEAL_KEY).unwrap()),
         )
         .with_health(pool.clone());
-    let request = axum::http::Request::post("/v1/chat/completions")
-        .header("authorization", format!("Bearer {token}"))
+    let mut request = axum::http::Request::post("/v1/chat/completions")
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(reply) = reply {
+        request = request.header("x-outturn-reply", reply.to_string());
+    }
+    let request = request
         .header("content-type", "application/json")
         .body(axum::body::Body::from(
             r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
@@ -4780,6 +4794,82 @@ async fn a_turn_finishes_on_the_version_it_began_on() {
     };
     assert_eq!(asked(moved - chrono::Duration::seconds(5)).await, "old");
     assert_eq!(asked(moved + chrono::Duration::seconds(5)).await, "new");
+
+    finish!(db);
+}
+
+/// A reply answered by the chain's second model, because the first was
+/// unavailable, says so: the gateway records which model was tried first,
+/// which answered, and why, against the reply -- and only against a reply in
+/// the session the token is for.
+#[tokio::test]
+async fn a_reply_answered_by_a_fallback_says_which_and_why() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (down, _) = body_recorder(503).await;
+    let (up, _) = body_recorder(200).await;
+    add_route(pool, None, "assistant", 10, &down, "primary").await;
+    add_route(pool, None, "assistant", 20, &up, "fallback").await;
+    let (session, store) = streamed_session(pool, workspace).await;
+    let reply = store
+        .append_message(
+            session,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("reply")
+        .id;
+
+    assert_eq!(
+        ask_gateway_for(pool, workspace, session, Some(reply)).await,
+        200
+    );
+    let recorded: (String, String, String) = sqlx::query_as(
+        "select configured_model, served_model, reason from reply_fallbacks where reply_id = $1",
+    )
+    .bind(reply)
+    .fetch_one(pool)
+    .await
+    .expect("a recorded change");
+    assert_eq!(
+        recorded,
+        (
+            "primary".into(),
+            "fallback".into(),
+            "was unavailable".into()
+        )
+    );
+
+    // A reply in another session is not this turn's to annotate.
+    let (elsewhere, other_store) = streamed_session(pool, workspace).await;
+    let theirs = other_store
+        .append_message(
+            elsewhere,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("reply")
+        .id;
+    assert_eq!(
+        ask_gateway_for(pool, workspace, session, Some(theirs)).await,
+        200
+    );
+    let count: i64 = sqlx::query_scalar("select count(*) from reply_fallbacks where reply_id = $1")
+        .bind(theirs)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
 
     finish!(db);
 }

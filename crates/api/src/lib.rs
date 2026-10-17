@@ -20,6 +20,7 @@ pub mod gated;
 pub mod grant;
 pub mod inhibitor;
 mod login;
+mod model_changes;
 mod models;
 pub mod naming;
 pub mod role;
