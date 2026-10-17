@@ -1825,6 +1825,35 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             post(super::catalog::refresh),
         )
         .route(
+            "/v1/platform/models",
+            get(super::models::view).post(super::models::create_model),
+        )
+        .route(
+            "/v1/platform/models/{id}",
+            axum::routing::patch(super::models::update_model).delete(super::models::delete_model),
+        )
+        .route(
+            "/v1/platform/provider-accounts",
+            post(super::models::create_account),
+        )
+        .route(
+            "/v1/platform/provider-accounts/{id}",
+            axum::routing::delete(super::models::delete_account),
+        )
+        .route(
+            "/v1/platform/provider-accounts/{id}/key",
+            axum::routing::put(super::models::seal_account_key),
+        )
+        .route("/v1/platform/chains", post(super::models::create_chain))
+        .route(
+            "/v1/platform/chains/{id}",
+            axum::routing::put(super::models::update_chain).delete(super::models::delete_chain),
+        )
+        .route(
+            "/v1/platform/chain-assignments/{traffic_type}",
+            axum::routing::put(super::models::assign).delete(super::models::unassign),
+        )
+        .route(
             "/v1/platform/skills",
             post(super::skills::create_platform_skill),
         )

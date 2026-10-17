@@ -12053,3 +12053,204 @@ async fn an_operator_imports_a_catalog_file() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The operator configures where the platform's traffic goes: an account,
+/// a model the catalog describes and one it does not, a chain of both, and
+/// the class that walks it. A model the catalog lacks is refused until it is
+/// described, a model in use is not deleted, and nobody else may do any of it.
+#[tokio::test]
+async fn the_operator_configures_accounts_models_and_chains() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, admin) = template_people(&h).await;
+    let json = |body: &str| -> Value { serde_json::from_str(body).unwrap() };
+
+    let (status, _) = h.get("/v1/platform/models", Some(&admin)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"Anthropic","protocol":"anthropic","base_url":"https://api.anthropic.com","credential_env":"ANTHROPIC_API_KEY"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let account = json(&body)["id"].as_str().unwrap().to_string();
+    let (status, _) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"x","protocol":"smoke-signals","base_url":"https://x.example.com"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let model = |name: &str, facts: Option<Value>| {
+        let mut body = serde_json::json!({"account_id": account, "model": name});
+        if let Some(facts) = facts {
+            body["facts"] = facts;
+        }
+        body.to_string()
+    };
+    let (status, body) = h
+        .post(
+            "/v1/platform/models",
+            Some(&operator),
+            &model("claude-sonnet-5-5", None),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let sonnet = json(&body);
+    assert_eq!(sonnet["name"], "Claude Sonnet 5.5");
+    assert_eq!(sonnet["catalog_provider"], "anthropic");
+    assert_eq!(sonnet["facts"]["temperature"], false);
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/models",
+            Some(&operator),
+            &model("claude-unheard-of", None),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let described = serde_json::json!({"limit": {"output": 16000}, "temperature": true});
+    let (status, body) = h
+        .post(
+            "/v1/platform/models",
+            Some(&operator),
+            &model("claude-unheard-of", Some(described)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let unheard = json(&body);
+    assert!(unheard["catalog_provider"].is_null());
+
+    let chain_body = serde_json::json!({
+        "name": "assistant",
+        "models": [sonnet["id"], unheard["id"]],
+    })
+    .to_string();
+    let (status, body) = h
+        .post("/v1/platform/chains", Some(&operator), &chain_body)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let chain = json(&body)["id"].as_str().unwrap().to_string();
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        "/v1/platform/chain-assignments/assistant",
+        &operator,
+        &serde_json::json!({"chain_id": chain}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = h.get("/v1/platform/models", Some(&operator)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let held = json(&body);
+    assert_eq!(
+        held["chains"][0]["models"],
+        serde_json::json!([sonnet["id"], unheard["id"]])
+    );
+    assert_eq!(held["assignments"]["assistant"], chain.as_str());
+
+    let (status, _) = send_as(
+        &h,
+        "DELETE",
+        &format!("/v1/platform/models/{}", sonnet["id"].as_str().unwrap()),
+        &operator,
+        "",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a model in a chain was deleted"
+    );
+}
+
+/// An account's key is sealed as a provider key, for every workspace, to the
+/// account's host alone; sealing it replaces the environment variable.
+#[tokio::test]
+async fn an_accounts_key_is_sealed_for_its_host_alone() {
+    use base64::Engine as _;
+    use outturn::egress::seal;
+
+    let h = harness_or_skip!();
+    let (_acme, operator, _admin) = template_people(&h).await;
+    let (_, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"Anthropic","protocol":"anthropic","base_url":"https://api.anthropic.com","credential_env":"ANTHROPIC_API_KEY"}"#,
+        )
+        .await;
+    let account: Value = serde_json::from_str(&body).unwrap();
+    let uri = format!(
+        "/v1/platform/provider-accounts/{}/key",
+        account["id"].as_str().unwrap()
+    );
+
+    let public = seal::public_of(SEAL_KEY).unwrap();
+    let id = Uuid::now_v7();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let sealed_for = |binding: Value| {
+        let binding = serde_json::to_vec(&binding).unwrap();
+        let sealed = seal::seal(&public, &binding, b"sk-ant-test").unwrap();
+        serde_json::json!({
+            "id": id, "name": "Anthropic key", "binding": b64(&binding),
+            "sealed": b64(&sealed), "key_id": seal::key_id(&public),
+        })
+        .to_string()
+    };
+    let binding = |kind: &str, host: &str, workspaces: Value| {
+        let mut b = serde_json::json!({
+            "credential": id, "kind": kind, "workspaces": workspaces, "hosts": [host],
+        });
+        if kind == "static" {
+            b["header"] = "x-api-key".into();
+        }
+        b
+    };
+    let every = serde_json::json!(["*"]);
+    for (wrong, why) in [
+        (
+            binding("static", "api.anthropic.com", every.clone()),
+            "as a header credential",
+        ),
+        (
+            binding("provider", "elsewhere.example.com", every.clone()),
+            "for another host",
+        ),
+        (
+            binding(
+                "provider",
+                "api.anthropic.com",
+                serde_json::json!([Uuid::now_v7()]),
+            ),
+            "for one workspace",
+        ),
+    ] {
+        let (status, _) = send_as(&h, "PUT", &uri, &operator, &sealed_for(wrong)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a key sealed {why} was taken"
+        );
+    }
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        &uri,
+        &operator,
+        &sealed_for(binding("provider", "api.anthropic.com", every)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (_, body) = h.get("/v1/platform/models", Some(&operator)).await;
+    let held: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(held["accounts"][0]["credential_id"], id.to_string());
+    assert!(held["accounts"][0]["credential_env"].is_null());
+}

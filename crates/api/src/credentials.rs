@@ -130,6 +130,24 @@ fn check(
     id: Uuid,
     seal: &Sealed,
 ) -> Result<(Vec<u8>, Vec<u8>), ApiError> {
+    let (binding, parsed, sealed) = decode(state, id, seal)?;
+    if parsed.workspaces != [workspace.to_string()] {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a credential is bound to this workspace and no other".into(),
+        ));
+    }
+    Ok((binding, sealed))
+}
+
+/// Reads a seal for credential `id`: its binding's bytes, the binding they
+/// say, and the ciphertext. Refused when the binding names another
+/// credential or the seal is to a key this deployment does not publish.
+pub(super) fn decode(
+    state: &ApiState,
+    id: Uuid,
+    seal: &Sealed,
+) -> Result<(Vec<u8>, Binding, Vec<u8>), ApiError> {
     let bad = |m: String| (StatusCode::BAD_REQUEST, m);
     let engine = base64::engine::general_purpose::STANDARD;
     let binding = engine
@@ -142,11 +160,6 @@ fn check(
     if parsed.credential != id {
         return Err(bad("the binding names a different credential".into()));
     }
-    if parsed.workspaces != [workspace.to_string()] {
-        return Err(bad(
-            "a credential is bound to this workspace and no other".into()
-        ));
-    }
     let (_, current) = state.seal_key.as_ref().ok_or_else(no_seal_key)?;
     if &seal.key_id != current {
         return Err(bad(format!(
@@ -157,7 +170,7 @@ fn check(
     if sealed.len() <= 32 {
         return Err(bad("sealed is too short to be a seal".into()));
     }
-    Ok((binding, sealed))
+    Ok((binding, parsed, sealed))
 }
 
 pub async fn create(

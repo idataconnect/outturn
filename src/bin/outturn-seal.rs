@@ -12,6 +12,16 @@
 //! comes from the operator's own copy, and that pin is the whole of what this
 //! path protects. See docs/sealed-credentials.md.
 //!
+//! A provider account's key is sealed with `--provider` in place of
+//! `--workspace` and `--header`, for `PUT /v1/platform/provider-accounts/{id}/key`:
+//! bound to every workspace and to the account's host, and usable as nothing
+//! but a provider key.
+//!
+//! ```text
+//! printf %s "$ANTHROPIC_API_KEY" | outturn-seal --public-key <hex> --provider \
+//!     --host api.anthropic.com --name "Anthropic" > key.json
+//! ```
+//!
 //! What it prints is the request body, with the secret sealed: the API never
 //! sees it, and neither does anything that logs the request.
 
@@ -22,8 +32,9 @@ use outturn::egress::seal;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: outturn-seal --public-key <hex> --workspace <id> --host <name> [--host <name>...] \
-         --header <name> --name <label> [--id <credential id, to rotate one>]   (the secret on stdin)"
+        "usage: outturn-seal --public-key <hex> (--workspace <id> --header <name> | --provider) \
+         --host <name> [--host <name>...] --name <label> [--id <credential id, to rotate one>]   \
+         (the secret on stdin)"
     );
     std::process::exit(2)
 }
@@ -34,11 +45,16 @@ fn main() {
     let mut hosts = Vec::new();
     let mut header = None;
     let mut name = None;
+    let mut provider = false;
     // Given when rotating: the binding names the credential, so a new seal for
     // an existing one has to carry its id.
     let mut id = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
+        if flag == "--provider" {
+            provider = true;
+            continue;
+        }
         let value = args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--public-key" => public = Some(value),
@@ -55,12 +71,10 @@ fn main() {
             _ => usage(),
         }
     }
-    let (Some(public), Some(workspace), Some(header), Some(name)) =
-        (public, workspace, header, name)
-    else {
+    let (Some(public), Some(name)) = (public, name) else {
         usage()
     };
-    if hosts.is_empty() {
+    if hosts.is_empty() || provider != (workspace.is_none() && header.is_none()) {
         usage()
     }
 
@@ -80,14 +94,23 @@ fn main() {
     }
 
     let id = id.unwrap_or_else(uuid::Uuid::now_v7);
-    let binding = serde_json::to_vec(&serde_json::json!({
-        "credential": id,
-        "kind": "static",
-        "workspaces": [workspace],
-        "hosts": hosts,
-        "header": header,
-    }))
-    .expect("a binding serializes");
+    let binding = if provider {
+        serde_json::json!({
+            "credential": id,
+            "kind": "provider",
+            "workspaces": ["*"],
+            "hosts": hosts,
+        })
+    } else {
+        serde_json::json!({
+            "credential": id,
+            "kind": "static",
+            "workspaces": [workspace],
+            "hosts": hosts,
+            "header": header,
+        })
+    };
+    let binding = serde_json::to_vec(&binding).expect("a binding serializes");
     // Checked before sealing, so a mistake is said here rather than by the API.
     if let Err(why) = seal::Binding::parse(&binding) {
         eprintln!("{why}");
