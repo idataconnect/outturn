@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router'
 import {
+  Boxes,
   Bot,
   Building2,
   Globe,
@@ -54,6 +55,7 @@ import UserEditor from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
 import PlatformDefaults from './pages/PlatformDefaults'
+import PlatformModels from './pages/PlatformModels'
 import AgentTemplates from './pages/AgentTemplates'
 import AgentTemplateEditor from './pages/AgentTemplateEditor'
 import Inbox from './pages/Inbox'
@@ -272,6 +274,7 @@ function PlatformSection() {
       items={[
         { to: paths.workspaces, label: 'Workspaces', icon: Building2, allowed: true },
         { to: paths.platformDefaults, label: 'Defaults', icon: SlidersHorizontal, allowed: operator },
+        { to: paths.platformModels, label: 'Models', icon: Boxes, allowed: operator },
         { to: paths.agentTemplates, label: 'Agent templates', icon: LayoutTemplate, allowed: operator },
       ]}
     />
@@ -672,6 +675,7 @@ function Shell() {
               }
             />
             <Route path="defaults" element={<PlatformDefaults />} />
+            <Route path="models" element={<PlatformModels />} />
             <Route path="agent-templates" element={<AgentTemplates />} />
             <Route path="agent-templates/new" element={<AgentTemplateEditor />} />
             <Route path="agent-templates/:id" element={<AgentTemplateEditor />} />

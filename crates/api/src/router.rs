@@ -1812,7 +1812,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/settings/{key}",
             axum::routing::put(set_workspace_setting).delete(clear_workspace_setting),
         )
-        .route("/v1/platform/catalog", get(super::catalog::view))
+        .route(
+            "/v1/platform/catalog",
+            get(super::catalog::view)
+                .post(super::catalog::import)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    super::catalog::IMPORT_LIMIT,
+                )),
+        )
         .route(
             "/v1/platform/catalog/refresh",
             post(super::catalog::refresh),

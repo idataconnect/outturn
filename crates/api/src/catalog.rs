@@ -331,3 +331,33 @@ pub async fn refresh(
         })?;
     Ok(Json(serde_json::json!({ "checked": checked })))
 }
+
+/// The most a catalog file may be: the site's document is several megabytes,
+/// and a reduced or gzipped one far less.
+pub const IMPORT_LIMIT: usize = 32 * 1024 * 1024;
+
+/// A catalog carried in by hand -- the site's document, a reduced one, or
+/// either gzipped -- for a deployment that cannot fetch one.
+pub async fn import(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    if !claims.is_system_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only the operator imports a catalog".into(),
+        ));
+    }
+    let models =
+        catalog::read(&body).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    let kept = keep(&state.pool, "upload", None, &models)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (providers, models) = catalog::counts(&models);
+    tracing::info!(actor = %claims.subject, providers, models, "a catalog was imported");
+    Ok(Json(serde_json::json!({
+        "checked": if kept.is_some() { Checked::Kept } else { Checked::Unchanged },
+    })))
+}

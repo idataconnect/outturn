@@ -12013,3 +12013,43 @@ async fn a_catalog_check_asks_whether_anything_changed() {
         "checked again before the week is up"
     );
 }
+
+/// A catalog carried in by hand is read in whatever shape it comes, and
+/// something that is not one is refused rather than kept.
+#[tokio::test]
+async fn an_operator_imports_a_catalog_file() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let operator = h
+        .login_as(
+            "op@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/platform/catalog",
+            Some(&operator),
+            r#"{"acme-ai": {"name": "Acme AI", "models": {"m1": {"name": "M1"}}}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("kept"), "{body}");
+    let (status, _) = h
+        .post("/v1/platform/catalog", Some(&operator), r#"{"nope": 1}"#)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let admin = h
+        .login_as("a@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, _) = h
+        .post(
+            "/v1/platform/catalog",
+            Some(&admin),
+            r#"{"acme-ai": {"models": {}}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
