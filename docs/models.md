@@ -374,8 +374,12 @@ Each phase leaves the platform working.
    has a circuit of its own -- the endpoint and the model together, so
    nothing else the endpoint serves is affected -- which one such answer opens
    for a day (`RETIRED_FOR`), after which a single call checks again.
-3. **Catalog.** The shipped snapshot, stored snapshots, the weekly
-   conditional check, the source setting, and import from a file or a mount.
+3. **Catalog.** Built. `assets/catalog.json.gz` ships in the image
+   (`scripts/refresh-catalog.sh` rebuilds it) and is kept as the first
+   snapshot; `OUTTURN_CATALOG_FILE` loads a mounted file at startup; the
+   worker's tick checks `OUTTURN_CATALOG_URL` weekly, conditionally, through
+   the gateway, unless `OUTTURN_CATALOG_FETCH=off`; Platform → Models shows
+   what is held, checks on request at most hourly, and imports a file.
 4. **Accounts, models, chains** in the database, with the migration from
    `traffic_routes` and `OUTTURN_DEFAULT_MODEL`, and sealed provider keys.
    The gateway reads chains; `ClaudeTraits` goes.
