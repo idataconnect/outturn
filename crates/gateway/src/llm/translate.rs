@@ -21,7 +21,14 @@ pub fn openai_to_anthropic(
                         .collect::<Vec<_>>()
                         .join("\n"),
                 };
-                system = Some(text);
+                // Joined rather than the last one winning: outturn sends one,
+                // at the top, and a second arriving here is a mistake upstream
+                // -- which should cost nothing worse than a longer prompt, not
+                // the system prompt silently replaced.
+                system = Some(match system {
+                    Some(existing) => format!("{existing}\n{text}"),
+                    None => text,
+                });
             }
             Role::User | Role::Assistant => {
                 let content = match &msg.content {

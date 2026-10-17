@@ -271,9 +271,9 @@ fn projected_with_sources(
                 // on from them, label and all: "[the platform recorded this…]
                 // System Admin approved this charge. I've booked…". A note from
                 // outside the conversation goes where every protocol puts one:
-                // not `system`, which only OpenAI accepts mid-conversation and
-                // which would give an approver's free-text note the authority
-                // of the platform's instructions.
+                // not `system`, which only some models accept mid-conversation
+                // (Gemini none at all) and which would give an approver's
+                // free-text note the authority of the platform's instructions.
                 role = "user";
                 format!("{PLATFORM_NOTE}\n\n{}", message.content)
             } else if message.metadata.get(super::wake::WAKE_MARK).is_some() {

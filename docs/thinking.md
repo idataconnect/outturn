@@ -121,22 +121,23 @@ The same rule [caching](caching.md) runs on, for a second reason. A thinking
 block is bound to the conversation before it; edit that, and every block after
 the edit is invalid. So:
 
-- **Effort changes go in as a message, not a parameter.** The request-level
-  effort stays fixed for a session, and an agent's change of effort is a
-  mid-conversation system message with an `output_config` and no content,
-  placed where it applies. Changing the top-level parameter would invalidate
-  the cached history as well.
+- **Effort is set per agent, not changed mid-conversation.** Adaptive
+  thinking already decides how much each request needs; effort only leans it.
+  A piece of work that needs much deeper reasoning is handed to an agent set
+  up for it, with its own conversation, cache and cost, rather than turning a
+  dial partway through this one.
 - **Stale blocks are dropped rather than refused.** The beta
   `block_binding: {"prefix_mismatch_behavior": "drop_block"}` makes the
   provider discard a block whose prefix changed, instead of answering 400 for
   the rest of the session. Compaction rewrites history by design, so this is
   what lets it and thinking coexist.
-- **Mid-conversation system messages are placed by one rule.** After a user
-  turn, never beside another, runs merged; one that would end the request, or
-  sit right before an assistant turn, becomes a user turn instead. Placement
-  depends only on the messages before it, so each request is a byte-identical
-  prefix of the next. That also fixes what the translation does now with more
-  than one system message, which is keep the last and lose the rest.
+- **No system messages mid-conversation.** Some models accept them, some
+  only lately, and Gemini none at all; a note from the platform -- an
+  approval, a wake, a summary -- goes in the user position with a label
+  instead, which every provider takes and which never gives a person's
+  free text the authority of the platform's instructions. outturn sends one
+  system message, at the top. A second reaching the translation is joined
+  to it rather than replacing it.
 
 ## Order of work
 
@@ -174,5 +175,6 @@ the edit is invalid. So:
    adaptive request asks for `block_binding.prefix_mismatch_behavior:
    "drop_block"` under the `thinking-binding-controls-2026-08-01` beta: a
    stale block costs its own reasoning and nothing more.
-5. **Place system messages by the rule**, and effort as a message.
-   `drop_block` is on already, with step 4.
+5. **Decided against:** system messages mid-conversation, and changing effort
+   by message. Both are features of some models, solving problems outturn does
+   not have; see *The front of the request does not change* above.
