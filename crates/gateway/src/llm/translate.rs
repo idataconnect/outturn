@@ -188,6 +188,11 @@ struct ClaudeTraits {
     output_limit: u32,
     /// The effort levels it offers, lowest first.
     efforts: &'static [&'static str],
+    /// Takes `thinking.block_binding`, which says what to do with a stale
+    /// thinking block: the 5.x line, which checks a block against the
+    /// conversation before it. Sent to a 4.x model it is refused on some
+    /// platforms -- Bedrock's 4.6, for one -- and buys nothing there.
+    binds_thinking: bool,
 }
 
 impl ClaudeTraits {
@@ -198,12 +203,14 @@ impl ClaudeTraits {
             sampling: false,
             output_limit: 128_000,
             efforts: NEWEST,
+            binds_thinking: true,
         };
         let older = Self {
             adaptive: false,
             sampling: true,
             output_limit: 4096,
             efforts: &[],
+            binds_thinking: false,
         };
 
         // `claude-sonnet-5-5`, `claude-opus-4-6-20260101`, `claude-3-5-haiku`.
@@ -230,10 +237,14 @@ impl ClaudeTraits {
             // than an old one, so it is treated as the newest.
             [] => newest,
             [major, ..] if *major >= 5 => newest,
-            [4, minor, ..] if *minor >= 7 => newest,
+            [4, minor, ..] if *minor >= 7 => Self {
+                binds_thinking: false,
+                ..newest
+            },
             [4, 6, ..] => Self {
                 sampling: true,
                 efforts: &["low", "medium", "high", "max"],
+                binds_thinking: false,
                 ..newest
             },
             _ => older,
@@ -270,12 +281,12 @@ fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: O
     // any of it changed: a system prompt composed afresh, history trimmed or
     // compacted. Dropping the stale block instead costs that block's
     // reasoning and nothing else (docs/thinking.md).
-    body["thinking"] = serde_json::json!({
-        "type": "adaptive",
-        "display": "summarized",
-        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
-    });
-    body["anthropic_beta"] = serde_json::json!([THINKING_BINDING_BETA]);
+    body["thinking"] = serde_json::json!({"type": "adaptive", "display": "summarized"});
+    if claude.binds_thinking {
+        body["thinking"]["block_binding"] =
+            serde_json::json!({"prefix_mismatch_behavior": "drop_block"});
+        body["anthropic_beta"] = serde_json::json!([THINKING_BINDING_BETA]);
+    }
     let Some(asked) = effort else {
         return;
     };
@@ -626,9 +637,18 @@ mod cache_tests {
         let newest = ClaudeTraits::of("claude-sonnet-5-5");
         assert!(newest.adaptive && !newest.sampling);
         assert_eq!(ClaudeTraits::of("claude-fable-5-1"), newest);
-        assert_eq!(ClaudeTraits::of("claude-opus-4-8-20260501"), newest);
         assert_eq!(ClaudeTraits::of("claude-something-new"), newest);
+        // The 4.x line thinks the same way but is not sent the 5.x line's
+        // stale-block setting, which some platforms refuse from it.
+        let four_eight = ClaudeTraits::of("claude-opus-4-8-20260501");
+        assert!(four_eight.adaptive && !four_eight.binds_thinking);
+        assert!(newest.binds_thinking);
         assert!(ClaudeTraits::of("claude-opus-4-6").sampling);
+        assert!(
+            asked("claude-opus-4-6", Some("high"), None)["thinking"]
+                .get("block_binding")
+                .is_none()
+        );
         let old = ClaudeTraits::of("claude-sonnet-4-20250514");
         assert!(!old.adaptive && old.sampling && old.output_limit == 4096);
         assert!(!ClaudeTraits::of("claude-3-5-haiku-latest").adaptive);
