@@ -18,6 +18,32 @@ export type Effective = {
   source: 'default' | 'operator' | 'workspace' | 'agent' | 'template'
   override_value: unknown | undefined
   inherited: unknown
+  /** About a model, and so may also be chosen for one model. */
+  per_model: boolean
+}
+
+/** A model this level may choose values for, from `/v1/models`. */
+type Offered = { id: string; name: string; model: string; facts: Record<string, unknown> | null }
+
+/** The effort levels a model's catalog entry offers, if it lists any. */
+function effortsOf(model: Offered | undefined): string[] | null {
+  const options = model?.facts?.reasoning_options
+  if (!Array.isArray(options)) return null
+  const effort = options.find((o) => o?.type === 'effort')
+  return Array.isArray(effort?.values) ? (effort.values as string[]) : null
+}
+
+/** Narrows a setting's choices to those a model takes: an effort level it
+ *  does not offer is not offered. Off is always offered; a model that cannot
+ *  stop thinking is asked for its least instead. */
+function forModel(setting: Effective, model: Offered | undefined): Effective {
+  if (setting.key !== 'reasoning_effort' || setting.kind.type !== 'choice') return setting
+  const efforts = effortsOf(model)
+  if (!efforts) return setting
+  const options = setting.kind.options.filter(
+    (o) => o.value.startsWith('none') || efforts.includes(o.value),
+  )
+  return { ...setting, kind: { ...setting.kind, options } }
 }
 
 const SOURCE_LABEL: Record<Effective['source'], string> = {
@@ -61,15 +87,26 @@ export default function SettingsCascade({
   const [settings, setSettings] = useState<Effective[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // The model whose values are shown, or '' for the values every model gets.
+  const [model, setModel] = useState('')
+  const [models, setModels] = useState<Offered[]>([])
+  const query = model ? `?model=${model}` : ''
+
+  // Who cannot read the models simply sees no picker.
+  useEffect(() => {
+    api<Offered[]>('/v1/models')
+      .then(setModels)
+      .catch(() => setModels([]))
+  }, [])
 
   const load = useCallback(async () => {
     try {
-      setSettings(await api<Effective[]>(base))
+      setSettings(await api<Effective[]>(`${base}${query}`))
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load settings')
     }
-  }, [base])
+  }, [base, query])
 
   useEffect(() => {
     void load()
@@ -78,7 +115,7 @@ export default function SettingsCascade({
   async function write(key: string, value: unknown) {
     setBusy(key)
     try {
-      await api<void>(`${base}/${key}`, { method: 'PUT', body: JSON.stringify({ value }) })
+      await api<void>(`${base}/${key}${query}`, { method: 'PUT', body: JSON.stringify({ value }) })
       await load()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to save setting')
@@ -90,7 +127,7 @@ export default function SettingsCascade({
   async function clear(key: string) {
     setBusy(key)
     try {
-      await api<void>(`${base}/${key}`, { method: 'DELETE' })
+      await api<void>(`${base}/${key}${query}`, { method: 'DELETE' })
       await load()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to clear setting')
@@ -103,14 +140,47 @@ export default function SettingsCascade({
     return <p className="text-sm text-surface-600 dark:text-surface-400">Loading…</p>
   }
 
+  const chosen = models.find((m) => m.id === model)
+  const shownSettings = model
+    ? settings?.filter((s) => s.per_model).map((s) => forModel(s, chosen))
+    : settings
+  const scope = chosen ? `${levelName}, for ${chosen.name}` : levelName
+
   return (
     <div className="space-y-4">
+      {models.length > 0 && (
+        <div className="space-y-1">
+          <label className="flex items-center gap-3 text-sm text-surface-700 dark:text-surface-300">
+            Values for
+            <select
+              value={model}
+              onChange={(e) => {
+                setError(null)
+                setModel(e.target.value)
+              }}
+              className={field}
+            >
+              <option value="">Every model</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-xs text-surface-500 dark:text-surface-400">
+            {chosen
+              ? `A value set here applies to ${chosen.name} alone and wins over one set for every model at the same level. Only what the model accepts can be chosen.`
+              : 'Temperature, thinking and conversation size can also be set for one model. A value for every model is skipped for a model that cannot take it.'}
+          </p>
+        </div>
+      )}
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
         </p>
       )}
-      {settings?.map((s) => {
+      {shownSettings?.map((s) => {
         const overridden = s.override_value !== undefined
         // A value a template fixes is not this level's to change, whoever
         // is looking.
@@ -150,7 +220,7 @@ export default function SettingsCascade({
                       ? 'Turned off by the platform operator'
                       : s.owner === 'operator_only'
                       ? 'Set by the platform operator and not overridable here'
-                      : `Override for ${levelName}`
+                      : `Override for ${scope}`
                 }
               >
                 <input
@@ -177,7 +247,7 @@ export default function SettingsCascade({
               />
               <span className="text-xs text-surface-500 dark:text-surface-400">
                 {overridden
-                  ? `Set for ${levelName}. Without it: ${show(s.inherited)}, from ${
+                  ? `Set for ${scope}. Without it: ${show(s.inherited)}, from ${
                       s.source === 'default' ? SOURCE_LABEL.default : 'above'
                     }.`
                   : s.source === 'template'
