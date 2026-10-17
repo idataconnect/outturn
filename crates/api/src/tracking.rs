@@ -140,7 +140,7 @@ pub async fn track(pool: &PgPool) -> Result<u64, sqlx::Error> {
         let reason = if m.tracks.is_some() {
             "a value set for this model is one the new version refuses"
         } else {
-            "this model is pinned, and a newer version is out"
+            "this model is pinned to its version"
         };
         hold(pool, &m, &next, reason, &changes).await?;
     }
@@ -217,6 +217,12 @@ async fn clear_pending(pool: &PgPool, model_id: Uuid) -> Result<(), sqlx::Error>
     .bind(model_id)
     .execute(pool)
     .await?;
+    settle_items(pool, model_id, State::Cancelled).await
+}
+
+/// Withdraws the questions about a model that is going: nobody can answer
+/// them once it has.
+pub async fn forget(pool: &PgPool, model_id: Uuid) -> Result<(), sqlx::Error> {
     settle_items(pool, model_id, State::Cancelled).await
 }
 

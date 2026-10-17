@@ -12472,6 +12472,22 @@ async fn a_tracked_model_moves_or_asks_and_a_pinned_one_is_offered() {
         "the approved upgrade's question is still open: {body}"
     );
 
+    // A model that goes takes its question with it.
+    let (status, _) = send_as(
+        &h,
+        "DELETE",
+        &format!("/v1/platform/models/{opus}"),
+        &operator,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h.get("/v1/action-items", Some(&operator)).await;
+    assert!(
+        !body.contains("model.upgrade"),
+        "a deleted model's question is still open: {body}"
+    );
+
     // The platform's questions are the operator's alone.
     let (_, body) = h.get("/v1/action-items", Some(&admin)).await;
     assert!(

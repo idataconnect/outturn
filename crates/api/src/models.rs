@@ -603,6 +603,9 @@ pub async fn delete_model(
     if done.rows_affected() == 0 {
         return Err(not_found("model"));
     }
+    if let Err(e) = super::tracking::forget(&state.pool, id).await {
+        tracing::error!(model = %id, error = %e, "could not withdraw a deleted model's questions");
+    }
     tracing::info!(%actor, model = %id, "model deleted");
     Ok(StatusCode::NO_CONTENT)
 }
