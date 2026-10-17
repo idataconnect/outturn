@@ -4,6 +4,7 @@ import { heldCatalog, importCatalog, refreshCatalog, type HeldCatalog } from '..
 import { configured, type Configured } from '../lib/models'
 import Accounts from '../components/models/Accounts'
 import Models from '../components/models/Models'
+import Chains from '../components/models/Chains'
 
 /** "3 days ago", "in 5 hours": near enough for an age, which is all this is. */
 function relative(when: string, now = Date.now()): string {
@@ -89,6 +90,13 @@ export default function PlatformModels() {
         <>
           <Accounts accounts={config.accounts} reload={loadConfig} />
           <Models accounts={config.accounts} models={config.models} reload={loadConfig} />
+          <Chains
+            accounts={config.accounts}
+            models={config.models}
+            chains={config.chains}
+            assignments={config.assignments}
+            reload={loadConfig}
+          />
         </>
       )}
 
