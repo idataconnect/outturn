@@ -11806,6 +11806,11 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
         serde_json::json!({"kind": "tool_result", "id": "c1", "details": refusal, "content": refusal, "is_error": true}),
         serde_json::json!({"kind": "tool", "id": "c2", "name": "fetch_url", "action": "Reading", "arguments": "{}"}),
         serde_json::json!({"kind": "tool_result", "id": "c2", "details": page, "content": page, "is_error": false}),
+        // As `fetch_url` reports a failure: the refusal inside its JSON.
+        serde_json::json!({"kind": "tool", "id": "c3", "name": "fetch_url", "action": "Charging", "arguments": "{}"}),
+        serde_json::json!({"kind": "tool_result", "id": "c3", "is_error": true,
+            "details": serde_json::json!({"method": "POST", "url": "http://x.example/charges", "error": refusal}).to_string(),
+            "content": serde_json::json!({"method": "POST", "url": "http://x.example/charges", "error": refusal}).to_string()}),
         serde_json::json!({"kind": "done", "content": "", "prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0}),
     ]
     .map(|line| line.to_string())
@@ -11850,4 +11855,20 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
         Some(page.as_str()),
         "a page was rewritten"
     );
+
+    let wrapped = &results[2];
+    assert_eq!(
+        wrapped["gated"], true,
+        "a held call inside JSON was missed: {wrapped}"
+    );
+    let shown: Value =
+        serde_json::from_str(wrapped["details"].as_str().expect("details")).expect("still JSON");
+    assert!(
+        shown["error"]
+            .as_str()
+            .unwrap()
+            .ends_with("until they answer."),
+        "the suffix stayed: {shown}"
+    );
+    assert_eq!(shown["url"], "http://x.example/charges");
 }

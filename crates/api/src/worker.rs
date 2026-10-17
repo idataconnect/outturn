@@ -166,6 +166,30 @@ async fn signed_replies(
         .collect())
 }
 
+/// A held call's result as a person reads it: without the gate's suffix, or
+/// None when it is not a held call.
+///
+/// The suffix ends the refusal, wherever the refusal is: the whole result, or
+/// the `error` of the JSON a tool wraps its failures in -- `fetch_url` reports
+/// `{"method", "url", "error"}`, and looking only at the end of the text
+/// missed every held call it made. Never matched anywhere else in a result: a
+/// fetched page can carry the mark, and that is a page, not a held call.
+fn without_gate_mark(details: &str) -> Option<String> {
+    let suffix = outturn_core::egress::gate::gated_suffix();
+    if let Some(said) = details.strip_suffix(suffix.as_str()) {
+        return Some(said.trim_end().to_string());
+    }
+    let mut wrapped: serde_json::Value = serde_json::from_str(details).ok()?;
+    let said = wrapped
+        .get("error")?
+        .as_str()?
+        .strip_suffix(suffix.as_str())?
+        .trim_end()
+        .to_string();
+    wrapped["error"] = serde_json::json!(said);
+    Some(wrapped.to_string())
+}
+
 #[cfg(test)]
 fn project(messages: &[super::chat::Message]) -> Vec<serde_json::Value> {
     projected_with_sources(messages).0
@@ -1219,11 +1243,7 @@ impl Worker {
                         // fetched page can carry the mark or the sentence, and
                         // matching either anywhere let it pose as a held call
                         // and had a quoted copy of the sentence cut out.
-                        let suffix = outturn_core::egress::gate::gated_suffix();
-                        let held = is_error
-                            .then(|| details.strip_suffix(suffix.as_str()))
-                            .flatten()
-                            .map(|said| said.trim_end().to_string());
+                        let held = is_error.then(|| without_gate_mark(&details)).flatten();
                         let gated = held.is_some();
                         let details = held.unwrap_or(details);
                         // Attached to the call it answers rather than sent as
