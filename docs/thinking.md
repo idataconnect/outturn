@@ -174,5 +174,19 @@ the edit is invalid. So:
    adaptive request asks for `block_binding.prefix_mismatch_behavior:
    "drop_block"` under the `thinking-binding-controls-2026-08-01` beta: a
    stale block costs its own reasoning and nothing more.
+
+   **A refusal it can cause.** With its earlier reasoning in the
+   conversation, a follow-up such as "Why did you do it that way?" is
+   declined as `reasoning_extraction` -- every time, in an A/B against the
+   real API on 2026-10-16, while the same request without the thinking was
+   answered every time, and "Why did you check the clock just now?" was
+   answered either way. Anthropic's own fallback does not retry that
+   category. So the gateway does, once: a request that carried thinking and
+   was declined as reasoning extraction before saying anything is asked
+   again without the thinking. That is logged, and marked on the usage the
+   ledger keeps (`outturn.retried_without_thinking`, with the declined
+   attempt's usage beside it), so how often it happens is a query rather than
+   a guess. Every other refusal is passed on as one: the turn ends saying
+   why, and is not retried.
 5. **Place system messages by the rule**, and effort as a message.
    `drop_block` is on already, with step 4.
