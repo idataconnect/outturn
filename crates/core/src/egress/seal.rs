@@ -37,6 +37,12 @@ pub enum Kind {
     Static,
     ClientId,
     ClientSecret,
+    /// A model provider's key, for a provider account (docs/models.md). The
+    /// gateway puts it where the account's protocol says, and never on an
+    /// agent's request: a key the platform pays for, attachable to whatever
+    /// an agent asked for at the provider's host, would be spent on
+    /// whatever that agent liked.
+    Provider,
 }
 
 /// Where a credential may go: the associated data it was sealed under.
@@ -123,6 +129,10 @@ impl Binding {
             (Kind::ClientId | Kind::ClientSecret, _, _) => {
                 Err("a client credential names its token endpoint and no header".into())
             }
+            (Kind::Provider, None, None) => Ok(()),
+            (Kind::Provider, _, _) => Err(
+                "a provider key names neither a header nor a token endpoint: its protocol decides where it goes".into(),
+            ),
         }
     }
 

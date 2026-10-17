@@ -18,7 +18,10 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
+use outturn_core::egress::seal::Kind;
 use outturn_core::facts::ModelFacts;
+
+use crate::egress::sealed::{Credentials, Opened};
 
 use super::llm::provider::{
     LlmProvider, anthropic::AnthropicProvider, gemini::GeminiProvider, openai::OpenAiProvider,
@@ -43,10 +46,15 @@ fn borrows_from(traffic_type: &str) -> Option<&'static str> {
 /// One attempt: where to go, what to ask for, and what it accepts.
 #[derive(Debug, Clone)]
 pub struct Route {
+    /// The provider account: what a built provider is kept under.
+    pub account: Uuid,
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    /// The account's key, named in the gateway's environment or sealed;
+    /// at most one.
     pub credential_ref: Option<String>,
+    pub credential_id: Option<Uuid>,
     pub facts: Arc<ModelFacts>,
 }
 
@@ -81,7 +89,7 @@ async fn routes_of(
     traffic_type: &str,
 ) -> Result<Vec<Route>, sqlx::Error> {
     let rows = sqlx::query(
-        "select a.protocol, a.base_url, a.credential_env, m.model, m.facts, m.overrides \
+        "select a.id as account, a.protocol, a.base_url, a.credential_env, a.credential_id, m.model, m.facts, m.overrides \
          from chain_assignments c \
          join chain_links l on l.chain_id = c.chain_id \
          join models m on m.id = l.model_id \
@@ -106,43 +114,82 @@ async fn routes_of(
             let facts: Option<serde_json::Value> = r.get("facts");
             let overrides: serde_json::Value = r.get("overrides");
             Route {
+                account: r.get("account"),
                 provider: r.get("protocol"),
                 base_url: r.get("base_url"),
                 model: r.get("model"),
                 credential_ref: r.get("credential_env"),
+                credential_id: r.get("credential_id"),
                 facts: Arc::new(ModelFacts::of(facts.as_ref(), Some(&overrides))),
             }
         })
         .collect())
 }
 
-/// Builds providers from routes, keeping one per endpoint.
+/// Builds providers from routes, keeping one per account.
 ///
 /// Providers own a connection pool, so constructing one per request would
 /// throw away keep-alive and make every call pay a fresh TLS handshake. They
-/// are keyed by endpoint rather than by route because two routes differing
-/// only in model share a connection perfectly well.
+/// are kept per account rather than per route because two models at one
+/// account share a connection perfectly well -- and per account rather than
+/// per endpoint because two accounts at one endpoint hold different keys.
 #[derive(Default)]
 pub struct ProviderCache {
-    built: tokio::sync::Mutex<HashMap<String, Arc<dyn LlmProvider>>>,
+    built: tokio::sync::Mutex<HashMap<Uuid, Built>>,
+}
+
+struct Built {
+    provider: Arc<dyn LlmProvider>,
+    /// The sealed key it was built with, so a rotated or revoked one is
+    /// noticed: the credential cache hands back a different one, or none.
+    sealed: Option<Arc<Opened>>,
 }
 
 impl ProviderCache {
-    pub async fn get(&self, route: &Route) -> Option<Arc<dyn LlmProvider>> {
-        let key = route.endpoint();
-        let mut built = self.built.lock().await;
+    /// The provider for a route, for a request from `workspace`. None when
+    /// the account's key cannot be had, so the next route is tried.
+    pub async fn get(
+        &self,
+        route: &Route,
+        sealed: &Credentials,
+        workspace: Uuid,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        // Opened afresh each time -- from memory, almost always -- so a key
+        // revoked a moment ago is not still being sent.
+        let opened = match route.credential_id {
+            Some(id) => Some(open_provider_key(sealed, id, route, workspace).await?),
+            None => None,
+        };
 
-        if let Some(existing) = built.get(&key) {
-            return Some(Arc::clone(existing));
+        let mut built = self.built.lock().await;
+        if let Some(existing) = built.get(&route.account) {
+            let same_key = match (&existing.sealed, &opened) {
+                (None, None) => true,
+                (Some(was), Some(now)) => Arc::ptr_eq(was, now),
+                _ => false,
+            };
+            if same_key {
+                return Some(Arc::clone(&existing.provider));
+            }
         }
 
-        // Resolved from the environment at construction, so the secret is
-        // never in the database and never in a log line.
-        let credential = route
-            .credential_ref
-            .as_deref()
-            .and_then(|name| std::env::var(name).ok())
-            .filter(|value| !value.trim().is_empty());
+        // From the seal, or resolved from the environment at construction,
+        // so the secret is never in the database in the clear and never in
+        // a log line.
+        let credential = match &opened {
+            Some(opened) => match std::str::from_utf8(&opened.secret) {
+                Ok(key) => Some(key.trim().to_string()),
+                Err(_) => {
+                    tracing::warn!(account = %route.account, "a provider key is not text, skipping");
+                    return None;
+                }
+            },
+            None => route
+                .credential_ref
+                .as_deref()
+                .and_then(|name| std::env::var(name).ok()),
+        }
+        .filter(|value| !value.trim().is_empty());
 
         let provider: Arc<dyn LlmProvider> = match route.provider.as_str() {
             "openai" => Arc::new(OpenAiProvider::new(route.base_url.clone(), credential)),
@@ -205,9 +252,44 @@ impl ProviderCache {
             }
         };
 
-        built.insert(key, Arc::clone(&provider));
+        built.insert(
+            route.account,
+            Built {
+                provider: Arc::clone(&provider),
+                sealed: opened,
+            },
+        );
         Some(provider)
     }
+}
+
+/// An account's sealed key, if its seal lets this workspace use it at this
+/// account's host as a provider key -- and only as one. Which of those failed
+/// is logged; the caller only learns it has no key.
+async fn open_provider_key(
+    sealed: &Credentials,
+    id: Uuid,
+    route: &Route,
+    workspace: Uuid,
+) -> Option<Arc<Opened>> {
+    let opened = match sealed.get(id).await {
+        Ok(opened) => opened,
+        Err(why) => {
+            tracing::warn!(account = %route.account, credential_id = %id, %why, "a provider account's key is not available, skipping");
+            return None;
+        }
+    };
+    let host = reqwest::Url::parse(&route.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))?;
+    if let Err(why) = opened
+        .binding
+        .allows(workspace, &host, None, Kind::Provider)
+    {
+        tracing::warn!(account = %route.account, credential_id = %id, %why, "a provider account's key is not sealed for this, skipping");
+        return None;
+    }
+    Some(opened)
 }
 
 /// A message the user sent while a turn was already running.

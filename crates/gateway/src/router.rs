@@ -20,7 +20,7 @@ pub struct GatewayState {
     /// statically configured providers, which is what it did before either
     /// existed.
     health: Option<sqlx::postgres::PgPool>,
-    providers_by_endpoint: routing::ProviderCache,
+    providers_by_account: routing::ProviderCache,
     /// Where a vetted outbound request physically leaves from. `Direct` here
     /// and in any open-source deployment; the seam exists because spreading
     /// egress across a pool of addresses, or routing it through an estate's
@@ -61,7 +61,7 @@ impl GatewayState {
             providers,
             auth,
             health: None,
-            providers_by_endpoint: routing::ProviderCache::default(),
+            providers_by_account: routing::ProviderCache::default(),
             egress_transport: Arc::new(egress::transport::Direct),
             // Read once, at startup: an operator changing which internal hosts
             // are open is changing the deployment, and the list is read on
@@ -302,7 +302,11 @@ impl GatewayState {
                         if !self.route_is_reachable(&route) {
                             continue;
                         }
-                        if let Some(provider) = self.providers_by_endpoint.get(&route).await {
+                        if let Some(provider) = self
+                            .providers_by_account
+                            .get(&route, &self.sealed, workspace_id)
+                            .await
+                        {
                             attempts.push(Attempt {
                                 provider,
                                 model: Some(route.model),
@@ -875,6 +879,8 @@ mod tests {
 
     fn route(base_url: &str) -> routing::Route {
         routing::Route {
+            account: uuid::Uuid::nil(),
+            credential_id: None,
             provider: "openai".into(),
             base_url: base_url.into(),
             model: "m".into(),

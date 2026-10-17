@@ -4494,3 +4494,150 @@ async fn migrated_models_are_linked_to_the_catalog() {
 
     finish!(db);
 }
+
+// Sealed provider keys --------------------------------------------------------
+
+const SEAL_KEY: &str = "0606060606060606060606060606060606060606060606060606060606060606";
+
+/// An OpenAI-protocol upstream on loopback that answers every call and
+/// records the Authorization header each one came with.
+async fn key_recorder() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    let app = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(move |headers: axum::http::HeaderMap| {
+            let kept = kept.clone();
+            async move {
+                let auth = headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                kept.lock().unwrap().push(auth);
+                axum::Json(serde_json::json!({
+                    "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": "ok"}}],
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, seen)
+}
+
+/// Seals `secret` as a platform credential of `kind` for the loopback host,
+/// usable by `workspaces`.
+async fn seal_provider_key(
+    pool: &PgPool,
+    kind: &str,
+    workspaces: serde_json::Value,
+    secret: &[u8],
+) -> Uuid {
+    use outturn::egress::seal;
+    let public = seal::public_of(SEAL_KEY).unwrap();
+    let id = Uuid::now_v7();
+    let mut binding = serde_json::json!({
+        "credential": id, "kind": kind, "workspaces": workspaces, "hosts": ["127.0.0.1"],
+    });
+    if kind == "static" {
+        binding["header"] = "authorization".into();
+    }
+    let binding = serde_json::to_vec(&binding).unwrap();
+    let sealed = seal::seal(&public, &binding, secret).unwrap();
+    sqlx::query(
+        "insert into credentials (id, workspace_id, name, binding, sealed, key_id) \
+         values ($1, null, 'key', $2, $3, $4)",
+    )
+    .bind(id)
+    .bind(&binding)
+    .bind(&sealed)
+    .bind(seal::key_id(&public))
+    .execute(pool)
+    .await
+    .expect("credential");
+    id
+}
+
+/// Asks the gateway for one completion as `workspace`, and says how it went.
+async fn ask_gateway(pool: &PgPool, workspace: Uuid) -> u16 {
+    use tower::ServiceExt;
+    let seed = [12u8; 32];
+    let validator = outturn::auth::TokenValidator::new(
+        &outturn::auth::TokenMinter::public_key_of(&seed),
+        outturn::auth::AUDIENCE_GATEWAY,
+    )
+    .expect("validator");
+    let token = outturn::auth::TokenMinter::new(&seed)
+        .expect("minter")
+        .mint_turn(
+            Uuid::now_v7(),
+            workspace,
+            outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(workspace),
+        )
+        .expect("token");
+    let state = outturn::gateway::GatewayState::new(Vec::new(), validator)
+        .with_internal_hosts(outturn::egress::internal::Internal::parse("127.0.0.1"))
+        .with_sealed(
+            outturn::gateway::egress::sealed::Credentials::default()
+                .with_keys(outturn::egress::seal::Keys::parse(SEAL_KEY).unwrap()),
+        )
+        .with_health(pool.clone());
+    let request = axum::http::Request::post("/v1/chat/completions")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+        ))
+        .unwrap();
+    outturn::gateway::routes(std::sync::Arc::new(state))
+        .oneshot(request)
+        .await
+        .expect("response")
+        .status()
+        .as_u16()
+}
+
+/// An account's sealed key is opened and sent; one sealed as an ordinary
+/// header credential, or for other workspaces, is not a provider key and
+/// is not sent, and with no other route the request is refused.
+#[tokio::test]
+async fn a_sealed_provider_key_is_sent_only_as_one() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (url, seen) = key_recorder().await;
+    add_route(pool, None, "assistant", 10, &url, "m").await;
+
+    let key = seal_provider_key(pool, "provider", serde_json::json!(["*"]), b"sk-sealed").await;
+    sqlx::query("update provider_accounts set credential_id = $1")
+        .bind(key)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(ask_gateway(pool, workspace).await, 200);
+    assert_eq!(*seen.lock().unwrap(), ["Bearer sk-sealed"]);
+
+    for (kind, workspaces) in [
+        ("static", serde_json::json!(["*"])),
+        ("provider", serde_json::json!([Uuid::now_v7()])),
+    ] {
+        let wrong = seal_provider_key(pool, kind, workspaces, b"sk-wrong").await;
+        sqlx::query("update provider_accounts set credential_id = $1")
+            .bind(wrong)
+            .execute(pool)
+            .await
+            .unwrap();
+        assert_ne!(ask_gateway(pool, workspace).await, 200, "{kind} was used");
+    }
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "a refused key reached the provider"
+    );
+
+    finish!(db);
+}
