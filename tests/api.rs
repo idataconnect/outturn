@@ -12343,6 +12343,31 @@ async fn a_setting_for_one_model_is_one_that_model_accepts() {
         .unwrap();
     assert_eq!(effort["value"], "high", "{effort}");
     assert_eq!(effort["per_model"], true);
+
+    // The temperature set for every model is Sonnet's to inherit, not its
+    // own: once Sonnet's own is cleared, no override shows for it at
+    // Sonnet's level, while the effort set for Sonnet itself does.
+    let (status, _) = send_as(
+        &h,
+        "DELETE",
+        &format!("/v1/settings/temperature?model={sonnet}"),
+        &admin,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h
+        .get(&format!("/v1/settings?model={sonnet}"), Some(&admin))
+        .await;
+    let view: Vec<Value> = serde_json::from_str(&body).unwrap();
+    let effort = view
+        .iter()
+        .find(|s| s["key"] == "reasoning_effort")
+        .unwrap();
+    let temperature = view.iter().find(|s| s["key"] == "temperature").unwrap();
+    assert!(temperature.get("override_value").is_none(), "{temperature}");
+    assert_eq!(temperature["value"], 0.5, "{temperature}");
+    assert_eq!(effort["override_value"], "high", "{effort}");
 }
 
 /// "Latest", against the shipped catalog. A model tracked with nothing set

@@ -65,6 +65,30 @@ impl PostgresSettingsStore {
             .collect())
     }
 
+    /// A level's rows for one model, without those for every model.
+    async fn rows_for_model_only(&self, level: Level, model: Uuid) -> Result<Rows, SettingsError> {
+        let (workspace_id, agent_id) = address(level);
+        let rows = sqlx::query(
+            "select key, value from setting_overrides \
+             where workspace_id = $1 and agent_id = $2 and model_id = $3",
+        )
+        .bind(workspace_id)
+        .bind(agent_id)
+        .bind(model)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("key"),
+                    r.get::<serde_json::Value, _>("value"),
+                )
+            })
+            .collect())
+    }
+
     /// What a model the caller can see accepts: a platform model, or one of
     /// the workspace's own. None for a model it cannot.
     async fn facts_of(
@@ -193,15 +217,28 @@ impl SettingsStore for PostgresSettingsStore {
             Level::Workspace(_) => super::Source::Workspace,
             Level::Agent { .. } => super::Source::Agent,
         };
-        let here = chain
-            .iter()
-            .find(|(source, _)| *source == own)
-            .map(|(_, rows)| rows.clone())
-            .unwrap_or_default();
+        // For one model, this level's own rows are the ones for that model
+        // alone: its value for every model is something this model inherits,
+        // and removing the model's row falls back to it rather than past it.
+        let every_model_here = match model {
+            Some(_) => Some(self.rows_at(level, None).await?),
+            None => None,
+        };
+        let here = match model {
+            Some(m) => self.rows_for_model_only(level, m).await?,
+            None => chain
+                .iter()
+                .find(|(source, _)| *source == own)
+                .map(|(_, rows)| rows.clone())
+                .unwrap_or_default(),
+        };
         let without: Vec<(super::Source, Rows)> = chain
             .iter()
-            .filter(|(source, _)| *source != own)
-            .cloned()
+            .filter_map(|(source, rows)| match (*source == own, &every_model_here) {
+                (false, _) => Some((*source, rows.clone())),
+                (true, Some(every)) => Some((*source, every.clone())),
+                (true, None) => None,
+            })
             .collect();
 
         Ok(catalog()
