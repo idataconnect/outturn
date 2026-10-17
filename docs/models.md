@@ -77,26 +77,52 @@ early warning when it is there, never the guarantee. The guarantee is the chain
 -- so the catalog entry is completed by **family defaults** held in code, and
 any field can be overridden per configured model.
 
-**Loaded on first launch.** On startup with no stored catalog, the API asks the
-gateway to fetch it -- the gateway being the tier that reaches the outside --
-and stores what came back. It is refreshed daily by a scheduled job, and on
-demand from the Platform page, limited by the server to once an hour. Snapshots
-are kept, one row per fetch:
+**Shipped with the image.** A snapshot of the catalog, reduced to the fields
+above, is built into every release -- a few hundred kilobytes. A deployment
+starts with a catalog whether or not it can reach anything: first run needs no
+fetch, an offline install works as shipped, and tests run against a known
+catalog rather than whatever the site said that morning. Fetching is how a
+deployment stays current, not how it starts.
+
+**Fetched rarely, and only when it changed.** The site is somebody else's free
+service, and new models arrive weekly at most. So:
+
+- A scheduled job checks once a week, at a time offset per deployment so
+  every install does not ask in the same minute.
+- Every check is conditional (`If-None-Match`, `If-Modified-Since`): a
+  catalog that has not changed costs the site a "not modified" and nothing
+  more.
+- An operator can ask for a refresh from the Platform page, limited by the
+  server to once an hour.
+- Nothing else fetches. A turn, a route and the chain editor read what is
+  stored; the catalog is never on the path of a request.
+
+The fetch goes through the gateway, the tier that reaches the outside. Each
+one that brought something new is kept as a snapshot:
 
 ```
 catalog_snapshots (id, fetched_at, source_url, sha256, models jsonb)
 ```
 
 `models` is the document reduced to the fields above, keyed by provider and
-model id. Configured models record which snapshot their facts came from, so an
-entry that leaves the catalog keeps the facts it had.
+model id. Configured models record which snapshot their facts came from, so a
+refresh never changes a model under anyone, and an entry that leaves the
+catalog keeps the facts it had.
+
+**Where it comes from is a setting.** The source URL defaults to the site and
+can name a mirror -- an internal copy, an object in a bucket -- and fetching
+can be turned off altogether. A deployment managed from a repository can also
+point a setting at a file (a mounted ConfigMap, say), loaded at startup as a
+snapshot like any other, so the catalog is versioned with everything else
+rather than uploaded through a page.
 
 **A deployment that cannot reach the internet** -- air-gapped, or with egress
-locked down -- cannot seed itself. First run then offers two ways on: import a
-catalog file (the same JSON, carried in by hand), or enter models by hand. A
-model served locally -- ollama, llama.cpp, a vLLM -- is never in the catalog
-under the name it is served as, so entering one by hand, with its capabilities
-typed in, is a first-class path and not a fallback.
+locked down -- still has the shipped snapshot, only older. The Platform page
+says how old, and offers the same two ways on as everywhere else: import a
+catalog file (the same JSON, carried in by hand or mounted), or enter models
+by hand. A model served locally -- ollama, llama.cpp, a vLLM -- is never in the
+catalog under the name it is served as, so entering one by hand, with its
+capabilities typed in, is a first-class path and not a fallback.
 
 ## The objects
 
@@ -244,8 +270,8 @@ The first person to sign in as the operator, on a deployment with no models
 configured, is taken to setup. It is skippable, and reachable later from the
 Platform page.
 
-1. **The catalog** is already loading, or offers the file import or hand entry
-   where it cannot be fetched.
+1. **The catalog** is the shipped snapshot or something newer, with its age
+   shown, and the file import and hand entry offered beside it.
 2. **A recipe**, each a chain with its accounts and models filled in:
 
    | Recipe | Chain | Caveats shown |
@@ -324,8 +350,10 @@ Most of the risk is in time passing, so most tests are about it.
 - **Settings:** a fallback to another model sends that model's settings; the
   server refuses a value the model does not accept; a model's own default is
   used when nothing is set.
-- **Catalog:** first-start seeding; refusal of a refresh within the limit; an
-  import file; a model leaving the catalog keeps its facts.
+- **Catalog:** a first start with no network uses the shipped snapshot; a
+  check of an unchanged catalog stores nothing; refusal of a refresh within
+  the limit; a mirror URL and a mounted file each load as a snapshot; fetching
+  turned off fetches nothing; a model leaving the catalog keeps its facts.
 - **Migration:** each row of *What changes* above, against a database shaped
   like today's.
 
@@ -342,8 +370,8 @@ Each phase leaves the platform working.
 2. **Retirement falls over.** The gateway's walk continues past a refused
    model, with its breaker. Independent of everything else, and the thing that
    prevents a retirement from becoming an outage today.
-3. **Catalog.** Snapshots, first-start seeding, the refresh job, the file
-   import.
+3. **Catalog.** The shipped snapshot, stored snapshots, the weekly
+   conditional check, the source setting, and import from a file or a mount.
 4. **Accounts, models, chains** in the database, with the migration from
    `traffic_routes` and `OUTTURN_DEFAULT_MODEL`, and sealed provider keys.
    The gateway reads chains; `ClaudeTraits` goes.
