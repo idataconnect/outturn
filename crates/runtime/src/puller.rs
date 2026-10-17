@@ -389,6 +389,12 @@ impl Puller {
                 // room may well loop again on the same conversation, and each
                 // try is minutes of generation paid for; a person asking again
                 // decides whether that is worth it.
+                // Terminal: the same conversation is declined the same way.
+                Err(e) if e.refused.is_some() => tx.send(ExecuteEvent::Failed {
+                    message: e.refused.clone().unwrap_or_default(),
+                    held: e.held,
+                    terminal: true,
+                }),
                 Err(e) if e.malformed_reply => tx.send(ExecuteEvent::Failed {
                     message: super::component::MALFORMED.into(),
                     held: e.held,

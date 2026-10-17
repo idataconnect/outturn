@@ -292,6 +292,12 @@ pub struct Delta {
     /// unsigned one cannot go back at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_block: Option<serde_json::Value>,
+    /// Why the provider declined to answer, where it did -- the field the
+    /// OpenAI protocol defines for it, on the chunk that ends the stream. A
+    /// refusal can arrive after output has begun, when the response is
+    /// already a 200, so it travels in the stream rather than as a status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

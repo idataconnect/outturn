@@ -376,6 +376,8 @@ pub struct AgentHost {
     open_writers: usize,
     /// Whether a round's reply came back unusable. See `HeldError`.
     malformed_reply: bool,
+    /// Why the provider declined a round, if it did.
+    refused: Option<String>,
 }
 
 /// What separates the text of one model round from the next in a reply.
@@ -571,6 +573,9 @@ pub struct HeldError {
     /// from the host rather than from the error: the failure reaches the
     /// guest as a string, and the guest's error is what the turn returns.
     pub malformed_reply: bool,
+    /// Why the provider declined, where that is what ended it. Read from the
+    /// host for the same reason.
+    pub refused: Option<String>,
 }
 
 impl HeldError {
@@ -579,6 +584,7 @@ impl HeldError {
             held,
             error,
             malformed_reply: false,
+            refused: None,
         }
     }
 }
@@ -607,6 +613,12 @@ pub const MALFORMED: &str = "the model's reply was cut off partway through a too
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct MalformedReply(String);
+
+/// The provider declined to answer, in its own sentence. Not retried: the
+/// same conversation is declined the same way, and every try is paid for.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Refused(pub String);
 
 impl HeldError {
     /// Whether the guest ran out of fuel.
@@ -881,6 +893,9 @@ impl outturn::agent::host::Host for AgentHost {
         .await
         .map_err(|e| {
             self.malformed_reply |= e.downcast_ref::<MalformedReply>().is_some();
+            if let Some(Refused(why)) = e.downcast_ref::<Refused>() {
+                self.refused = Some(why.clone());
+            }
             e.to_string()
         })?;
 
@@ -1689,6 +1704,7 @@ async fn stream_completion(
         std::collections::BTreeMap::new();
     let mut finish_reason = None;
     let mut usage = None;
+    let mut refused: Option<String> = None;
     // Tool calls arrive in fragments keyed by index, and the arguments are a
     // JSON string spread across chunks. Kept sparse by index rather than
     // pushed, since a provider is free to interleave two calls.
@@ -1847,6 +1863,9 @@ async fn stream_completion(
             if let Some(reason) = chunk["choices"][0]["finish_reason"].as_str() {
                 finish_reason = Some(reason.to_string());
             }
+            if let Some(why) = chunk["choices"][0]["delta"]["refusal"].as_str() {
+                refused = Some(why.to_string());
+            }
             if let Some(tier) = chunk["service_tier"].as_str() {
                 served.service_tier = Some(tier.to_string());
             }
@@ -1875,6 +1894,13 @@ async fn stream_completion(
                 });
             }
         }
+    }
+
+    // Ends the round as a failure rather than a short reply: what streamed
+    // before it is still shown, but the turn does not go on as though the
+    // model had finished.
+    if let Some(why) = refused {
+        return Err(Refused(why).into());
     }
 
     for (index, signature) in call_signatures {
@@ -2342,6 +2368,7 @@ impl AgentRunner {
             renderer_url: options.renderer_url,
             open_writers: 0,
             malformed_reply: false,
+            refused: None,
             timezone: options.timezone.as_deref().and_then(|tz| {
                 tz.parse::<chrono_tz::Tz>()
                     .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
@@ -2392,6 +2419,7 @@ impl AgentRunner {
             Ok(Err(e)) => {
                 return Err(HeldError {
                     malformed_reply: store.data().malformed_reply,
+                    refused: store.data().refused.clone(),
                     ..HeldError::new(
                         store.data().held.clone(),
                         // As the guest said it: the guest is passing on

@@ -688,6 +688,30 @@ async fn an_earlier_turns_signed_reply_goes_back_signed() {
     );
 }
 
+/// A provider that declines ends the turn saying why, not as a reply that
+/// merely stopped -- and as a failure nothing retries, since the same
+/// conversation is declined the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_ends_the_turn_saying_why() {
+    let why = "This request was blocked as it seems to violate the terms.";
+    let gateway = FakeGateway::start(Behavior::Refuse {
+        text: "Let me ".into(),
+        why: why.into(),
+    })
+    .await;
+
+    let err = runner()
+        .run(
+            &component(),
+            user("hello"),
+            String::new(),
+            options(&gateway, None),
+        )
+        .await
+        .expect_err("a refusal is not a reply");
+    assert_eq!(err.refused.as_deref(), Some(why));
+}
+
 /// A provider that accepts the request and then goes silent is abandoned.
 ///
 /// TCP will not save us here: the connection is healthy and keepalive probes

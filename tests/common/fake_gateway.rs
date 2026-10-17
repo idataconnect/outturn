@@ -35,6 +35,8 @@ pub fn thinking_block() -> serde_json::Value {
 pub enum Behavior {
     /// Stream this text, split into chunks of a few characters.
     Reply(String),
+    /// Stream this text, then decline to go on, saying why.
+    Refuse { text: String, why: String },
     /// Stream some text, then drop the connection mid-generation.
     TruncateAfter { text: String, chunks: usize },
     /// Fail the request outright.
@@ -403,6 +405,18 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behavior::Refuse { text, why } => {
+            let mut lines: Vec<String> = chunk_text(&text)
+                .iter()
+                .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                .collect();
+            let mut end: serde_json::Value =
+                serde_json::from_str(&chunk_json("", Some("content_filter"))).unwrap();
+            end["choices"][0]["delta"]["refusal"] = serde_json::json!(why);
+            lines.push(format!("{end}\n"));
+            ndjson(lines)
+        }
+
         Behavior::TruncateAfter { text, chunks } => {
             // Ends without a finish_reason, as a dropped upstream would.
             let lines: Vec<String> = chunk_text(&text)
@@ -424,6 +438,7 @@ async fn completions(
 
     let text = match behavior {
         Behavior::Reply(text) => text,
+        Behavior::Refuse { text, .. } => text,
         Behavior::ToolThenReply { reply, .. } => reply,
         Behavior::LoadThenToolThenReply { reply, .. } => reply,
         Behavior::AlwaysToolCall { content, .. } => content,

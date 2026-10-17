@@ -992,6 +992,7 @@ impl AnthropicStream {
                                 reasoning: None,
                                 reasoning_content: None,
                                 thinking_block: None,
+                                refusal: None,
                             },
                             None,
                         ))
@@ -1020,6 +1021,7 @@ impl AnthropicStream {
                                 reasoning: None,
                                 reasoning_content: None,
                                 thinking_block: None,
+                                refusal: None,
                             },
                             None,
                         ))
@@ -1040,6 +1042,7 @@ impl AnthropicStream {
                                 reasoning: Some(thinking.to_string()),
                                 reasoning_content: None,
                                 thinking_block: None,
+                                refusal: None,
                             },
                             None,
                         ))
@@ -1082,6 +1085,7 @@ impl AnthropicStream {
                                 reasoning: None,
                                 reasoning_content: None,
                                 thinking_block: None,
+                                refusal: None,
                             },
                             None,
                         ))
@@ -1095,12 +1099,18 @@ impl AnthropicStream {
                 // `delta`. The split is Anthropic's, and a reader that looks
                 // for either in the other's place finds nothing.
                 self.usage.absorb(&event["usage"], false);
-                let reason = event["delta"]["stop_reason"]
-                    .as_str()
-                    .map(finish_reason_of)
-                    .unwrap_or("stop");
+                let stop_reason = event["delta"]["stop_reason"].as_str();
+                let reason = stop_reason.map(finish_reason_of).unwrap_or("stop");
                 self.finish_reason = Some(reason.to_string());
-                Some(self.chunk(Delta::default(), Some(reason.to_string())))
+                let refusal = (stop_reason == Some("refusal"))
+                    .then(|| refusal_of(&event["delta"]["stop_details"]));
+                Some(self.chunk(
+                    Delta {
+                        refusal,
+                        ..Delta::default()
+                    },
+                    Some(reason.to_string()),
+                ))
             }
 
             // Carries nothing the OpenAI shape has anywhere to put: the reason
@@ -1155,6 +1165,23 @@ impl AnthropicStream {
 ///
 /// An unknown reason becomes "stop" rather than an error: a provider adding
 /// one should not fail a turn that otherwise succeeded.
+/// What a person is told when the provider declined: the explanation's first
+/// sentence, which says what was objected to. The rest is addressed to
+/// whoever integrated the API, so it is logged rather than shown, with the
+/// category the provider filed it under.
+fn refusal_of(details: &serde_json::Value) -> String {
+    let explanation = details["explanation"].as_str().unwrap_or_default();
+    tracing::warn!(
+        category = details["category"].as_str().unwrap_or("unspecified"),
+        explanation,
+        "the provider declined to answer"
+    );
+    match explanation.split_inclusive(". ").next().map(str::trim) {
+        Some(first) if !first.is_empty() => first.to_string(),
+        _ => "The model declined to answer this request.".to_string(),
+    }
+}
+
 fn finish_reason_of(anthropic: &str) -> &'static str {
     match anthropic {
         "tool_use" => "tool_calls",
@@ -1230,6 +1257,32 @@ mod stream_tests {
             }))
         );
         assert_eq!(closed.choices[0].delta.reasoning, None, "not shown twice");
+    }
+
+    /// A refusal says why, in a sentence a person can read, rather than
+    /// ending the stream as though the model had finished.
+    #[test]
+    fn a_refusal_says_why() {
+        let mut s = AnthropicStream::new();
+        s.event(&start(10, 1));
+        let chunk = s
+            .event(&event(serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "refusal", "stop_details": {
+                    "type": "refusal", "category": "reasoning_extraction",
+                    "explanation": "This request was blocked as it seems to violate the terms. API integrators: configure a fallback.",
+                }},
+                "usage": {"output_tokens": 0},
+            })))
+            .expect("the closing chunk");
+        assert_eq!(
+            chunk.choices[0].finish_reason.as_deref(),
+            Some("content_filter")
+        );
+        assert_eq!(
+            chunk.choices[0].delta.refusal.as_deref(),
+            Some("This request was blocked as it seems to violate the terms.")
+        );
     }
 
     /// A stream cut before the signature leaves a block the provider will
@@ -2023,6 +2076,16 @@ impl GeminiStream {
         let finish = candidate["finishReason"]
             .as_str()
             .map(|r| gemini_finish_reason(r, self.called_a_tool));
+        // Said, not left as a stream that merely ended: the provider's own
+        // message where it gave one, else which filter it was.
+        let refusal = (finish.as_deref() == Some("content_filter")).then(|| {
+            let reason = candidate["finishReason"].as_str().unwrap_or_default();
+            tracing::warn!(reason, "the provider declined to answer");
+            match candidate["finishMessage"].as_str() {
+                Some(said) if !said.trim().is_empty() => said.trim().to_string(),
+                _ => format!("The model's provider declined to answer this request ({reason})."),
+            }
+        });
 
         // Nothing to say and nothing to end: usage was the whole of it, and
         // that has been kept.
@@ -2044,6 +2107,7 @@ impl GeminiStream {
                     reasoning: None,
                     reasoning_content: None,
                     thinking_block: None,
+                    refusal,
                 },
                 finish_reason: finish,
             }],
