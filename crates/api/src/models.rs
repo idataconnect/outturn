@@ -831,3 +831,81 @@ pub async fn offered(
             .collect(),
     ))
 }
+
+// -- For the configuration page ------------------------------------------------
+
+/// The gateway's sealing key, for the operator sealing an account's key in
+/// the browser. As `/v1/credentials/seal-key`, without a workspace's
+/// authority: the operator's keys are the platform's.
+pub async fn seal_key(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<super::credentials::SealKey>, ApiError> {
+    operator(&state, &headers)?;
+    super::credentials::seal_key_of(&state).map(Json)
+}
+
+/// One model the catalog has at an account's provider, for choosing one.
+#[derive(Debug, Serialize)]
+pub struct Listed {
+    pub id: String,
+    pub name: Option<String>,
+    pub family: Option<String>,
+    pub release_date: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountCatalog {
+    /// The catalog's provider for the account, or none: an endpoint the
+    /// catalog does not know, whose models are entered by hand.
+    pub provider: Option<String>,
+    /// Newest first.
+    pub models: Vec<Listed>,
+}
+
+pub async fn account_catalog(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(account): Path<Uuid>,
+) -> Result<Json<AccountCatalog>, ApiError> {
+    operator(&state, &headers)?;
+    let row = sqlx::query(
+        "select protocol, base_url from provider_accounts where id = $1 and workspace_id is null",
+    )
+    .bind(account)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| not_found("account"))?;
+    let protocol: String = row.get("protocol");
+    let base_url: String = row.get("base_url");
+    let held: Option<serde_json::Value> =
+        sqlx::query_scalar("select models from catalog_snapshots order by fetched_at desc limit 1")
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal)?;
+    let Some(held) = held else {
+        return Ok(Json(AccountCatalog {
+            provider: None,
+            models: Vec::new(),
+        }));
+    };
+    let provider = catalog::provider_for(&held, &protocol, &base_url);
+    let text = |m: &serde_json::Value, k: &str| m[k].as_str().map(str::to_string);
+    let mut models: Vec<Listed> = provider
+        .as_deref()
+        .and_then(|p| held[p]["models"].as_object())
+        .into_iter()
+        .flatten()
+        .map(|(id, m)| Listed {
+            id: id.clone(),
+            name: text(m, "name"),
+            family: text(m, "family"),
+            release_date: text(m, "release_date"),
+            status: text(m, "status"),
+        })
+        .collect();
+    models.sort_by(|a, b| b.release_date.cmp(&a.release_date).then(a.id.cmp(&b.id)));
+    Ok(Json(AccountCatalog { provider, models }))
+}

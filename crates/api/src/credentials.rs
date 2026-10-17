@@ -53,13 +53,18 @@ pub async fn seal_key_for(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<SealKey>, ApiError> {
     authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    seal_key_of(&state).map(Json)
+}
+
+/// The key and what a sealer needs beside it, for whoever may seal.
+pub(super) fn seal_key_of(state: &ApiState) -> Result<SealKey, ApiError> {
     let (public, id) = state.seal_key.as_ref().ok_or_else(no_seal_key)?;
-    Ok(Json(SealKey {
+    Ok(SealKey {
         public_key: hex::encode(public),
         key_id: id.clone(),
         suite: "HPKE base, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM",
         info: std::str::from_utf8(seal::INFO).unwrap_or_default(),
-    }))
+    })
 }
 
 /// A credential as a workspace sees it: where it may go, never what it is.

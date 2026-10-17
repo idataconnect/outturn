@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BookOpen, RefreshCw, Upload } from 'lucide-react'
 import { heldCatalog, importCatalog, refreshCatalog, type HeldCatalog } from '../lib/catalog'
+import { configured, type Configured } from '../lib/models'
+import Accounts from '../components/models/Accounts'
+import Models from '../components/models/Models'
 
 /** "3 days ago", "in 5 hours": near enough for an age, which is all this is. */
 function relative(when: string, now = Date.now()): string {
@@ -26,11 +29,11 @@ function origin(source: string): string {
 }
 
 /**
- * The models this deployment knows about. For now its catalog: where it came
- * from, how old it is, and when it is next checked. The catalog is what a
- * configured model's facts come from -- what it accepts, how far it reaches --
- * and it ships with every release, so a deployment that can reach nothing
- * still has one; this page says how current it is.
+ * The models this deployment answers with: the accounts requests go to, the
+ * models configured at them, and the catalog their facts come from -- what
+ * each accepts, how far it reaches. The catalog ships with every release, so
+ * a deployment that can reach nothing still has one; this page says how
+ * current it is.
  */
 export default function PlatformModels() {
   const [held, setHeld] = useState<HeldCatalog | null>(null)
@@ -38,6 +41,14 @@ export default function PlatformModels() {
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const file = useRef<HTMLInputElement>(null)
+  const [config, setConfig] = useState<Configured | null>(null)
+
+  const loadConfig = useCallback(() => {
+    configured()
+      .then(setConfig)
+      .catch((e: Error) => setError(e.message))
+  }, [])
+  useEffect(loadConfig, [loadConfig])
 
   const load = useCallback(() => {
     heldCatalog()
@@ -69,9 +80,17 @@ export default function PlatformModels() {
       <div>
         <h1 className="text-2xl font-semibold text-surface-900 dark:text-surface-100">Models</h1>
         <p className="mt-2 text-surface-600 dark:text-surface-400">
-          What this deployment knows about the models providers offer. Visible to the operator only.
+          Where this deployment's model requests go, and what it knows about the models providers offer.
+          Visible to the operator only.
         </p>
       </div>
+
+      {config && (
+        <>
+          <Accounts accounts={config.accounts} reload={loadConfig} />
+          <Models accounts={config.accounts} models={config.models} reload={loadConfig} />
+        </>
+      )}
 
       <section className="rounded-lg border border-surface-200 dark:border-surface-700 p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">

@@ -27,13 +27,22 @@ export function toBase64(bytes: Uint8Array): string {
   return btoa(s)
 }
 
-export type Binding = {
-  credential: string
-  kind: 'static'
-  workspaces: string[]
-  hosts: string[]
-  header: string
-}
+export type Binding =
+  | {
+      credential: string
+      kind: 'static'
+      workspaces: string[]
+      hosts: string[]
+      header: string
+    }
+  | {
+      /** A provider account's key: no header, since the account's protocol
+       *  decides where it goes, and never attachable to an agent's request. */
+      credential: string
+      kind: 'provider'
+      workspaces: string[]
+      hosts: string[]
+    }
 
 /** The binding's bytes, written once: what is sealed under is what is sent. */
 export function bindingBytes(binding: Binding): Uint8Array {
