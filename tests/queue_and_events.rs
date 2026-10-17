@@ -4188,3 +4188,202 @@ async fn a_retired_model_falls_over_to_the_next_route_and_is_then_skipped() {
     );
     drop(db);
 }
+
+// Accounts, models and chains, from traffic_routes ---------------------------
+
+/// Replays the migration that replaced routes, against routes inserted as
+/// today's deployments hold them. The tables it fills are emptied first, so
+/// what it finds is only what the routes say.
+async fn migrate_routes(pool: &PgPool) {
+    sqlx::raw_sql(
+        "delete from chain_assignments; delete from chain_links; delete from chains; \
+         delete from models; delete from provider_accounts; \
+         drop table chain_assignments, chain_links, chains, models, provider_accounts",
+    )
+    .execute(pool)
+    .await
+    .expect("empty");
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::raw_sql(include_str!(
+        "../migrations/0041_provider_accounts_models_chains.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .expect("migrate routes");
+    tx.commit().await.expect("commit");
+}
+
+/// Each endpoint and credential an account, each row a model, each class a
+/// chain in priority order; a disabled route left behind; a workspace's
+/// routes its own chain, not mixed into the platform's.
+#[tokio::test]
+async fn routes_become_accounts_models_and_chains() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(
+        pool,
+        None,
+        "assistant",
+        20,
+        "https://api.anthropic.com",
+        "claude-haiku-5-5",
+    )
+    .await;
+    add_route(
+        pool,
+        None,
+        "assistant",
+        10,
+        "https://api.anthropic.com",
+        "claude-sonnet-5-5",
+    )
+    .await;
+    add_route(
+        pool,
+        None,
+        "background",
+        10,
+        "http://ollama:11434/v1",
+        "qwen3.5",
+    )
+    .await;
+    add_route(
+        pool,
+        Some(workspace),
+        "assistant",
+        10,
+        "http://ollama:11434/v1",
+        "qwen3.5",
+    )
+    .await;
+    sqlx::query("update traffic_routes set provider = 'anthropic', credential_ref = 'ANTHROPIC_API_KEY' where base_url like '%anthropic%'")
+        .execute(pool)
+        .await
+        .unwrap();
+    add_route(pool, None, "session-name", 10, "http://off", "nobody").await;
+    sqlx::query("update traffic_routes set enabled = false where base_url = 'http://off'")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    migrate_routes(pool).await;
+
+    let accounts: Vec<(Option<Uuid>, String, String, Option<String>)> = sqlx::query_as(
+        "select workspace_id, protocol, base_url, credential_env from provider_accounts \
+         order by protocol, workspace_id nulls first",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        accounts,
+        [
+            (
+                None,
+                "anthropic".into(),
+                "https://api.anthropic.com".into(),
+                Some("ANTHROPIC_API_KEY".into())
+            ),
+            (None, "openai".into(), "http://ollama:11434/v1".into(), None),
+            (
+                Some(workspace),
+                "openai".into(),
+                "http://ollama:11434/v1".into(),
+                None
+            ),
+        ],
+        "two Claude models share one account, and the workspace's is its own"
+    );
+
+    let chain = |ws: Option<Uuid>, class: &'static str| async move {
+        sqlx::query_scalar::<_, String>(
+            "select m.model from chain_assignments c \
+             join chain_links l on l.chain_id = c.chain_id \
+             join models m on m.id = l.model_id \
+             where c.workspace_id is not distinct from $1 and c.traffic_type = $2 \
+             order by l.position",
+        )
+        .bind(ws)
+        .bind(class)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        chain(None, "assistant").await,
+        ["claude-sonnet-5-5", "claude-haiku-5-5"]
+    );
+    assert_eq!(chain(None, "background").await, ["qwen3.5"]);
+    assert_eq!(chain(Some(workspace), "assistant").await, ["qwen3.5"]);
+    assert!(
+        chain(None, "session-name").await.is_empty(),
+        "a disabled route is passed over"
+    );
+
+    finish!(db);
+}
+
+/// A migrated model the catalog knows takes its entry and its name; one it
+/// does not stays hand-entered; one with facts already is left alone.
+#[tokio::test]
+async fn migrated_models_are_linked_to_the_catalog() {
+    let (db, _workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(
+        pool,
+        None,
+        "assistant",
+        10,
+        "https://api.anthropic.com",
+        "claude-sonnet-5-5",
+    )
+    .await;
+    add_route(
+        pool,
+        None,
+        "assistant",
+        20,
+        "http://ollama:11434/v1",
+        "qwen3.5",
+    )
+    .await;
+    sqlx::query(
+        "update traffic_routes set provider = 'anthropic' where base_url like '%anthropic%'",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    migrate_routes(pool).await;
+    outturn::api::catalog::keep(pool, "shipped", None, &outturn::catalog::shipped())
+        .await
+        .unwrap();
+
+    assert_eq!(outturn::api::catalog::link_models(pool).await.unwrap(), 1);
+    let rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
+        "select model, name, catalog_provider, facts is not null from models order by model",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude-sonnet-5-5".into(),
+                "Claude Sonnet 5.5".into(),
+                Some("anthropic".into()),
+                true
+            ),
+            ("qwen3.5".into(), "qwen3.5".into(), None, false),
+        ]
+    );
+    assert_eq!(
+        outturn::api::catalog::link_models(pool).await.unwrap(),
+        0,
+        "linking twice links nothing new"
+    );
+
+    finish!(db);
+}

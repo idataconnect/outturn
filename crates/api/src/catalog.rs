@@ -104,6 +104,56 @@ pub async fn at_startup(pool: &PgPool) {
     {
         tracing::error!(error = %e, "could not keep the shipped catalog");
     }
+
+    if let Err(e) = link_models(pool).await {
+        tracing::error!(error = %e, "could not link models to the catalog");
+    }
+}
+
+/// Gives each model that has no catalog link and no facts the entry the
+/// newest catalog has for it, if any. Models migrated from routes arrive
+/// this way; one the catalog does not know stays hand-entered. A model that
+/// already has facts is never touched: they were chosen, and a newer catalog
+/// changes nobody's model under them.
+pub async fn link_models(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let newest: Option<(Uuid, serde_json::Value)> =
+        sqlx::query_as("select id, models from catalog_snapshots order by fetched_at desc limit 1")
+            .fetch_optional(pool)
+            .await?;
+    let Some((snapshot, held)) = newest else {
+        return Ok(0);
+    };
+    let unlinked: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "select m.id, m.model, a.protocol, a.base_url \
+         from models m join provider_accounts a on a.id = m.account_id \
+         where m.catalog_provider is null and m.facts is null",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut linked = 0;
+    for (id, model, protocol, base_url) in unlinked {
+        let Some(provider) = catalog::provider_for(&held, &protocol, &base_url) else {
+            continue;
+        };
+        let Some(facts) = catalog::entry(&held, &provider, &model) else {
+            continue;
+        };
+        sqlx::query(
+            "update models set catalog_provider = $2, catalog_model = $3, snapshot_id = $4, \
+             facts = $5, name = coalesce($6, name) \
+             where id = $1 and catalog_provider is null and facts is null",
+        )
+        .bind(id)
+        .bind(&provider)
+        .bind(&model)
+        .bind(snapshot)
+        .bind(facts)
+        .bind(facts["name"].as_str())
+        .execute(pool)
+        .await?;
+        linked += 1;
+    }
+    Ok(linked)
 }
 
 /// The catalog this deployment holds, as the Platform page shows it.

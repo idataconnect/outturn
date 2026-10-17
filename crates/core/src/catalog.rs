@@ -138,8 +138,80 @@ pub fn counts(catalog: &serde_json::Value) -> (usize, usize) {
     (providers, models)
 }
 
+/// The catalog's provider for an account: the one whose API is at the
+/// account's host, else the one that is the protocol's own vendor at its own
+/// host. An OpenAI-protocol account anywhere else -- ollama, a proxy -- is
+/// none of them, and its models are entered by hand.
+pub fn provider_for(catalog: &serde_json::Value, protocol: &str, base_url: &str) -> Option<String> {
+    let host = host_of(base_url)?;
+    let providers = catalog.as_object()?;
+    let by_api = providers.iter().find(|(_, p)| {
+        p["api"]
+            .as_str()
+            .and_then(host_of)
+            .is_some_and(|api| api == host)
+    });
+    if let Some((id, _)) = by_api {
+        return Some(id.clone());
+    }
+    let (id, vendor_host) = match protocol {
+        "anthropic" => ("anthropic", "api.anthropic.com"),
+        "gemini" => ("google", "generativelanguage.googleapis.com"),
+        "openai" => ("openai", "api.openai.com"),
+        // Bedrock's host names its region, and every region is Bedrock.
+        "bedrock" if host.starts_with("bedrock-runtime.") => return Some("amazon-bedrock".into()),
+        _ => return None,
+    };
+    (host == vendor_host && providers.contains_key(id)).then(|| id.to_string())
+}
+
+/// A model's catalog entry, by provider and the id the provider is asked for.
+pub fn entry<'a>(
+    catalog: &'a serde_json::Value,
+    provider: &str,
+    model: &str,
+) -> Option<&'a serde_json::Value> {
+    catalog.get(provider)?.get("models")?.get(model)
+}
+
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest.split(['/', ':']).next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_account_finds_its_provider() {
+        let catalog = serde_json::json!({
+            "anthropic": {"models": {}},
+            "google": {"models": {}},
+            "openai": {"models": {}},
+            "amazon-bedrock": {"models": {}},
+            "openrouter": {"api": "https://openrouter.ai/api/v1", "models": {}},
+        });
+        let of = |protocol, url| super::provider_for(&catalog, protocol, url);
+        assert_eq!(
+            of("anthropic", "https://api.anthropic.com").as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            of("gemini", "https://generativelanguage.googleapis.com/v1beta").as_deref(),
+            Some("google")
+        );
+        assert_eq!(
+            of("openai", "https://openrouter.ai/api/v1").as_deref(),
+            Some("openrouter")
+        );
+        assert_eq!(
+            of("bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com").as_deref(),
+            Some("amazon-bedrock")
+        );
+        assert_eq!(of("openai", "http://ollama.ollama:11434/v1"), None);
+        assert_eq!(of("anthropic", "http://proxy.example.com"), None);
+    }
+
     use super::*;
 
     fn site() -> serde_json::Value {
