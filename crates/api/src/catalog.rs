@@ -60,6 +60,7 @@ pub async fn keep(
     .bind(models)
     .execute(pool)
     .await?;
+    after_new_catalog(pool).await;
     Ok(Some(id))
 }
 
@@ -107,6 +108,14 @@ pub async fn at_startup(pool: &PgPool) {
 
     if let Err(e) = link_models(pool).await {
         tracing::error!(error = %e, "could not link models to the catalog");
+    }
+    after_new_catalog(pool).await;
+}
+
+/// What a newly kept catalog changes: models tracking "Latest" move, or ask.
+pub async fn after_new_catalog(pool: &PgPool) {
+    if let Err(e) = super::tracking::track(pool).await {
+        tracing::error!(error = %e, "could not bring tracked models up to date");
     }
 }
 

@@ -12344,3 +12344,138 @@ async fn a_setting_for_one_model_is_one_that_model_accepts() {
     assert_eq!(effort["value"], "high", "{effort}");
     assert_eq!(effort["per_model"], true);
 }
+
+/// "Latest", against the shipped catalog. A model tracked with nothing set
+/// for it moves to the newest in its line at once. One with a value the
+/// newest refuses -- a temperature, which Sonnet 5.5 takes none of -- stays,
+/// says why and what approving would change, and asks the operator; approving
+/// moves it with the value adjusted, and the question is settled. A pinned
+/// model stays put and is offered its newer version.
+#[tokio::test]
+async fn a_tracked_model_moves_or_asks_and_a_pinned_one_is_offered() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, admin) = template_people(&h).await;
+    let json = |body: &str| -> Value { serde_json::from_str(body).unwrap() };
+    let (_, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"Anthropic","protocol":"anthropic","base_url":"https://api.anthropic.com"}"#,
+        )
+        .await;
+    let account = json(&body)["id"].clone();
+    let configure = |model: &str| {
+        let body = serde_json::json!({"account_id": account, "model": model}).to_string();
+        let h = &h;
+        let operator = operator.clone();
+        async move {
+            let (status, body) = h.post("/v1/platform/models", Some(&operator), &body).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let haiku = configure("claude-haiku-4-5").await;
+    let sonnet = configure("claude-sonnet-4-5").await;
+    let opus = configure("claude-opus-4-8").await;
+
+    let (status, _) = send_as(
+        &h,
+        "PUT",
+        &format!("/v1/settings/temperature?model={sonnet}"),
+        &admin,
+        r#"{"value": 0.5}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for id in [&haiku, &sonnet] {
+        let (status, body) = send_as(
+            &h,
+            "PATCH",
+            &format!("/v1/platform/models/{id}"),
+            &operator,
+            r#"{"tracks": true}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    let model_of = |id: String| {
+        let h = &h;
+        let operator = operator.clone();
+        async move {
+            let (_, body) = h.get("/v1/platform/models", Some(&operator)).await;
+            serde_json::from_str::<Value>(&body).unwrap()["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["id"] == id.as_str())
+                .unwrap()
+                .clone()
+        }
+    };
+    let moved = model_of(haiku.clone()).await;
+    assert_eq!(moved["model"], "claude-haiku-5-5", "{moved}");
+    assert!(moved["pending_model"].is_null());
+
+    let held = model_of(sonnet.clone()).await;
+    assert_eq!(held["model"], "claude-sonnet-4-5", "{held}");
+    assert_eq!(held["pending_model"], "claude-sonnet-5-5");
+    assert_eq!(held["pending_adjustments"][0]["key"], "temperature");
+    assert!(held["pending_adjustments"][0]["to"].is_null());
+
+    let pinned = model_of(opus.clone()).await;
+    assert_eq!(pinned["model"], "claude-opus-4-8");
+    assert_eq!(pinned["pending_model"], "claude-opus-5-5");
+
+    let (_, body) = h.get("/v1/action-items", Some(&operator)).await;
+    let asked = json(&body)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "model.upgrade")
+        .count();
+    assert_eq!(asked, 2, "the operator was not asked about both: {body}");
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/platform/models/{sonnet}/upgrade"),
+            Some(&operator),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let upgraded = model_of(sonnet.clone()).await;
+    assert_eq!(upgraded["model"], "claude-sonnet-5-5");
+    let (_, body) = h
+        .get(&format!("/v1/settings?model={sonnet}"), Some(&admin))
+        .await;
+    let view: Vec<Value> = serde_json::from_str(&body).unwrap();
+    let temperature = view.iter().find(|s| s["key"] == "temperature").unwrap();
+    assert!(
+        temperature["value"].is_null(),
+        "not adjusted: {temperature}"
+    );
+
+    let (_, body) = h.get("/v1/action-items", Some(&operator)).await;
+    let still = json(&body)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "model.upgrade")
+        .count();
+    assert_eq!(
+        still, 1,
+        "the approved upgrade's question is still open: {body}"
+    );
+
+    // The platform's questions are the operator's alone.
+    let (_, body) = h.get("/v1/action-items", Some(&admin)).await;
+    assert!(
+        !body.contains("model.upgrade"),
+        "a workspace admin was asked: {body}"
+    );
+}

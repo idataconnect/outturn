@@ -89,6 +89,13 @@ pub struct Model {
     pub catalog_model: Option<String>,
     pub facts: Option<serde_json::Value>,
     pub overrides: serde_json::Value,
+    /// The family it tracks, for "Latest"; none when pinned.
+    pub tracks: Option<String>,
+    /// A newer version waiting on somebody, why, and what approving it would
+    /// change.
+    pub pending_model: Option<String>,
+    pub pending_reason: Option<String>,
+    pub pending_adjustments: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,7 +140,8 @@ pub async fn view(
     })
     .collect();
     let models = sqlx::query(
-        "select id, account_id, name, model, catalog_provider, catalog_model, facts, overrides \
+        "select id, account_id, name, model, catalog_provider, catalog_model, facts, overrides, \
+                tracks, pending_model, pending_reason, pending_adjustments \
          from models where workspace_id is null order by id",
     )
     .fetch_all(pool)
@@ -149,6 +157,10 @@ pub async fn view(
         catalog_model: r.get("catalog_model"),
         facts: r.get("facts"),
         overrides: r.get("overrides"),
+        tracks: r.get("tracks"),
+        pending_model: r.get("pending_model"),
+        pending_reason: r.get("pending_reason"),
+        pending_adjustments: r.get("pending_adjustments"),
     })
     .collect();
     let chains = sqlx::query(
@@ -371,6 +383,10 @@ pub struct NewModel {
     pub facts: Option<serde_json::Value>,
     #[serde(default)]
     pub overrides: Option<serde_json::Value>,
+    /// Track "Latest" in this model's line rather than pin it: it is
+    /// configured as the newest there now, and moves when a newer one comes.
+    #[serde(default)]
+    pub tracks: bool,
 }
 
 pub async fn create_model(
@@ -395,6 +411,13 @@ pub async fn create_model(
     let protocol: String = row.get("protocol");
     let base_url: String = row.get("base_url");
 
+    if input.tracks && input.facts.is_some() {
+        return Err(bad(
+            "a model described by hand has no line in the catalog to track".into(),
+        ));
+    }
+    let mut asked = input.model.clone();
+    let mut tracks = None;
     let (link, facts) = match input.facts {
         Some(facts) if facts.is_object() => (None, Some(facts)),
         Some(_) => return Err(bad("facts is an object, shaped as a catalog entry".into())),
@@ -407,7 +430,11 @@ pub async fn create_model(
             .map_err(internal)?;
             let found = newest.and_then(|(snapshot, held)| {
                 let provider = catalog::provider_for(&held, &protocol, &base_url)?;
-                let entry = catalog::entry(&held, &provider, &input.model)?.clone();
+                catalog::entry(&held, &provider, &input.model)?;
+                if input.tracks {
+                    asked = catalog::newest_in_line(&held, &provider, &input.model)?;
+                }
+                let entry = catalog::entry(&held, &provider, &asked)?.clone();
                 Some(((provider, snapshot), entry))
             });
             match found {
@@ -421,43 +448,59 @@ pub async fn create_model(
             }
         }
     };
+    if input.tracks {
+        tracks = facts
+            .as_ref()
+            .and_then(|f| f["family"].as_str().map(str::to_string));
+        if tracks.is_none() {
+            return Err(bad(format!(
+                "the catalog gives {} no family to track",
+                input.model
+            )));
+        }
+    }
     let name = input
         .name
         .filter(|n| !n.trim().is_empty())
         .or_else(|| facts.as_ref()?["name"].as_str().map(str::to_string))
-        .unwrap_or_else(|| input.model.clone());
+        .unwrap_or_else(|| asked.clone());
     let id = Uuid::now_v7();
     let (catalog_provider, snapshot) = link.map_or((None, None), |(p, s)| (Some(p), Some(s)));
-    let catalog_model = catalog_provider.as_ref().map(|_| input.model.clone());
+    let catalog_model = catalog_provider.as_ref().map(|_| asked.clone());
     sqlx::query(
         "insert into models (id, workspace_id, account_id, name, model, catalog_provider, \
-             catalog_model, snapshot_id, facts, overrides) \
-         values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9)",
+             catalog_model, snapshot_id, facts, overrides, tracks) \
+         values ($1, null, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(id)
     .bind(input.account_id)
     .bind(&name)
-    .bind(&input.model)
+    .bind(&asked)
     .bind(&catalog_provider)
     .bind(&catalog_model)
     .bind(snapshot)
     .bind(&facts)
     .bind(&overrides)
+    .bind(&tracks)
     .execute(&state.pool)
     .await
     .map_err(internal)?;
-    tracing::info!(%actor, model = %id, name = %input.model, "model configured");
+    tracing::info!(%actor, model = %id, name = %asked, tracking = tracks.is_some(), "model configured");
     Ok((
         StatusCode::CREATED,
         Json(Model {
             id,
             account_id: input.account_id,
             name,
-            model: input.model,
+            model: asked,
             catalog_provider,
             catalog_model,
             facts,
             overrides,
+            tracks,
+            pending_model: None,
+            pending_reason: None,
+            pending_adjustments: None,
         }),
     ))
 }
@@ -469,6 +512,9 @@ pub struct ModelChange {
     /// Replaces the overrides whole; `{}` clears them.
     #[serde(default)]
     pub overrides: Option<serde_json::Value>,
+    /// Track "Latest" (true) or pin to the version it is on (false).
+    #[serde(default)]
+    pub tracks: Option<bool>,
 }
 
 pub async fn update_model(
@@ -484,21 +530,63 @@ pub async fn update_model(
             "overrides is an object of catalog fields".into(),
         ));
     }
+    // Tracking takes the family from the facts it already has; a model
+    // entered by hand has none, and is refused rather than tracking nothing.
     let done = sqlx::query(
-        "update models set name = coalesce($2, name), overrides = coalesce($3, overrides) \
-         where id = $1 and workspace_id is null",
+        "update models set name = coalesce($2, name), overrides = coalesce($3, overrides), \
+             tracks = case $4::bool when true then facts->>'family' when false then null \
+                      else tracks end \
+         where id = $1 and workspace_id is null \
+           and ($4::bool is not true or (catalog_provider is not null and facts ? 'family'))",
     )
     .bind(id)
     .bind(input.name.filter(|n| !n.trim().is_empty()))
     .bind(input.overrides)
+    .bind(input.tracks)
     .execute(&state.pool)
     .await
     .map_err(internal)?;
     if done.rows_affected() == 0 {
-        return Err(not_found("model"));
+        return Err(if input.tracks == Some(true) {
+            (
+                StatusCode::BAD_REQUEST,
+                "no such catalog model to track".to_string(),
+            )
+        } else {
+            not_found("model")
+        });
+    }
+    // Turning tracking on or off changes what should be waiting.
+    if input.tracks.is_some()
+        && let Err(e) = super::tracking::track(&state.pool).await
+    {
+        tracing::error!(error = %e, "could not bring tracked models up to date");
     }
     tracing::info!(%actor, model = %id, "model changed");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Approves the version waiting for a model: it moves there, with the
+/// adjustments that were proposed. 409 when what it would change is no
+/// longer what was proposed; the new proposal is then in the model's view.
+pub async fn upgrade_model(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use super::tracking::UpgradeError;
+    let actor = operator(&state, &headers)?;
+    match super::tracking::approve(&state.pool, id).await {
+        Ok(to) => {
+            tracing::info!(%actor, model = %id, %to, "model upgrade approved");
+            Ok(Json(serde_json::json!({ "model": to })))
+        }
+        Err(UpgradeError::NotFound) => Err(not_found("model")),
+        Err(
+            e @ (UpgradeError::NothingPending | UpgradeError::Withdrawn | UpgradeError::Changed),
+        ) => Err((StatusCode::CONFLICT, e.to_string())),
+        Err(UpgradeError::Database(e)) => Err(internal(e)),
+    }
 }
 
 pub async fn delete_model(

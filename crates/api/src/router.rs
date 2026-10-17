@@ -1860,6 +1860,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::models::view).post(super::models::create_model),
         )
         .route(
+            "/v1/platform/models/{id}/upgrade",
+            post(super::models::upgrade_model),
+        )
+        .route(
             "/v1/platform/models/{id}",
             axum::routing::patch(super::models::update_model).delete(super::models::delete_model),
         )

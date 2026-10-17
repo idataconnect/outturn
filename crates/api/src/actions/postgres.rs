@@ -371,6 +371,10 @@ impl ActionStore for PostgresActionStore {
         //
         //   `m` decides which workspaces the reader belongs to. Without it a
         //   direct user target would be returned from a workspace they left.
+        //   The platform's own workspace is the one exception, admitted for
+        //   an operator, who belongs to it by being one: what is waiting on
+        //   the operator (a model's upgrade, say) is raised there, and has to
+        //   reach them whichever workspace they have open.
         //
         //   `r` decides which role targets within those workspaces reach them.
         //   Without it every item in a workspace they belong to would arrive,
@@ -386,8 +390,11 @@ impl ActionStore for PostgresActionStore {
                     i.state, i.resolved_note, i.created_at, i.expires_at \
              from action_items i \
              where i.state = 'pending' \
-               and exists (select 1 from user_workspace_roles m \
-                           where m.workspace_id = i.workspace_id and m.user_id = $1) \
+               and (exists (select 1 from user_workspace_roles m \
+                            where m.workspace_id = i.workspace_id and m.user_id = $1) \
+                    or (i.workspace_id = '00000000-0000-0000-0000-000000000001' \
+                        and exists (select 1 from user_system_roles s \
+                                    where s.user_id = $1 and s.role = 'system_admin'))) \
                and exists ( \
                    select 1 from action_targets t \
                    where t.workspace_id = i.workspace_id and t.item_id = i.id \
@@ -423,8 +430,11 @@ impl ActionStore for PostgresActionStore {
             "select count(*) from ( \
                  select i.id from action_items i \
                  where i.state = 'pending' \
-                   and exists (select 1 from user_workspace_roles m \
-                               where m.workspace_id = i.workspace_id and m.user_id = $1) \
+                   and (exists (select 1 from user_workspace_roles m \
+                                where m.workspace_id = i.workspace_id and m.user_id = $1) \
+                        or (i.workspace_id = '00000000-0000-0000-0000-000000000001' \
+                            and exists (select 1 from user_system_roles s \
+                                        where s.user_id = $1 and s.role = 'system_admin'))) \
                    and exists ( \
                        select 1 from action_targets t \
                        where t.workspace_id = i.workspace_id and t.item_id = i.id \

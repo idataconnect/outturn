@@ -34,6 +34,7 @@ pub mod settings;
 pub mod skill;
 mod skill_sources;
 mod skills;
+pub mod tracking;
 pub mod trigger;
 pub mod usage;
 pub mod user;
