@@ -55,7 +55,9 @@ What the queue adds is everything the hold cannot express:
   yet.
 - **One list across workspaces.** A hold belongs to one workspace. A person
   belongs to several, and the workspace they are not looking at is exactly where
-  an unseen decision sits.
+  an unseen decision sits. The platform's own workspace counts as one an operator
+  belongs to, so what is waiting on the operator -- a model's upgrade -- is
+  raised there and reaches them wherever they are.
 - **A badge.** One number for the whole application, which no per-workspace read
   can give.
 

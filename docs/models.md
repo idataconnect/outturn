@@ -432,8 +432,30 @@ Each phase leaves the platform working.
    and prompt repetition is the first model's. A template's fixed value wins
    wherever the model can take it. "The model's own default" is the
    setting's: the catalog says nothing about default efforts.
-6. **Tracking "Latest"**, upgrades with validation and approval, and the
-   reminders.
+6. **Tracking "Latest".** Built (`api::tracking`), run whenever a catalog is
+   kept and at startup. A line is narrower than a catalog family, which is
+   coarse -- Gemini Pro's holds image, research and translation models -- so
+   the next version must also be what the current one is: the same output,
+   at least the same input, tools and reasoning where it has them, and the
+   same id up to the family's name, which keeps Bedrock's `us.` ids among
+   `us.` ones. A provider's moving alias (`-latest`) is never chosen, nor a
+   preview unless the current model is one (`catalog::newest_in_line`).
+
+   A tracked model with nothing set against the new version moves; one with
+   a value the new version refuses waits, and so does a pinned model with a
+   newer version out. Either way `pending_model` says what is waiting, why,
+   and what approving would change (`model_settings::adjust`), and an
+   `model.upgrade` item asks the operator. `POST
+   /v1/platform/models/{id}/upgrade` approves it, refused with 409 if the
+   values it would change are no longer the ones shown. The operator is
+   asked in the platform's own workspace, which the inbox admits for system
+   administrators whichever workspace they have open. A workspace's own
+   models will ask its administrators, once it can have any.
+
+   A turn finishes on the version it began on: a moved model keeps its
+   previous version and facts, and the gateway asks for that one when the
+   turn's reply -- a UUIDv7, so it says when the turn began -- is older than
+   the move.
 7. **The UI:** the chain editor, per-model settings, then first-run setup and
    recipes.
 8. **Bedrock**, which the "two doors" recipe needs. Begun: a `bedrock` route
