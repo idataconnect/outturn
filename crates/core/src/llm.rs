@@ -298,6 +298,11 @@ pub struct Delta {
     /// already a 200, so it travels in the stream rather than as a status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
+    /// What the provider filed a refusal under, beside it. Not part of the
+    /// OpenAI protocol, which has no category; read by the runtime so a
+    /// refusal can be shown with what kind it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

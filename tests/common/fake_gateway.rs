@@ -413,6 +413,8 @@ async fn completions_stream(
             let mut end: serde_json::Value =
                 serde_json::from_str(&chunk_json("", Some("content_filter"))).unwrap();
             end["choices"][0]["delta"]["refusal"] = serde_json::json!(why);
+            end["choices"][0]["delta"]["refusal_category"] =
+                serde_json::json!("reasoning_extraction");
             lines.push(format!("{end}\n"));
             ndjson(lines)
         }

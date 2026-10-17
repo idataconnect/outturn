@@ -766,6 +766,13 @@ pub struct LeaseLost;
 #[error("{0}")]
 struct FailedForGood(String);
 
+/// A turn the model's provider declined to answer. Final for the same reason
+/// as `FailedForGood`, and its own type because it is not a failure: the
+/// reader is shown that a safety check tripped, not that something broke.
+#[derive(Debug, thiserror::Error)]
+#[error("{}", .0.reason)]
+struct Declined(outturn_core::protocol::work::Refusal);
+
 pub struct Worker {
     pub pool: PgPool,
     pub agents: Arc<dyn AgentStore>,
@@ -894,6 +901,36 @@ impl Worker {
     /// no timescale at all. Both halves matter, which is why they are one
     /// function rather than two blocks that drifted apart.
     async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
+        self.abandon_payload_with(payload, reason, None).await
+    }
+
+    /// Kept on the prompt the refusal answered, so a reader who opens the
+    /// conversation later is shown it the same way as one who watched it
+    /// happen. Not fatal: the live event still says it.
+    async fn record_refusal(
+        &self,
+        payload: &ChatTurnPayload,
+        refusal: &outturn_core::protocol::work::Refusal,
+    ) {
+        if let Err(e) = sqlx::query(
+            "update agent_messages set metadata = metadata || jsonb_build_object('refused', $2::jsonb) \
+             where id = $1",
+        )
+        .bind(payload.message_id)
+        .bind(serde_json::json!(refusal))
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(error = %e, "could not record the refusal on its prompt");
+        }
+    }
+
+    async fn abandon_payload_with(
+        &self,
+        payload: &ChatTurnPayload,
+        reason: &str,
+        refusal: Option<&outturn_core::protocol::work::Refusal>,
+    ) {
         // The attempt being abandoned is the latest one: earlier attempts are
         // finished, and one of them may hold the refusal somebody approved
         // against. `current_attempt` is the one this turn was writing.
@@ -919,7 +956,14 @@ impl Worker {
             payload.workspace_id,
             Some(payload.session_id),
             "chat.error",
-            serde_json::json!({ "message": reason, "message_id": payload.message_id }),
+            match refusal {
+                Some(refusal) => serde_json::json!({
+                    "message": reason,
+                    "message_id": payload.message_id,
+                    "refusal": refusal,
+                }),
+                None => serde_json::json!({ "message": reason, "message_id": payload.message_id }),
+            },
         )
         .await;
     }
@@ -1381,6 +1425,7 @@ impl Worker {
                         message,
                         held,
                         terminal,
+                        refusal,
                     }) => {
                         // A turn a hold cut and that then failed is a stop
                         // first and a failure second. Latched before the bail,
@@ -1397,6 +1442,9 @@ impl Worker {
                                 reason = %reason,
                                 "a hold cut this turn before it failed; the session is stopped"
                             );
+                        }
+                        if let Some(refusal) = refusal {
+                            return Err(Declined(refusal).into());
                         }
                         if terminal {
                             return Err(FailedForGood(message).into());
@@ -2837,9 +2885,14 @@ impl Worker {
                 // Given up on now rather than after the attempts run out: the
                 // next attempt would fail the same way, after paying again for
                 // every model call this one made on the way there.
-                let for_good = e.downcast_ref::<FailedForGood>().is_some();
+                let declined = e.downcast_ref::<Declined>().map(|d| d.0.clone());
+                let for_good = e.downcast_ref::<FailedForGood>().is_some() || declined.is_some();
+                if let Some(refusal) = &declined {
+                    self.record_refusal(&payload, refusal).await;
+                }
                 if for_good || job.attempts >= job.max_attempts {
-                    self.abandon_payload(&payload, &e.to_string()).await;
+                    self.abandon_payload_with(&payload, &e.to_string(), declined.as_ref())
+                        .await;
                 } else {
                     let _ = events::append(
                         &self.pool,

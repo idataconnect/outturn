@@ -709,7 +709,14 @@ async fn a_refusal_ends_the_turn_saying_why() {
         )
         .await
         .expect_err("a refusal is not a reply");
-    assert_eq!(err.refused.as_deref(), Some(why));
+    let refused = err.refused.expect("named as a refusal");
+    assert_eq!(refused.reason, why);
+    assert_eq!(refused.category.as_deref(), Some("reasoning_extraction"));
+    assert_eq!(
+        refused.model.as_deref(),
+        Some("fake"),
+        "named for who declined"
+    );
 }
 
 /// A provider that accepts the request and then goes silent is abandoned.

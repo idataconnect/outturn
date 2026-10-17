@@ -362,6 +362,7 @@ impl Puller {
                     message: "no model: the turn names none".into(),
                     held: None,
                     terminal: false,
+                    refusal: None,
                 });
                 return;
             }
@@ -384,6 +385,7 @@ impl Puller {
                     message: super::component::OUT_OF_FUEL.into(),
                     held: e.held,
                     terminal: true,
+                    refusal: None,
                 }),
                 // Not retried either. A model that looped until it ran out of
                 // room may well loop again on the same conversation, and each
@@ -391,19 +393,26 @@ impl Puller {
                 // decides whether that is worth it.
                 // Terminal: the same conversation is declined the same way.
                 Err(e) if e.refused.is_some() => tx.send(ExecuteEvent::Failed {
-                    message: e.refused.clone().unwrap_or_default(),
+                    message: e
+                        .refused
+                        .as_ref()
+                        .map(|r| r.reason.clone())
+                        .unwrap_or_default(),
                     held: e.held,
                     terminal: true,
+                    refusal: e.refused,
                 }),
                 Err(e) if e.malformed_reply => tx.send(ExecuteEvent::Failed {
                     message: super::component::MALFORMED.into(),
                     held: e.held,
                     terminal: true,
+                    refusal: None,
                 }),
                 Err(e) => tx.send(ExecuteEvent::Failed {
                     message: e.to_string(),
                     held: e.held,
                     terminal: false,
+                    refusal: None,
                 }),
             };
         });

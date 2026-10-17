@@ -11650,6 +11650,58 @@ async fn a_template_agent_takes_the_next_free_slug() {
     finish!(h);
 }
 
+/// A turn the provider declined is shown as that, live and after a reload,
+/// and is not tried again: the same conversation is declined the same way.
+#[tokio::test]
+async fn a_declined_turn_is_kept_as_a_refusal_and_not_retried() {
+    let h = harness_or_skip!();
+    let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
+
+    let refusal = serde_json::json!({
+        "reason": "This request was blocked.",
+        "category": "reasoning_extraction",
+        "model": "claude-sonnet-5-5",
+    });
+    let stream = serde_json::json!({
+        "kind": "failed", "message": "This request was blocked.", "terminal": true, "refusal": refusal,
+    })
+    .to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let kept: Value = sqlx::query_scalar(
+        "select metadata->'refused' from agent_messages where session_id = $1 and role = 'user'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the prompt");
+    assert_eq!(kept, refusal, "kept on the prompt for a reader who reloads");
+
+    let said: Value = sqlx::query_scalar(
+        "select payload from events where session_id = $1 and kind = 'chat.error'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the live event");
+    assert_eq!(said["refusal"], refusal);
+
+    let state: String = sqlx::query_scalar("select state from jobs where id = $1::uuid")
+        .bind(&job)
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("the job");
+    assert_eq!(state, "failed", "not put back to be declined again");
+}
+
 /// What a reply was signed with is kept on it, and handed back with the next
 /// turn's conversation, so the model reads its own past tool calls with the
 /// reasoning that made them.

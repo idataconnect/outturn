@@ -377,7 +377,7 @@ pub struct AgentHost {
     /// Whether a round's reply came back unusable. See `HeldError`.
     malformed_reply: bool,
     /// Why the provider declined a round, if it did.
-    refused: Option<String>,
+    refused: Option<outturn_core::protocol::work::Refusal>,
 }
 
 /// What separates the text of one model round from the next in a reply.
@@ -575,7 +575,7 @@ pub struct HeldError {
     pub malformed_reply: bool,
     /// Why the provider declined, where that is what ended it. Read from the
     /// host for the same reason.
-    pub refused: Option<String>,
+    pub refused: Option<outturn_core::protocol::work::Refusal>,
 }
 
 impl HeldError {
@@ -617,8 +617,8 @@ pub struct MalformedReply(String);
 /// The provider declined to answer, in its own sentence. Not retried: the
 /// same conversation is declined the same way, and every try is paid for.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Refused(pub String);
+#[error("{}", .0.reason)]
+pub struct Refused(pub outturn_core::protocol::work::Refusal);
 
 impl HeldError {
     /// Whether the guest ran out of fuel.
@@ -893,8 +893,8 @@ impl outturn::agent::host::Host for AgentHost {
         .await
         .map_err(|e| {
             self.malformed_reply |= e.downcast_ref::<MalformedReply>().is_some();
-            if let Some(Refused(why)) = e.downcast_ref::<Refused>() {
-                self.refused = Some(why.clone());
+            if let Some(Refused(refusal)) = e.downcast_ref::<Refused>() {
+                self.refused = Some(refusal.clone());
             }
             e.to_string()
         })?;
@@ -1704,7 +1704,7 @@ async fn stream_completion(
         std::collections::BTreeMap::new();
     let mut finish_reason = None;
     let mut usage = None;
-    let mut refused: Option<String> = None;
+    let mut refused: Option<outturn_core::protocol::work::Refusal> = None;
     // Tool calls arrive in fragments keyed by index, and the arguments are a
     // JSON string spread across chunks. Kept sparse by index rather than
     // pushed, since a provider is free to interleave two calls.
@@ -1864,7 +1864,13 @@ async fn stream_completion(
                 finish_reason = Some(reason.to_string());
             }
             if let Some(why) = chunk["choices"][0]["delta"]["refusal"].as_str() {
-                refused = Some(why.to_string());
+                refused = Some(outturn_core::protocol::work::Refusal {
+                    reason: why.to_string(),
+                    category: chunk["choices"][0]["delta"]["refusal_category"]
+                        .as_str()
+                        .map(str::to_string),
+                    model: None,
+                });
             }
             if let Some(tier) = chunk["service_tier"].as_str() {
                 served.service_tier = Some(tier.to_string());
@@ -1899,8 +1905,9 @@ async fn stream_completion(
     // Ends the round as a failure rather than a short reply: what streamed
     // before it is still shown, but the turn does not go on as though the
     // model had finished.
-    if let Some(why) = refused {
-        return Err(Refused(why).into());
+    if let Some(mut refusal) = refused {
+        refusal.model = served.model.clone();
+        return Err(Refused(refusal).into());
     }
 
     for (index, signature) in call_signatures {

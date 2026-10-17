@@ -255,7 +255,26 @@ pub enum ExecuteEvent {
         /// False from an older runtime, which is the retrying it had.
         #[serde(default)]
         terminal: bool,
+        /// Set when the model's provider declined to answer, which is not a
+        /// failure of anything and is shown as what it is. Absent otherwise,
+        /// and from an older runtime.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refusal: Option<Refusal>,
     },
+}
+
+/// A provider declining to answer, as its safety checks decided.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Refusal {
+    /// The provider's own sentence about why.
+    pub reason: String,
+    /// What it filed the refusal under, where it said: `reasoning_extraction`,
+    /// `cyber`, or a filter's name.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// The model that declined, as the gateway named it.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// The part of a reply that only the model that wrote it can read: its signed

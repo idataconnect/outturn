@@ -1013,6 +1013,7 @@ impl AnthropicStream {
                                 reasoning_content: None,
                                 thinking_block: None,
                                 refusal: None,
+                                refusal_category: None,
                             },
                             None,
                         ))
@@ -1042,6 +1043,7 @@ impl AnthropicStream {
                                 reasoning_content: None,
                                 thinking_block: None,
                                 refusal: None,
+                                refusal_category: None,
                             },
                             None,
                         ))
@@ -1063,6 +1065,7 @@ impl AnthropicStream {
                                 reasoning_content: None,
                                 thinking_block: None,
                                 refusal: None,
+                                refusal_category: None,
                             },
                             None,
                         ))
@@ -1106,6 +1109,7 @@ impl AnthropicStream {
                                 reasoning_content: None,
                                 thinking_block: None,
                                 refusal: None,
+                                refusal_category: None,
                             },
                             None,
                         ))
@@ -1122,11 +1126,16 @@ impl AnthropicStream {
                 let stop_reason = event["delta"]["stop_reason"].as_str();
                 let reason = stop_reason.map(finish_reason_of).unwrap_or("stop");
                 self.finish_reason = Some(reason.to_string());
-                let refusal = (stop_reason == Some("refusal"))
-                    .then(|| refusal_of(&event["delta"]["stop_details"]));
+                let refused = stop_reason == Some("refusal");
+                let details = &event["delta"]["stop_details"];
+                let refusal = refused.then(|| refusal_of(details));
+                let refusal_category = refused
+                    .then(|| details["category"].as_str().map(str::to_string))
+                    .flatten();
                 Some(self.chunk(
                     Delta {
                         refusal,
+                        refusal_category,
                         ..Delta::default()
                     },
                     Some(reason.to_string()),
@@ -2127,6 +2136,12 @@ impl GeminiStream {
                     reasoning: None,
                     reasoning_content: None,
                     thinking_block: None,
+                    refusal_category: refusal.is_some().then(|| {
+                        candidate["finishReason"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                    }),
                     refusal,
                 },
                 finish_reason: finish,
