@@ -4094,3 +4094,97 @@ async fn a_turn_reads_from_its_newest_summary_on() {
 
     finish!(db);
 }
+
+/// A provider whose model has been retired: it answers every call with the
+/// 404 a provider gives for a model it no longer has, and counts the calls.
+struct Gone {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl outturn::gateway::llm::provider::LlmProvider for Gone {
+    fn provider(&self) -> outturn::gateway::llm::provider::Provider {
+        outturn::gateway::llm::provider::Provider::Mock
+    }
+
+    async fn chat_completion(
+        &self,
+        _: &outturn::llm::ChatCompletionRequest,
+    ) -> Result<outturn::llm::ChatCompletionResponse, outturn::gateway::llm::provider::ProviderError>
+    {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(outturn::gateway::llm::provider::ProviderError::Upstream {
+            status: Some(404),
+            detail: r#"{"type":"error","error":{"type":"not_found_error","message":"model: retired-model"}}"#
+                .into(),
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        "gone".to_string()
+    }
+}
+
+/// A model that is gone is the route's failure, not the request's: the walk
+/// goes on to the next route and answers -- and the next turn does not ask the
+/// gone model again, because its circuit is open for a day.
+#[tokio::test]
+async fn a_retired_model_falls_over_to_the_next_route_and_is_then_skipped() {
+    use tower::ServiceExt;
+
+    let (db, workspace_id) = setup().await;
+    let seed = [11u8; 32];
+    let validator = outturn::auth::TokenValidator::new(
+        &outturn::auth::TokenMinter::public_key_of(&seed),
+        outturn::auth::AUDIENCE_GATEWAY,
+    )
+    .expect("validator");
+    let token = outturn::auth::TokenMinter::new(&seed)
+        .expect("minter")
+        .mint_turn(
+            Uuid::now_v7(),
+            workspace_id,
+            outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(workspace_id),
+        )
+        .expect("token");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state = outturn::gateway::GatewayState::new(
+        vec![
+            std::sync::Arc::new(Gone {
+                calls: calls.clone(),
+            }),
+            std::sync::Arc::new(outturn::gateway::llm::provider::mock::MockProvider::new()),
+        ],
+        validator,
+    )
+    .with_health(db.pool.clone());
+    let app = outturn::gateway::routes(std::sync::Arc::new(state));
+
+    for turn in 0..2 {
+        let request = axum::http::Request::post("/v1/chat/completions")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"model":"retired-model","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.expect("response");
+        assert_eq!(
+            response.status(),
+            200,
+            "turn {turn} was not answered by the next route"
+        );
+        assert_eq!(
+            response.headers()["x-outturn-provider"],
+            "mock",
+            "turn {turn} was answered by the wrong route"
+        );
+    }
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the gone model was asked again instead of skipped"
+    );
+    drop(db);
+}

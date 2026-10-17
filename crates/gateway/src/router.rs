@@ -352,11 +352,13 @@ impl GatewayState {
     /// is what `None` says: the credential and the rate limit behind it are
     /// shared, so the failures are too. A workspace bringing its own key would
     /// name itself here and get a circuit of its own.
-    async fn admits(&self, provider: &Arc<dyn LlmProvider>) -> bool {
+    async fn admits(&self, provider: &Arc<dyn LlmProvider>, model: &str) -> bool {
         let Some(pool) = &self.health else {
             return true;
         };
         breaker::check(pool, &provider.endpoint(), None).await == breaker::Verdict::Allow
+            && breaker::check(pool, &model_circuit(provider, model), None).await
+                == breaker::Verdict::Allow
     }
 
     /// Feeds the outcome of a call back into the shared breaker.
@@ -367,12 +369,39 @@ impl GatewayState {
     async fn observe(
         &self,
         provider: &Arc<dyn LlmProvider>,
+        model: &str,
         caller: breaker::policy::Caller,
         outcome: Result<(), &ProviderError>,
     ) {
         let Some(pool) = &self.health else {
             return;
         };
+        // A model that answered is one that exists, and a model that is gone
+        // is that model's circuit and no other's: the endpoint goes on serving
+        // everything else it has.
+        let model_outcome = match outcome {
+            Ok(()) => Some(breaker::policy::Observation::Success),
+            Err(e) if e.is_model_gone() => Some(breaker::policy::Observation::Retired),
+            Err(_) => None,
+        };
+        if let Some(observation) = model_outcome {
+            if observation == breaker::policy::Observation::Retired {
+                tracing::warn!(
+                    endpoint = %provider.endpoint(),
+                    model,
+                    "the model is gone from this endpoint; skipping it for a day"
+                );
+            }
+            breaker::observe(
+                pool,
+                &model_circuit(provider, model),
+                None,
+                observation,
+                caller,
+                outcome.err().map(|e| e.to_string()).as_deref(),
+            )
+            .await;
+        }
         let endpoint = provider.endpoint();
         let (observation, detail) = match outcome {
             Ok(()) => (breaker::policy::Observation::Success, None),
@@ -388,6 +417,12 @@ impl GatewayState {
         )
         .await;
     }
+}
+
+/// The circuit a model's existence at an endpoint is kept under: the endpoint
+/// and the model together, so a retired model takes only its own route out.
+fn model_circuit(provider: &Arc<dyn LlmProvider>, model: &str) -> String {
+    format!("{} model={model}", provider.endpoint())
 }
 
 /// The reply the caller is writing, so a message taken mid-turn can name what
@@ -465,7 +500,12 @@ async fn chat_completions(
 
     for attempt in state.attempts(claims.workspace_id, &traffic).await {
         let provider = &attempt.provider;
-        if !state.admits(provider).await {
+        let model = attempt
+            .model
+            .as_deref()
+            .unwrap_or(&request.model)
+            .to_string();
+        if !state.admits(provider, &model).await {
             continue;
         }
 
@@ -478,7 +518,7 @@ async fn chat_completions(
 
         match provider.chat_completion(&request).await {
             Ok(response) => {
-                state.observe(provider, caller, Ok(())).await;
+                state.observe(provider, &model, caller, Ok(())).await;
                 // The same two the streamed path sets. A caller that does not
                 // stream still has to write a ledger row, and it cannot name
                 // the endpoint it reached or who paid for it from the body.
@@ -499,14 +539,16 @@ async fn chat_completions(
             }
             Err(e) => {
                 tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");
-                state.observe(provider, caller, Err(&e)).await;
+                state.observe(provider, &model, caller, Err(&e)).await;
                 // A client error is the request being wrong rather than the
                 // endpoint being unwell, so the next route refuses it the same
                 // way -- walking the list spends attempts to reach the same
                 // answer and buries the one message that explains it. 408 and
                 // 429 are excluded from that reading, so a provider asking to
                 // be retried still is.
-                let fatal = e.is_client_error();
+                // A model that is gone is this route's failure, not the
+                // request's: the next route may have one that is not.
+                let fatal = e.is_client_error() && !e.is_model_gone();
                 last_error = Some(e);
                 if fatal {
                     break;
@@ -676,7 +718,12 @@ async fn chat_completions_stream(
 
     for attempt in state.attempts(claims.workspace_id, &traffic).await {
         let provider = &attempt.provider;
-        if !state.admits(provider).await {
+        let model = attempt
+            .model
+            .as_deref()
+            .unwrap_or(&request.model)
+            .to_string();
+        if !state.admits(provider, &model).await {
             continue;
         }
 
@@ -706,7 +753,7 @@ async fn chat_completions_stream(
                 // streaming. A stream that dies partway is not seen here --
                 // the body is handed to the caller and this scope ends -- so
                 // the breaker measures reachability, not completion.
-                state.observe(provider, caller, Ok(())).await;
+                state.observe(provider, &model, caller, Ok(())).await;
                 let body = chunks.map(|chunk| match chunk {
                     Ok(chunk) => serde_json::to_string(&chunk)
                         .map(|mut line| {
@@ -739,8 +786,10 @@ async fn chat_completions_stream(
             Err(e) => {
                 // The Debug form, whole: what a caller is shown is capped.
                 tracing::warn!(provider = ?provider.provider(), error = ?e, "stream failed");
-                state.observe(provider, caller, Err(&e)).await;
-                let fatal = e.is_client_error();
+                state.observe(provider, &model, caller, Err(&e)).await;
+                // A model that is gone is this route's failure, not the
+                // request's: the next route may have one that is not.
+                let fatal = e.is_client_error() && !e.is_model_gone();
                 last_error = Some(e);
                 if fatal {
                     break;

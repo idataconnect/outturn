@@ -367,9 +367,13 @@ Each phase leaves the platform working.
    already had it per call. Showing a served model that differs from the
    configured one is left for the chain editor, which is where the
    configured one will be visible to compare against.
-2. **Retirement falls over.** The gateway's walk continues past a refused
-   model, with its breaker. Independent of everything else, and the thing that
-   prevents a retirement from becoming an outage today.
+2. **Retirement falls over.** Built. A 404 or 410 that is about the model,
+   or a 400 that says so outright ("model not found", "the provided model
+   identifier is invalid", "has reached the end of its life"), is the route's
+   failure and the walk goes on; any other 4xx still ends it. The model then
+   has a circuit of its own -- the endpoint and the model together, so
+   nothing else the endpoint serves is affected -- which one such answer opens
+   for a day (`RETIRED_FOR`), after which a single call checks again.
 3. **Catalog.** The shipped snapshot, stored snapshots, the weekly
    conditional check, the source setting, and import from a file or a mount.
 4. **Accounts, models, chains** in the database, with the migration from

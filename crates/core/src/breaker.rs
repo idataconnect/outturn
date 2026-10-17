@@ -79,6 +79,12 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(600);
 /// How long a claimed probe has to finish before another replica may try.
 pub const PROBE_LEASE: Duration = Duration::from_secs(60);
 
+/// How long a model that answered "no such model" is skipped before one call
+/// checks again. A day: a retirement does not reverse in minutes, and a turn
+/// in the meantime goes straight to the next route rather than paying for the
+/// refusal first.
+pub const RETIRED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// What one call told us about an endpoint.
 ///
 /// Named for what it is evidence *of*, not for the status code that produced
@@ -98,6 +104,12 @@ pub enum Observation {
     /// rate limiting, which means it is alive and applying backpressure.
     /// Never evidence about health.
     NotEvidence,
+    /// The model asked for no longer exists there: retired, renamed, or
+    /// never available to this credential. Not the endpoint's health -- it is
+    /// kept on a circuit of its own, for the endpoint and the model together
+    /// -- and not something a few seconds will change, so one sighting opens
+    /// it for `RETIRED_FOR` rather than the usual backoff.
+    Retired,
 }
 
 /// Which circuit an observation belongs to.
@@ -335,6 +347,13 @@ pub fn record(
         // nothing about health, and a caller with a bad credential must not be
         // able to speak for anyone else.
         Observation::NotEvidence => {}
+
+        Observation::Retired => {
+            next.failures = next.failures.saturating_add(1);
+            next.state = State::Open;
+            next.opened_at = Some(now);
+            next.probe_after = Some(now + backoff(RETIRED_FOR));
+        }
     }
 
     next
@@ -409,6 +428,31 @@ mod tests {
         at: DateTime<Utc>,
     ) -> Health {
         record(&health, observation, caller, at)
+    }
+
+    /// A model that is gone is skipped for a day on one sighting, then
+    /// checked once; if it answers, it is back.
+    #[test]
+    fn a_retired_model_is_skipped_for_a_day_then_checked() {
+        let health = observe(
+            Health::new(Scope::Platform),
+            Observation::Retired,
+            caller(),
+            t0(),
+        );
+        assert_eq!(health.state, State::Open);
+        let day = RETIRED_FOR.as_secs() as i64;
+        assert_eq!(check(&health, after(t0(), day - 1)), Verdict::Reject);
+        assert_eq!(check(&health, after(t0(), day)), Verdict::Probe);
+
+        let probing = claim_probe(&health, after(t0(), day));
+        let back = observe(
+            probing,
+            Observation::Success,
+            caller(),
+            after(t0(), day + 1),
+        );
+        assert_eq!(check(&back, after(t0(), day + 2)), Verdict::Allow);
     }
 
     #[test]

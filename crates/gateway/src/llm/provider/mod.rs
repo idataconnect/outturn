@@ -131,6 +131,59 @@ impl ProviderError {
         }
     }
 
+    /// Whether the endpoint answered that the model asked for is not there --
+    /// retired, renamed, or not offered to this credential.
+    ///
+    /// A client error, and still not the request's fault: the next route, on
+    /// another model or another provider, may well answer it. Told from a
+    /// malformed request by the provider's own words, since every provider
+    /// answers both with a 400 or a 404 (docs/models.md, *Nothing stops
+    /// working*).
+    pub fn is_model_gone(&self) -> bool {
+        // A 404 or 410 that is about the model is the model not being there.
+        const MISSING: &[&str] = &[
+            "not found",
+            "not_found",
+            "does not exist",
+            "could not resolve",
+            "retired",
+            "deprecated",
+            "decommissioned",
+            "no longer",
+            "end of its life",
+        ];
+        // A 400 says it only in so many words. "Parameter top_k is
+        // deprecated for this model" is a 400 about the request, and reading
+        // it as a retirement would skip a working model for a day.
+        const SAID_OUTRIGHT: &[&str] = &[
+            "model not found",
+            "model_not_found",
+            "no such model",
+            "model identifier is invalid",
+            "model version has reached the end of its life",
+            "model has been deprecated",
+            "model has been retired",
+            "model has been decommissioned",
+            "model is no longer available",
+            "model is no longer supported",
+        ];
+        let Self::Upstream {
+            status: Some(status),
+            detail,
+        } = self
+        else {
+            return false;
+        };
+        let detail = detail.to_lowercase();
+        match status {
+            404 | 410 => {
+                detail.contains("model") && MISSING.iter().any(|said| detail.contains(said))
+            }
+            400 => SAID_OUTRIGHT.iter().any(|said| detail.contains(said)),
+            _ => false,
+        }
+    }
+
     /// Whether the model wrote a reply its server could not turn into a tool
     /// call -- in practice, arguments cut off mid-string when a model loops
     /// until it runs out of room.
@@ -345,6 +398,50 @@ mod tests {
 
     /// The case that prompted the sentence: Sonnet 5.5 refusing a temperature
     /// arrived as the provider's whole error object, three layers deep.
+    /// What each provider says when the model is gone, as they say it.
+    #[test]
+    fn a_model_that_is_gone_is_told_from_a_bad_request() {
+        let e = |status: u16, detail: &str| ProviderError::Upstream {
+            status: Some(status),
+            detail: detail.into(),
+        };
+        for gone in [
+            e(
+                404,
+                r#"{"type":"error","error":{"type":"not_found_error","message":"model: claude-3-opus"}}"#,
+            ),
+            e(
+                404,
+                "The model `gpt-4-32k` does not exist or you do not have access to it. model_not_found",
+            ),
+            e(
+                404,
+                "models/gemini-1.0-pro is not found for API version v1beta",
+            ),
+            e(404, "model 'qwen9' not found"),
+            e(
+                404,
+                "This model version has reached the end of its life. Please refer to the model lifecycle docs.",
+            ),
+            e(
+                400,
+                "ValidationException: The provided model identifier is invalid.",
+            ),
+            e(400, "The model has been deprecated; use a newer one."),
+        ] {
+            assert!(gone.is_model_gone(), "{gone:?}");
+        }
+        for not_gone in [
+            e(400, "temperature: parameter is deprecated for this model"),
+            e(400, "messages: field required"),
+            e(404, "route not found"),
+            e(401, "invalid x-api-key"),
+            e(500, "model not found"),
+        ] {
+            assert!(!not_gone.is_model_gone(), "{not_gone:?}");
+        }
+    }
+
     #[test]
     fn a_refusal_says_the_providers_reason_and_nothing_else() {
         let refused = ProviderError::Upstream {
