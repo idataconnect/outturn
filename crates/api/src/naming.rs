@@ -260,6 +260,7 @@ async fn run_one(
         reasoning_effort: Some("none".into()),
         stream: false,
         stream_options: None,
+        facts: None,
     };
 
     let response = client

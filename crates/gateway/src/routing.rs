@@ -6,8 +6,10 @@
 //! because a caller that named a provider directly could not be failed over
 //! without lying to it about what it asked for.
 //!
-//! A route also carries the model, so switching a class of traffic to a
-//! cheaper model is configuration rather than a deployment.
+//! A class walks a chain of models (docs/models.md), each at a provider
+//! account, so switching a class of traffic to a cheaper model is
+//! configuration rather than a deployment. Each link becomes a route: where
+//! to go, what to ask for, and what that model accepts.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +17,8 @@ use std::sync::Arc;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
+
+use outturn_core::facts::ModelFacts;
 
 use super::llm::provider::{
     LlmProvider, anthropic::AnthropicProvider, gemini::GeminiProvider, openai::OpenAiProvider,
@@ -36,13 +40,14 @@ fn borrows_from(traffic_type: &str) -> Option<&'static str> {
     }
 }
 
-/// One attempt: where to go, and what to ask for.
+/// One attempt: where to go, what to ask for, and what it accepts.
 #[derive(Debug, Clone)]
 pub struct Route {
     pub provider: String,
     pub base_url: String,
     pub model: String,
     pub credential_ref: Option<String>,
+    pub facts: Arc<ModelFacts>,
 }
 
 impl Route {
@@ -52,10 +57,10 @@ impl Route {
     }
 }
 
-/// Routes for a traffic type, in the order to try them.
+/// Routes for a traffic type, in the order to try them: its chain's links.
 ///
-/// A workspace's own routes replace the system defaults rather than extending
-/// them: a workspace that has configured where its traffic goes should not have
+/// A workspace's own chain replaces the platform's rather than extending it:
+/// a workspace that has configured where its traffic goes should not have
 /// requests quietly fall through to somebody else's endpoint.
 pub async fn routes_for(
     pool: &PgPool,
@@ -69,23 +74,26 @@ pub async fn routes_for(
     }
 }
 
-/// One class's own routes, with no borrowing.
+/// One class's own chain, with no borrowing.
 async fn routes_of(
     pool: &PgPool,
     workspace_id: Uuid,
     traffic_type: &str,
 ) -> Result<Vec<Route>, sqlx::Error> {
     let rows = sqlx::query(
-        "select provider, base_url, model, credential_ref \
-         from traffic_routes \
-         where enabled and traffic_type = $2 \
-           and workspace_id is not distinct from ( \
+        "select a.protocol, a.base_url, a.credential_env, m.model, m.facts, m.overrides \
+         from chain_assignments c \
+         join chain_links l on l.chain_id = c.chain_id \
+         join models m on m.id = l.model_id \
+         join provider_accounts a on a.id = m.account_id \
+         where c.traffic_type = $2 \
+           and c.workspace_id is not distinct from ( \
                select case when exists ( \
-                   select 1 from traffic_routes \
-                   where enabled and workspace_id = $1 and traffic_type = $2 \
+                   select 1 from chain_assignments \
+                   where workspace_id = $1 and traffic_type = $2 \
                ) then $1 else null end \
            ) \
-         order by priority",
+         order by l.position",
     )
     .bind(workspace_id)
     .bind(traffic_type)
@@ -94,11 +102,16 @@ async fn routes_of(
 
     Ok(rows
         .iter()
-        .map(|r| Route {
-            provider: r.get("provider"),
-            base_url: r.get("base_url"),
-            model: r.get("model"),
-            credential_ref: r.get("credential_ref"),
+        .map(|r| {
+            let facts: Option<serde_json::Value> = r.get("facts");
+            let overrides: serde_json::Value = r.get("overrides");
+            Route {
+                provider: r.get("protocol"),
+                base_url: r.get("base_url"),
+                model: r.get("model"),
+                credential_ref: r.get("credential_env"),
+                facts: Arc::new(ModelFacts::of(facts.as_ref(), Some(&overrides))),
+            }
         })
         .collect())
 }

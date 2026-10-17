@@ -2528,6 +2528,7 @@ impl Worker {
             reasoning_effort: Some("none".into()),
             stream: false,
             stream_options: None,
+            facts: None,
         };
 
         // Signed for the session it is summarizing, so the spend lands on the

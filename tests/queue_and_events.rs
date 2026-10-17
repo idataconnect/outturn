@@ -1910,6 +1910,9 @@ fn a_client_error_is_told_apart_from_the_endpoint_being_unwell() {
 
 use outturn::gateway::routing;
 
+/// A link at the end of a class's chain: an OpenAI-protocol account at the
+/// URL, made if it is not there, and the model at it. `priority` orders the
+/// links, as it ordered routes.
 async fn add_route(
     pool: &PgPool,
     workspace: Option<Uuid>,
@@ -1918,19 +1921,99 @@ async fn add_route(
     base_url: &str,
     model: &str,
 ) {
-    sqlx::query(
-        "insert into traffic_routes \
-             (id, workspace_id, traffic_type, priority, provider, base_url, model) \
-         values (uuidv7(), $1, $2, $3, 'openai', $4, $5)",
+    let account: Uuid = sqlx::query_scalar(
+        "with found as ( \
+             select id from provider_accounts \
+             where workspace_id is not distinct from $1 and base_url = $2 \
+         ), made as ( \
+             insert into provider_accounts (id, workspace_id, name, protocol, base_url) \
+             select uuidv7(), $1, $2, 'openai', $2 where not exists (select 1 from found) \
+             returning id \
+         ) select id from found union all select id from made",
+    )
+    .bind(workspace)
+    .bind(base_url)
+    .fetch_one(pool)
+    .await
+    .expect("account");
+    let model: Uuid = sqlx::query_scalar(
+        "insert into models (id, workspace_id, account_id, name, model) \
+         values (uuidv7(), $1, $2, $3, $3) returning id",
+    )
+    .bind(workspace)
+    .bind(account)
+    .bind(model)
+    .fetch_one(pool)
+    .await
+    .expect("model");
+    let chain: Uuid = match sqlx::query_scalar(
+        "select chain_id from chain_assignments \
+         where workspace_id is not distinct from $1 and traffic_type = $2",
     )
     .bind(workspace)
     .bind(traffic)
-    .bind(priority)
-    .bind(base_url)
-    .bind(model)
+    .fetch_optional(pool)
+    .await
+    .expect("assignment")
+    {
+        Some(chain) => chain,
+        None => {
+            let chain = Uuid::now_v7();
+            sqlx::query("insert into chains (id, workspace_id, name) values ($1, $2, $3)")
+                .bind(chain)
+                .bind(workspace)
+                .bind(traffic)
+                .execute(pool)
+                .await
+                .expect("chain");
+            sqlx::query(
+                "insert into chain_assignments (id, workspace_id, traffic_type, chain_id) \
+                 values (uuidv7(), $1, $2, $3)",
+            )
+            .bind(workspace)
+            .bind(traffic)
+            .bind(chain)
+            .execute(pool)
+            .await
+            .expect("assign");
+            chain
+        }
+    };
+    sqlx::query("insert into chain_links (chain_id, position, model_id) values ($1, $2, $3)")
+        .bind(chain)
+        .bind(priority)
+        .bind(model)
+        .execute(pool)
+        .await
+        .expect("link");
+}
+
+/// A link carries what its model accepts: the catalog's facts with the
+/// deployment's overrides over them.
+#[tokio::test]
+async fn a_route_carries_its_models_facts() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+
+    add_route(pool, None, "assistant", 10, "http://first", "described").await;
+    add_route(pool, None, "assistant", 20, "http://second", "undescribed").await;
+    sqlx::query(
+        "update models set facts = $1, overrides = '{\"temperature\": false}' \
+         where model = 'described'",
+    )
+    .bind(serde_json::json!({"temperature": true, "limit": {"output": 8000}}))
     .execute(pool)
     .await
-    .expect("route");
+    .unwrap();
+
+    let routes = routing::routes_for(pool, workspace, "assistant")
+        .await
+        .expect("routes");
+    assert_eq!(routes[0].facts.output_limit, Some(8000));
+    assert!(!routes[0].facts.sampling, "the override wins");
+    assert_eq!(*routes[1].facts, outturn::facts::ModelFacts::default());
+
+    finish!(db);
 }
 
 /// Routes come back in precedence order, not insertion order.
@@ -4191,6 +4274,30 @@ async fn a_retired_model_falls_over_to_the_next_route_and_is_then_skipped() {
 
 // Accounts, models and chains, from traffic_routes ---------------------------
 
+/// A row of traffic_routes, as deployments before chains held them.
+async fn add_old_route(
+    pool: &PgPool,
+    workspace: Option<Uuid>,
+    traffic: &str,
+    priority: i32,
+    base_url: &str,
+    model: &str,
+) {
+    sqlx::query(
+        "insert into traffic_routes \
+             (id, workspace_id, traffic_type, priority, provider, base_url, model) \
+         values (uuidv7(), $1, $2, $3, 'openai', $4, $5)",
+    )
+    .bind(workspace)
+    .bind(traffic)
+    .bind(priority)
+    .bind(base_url)
+    .bind(model)
+    .execute(pool)
+    .await
+    .expect("route");
+}
+
 /// Replays the migration that replaced routes, against routes inserted as
 /// today's deployments hold them. The tables it fills are emptied first, so
 /// what it finds is only what the routes say.
@@ -4221,7 +4328,7 @@ async fn routes_become_accounts_models_and_chains() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
-    add_route(
+    add_old_route(
         pool,
         None,
         "assistant",
@@ -4230,7 +4337,7 @@ async fn routes_become_accounts_models_and_chains() {
         "claude-haiku-5-5",
     )
     .await;
-    add_route(
+    add_old_route(
         pool,
         None,
         "assistant",
@@ -4239,7 +4346,7 @@ async fn routes_become_accounts_models_and_chains() {
         "claude-sonnet-5-5",
     )
     .await;
-    add_route(
+    add_old_route(
         pool,
         None,
         "background",
@@ -4248,7 +4355,7 @@ async fn routes_become_accounts_models_and_chains() {
         "qwen3.5",
     )
     .await;
-    add_route(
+    add_old_route(
         pool,
         Some(workspace),
         "assistant",
@@ -4261,7 +4368,7 @@ async fn routes_become_accounts_models_and_chains() {
         .execute(pool)
         .await
         .unwrap();
-    add_route(pool, None, "session-name", 10, "http://off", "nobody").await;
+    add_old_route(pool, None, "session-name", 10, "http://off", "nobody").await;
     sqlx::query("update traffic_routes set enabled = false where base_url = 'http://off'")
         .execute(pool)
         .await
@@ -4331,7 +4438,7 @@ async fn migrated_models_are_linked_to_the_catalog() {
     let (db, _workspace) = setup_or_skip!();
     let pool = &db.pool;
 
-    add_route(
+    add_old_route(
         pool,
         None,
         "assistant",
@@ -4340,7 +4447,7 @@ async fn migrated_models_are_linked_to_the_catalog() {
         "claude-sonnet-5-5",
     )
     .await;
-    add_route(
+    add_old_route(
         pool,
         None,
         "assistant",

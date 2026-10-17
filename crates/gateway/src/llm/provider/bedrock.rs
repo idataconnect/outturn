@@ -500,12 +500,18 @@ mod tests {
             "stream": true,
         }))
         .expect("request");
+        let mut request = request;
+        let held = outturn_core::catalog::shipped();
+        let entry = outturn_core::catalog::entry(&held, "amazon-bedrock", &request.model);
+        request.facts = Some(std::sync::Arc::new(outturn_core::facts::ModelFacts::of(
+            entry, None,
+        )));
         let body = BedrockProvider::body(&request).expect("body");
         assert!(body.get("model").is_none(), "{body}");
         assert!(body.get("stream").is_none(), "{body}");
         assert_eq!(body["anthropic_version"], BEDROCK_ANTHROPIC_VERSION);
         assert_eq!(body["messages"][0]["role"], "user");
-        // The same model's traits, read through Bedrock's longer id.
+        // The same model's facts, at Bedrock's longer id.
         assert_eq!(body["max_tokens"], 128_000);
     }
 

@@ -1,4 +1,5 @@
 use super::types::*;
+use outturn_core::facts::ModelFacts;
 
 /// Convert OpenAI-format request to Anthropic Messages API format.
 pub fn openai_to_anthropic(
@@ -147,11 +148,11 @@ pub fn openai_to_anthropic(
     if let Some(last) = body["messages"].as_array_mut().and_then(|m| m.last_mut()) {
         mark_for_cache(last);
     }
-    let claude = ClaudeTraits::of(&req.model);
+    let facts = req.facts.as_deref().cloned().unwrap_or_default();
     // A model that refuses sampling parameters refuses the whole request over
     // one, so it is left out -- except 1, the one value these models accept.
     if let Some(temp) = req.temperature {
-        if claude.sampling || temp == 1.0 {
+        if facts.sampling || temp == 1.0 {
             body["temperature"] = serde_json::json!(temp);
         } else {
             tracing::debug!(model = %req.model, temp, "temperature left out: this model refuses it");
@@ -161,9 +162,13 @@ pub fn openai_to_anthropic(
     // the model's own limit: thinking counts against it, the model is not told
     // where it is, and a small one cuts a hard answer off mid-thought. Effort
     // is what controls how much is written; this is only the guarantee.
-    body["max_tokens"] = serde_json::json!(req.max_tokens.unwrap_or(claude.output_limit));
-    if claude.adaptive {
-        apply_thinking(&mut body, &claude, req.reasoning_effort.as_deref());
+    body["max_tokens"] = serde_json::json!(
+        req.max_tokens
+            .or(facts.output_limit)
+            .unwrap_or(UNDESCRIBED_OUTPUT_LIMIT)
+    );
+    if facts.adaptive_thinking {
+        apply_thinking(&mut body, &facts, req.reasoning_effort.as_deref());
     }
 
     if let Some(tools) = &req.tools {
@@ -183,81 +188,10 @@ pub fn openai_to_anthropic(
     Ok(body)
 }
 
-/// What a Claude model accepts, told from its name until the model catalog
-/// says (docs/model-catalog.md, docs/thinking.md).
-#[derive(Debug, PartialEq)]
-struct ClaudeTraits {
-    /// Thinks adaptively, with effort as its control: 4.6 and later.
-    adaptive: bool,
-    /// Accepts `temperature` and its siblings: refused from 4.7 on.
-    sampling: bool,
-    /// The default `max_tokens`.
-    output_limit: u32,
-    /// The effort levels it offers, lowest first.
-    efforts: &'static [&'static str],
-    /// Takes `thinking.block_binding`, which says what to do with a stale
-    /// thinking block: the 5.x line, which checks a block against the
-    /// conversation before it. Sent to a 4.x model it is refused on some
-    /// platforms -- Bedrock's 4.6, for one -- and buys nothing there.
-    binds_thinking: bool,
-}
-
-impl ClaudeTraits {
-    fn of(model: &str) -> Self {
-        const NEWEST: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-        let newest = Self {
-            adaptive: true,
-            sampling: false,
-            output_limit: 128_000,
-            efforts: NEWEST,
-            binds_thinking: true,
-        };
-        let older = Self {
-            adaptive: false,
-            sampling: true,
-            output_limit: 4096,
-            efforts: &[],
-            binds_thinking: false,
-        };
-
-        // `claude-sonnet-5-5`, `claude-opus-4-6-20260101`, `claude-3-5-haiku`.
-        // The version is the run of short numbers after the name; a date is a
-        // long one and ends it, so it is never read as a minor version.
-        let Some(rest) = model
-            .rsplit("claude-")
-            .next()
-            .filter(|_| model.contains("claude-"))
-        else {
-            return newest;
-        };
-        let version: Vec<u32> = rest
-            .split('-')
-            .skip_while(|part| part.parse::<u32>().is_err())
-            .take_while(|part| part.len() <= 2)
-            .map_while(|part| part.parse().ok())
-            .collect();
-        // Fable and Mythos number from 5, as every 5.x does.
-        let family_is_new = rest.starts_with("fable") || rest.starts_with("mythos");
-        match version.as_slice() {
-            _ if family_is_new => newest,
-            // A name nothing recognizes is far likelier to be the next model
-            // than an old one, so it is treated as the newest.
-            [] => newest,
-            [major, ..] if *major >= 5 => newest,
-            [4, minor, ..] if *minor >= 7 => Self {
-                binds_thinking: false,
-                ..newest
-            },
-            [4, 6, ..] => Self {
-                sampling: true,
-                efforts: &["low", "medium", "high", "max"],
-                binds_thinking: false,
-                ..newest
-            },
-            _ => older,
-        }
-    }
-}
+/// `max_tokens` for a model nobody described, where the protocol insists on
+/// one: small enough that no Claude refuses it. A model that writes more is
+/// given its limit by describing it (docs/models.md).
+const UNDESCRIBED_OUTPUT_LIMIT: u32 = 4096;
 
 /// Asks an adaptive model for its reasoning, and sets how much of it.
 ///
@@ -272,10 +206,10 @@ impl ClaudeTraits {
 /// The beta that lets a request say what to do with a stale thinking block.
 pub const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 
-fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: Option<&str>) {
+fn apply_thinking(body: &mut serde_json::Value, facts: &ModelFacts, effort: Option<&str>) {
     let effort = match effort {
         Some("none") => {
-            if let Some(lowest) = claude.efforts.first() {
+            if let Some(lowest) = facts.efforts.first() {
                 body["output_config"] = serde_json::json!({"effort": lowest});
             }
             return;
@@ -289,7 +223,7 @@ fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: O
     // compacted. Dropping the stale block instead costs that block's
     // reasoning and nothing else (docs/thinking.md).
     body["thinking"] = serde_json::json!({"type": "adaptive", "display": "summarized"});
-    if claude.binds_thinking {
+    if facts.thinking_binding {
         body["thinking"]["block_binding"] =
             serde_json::json!({"prefix_mismatch_behavior": "drop_block"});
         body["anthropic_beta"] = serde_json::json!([THINKING_BINDING_BETA]);
@@ -297,10 +231,10 @@ fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: O
     let Some(asked) = effort else {
         return;
     };
-    let level = if claude.efforts.contains(&asked) {
+    let level = if facts.efforts.iter().any(|e| e == asked) {
         Some(asked)
     } else if ["xhigh", "max"].contains(&asked) {
-        claude.efforts.last().copied()
+        facts.efforts.last().map(String::as_str)
     } else {
         None
     };
@@ -308,7 +242,7 @@ fn apply_thinking(body: &mut serde_json::Value, claude: &ClaudeTraits, effort: O
         Some(level) => body["output_config"] = serde_json::json!({"effort": level}),
         None => tracing::warn!(
             effort = asked,
-            "an effort no Claude model offers; left to the model's default"
+            "an effort this model does not offer; left to its default"
         ),
     }
 }
@@ -572,6 +506,9 @@ mod cache_tests {
         .expect("request");
         request.reasoning_effort = effort.map(str::to_string);
         request.temperature = temperature;
+        let held = outturn_core::catalog::shipped();
+        let entry = outturn_core::catalog::entry(&held, "anthropic", model);
+        request.facts = entry.map(|e| std::sync::Arc::new(ModelFacts::of(Some(e), None)));
         openai_to_anthropic(&request).expect("translate")
     }
 
@@ -637,34 +574,31 @@ mod cache_tests {
         assert_eq!(older["temperature"], 0.5);
     }
 
-    /// Versions are read from the name, a date suffix is not a minor version,
-    /// and a name nothing recognizes is taken for the newest.
+    /// The 4.x line thinks the same way as the 5.x but is not sent its
+    /// stale-block setting, which some platforms refuse from it; an older
+    /// model is not asked about thinking at all.
     #[test]
-    fn a_models_traits_come_from_its_name() {
-        let newest = ClaudeTraits::of("claude-sonnet-5-5");
-        assert!(newest.adaptive && !newest.sampling);
-        assert_eq!(ClaudeTraits::of("claude-fable-5-1"), newest);
-        assert_eq!(ClaudeTraits::of("claude-something-new"), newest);
-        // The 4.x line thinks the same way but is not sent the 5.x line's
-        // stale-block setting, which some platforms refuse from it.
-        let four_eight = ClaudeTraits::of("claude-opus-4-8-20260501");
-        assert!(four_eight.adaptive && !four_eight.binds_thinking);
-        assert!(newest.binds_thinking);
-        assert!(ClaudeTraits::of("claude-opus-4-6").sampling);
+    fn thinking_is_asked_for_as_the_model_takes_it() {
         assert!(
             asked("claude-opus-4-6", Some("high"), None)["thinking"]
                 .get("block_binding")
                 .is_none()
         );
-        let old = ClaudeTraits::of("claude-sonnet-4-20250514");
-        assert!(!old.adaptive && old.sampling && old.output_limit == 4096);
-        assert!(!ClaudeTraits::of("claude-3-5-haiku-latest").adaptive);
-        // An older model is not asked about thinking at all.
         assert!(
             asked("claude-haiku-4-5", Some("high"), None)
                 .get("thinking")
                 .is_none()
         );
+    }
+
+    /// A model nobody described is sent what it was asked and a
+    /// `max_tokens` no Claude refuses, whatever its name suggests.
+    #[test]
+    fn a_model_nobody_described_is_not_guessed_at() {
+        let body = asked("claude-something-new", Some("high"), Some(0.5));
+        assert!(body.get("thinking").is_none(), "{body}");
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["max_tokens"], UNDESCRIBED_OUTPUT_LIMIT);
     }
 
     /// An empty system prompt is no system prompt: as a block it would be an
@@ -2641,6 +2575,7 @@ mod gemini_tests {
             reasoning_effort: None,
             stream: false,
             stream_options: None,
+            facts: None,
         };
 
         let newer = openai_to_gemini_for(&request, "gemini-3.7-flash").expect("translate");
@@ -2759,6 +2694,7 @@ mod gemini_tests {
             reasoning_effort: None,
             stream: false,
             stream_options: None,
+            facts: None,
         };
 
         let json = openai_to_gemini_for(&request, "gemini-3.7-flash")
@@ -2889,6 +2825,7 @@ mod gemini_tests {
             reasoning_effort: None,
             stream: false,
             stream_options: None,
+            facts: None,
         };
 
         let body = openai_to_gemini(&request).expect("translate");
@@ -2931,6 +2868,7 @@ mod gemini_tests {
             reasoning_effort: None,
             stream: false,
             stream_options: None,
+            facts: None,
         };
 
         let body = openai_to_gemini(&request).expect("translate");

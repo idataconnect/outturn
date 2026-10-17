@@ -50,6 +50,9 @@ pub struct GatewayState {
 struct Attempt {
     provider: Arc<dyn LlmProvider>,
     model: Option<String>,
+    /// What the route's model accepts; none for the caller's own choice,
+    /// which nobody described.
+    facts: Option<Arc<outturn_core::facts::ModelFacts>>,
 }
 
 impl GatewayState {
@@ -261,7 +264,7 @@ impl GatewayState {
         //
         // What that leaves open is a route naming one of our own services by
         // hostname. It is a narrower hole than it looks: routes are written by
-        // whoever runs the deployment, `traffic_routes` has no write API, and
+        // whoever runs the deployment, chains have no write API yet, and
         // the thing it would buy an attacker is reaching an API that requires a
         // token the gateway will not mint for them. Worth closing when routes
         // become workspace-writable, and worth closing then by giving the
@@ -292,10 +295,9 @@ impl GatewayState {
                     for route in routes {
                         // A route's base URL was taken as given until now, so
                         // this path could reach anywhere the agent path could
-                        // not. `traffic_routes` already has a nullable
-                        // workspace_id, so workspace-owned routes are a shape
-                        // the schema allows and only the absence of an API
-                        // prevents -- vetting here means whoever builds that
+                        // not. Accounts already have a nullable workspace_id,
+                        // so workspace-owned ones are a shape the schema
+                        // allows -- vetting here means whoever builds their
                         // API does not have to notice.
                         if !self.route_is_reachable(&route) {
                             continue;
@@ -304,6 +306,7 @@ impl GatewayState {
                             attempts.push(Attempt {
                                 provider,
                                 model: Some(route.model),
+                                facts: Some(route.facts),
                             });
                         }
                     }
@@ -342,6 +345,7 @@ impl GatewayState {
             .map(|p| Attempt {
                 provider: Arc::clone(p),
                 model: None,
+                facts: None,
             })
             .collect()
     }
@@ -515,6 +519,7 @@ async fn chat_completions(
         if let Some(model) = &attempt.model {
             request.model = model.clone();
         }
+        request.facts = attempt.facts.clone();
 
         match provider.chat_completion(&request).await {
             Ok(response) => {
@@ -731,6 +736,7 @@ async fn chat_completions_stream(
         if let Some(model) = &attempt.model {
             request.model = model.clone();
         }
+        request.facts = attempt.facts.clone();
 
         // Dropping the call is the stop: it closes the connection, which is
         // the only "never mind" a provider understands.
@@ -872,6 +878,7 @@ mod tests {
             provider: "openai".into(),
             base_url: base_url.into(),
             model: "m".into(),
+            facts: Default::default(),
             credential_ref: None,
         }
     }

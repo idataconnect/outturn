@@ -91,6 +91,7 @@ fn ask(text: &str) -> ChatCompletionRequest {
         reasoning_effort: None,
         stream: false,
         stream_options: None,
+        facts: None,
     }
 }
 

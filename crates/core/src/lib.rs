@@ -10,6 +10,7 @@ pub mod db;
 pub mod egress;
 pub mod events;
 pub mod extract;
+pub mod facts;
 pub mod http_client;
 pub mod inhibitor;
 pub mod jobs;

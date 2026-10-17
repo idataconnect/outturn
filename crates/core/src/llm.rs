@@ -20,6 +20,11 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
+    /// What the model being asked accepts, set by the gateway per attempt
+    /// from the model it configured. Never on the wire: a caller does not
+    /// get to say what a model takes.
+    #[serde(skip)]
+    pub facts: Option<std::sync::Arc<crate::facts::ModelFacts>>,
 }
 
 /// Streaming leaves usage out unless it is asked for.

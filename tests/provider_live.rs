@@ -95,7 +95,18 @@ fn ask(model: &str, text: &str, tools: Option<Vec<Tool>>) -> ChatCompletionReque
         reasoning_effort: None,
         stream: true,
         stream_options: None,
+        facts: facts_of(model),
     }
+}
+
+/// What the gateway would know of the model from the shipped catalog, at
+/// the vendor that serves it directly.
+fn facts_of(model: &str) -> Option<std::sync::Arc<outturn::facts::ModelFacts>> {
+    let held = outturn::catalog::shipped();
+    ["anthropic", "google", "openai"]
+        .iter()
+        .find_map(|provider| outturn::catalog::entry(&held, provider, model))
+        .map(|entry| std::sync::Arc::new(outturn::facts::ModelFacts::of(Some(entry), None)))
 }
 
 /// What a streamed reply amounted to, assembled the way a caller assembles it.
