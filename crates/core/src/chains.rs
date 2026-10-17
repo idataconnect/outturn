@@ -22,6 +22,27 @@ pub struct Link {
     pub base_url: String,
     pub credential_env: Option<String>,
     pub credential_id: Option<Uuid>,
+    /// What the model asked for before it last moved, with its facts, and
+    /// when it moved: a turn begun before then is finished on it.
+    pub previous: Option<(String, Arc<ModelFacts>)>,
+    pub changed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl Link {
+    /// The version a turn that began at `began` is asked of. A version
+    /// changes between turns, never between a turn's rounds: a thinking
+    /// block is valid only for the model that wrote it, and the cache is per
+    /// model, so a turn that crossed versions would lose both partway.
+    pub fn for_turn_begun(mut self, began: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+        if let (Some(began), Some(changed), Some(_)) = (began, self.changed_at, &self.previous)
+            && began < changed
+            && let Some((model, facts)) = self.previous.take()
+        {
+            self.model = model;
+            self.facts = facts;
+        }
+        self
+    }
 }
 
 /// The class to borrow a chain from when this one has none.
@@ -62,7 +83,8 @@ async fn links_of(
     traffic_type: &str,
 ) -> Result<Vec<Link>, sqlx::Error> {
     let rows = sqlx::query(
-        "select m.id as model_id, m.model, m.facts, m.overrides, a.id as account, \
+        "select m.id as model_id, m.model, m.facts, m.overrides, m.previous_model, \
+                m.previous_facts, m.changed_at, a.id as account, \
                 a.protocol, a.base_url, a.credential_env, a.credential_id \
          from chain_assignments c \
          join chain_links l on l.chain_id = c.chain_id \
@@ -87,7 +109,14 @@ async fn links_of(
         .map(|r| {
             let facts: Option<serde_json::Value> = r.get("facts");
             let overrides: serde_json::Value = r.get("overrides");
+            let previous_facts: Option<serde_json::Value> = r.get("previous_facts");
+            let previous = r.get::<Option<String>, _>("previous_model").map(|model| {
+                let facts = ModelFacts::of(previous_facts.as_ref(), Some(&overrides));
+                (model, Arc::new(facts))
+            });
             Link {
+                previous,
+                changed_at: r.get("changed_at"),
                 model_id: r.get("model_id"),
                 model: r.get("model"),
                 facts: Arc::new(ModelFacts::of(facts.as_ref(), Some(&overrides))),

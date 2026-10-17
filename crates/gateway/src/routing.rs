@@ -59,10 +59,22 @@ pub async fn routes_for(
     workspace_id: Uuid,
     traffic_type: &str,
 ) -> Result<Vec<Route>, sqlx::Error> {
+    routes_for_turn(pool, workspace_id, traffic_type, None).await
+}
+
+/// As `routes_for`, for a turn that began at `began`: a model that moved to
+/// a newer version since is asked for the one the turn began on.
+pub async fn routes_for_turn(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    traffic_type: &str,
+    began: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<Route>, sqlx::Error> {
     Ok(
         outturn_core::chains::links_for(pool, workspace_id, traffic_type)
             .await?
             .into_iter()
+            .map(|link| link.for_turn_begun(began))
             .map(|link| Route {
                 model_id: link.model_id,
                 account: link.account,

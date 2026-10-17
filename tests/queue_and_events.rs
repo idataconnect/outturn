@@ -4756,3 +4756,30 @@ async fn a_fallback_is_asked_with_its_own_models_settings() {
 
     finish!(db);
 }
+
+/// A turn that began before its model moved to a newer version is finished
+/// on the version it began on; one begun after is asked of the new one.
+#[tokio::test]
+async fn a_turn_finishes_on_the_version_it_began_on() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    add_route(pool, None, "assistant", 10, "http://somewhere", "new").await;
+    let moved = chrono::Utc::now();
+    sqlx::query("update models set previous_model = 'old', changed_at = $1 where model = 'new'")
+        .bind(moved)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let asked = |began| async move {
+        routing::routes_for_turn(pool, workspace, "assistant", Some(began))
+            .await
+            .unwrap()[0]
+            .model
+            .clone()
+    };
+    assert_eq!(asked(moved - chrono::Duration::seconds(5)).await, "old");
+    assert_eq!(asked(moved + chrono::Duration::seconds(5)).await, "new");
+
+    finish!(db);
+}

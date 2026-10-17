@@ -289,9 +289,14 @@ impl GatewayState {
     /// configured for this traffic type -- the statically built providers are
     /// used in their configured order, so an unconfigured system behaves as it
     /// always has rather than refusing to serve.
-    async fn attempts(&self, workspace_id: uuid::Uuid, traffic_type: &str) -> Vec<Attempt> {
+    async fn attempts(
+        &self,
+        workspace_id: uuid::Uuid,
+        traffic_type: &str,
+        began: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<Attempt> {
         if let Some(pool) = &self.health {
-            match routing::routes_for(pool, workspace_id, traffic_type).await {
+            match routing::routes_for_turn(pool, workspace_id, traffic_type, began).await {
                 Ok(routes) if !routes.is_empty() => {
                     let mut attempts = Vec::with_capacity(routes.len());
                     for route in routes {
@@ -504,6 +509,15 @@ fn reply_id(headers: &axum::http::HeaderMap) -> Option<uuid::Uuid> {
         .and_then(|v| v.parse().ok())
 }
 
+/// When the turn this call belongs to began: the reply it is writing was
+/// made then, and its id is a UUIDv7, which says when. Forged, it can only
+/// choose the version a model was on before its last move -- one the
+/// operator configured -- so it is taken as given.
+fn turn_began(headers: &axum::http::HeaderMap) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (secs, nanos) = reply_id(headers)?.get_timestamp()?.to_unix();
+    chrono::DateTime::from_timestamp(i64::try_from(secs).ok()?, nanos)
+}
+
 fn traffic_type(headers: &axum::http::HeaderMap) -> String {
     headers
         .get(TRAFFIC_HEADER)
@@ -566,7 +580,10 @@ async fn chat_completions(
     let mut last_error = None;
     let traffic = traffic_type(&headers);
 
-    for attempt in state.attempts(claims.workspace_id, &traffic).await {
+    for attempt in state
+        .attempts(claims.workspace_id, &traffic, turn_began(&headers))
+        .await
+    {
         let provider = &attempt.provider;
         let model = attempt
             .model
@@ -788,7 +805,10 @@ async fn chat_completions_stream(
 
     let mut last_error = None;
 
-    for attempt in state.attempts(claims.workspace_id, &traffic).await {
+    for attempt in state
+        .attempts(claims.workspace_id, &traffic, turn_began(&headers))
+        .await
+    {
         let provider = &attempt.provider;
         let model = attempt
             .model
