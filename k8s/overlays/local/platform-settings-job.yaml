@@ -1,4 +1,5 @@
-# Sets the operator's defaults this machine's model needs, once the API is up.
+# Sets the operator's defaults this machine's model needs, once the API is up,
+# and gives assistant traffic a chain to that model if nothing does yet.
 #
 # The settings cascade from operator to workspace to agent, and the operator's
 # level is written over the API like any other -- there is no environment
@@ -23,6 +24,13 @@
 # 32k window and is only the fallback for `kubectl apply -k` on its own:
 # scripts/dev.sh and scripts/dev-mac.sh patch CONTEXT_BUDGET from this
 # machine's answers. See docs/local-development.md.
+#
+# The chain is made only when no chain answers assistant traffic: a cluster
+# coming up for the first time answers at once, and one where somebody has
+# since configured models on the Models page is left as they configured it.
+# The model is described by hand -- a local server is not in the catalog --
+# with the window this machine's answers give it, so the conversation is
+# sized to what it can read.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,6 +54,14 @@ spec:
           env:
             - name: CONTEXT_BUDGET
               value: "60000"
+            # Where the model server is, from inside the cluster, and what it
+            # serves. Patched by the dev scripts like CONTEXT_BUDGET.
+            - name: MODEL_URL
+              value: "http://172.18.0.1:11434"
+            - name: MODEL
+              value: "qwen3.5"
+            - name: CONTEXT_WINDOW
+              value: "32768"
             - name: OUTTURN_API
               value: "http://outturn-api:8080"
             - name: OUTTURN_ADMIN_EMAIL
@@ -93,6 +109,25 @@ spec:
                 2*) say "context_budget is $CONTEXT_BUDGET bytes" ;;
                 *) say "$code from the API: $(cat /tmp/body)"; exit 1 ;;
               esac
+              api() { path=$1; shift; curl -sf "$OUTTURN_API$path" -H "authorization: Bearer $token" -H 'content-type: application/json' "$@"; }
+              chain=$(api /v1/platform/models | jq -r '.assignments.assistant // empty')
+              if [ -n "$chain" ]; then
+                say "assistant traffic already has a chain; left as it is"
+                exit 0
+              fi
+              account=$(api /v1/platform/provider-accounts -X POST \
+                  -d "$(jq -n --arg u "$MODEL_URL" '{name: "This machine", protocol: "openai", base_url: $u}')" \
+                | jq -r .id)
+              model=$(api /v1/platform/models -X POST \
+                  -d "$(jq -n --arg a "$account" --arg m "$MODEL" --argjson w "$CONTEXT_WINDOW" \
+                        '{account_id: $a, model: $m, facts: {reasoning: true, tool_call: true, temperature: true, limit: {context: $w}}}')" \
+                | jq -r .id)
+              chain=$(api /v1/platform/chains -X POST \
+                  -d "$(jq -n --arg m "$model" '{name: "This machine", models: [$m]}')" | jq -r .id)
+              for class in assistant background; do
+                api "/v1/platform/chain-assignments/$class" -X PUT -d "{\"chain_id\": \"$chain\"}" >/dev/null
+              done
+              say "assistant and background traffic go to $MODEL at $MODEL_URL"
           resources:
             requests:
               cpu: 10m

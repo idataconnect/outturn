@@ -44,12 +44,12 @@ if [[ "$show" == true ]]; then
     ollama) echo "  ollama          $dev_ollama_url" ;;
     llama.cpp)
       echo "  llama-server    $dev_llama_url"
-      echo "  gateway reaches $(dev_gateway_base_url)"
+      echo "  gateway reaches $(dev_model_url)"
       echo "  started as      $(dev_llamacpp_command)"
       ;;
     other)
       echo "  server          ${dev_other_url:-the address the overlay names}"
-      [[ -n "$dev_other_url" ]] && echo "  gateway reaches $(dev_gateway_base_url)"
+      [[ -n "$dev_other_url" ]] && echo "  gateway reaches $(dev_model_url)"
       ;;
   esac
   exit 0

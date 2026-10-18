@@ -49,7 +49,7 @@ spec:
           ports:
             - containerPort: 4566
           env:
-            # The local model, as the local overlay's OPENAI_BASE_URL has it;
+            # The local model, at the address the local overlay opens for it;
             # MiniStack appends /v1/chat/completions. Unreachable, it answers
             # with canned text instead -- which still tests the door, just not
             # with words. A model on another machine needs that machine's

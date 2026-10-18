@@ -120,25 +120,26 @@ dev_write_overlay() {
         hosts="${hosts:+$hosts,}$entry"
       done <"k8s/components/$feature/internal-host"
     done
+    # Where the model is, from inside the cluster: the platform-settings Job
+    # gives assistant traffic a chain to it. Opened as an internal host too,
+    # since on Linux it is a private address -- the Docker bridge -- which
+    # the gateway reaches only where an operator said it may.
+    local model_url
+    model_url=$(dev_model_url)
+    local model_host
+    model_host=$(echo "$model_url" | sed -E 's#^[a-z]+://##; s#/.*$##')
+    case "$model_host" in
+      *:*) ;;
+      *) model_host="$model_host:80" ;;
+    esac
+    hosts="${hosts:+$hosts,}$model_host"
+
     echo
     echo "patches:"
 
     # This machine's answers (see dev_machine_load). Strategic merge, so env
     # is matched by name rather than by its position in ../local.
     echo "  # From $(dev_machine_file) -- change with scripts/dev-setup.sh --reconfigure."
-    echo "  - patch: |"
-    echo "      apiVersion: apps/v1"
-    echo "      kind: Deployment"
-    echo "      metadata:"
-    echo "        name: outturn-api"
-    echo "      spec:"
-    echo "        template:"
-    echo "          spec:"
-    echo "            containers:"
-    echo "              - name: api"
-    echo "                env:"
-    echo "                  - name: OUTTURN_DEFAULT_MODEL"
-    echo "                    value: \"$dev_served_model\""
     echo "  - patch: |"
     echo "      apiVersion: batch/v1"
     echo "      kind: Job"
@@ -152,27 +153,12 @@ dev_write_overlay() {
     echo "                env:"
     echo "                  - name: CONTEXT_BUDGET"
     echo "                    value: \"$dev_context_budget\""
-
-    # Where the gateway reaches the model. The base overlays name ollama's
-    # port, so another server has to say where it is -- translated from this
-    # machine's address to one a pod can reach.
-    local base_url
-    base_url=$(dev_gateway_base_url)
-    if [[ -n "$base_url" ]]; then
-      echo "  - patch: |"
-      echo "      apiVersion: apps/v1"
-      echo "      kind: Deployment"
-      echo "      metadata:"
-      echo "        name: outturn-gateway"
-      echo "      spec:"
-      echo "        template:"
-      echo "          spec:"
-      echo "            containers:"
-      echo "              - name: gateway"
-      echo "                env:"
-      echo "                  - name: OPENAI_BASE_URL"
-      echo "                    value: \"$base_url\""
-    fi
+    echo "                  - name: MODEL"
+    echo "                    value: \"$dev_served_model\""
+    echo "                  - name: MODEL_URL"
+    echo "                    value: \"$model_url\""
+    echo "                  - name: CONTEXT_WINDOW"
+    echo "                    value: \"$dev_context_window\""
 
     if [[ -n "$hosts" ]]; then
       # Both tiers, because both halves of the decision read it: the gateway
@@ -271,8 +257,8 @@ dev_budget_for() {
 dev_machine_defaults() {
   local base
   base=$(dev_machine_base)
-  dev_model=$(awk '/name: OUTTURN_DEFAULT_MODEL/ { getline; gsub(/.*value: "|"$/, ""); print; exit }' \
-    "k8s/overlays/$base/kustomization.yaml")
+  dev_model=$(awk '/name: MODEL$/ { getline; gsub(/.*value: "|"$/, ""); print; exit }' \
+    "k8s/overlays/$base/kustomization.yaml" k8s/overlays/local/platform-settings-job.yaml)
   dev_context_window=32768
   dev_server=ollama
   dev_ollama_url=http://localhost:11434
@@ -355,14 +341,14 @@ dev_machine_load() {
 # Another server's address lives here, in this machine's answers, because it is
 # this machine's: written into the committed overlay instead, it is a change
 # every clone either carries or keeps reverting.
-dev_gateway_base_url() {
+dev_model_url() {
   local url
   case "${dev_server:-}" in
     llama.cpp) url=$dev_llama_url ;;
     other) url=$dev_other_url ;;
-    *) return 0 ;;
+    *) url=$dev_ollama_url ;;
   esac
-  [[ -n "$url" ]] || return 0
+  [[ -n "$url" ]] || url=$dev_ollama_url
   local host
   if [[ "$(dev_machine_base)" == local-mac ]]; then host=host.docker.internal; else host=172.18.0.1; fi
   echo "$url" | sed -E "s#//(localhost|127\.0\.0\.1)([:/]|\$)#//$host\2#"

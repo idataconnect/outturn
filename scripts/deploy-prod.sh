@@ -167,7 +167,6 @@ s3_endpoint=$(ask "OUTTURN_S3_ENDPOINT")
 s3_bucket=$(ask "OUTTURN_S3_BUCKET" "outturn")
 s3_access=$(ask "OUTTURN_S3_ACCESS_KEY")
 s3_secret=$(ask "OUTTURN_S3_SECRET_KEY")
-default_model=$(ask "OUTTURN_DEFAULT_MODEL")
 
 secret=$(outturn_token_secret)
 public=$(outturn_public_key_of "$secret")
@@ -207,12 +206,14 @@ stringData:
   OUTTURN_S3_BUCKET: "$s3_bucket"
   OUTTURN_S3_ACCESS_KEY: "$s3_access"
   OUTTURN_S3_SECRET_KEY: "$s3_secret"
-  OUTTURN_DEFAULT_MODEL: "$default_model"
 EOF
 
 echo >&2
 echo "wrote $secret_file" >&2
 echo >&2
+echo "Models are configured after the first sign-in, not here: the operator is" >&2
+echo "offered Platform -> Models -> Set up from a recipe, which makes a chain, seals" >&2
+echo "its keys and makes a test call. Until then every turn is refused." >&2
 check
 
 echo >&2

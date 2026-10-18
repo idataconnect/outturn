@@ -22,29 +22,21 @@ resources:
   - ../local
 
 patches:
+  # The model the platform-settings Job gives assistant traffic a chain to,
+  # where nothing does yet. A name, not a private address, so no internal
+  # host has to be opened for it.
   - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
+      apiVersion: batch/v1
+      kind: Job
       metadata:
-        name: outturn-api
+        name: platform-settings
       spec:
         template:
           spec:
             containers:
-              - name: api
+              - name: settings
                 env:
-                  - name: OUTTURN_DEFAULT_MODEL
-                    value: "qwen3.8:27b-mlx"
-  - patch: |
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: outturn-gateway
-      spec:
-        template:
-          spec:
-            containers:
-              - name: gateway
-                env:
-                  - name: OPENAI_BASE_URL
+                  - name: MODEL_URL
                     value: "http://host.docker.internal:11434"
+                  - name: MODEL
+                    value: "qwen3.8:27b-mlx"
