@@ -145,11 +145,16 @@ pub fn counts(catalog: &serde_json::Value) -> (usize, usize) {
 pub fn provider_for(catalog: &serde_json::Value, protocol: &str, base_url: &str) -> Option<String> {
     let host = host_of(base_url)?;
     let providers = catalog.as_object()?;
+    // Host and port, not host alone: several providers in the catalog are
+    // programs that run on the machine itself, each at `localhost` or
+    // `127.0.0.1` on a port of its own, and matching the host alone took an
+    // account at `localhost:11434` for one of them and offered its models.
+    let place = place_of(base_url)?;
     let by_api = providers.iter().find(|(_, p)| {
         p["api"]
             .as_str()
-            .and_then(host_of)
-            .is_some_and(|api| api == host)
+            .and_then(place_of)
+            .is_some_and(|api| api == place)
     });
     if let Some((id, _)) = by_api {
         return Some(id.clone());
@@ -282,6 +287,13 @@ pub fn newest_of_family(
         .map(|(id, _)| id.clone())
 }
 
+/// A URL's host and port, the port as written or the scheme's default.
+fn place_of(url: &str) -> Option<(String, u16)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    Some((host, parsed.port_or_known_default()?))
+}
+
 fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = rest.split(['/', ':']).next()?;
@@ -357,6 +369,16 @@ mod tests {
             Some("amazon-bedrock")
         );
         assert_eq!(of("openai", "http://ollama.ollama:11434/v1"), None);
+        // A program on this machine is told apart by its port.
+        let local = serde_json::json!({
+            "privatemode-ai": {"api": "http://localhost:8080/v1", "models": {}},
+            "lmstudio": {"api": "http://127.0.0.1:1234/v1", "models": {}},
+        });
+        assert_eq!(super::provider_for(&local, "openai", "http://localhost:11434"), None);
+        assert_eq!(
+            super::provider_for(&local, "openai", "http://127.0.0.1:1234/v1").as_deref(),
+            Some("lmstudio")
+        );
         assert_eq!(of("anthropic", "http://proxy.example.com"), None);
     }
 
