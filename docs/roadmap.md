@@ -18,7 +18,11 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+1. **One model for every trigger, then email** ([triggers.md](triggers.md),
+   *One model for every trigger* and *Email*): schedules and webhooks as two
+   sources of one pipeline -- dedupe, ceiling, sender policy, session, prompt
+   -- before email arrives as the third. Designed; to agree before building.
+2. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 

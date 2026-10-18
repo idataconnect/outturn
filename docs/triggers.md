@@ -3,7 +3,9 @@
 Starting a turn when nobody is typing.
 
 Schedules and webhooks are built. Email is designed here and not built, so
-that the first two do not get in its way.
+that the first two do not get in its way -- and so is one model for all three
+(*One model for every trigger*), since two were built separately and a third
+should not be.
 
 ## Why this matters more than it looks
 
@@ -415,20 +417,138 @@ narrowed away from an agent could cause it to run by giving it a schedule or
 a hook. Both endpoints now check `require_for_agent` with `sessions:create`,
 as `sessions::create_session` does.
 
+## One model for every trigger
+
+Designed, not built. Schedules and webhooks were built one after the other,
+and what they share was pulled out only at the last step: `trigger::start`,
+which makes the session and queues the turn, became shared after a copy of it
+lost three of its steps. Everything before that step is still written twice --
+two tables, two stores, two management APIs (`schedules.rs`, `webhooks.rs`),
+two editors (`AgentSchedules.tsx`, `AgentWebhooks.tsx`) -- and a third kind
+would make it three times. Email is that third kind, which is the moment to
+stop.
+
+### What a trigger is
+
+Two halves, and the split is the design. **A source** is how a firing
+arrives: a time comes due, a request is received, a message is found in a
+mailbox. **A firing** is what every source hands on, the same shape whatever
+produced it:
+
+```
+text         what arrived: a webhook's body, an email's text, nothing for a schedule
+external_id  what the sender calls it: a delivery's id, an email's Message-ID
+thread_id    what it belongs to, where the source knows: In-Reply-To, a booking id
+sender       who it claims to be from: an address, a signing key's holder
+metadata     anything else worth recording on the message
+```
+
+Then one pipeline, in this order, for every kind:
+
+1. **Dedupe** on `(trigger, external_id)`, recorded in the same transaction
+   that queues the turn -- so a crash between the two redoes the record, never
+   the turn. A schedule's external id is the time it was due, which makes a
+   tick that fired twice one firing.
+2. **Ceiling**: the hourly maximum and the concurrent maximum, refused before
+   the queue. Webhooks have the first today and nothing has the second (*What
+   is still to settle*); one place to enforce both is how schedules get them.
+3. **Sender policy**: whether this sender may start this agent at all. Nothing
+   for a schedule; the signature or shared secret for a webhook, already
+   checked by its source; an allowlist and the mail server's own verdict for
+   email.
+4. **Session**: new per firing, or the session an earlier firing in the same
+   thread started -- the external-identity mapping *Which session* describes,
+   built once here rather than per kind.
+5. **Prompt**: the trigger's template around the text, as webhooks do now.
+6. **`trigger::start`**, unchanged.
+
+A source is then small: produce firings, and say what its own sender check is.
+Schedules are a clock, webhooks an HTTP route, email a mailbox.
+
+### Replay is not dedupe
+
+Two records that look alike and are not. `webhook_deliveries` refuses a
+*captured request* presented twice (*Replay is refused*), keyed on a signature
+and released when its turn never started, so the sender's retry gets through.
+Dedupe refuses an *event* delivered twice, keyed on what the sender calls it,
+and is not released: the second delivery of a booking is the same booking. A
+webhook source keeps its replay check, before the pipeline; dedupe is the
+pipeline's, after it. A sender that names its deliveries -- an id header --
+gets both, and one that does not gets replay protection alone, as today.
+
+### The table
+
+One `triggers` table for what every kind has -- workspace, agent, name,
+prompt template, enabled, account, owner, the ceiling and its window, the
+last firing's time, status and error, who made it and when -- with `kind`
+and a `config` for what one kind has alone: a schedule's expression, zone and
+next run; a webhook's path, scheme and sealed secret; a mailbox's address and
+cursor. `trigger_firings` holds the dedupe keys, and `trigger_threads` maps a
+thread to its session. Migrated from `schedules` and `webhook_triggers`
+keeping their ids, so a webhook's address and anything linking a schedule do
+not change.
+
+### The API and the page
+
+`/v1/agents/{id}/triggers`, one list for an agent with each row's kind, and a
+form whose common half is the same for every kind and whose other half is the
+kind's own. The old routes stay as aliases for a release. On the agent's page,
+one *Triggers* section where there are now two, each row with its kind's icon,
+as now; adding one asks which kind first.
+
+### Order of work
+
+1. The table, the migration and the pipeline, with schedules and webhooks as
+   its first two sources -- behavior unchanged, which the existing tests say.
+2. The concurrent ceiling, for both, since the pipeline is where it goes.
+3. One API and one page.
+4. Email, as a third source (below).
+5. Threading for webhooks, keyed on a field of the body the trigger names.
+
+### What is still to decide
+
+- **When a thread is finished.** A booking's conversation should not run for a
+  year. A thread with no firing for some days starts a new session; how many
+  days, and whether it is the trigger's to say.
+- **Two firings racing into one thread.** The session's serial key queues their
+  turns, which is right; whether the second should wait for the first's reply
+  before its prompt is written is not settled.
+
 ## Email
 
-Designed, unbuilt, and mostly not its own thing: an inbound email provider
-delivers by POSTing to an endpoint, so email is the webhook path plus parsing.
+Designed, unbuilt, and the first source the model above is for. Four ways in,
+and they trade differently:
 
-It is also why the webhook path has two authentication schemes rather than one.
-Not every such provider signs its deliveries; some recommend a bearer
-credential and IP allowlisting instead, so an HMAC-only platform could not
-receive email through those. Confirm what a given provider actually does before
-relying on either -- checking is worth more than the assumption it replaces.
+| | For | Against |
+|---|---|---|
+| **IMAP** -- poll, or IDLE for push | Any mailbox, as it is: no DNS change, mail stays where it lives. | Gmail and Microsoft 365 increasingly want OAuth rather than a password, which is setup per provider; IDLE holds a connection per mailbox, which stateless pods do not keep without one pod owning each; the gateway learns a protocol that is not HTTP. |
+| **An inbound-parse service** -- mail forwarded or delivered to a provider that POSTs it, parsed | Push, no mailbox credential held anywhere, MIME already taken apart; it is the webhook path. | A forwarding rule or a DNS change, and a third party reading the mail. |
+| **A mail provider's own API** -- Gmail push, Microsoft Graph notifications | Push, scoped OAuth, threads and labels as the provider knows them. | Code per provider, an application to register and have verified, subscriptions to renew. |
+| **A mail server of our own** -- "forward to agent@" | The simplest thing to tell somebody. | Running inbound mail: spam, abuse, deliverability. Not worth it. |
 
-What is genuinely its own: threading, since a reply should land in the session
-its predecessor started, which is the external-identity mapping above with a
-`Message-ID` as the key; and the fact that anybody can send email to an
-address, so the sender is not merely untrusted but unauthenticated in a way a
-signed webhook is not. An allowlist of sending addresses is the obvious first
-control and is probably enough for a long time.
+**First, inbound parse**: it is a webhook source with a parser, so nearly all
+of it is built once the model above is. **Then IMAP**, for whoever needs an
+existing shared mailbox watched, with what it needs worked out already:
+
+- **The cursor is IMAP's own**: the folder's `UIDVALIDITY` and the highest UID
+  taken. Not the `\Seen` flag, which is the people's -- a receptionist reading a
+  message first would hide it from the agent, and the agent marking messages
+  read would hide new mail from the receptionist. What the agent took is shown
+  with a keyword of its own (`$Outturn`) or a move to a folder.
+- **Dedupe on `Message-ID`**, through the pipeline, for when the cursor resets
+  -- `UIDVALIDITY` changes -- or a mark did not reach the server. Missing or
+  reused ids are not rare, so a hash of date, sender and subject stands in.
+- **The gateway holds the mailbox credential** and does the fetching, as it
+  makes every other outbound call, under an egress rule and a sealed
+  credential bound to the mail host; the API's worker says when to poll.
+
+Either way, two things are email's own. **Threading**, which is the pipeline's
+thread mapping with `In-Reply-To` and `References` naming the thread. And
+**the sender**: anybody can send email to an address, so it is not merely
+untrusted but unauthenticated in a way a signed webhook is not. An allowlist of
+sending addresses, and the receiving server's SPF and DKIM verdict from its
+`Authentication-Results` header, is enough for a long time. The body is the
+least trusted text an agent will read: the platform preamble's rule that
+instructions come from the system prompt alone ([prompt-contributors.md](prompt-contributors.md))
+is written for exactly this, and what bounds a message that gets past it is,
+as everywhere, what the agent may reach.
