@@ -244,16 +244,22 @@ pub fn newest_in_line(
 /// tools, not a preview or a moving alias, and settled where anything
 /// settled is left. What a recipe names a tier by, so no model id is
 /// written down anywhere to go stale.
+///
+/// `prefix` narrows the ids, for a provider that lists one model several
+/// times over: Bedrock's `us.`, `eu.` and `global.` profiles. Empty for any
+/// other.
 pub fn newest_of_family(
     catalog: &serde_json::Value,
     provider: &str,
     family: &str,
+    prefix: &str,
 ) -> Option<String> {
     let models = catalog.get(provider)?.get("models")?.as_object()?;
     let chat: Vec<(&String, &serde_json::Value)> = models
         .iter()
         .filter(|(id, m)| {
             m["family"] == family
+                && id.starts_with(prefix)
                 && m["modalities"]["output"] == serde_json::json!(["text"])
                 && m["tool_call"] == true
                 && !id.ends_with("-latest")
@@ -314,10 +320,14 @@ mod tests {
         );
         assert!(super::newest_in_line(&held, "anthropic", "no-such-model").is_none());
         // A family's newest chat model, which is what a recipe asks for.
-        let family = |p, f| super::newest_of_family(&held, p, f).unwrap();
+        let family = |p, f| super::newest_of_family(&held, p, f, "").unwrap();
         assert_eq!(family("anthropic", "claude-opus"), "claude-opus-5-5");
         assert_eq!(family("google", "gemini-pro"), "gemini-2.5-pro");
         assert_eq!(family("google", "gemini-flash"), "gemini-3.8-flash");
+        assert_eq!(
+            super::newest_of_family(&held, "amazon-bedrock", "claude-sonnet", "eu.").unwrap(),
+            "eu.anthropic.claude-sonnet-5-5"
+        );
     }
 
     #[test]

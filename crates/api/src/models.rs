@@ -1085,6 +1085,18 @@ const ANTHROPIC: Vendor = Vendor {
     catalog: "anthropic",
 };
 
+/// Bedrock's address carries the region, filled in from what the operator
+/// names; its key is optional, since without one the gateway signs with its
+/// own AWS credentials -- a role for its pod, at best.
+const BEDROCK: Vendor = Vendor {
+    key: "bedrock",
+    name: "Amazon Bedrock",
+    protocol: "bedrock",
+    base_url: "https://bedrock-runtime.{region}.amazonaws.com",
+    env: "",
+    catalog: "amazon-bedrock",
+};
+
 const GEMINI: Vendor = Vendor {
     key: "gemini",
     name: "Google Gemini",
@@ -1116,11 +1128,42 @@ const RECIPES: &[(&str, &str, &str, &[(&Vendor, &str)])] = &[
         "Claude Haiku, falling back to Gemini Flash-Lite.",
         &[(&ANTHROPIC, "claude-haiku"), (&GEMINI, "gemini-flash-lite")],
     ),
+    (
+        "two-doors",
+        "Claude, two doors",
+        "Claude Sonnet on Amazon Bedrock, falling back to the same model at Anthropic.",
+        &[(&BEDROCK, "claude-sonnet"), (&ANTHROPIC, "claude-sonnet")],
+    ),
 ];
+
+/// Recipes not yet tried end to end against the provider they name, said
+/// beside them until somebody has.
+const UNTRIED: &[&str] = &["two-doors"];
+
+/// Bedrock's cross-region profile for a region: recent Claude models are
+/// called through `us.`, `eu.` or `global.` ids rather than in one region.
+fn bedrock_profile(region: &str) -> &'static str {
+    if region.starts_with("us-") {
+        "us."
+    } else if region.starts_with("eu-") {
+        "eu."
+    } else {
+        "global."
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecipeQuery {
+    /// For a recipe with Bedrock in it; `us-east-1` when left out.
+    #[serde(default)]
+    pub region: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct RecipeLink {
     pub vendor: &'static Vendor,
+    /// The vendor's address, with the region filled in where it has one.
+    pub base_url: String,
     /// The family's newest chat model in the catalog held, or none when the
     /// catalog has none -- and the recipe cannot be set up.
     pub model: Option<String>,
@@ -1134,43 +1177,73 @@ pub struct Recipe {
     pub summary: &'static str,
     /// In order: the first is asked, the next when it is unavailable.
     pub links: Vec<RecipeLink>,
+    /// Not yet tried end to end against the provider it names.
+    pub untried: bool,
+    /// Every link the same model, by the catalog's canonical id: a fallback
+    /// changes the door and not the voice.
+    pub same_model: bool,
 }
 
 pub async fn recipes(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<RecipeQuery>,
 ) -> Result<Json<Vec<Recipe>>, ApiError> {
     operator(&state, &headers)?;
+    // Written into an address, so only what a region name can be.
+    let region = query
+        .region
+        .map(|r| r.trim().to_ascii_lowercase())
+        .filter(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or_else(|| "us-east-1".into());
     let held: serde_json::Value =
         sqlx::query_scalar("select models from catalog_snapshots order by fetched_at desc limit 1")
             .fetch_optional(&state.pool)
             .await
             .map_err(internal)?
             .unwrap_or_default();
-    Ok(Json(
-        RECIPES
-            .iter()
-            .map(|(id, title, summary, links)| Recipe {
+    let recipes = RECIPES
+        .iter()
+        .map(|(id, title, summary, links)| {
+            // Each link resolved once, with the model it is whichever door
+            // it is reached through, for saying whether a fallback changes it.
+            let resolved: Vec<(RecipeLink, Option<String>)> = links
+                .iter()
+                .map(|(vendor, family)| {
+                    let prefix = if vendor.key == "bedrock" {
+                        bedrock_profile(&region)
+                    } else {
+                        ""
+                    };
+                    let model = catalog::newest_of_family(&held, vendor.catalog, family, prefix);
+                    let entry = model
+                        .as_deref()
+                        .and_then(|m| catalog::entry(&held, vendor.catalog, m));
+                    let name = entry.and_then(|e| e["name"].as_str()).map(str::to_string);
+                    let canonical = entry
+                        .and_then(|e| e["canonical_model_id"].as_str())
+                        .map(str::to_string);
+                    let link = RecipeLink {
+                        vendor,
+                        base_url: vendor.base_url.replace("{region}", &region),
+                        model,
+                        name,
+                    };
+                    (link, canonical)
+                })
+                .collect();
+            let same_model = resolved
+                .iter()
+                .all(|(_, c)| c.is_some() && *c == resolved[0].1);
+            Recipe {
                 id,
                 title,
                 summary,
-                links: links
-                    .iter()
-                    .map(|(vendor, family)| {
-                        let model = catalog::newest_of_family(&held, vendor.catalog, family);
-                        let name = model
-                            .as_deref()
-                            .and_then(|m| catalog::entry(&held, vendor.catalog, m))
-                            .and_then(|e| e["name"].as_str())
-                            .map(str::to_string);
-                        RecipeLink {
-                            vendor,
-                            model,
-                            name,
-                        }
-                    })
-                    .collect(),
-            })
-            .collect(),
-    ))
+                links: resolved.into_iter().map(|(link, _)| link).collect(),
+                untried: UNTRIED.contains(id),
+                same_model,
+            }
+        })
+        .collect();
+    Ok(Json(recipes))
 }

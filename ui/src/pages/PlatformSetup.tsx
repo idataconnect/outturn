@@ -29,7 +29,11 @@ type Recipe = {
   id: string
   title: string
   summary: string
-  links: { vendor: Vendor; model: string | null; name: string | null }[]
+  links: { vendor: Vendor; base_url: string; model: string | null; name: string | null }[]
+  /** Not yet tried end to end against the provider it names. */
+  untried: boolean
+  /** Every link the same model, so a fallback changes the door, not the voice. */
+  same_model: boolean
 }
 
 type Step = { label: string; state: 'waiting' | 'running' | 'done' | 'failed'; error?: string }
@@ -52,16 +56,27 @@ export default function PlatformSetup() {
   const [steps, setSteps] = useState<Step[] | null>(null)
   const [tested, setTested] = useState<Tested | null>(null)
 
+  // For a recipe with Bedrock in it: its address and model follow from it.
+  const [region, setRegion] = useState('us-east-1')
+
   useEffect(() => {
     heldCatalog().then(setHeld).catch(() => setHeld(null))
     configured().then(setConfig).catch(() => setConfig(null))
-    api<Recipe[]>('/v1/platform/recipes').then(setRecipes).catch(() => setRecipes([]))
   }, [])
+  useEffect(() => {
+    api<Recipe[]>(`/v1/platform/recipes?region=${encodeURIComponent(region.trim())}`)
+      .then(setRecipes)
+      .catch(() => setRecipes([]))
+  }, [region])
 
   const recipe = recipes.find((r) => r.id === choice)
+  // Each vendor once, at the address this recipe resolved for it.
   const vendors = recipe
-    ? recipe.links.map((l) => l.vendor).filter((v, i, all) => all.findIndex((w) => w.key === v.key) === i)
+    ? recipe.links
+        .map((l) => ({ ...l.vendor, base_url: l.base_url }))
+        .filter((v, i, all) => all.findIndex((w) => w.key === v.key) === i)
     : []
+  const usesBedrock = vendors.some((v) => v.protocol === 'bedrock')
   const existing = (v: Vendor): Account | undefined =>
     config?.accounts.find((a) => a.protocol === v.protocol && a.base_url === v.base_url)
   // A family the catalog has no chat model for cannot be set up from it.
@@ -144,7 +159,12 @@ export default function PlatformSetup() {
 
   const ready =
     recipe !== undefined
-      ? complete && vendors.every((v) => existing(v) || keys[v.key]?.trim() || envs[v.key]?.trim())
+      ? complete &&
+        vendors.every(
+          // Bedrock needs no key here: without one the gateway signs with
+          // its own AWS credentials.
+          (v) => v.protocol === 'bedrock' || existing(v) || keys[v.key]?.trim() || envs[v.key]?.trim(),
+        )
       : local.url.trim() !== '' && local.model.trim() !== ''
 
   return (
@@ -180,7 +200,11 @@ export default function PlatformSetup() {
               ...r,
               caveat: r.links.some((l) => !l.model)
                 ? 'The catalog held has no model for part of this.'
-                : `Today: ${r.links.map((l) => l.name ?? l.model).join(', then ')}. A different family answers on fallback.`,
+                : `Today: ${r.links.map((l) => l.name ?? l.model).join(', then ')}. ${
+                    r.same_model
+                      ? 'The same model answers on fallback.'
+                      : 'A different family answers on fallback.'
+                  }${r.untried ? ' Not yet tried against the provider itself.' : ''}`,
             })),
             {
               id: 'local',
@@ -221,6 +245,12 @@ export default function PlatformSetup() {
 
       <section className={sectionBox}>
         <h2 className="text-lg font-medium text-surface-900 dark:text-surface-100">3. Keys</h2>
+        {usesBedrock && (
+          <label className="block text-sm text-surface-700 dark:text-surface-300">
+            Bedrock region
+            <input value={region} onChange={(e) => setRegion(e.target.value)} placeholder="us-east-1" className={field} />
+          </label>
+        )}
         {recipe &&
           vendors.map((v) => {
             const has = existing(v)
@@ -234,8 +264,14 @@ export default function PlatformSetup() {
                   </p>
                 ) : (
                   <>
+                    {v.protocol === 'bedrock' && (
+                      <p className="text-sm text-surface-600 dark:text-surface-400">
+                        Without a key, the gateway signs with its own AWS credentials: a role for its pod, or
+                        keys in its environment.
+                      </p>
+                    )}
                     <label className="block text-sm text-surface-700 dark:text-surface-300">
-                      Key
+                      {v.protocol === 'bedrock' ? 'Bedrock API key (optional)' : 'Key'}
                       <input
                         type="password"
                         autoComplete="off"
@@ -244,15 +280,17 @@ export default function PlatformSetup() {
                         className={field}
                       />
                     </label>
-                    <label className="block text-sm text-surface-700 dark:text-surface-300">
-                      Or a variable in the gateway's environment
-                      <input
-                        value={envs[v.key] ?? ''}
-                        placeholder={v.env}
-                        onChange={(e) => setEnvs({ ...envs, [v.key]: e.target.value })}
-                        className={field}
-                      />
-                    </label>
+                    {v.env && (
+                      <label className="block text-sm text-surface-700 dark:text-surface-300">
+                        Or a variable in the gateway's environment
+                        <input
+                          value={envs[v.key] ?? ''}
+                          placeholder={v.env}
+                          onChange={(e) => setEnvs({ ...envs, [v.key]: e.target.value })}
+                          className={field}
+                        />
+                      </label>
+                    )}
                   </>
                 )}
               </div>
