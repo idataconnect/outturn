@@ -52,11 +52,15 @@ cascade from operator to workspace to agent with an explicit override at each
 level is in [docs/settings.md](settings.md). Both are mostly design: each
 says what exists.
 
-What a model accepts -- whether it takes a temperature, how it thinks, how
-much it may write -- is designed in [docs/models.md](models.md):
-a catalog fetched from models.dev when an operator asks for one, which routes
-are filled from and the gateway acts on. Until it exists, the Anthropic
-translation reads those facts from the model's name. How a model's reasoning
+Which models a deployment has, and what each accepts, is
+[docs/models.md](models.md), built but for Bedrock: a catalog from models.dev
+shipped in the image and checked weekly; provider accounts with sealed keys,
+models pinned or tracking the latest in their line, and a chain per traffic
+class, all configured on Platform → Models or made by a recipe on Platform →
+Setup with a test call; settings chosen per model; an upgrade the settings
+would not survive waiting in the operator's inbox; and a note under any reply
+a fallback answered. The gateway takes each model's facts from the catalog
+rather than its name. How a model's reasoning
 is asked for, shown, kept and given back is [docs/thinking.md](thinking.md);
 asking and showing are built, keeping a thinking block's signature through
 every tier is not.
