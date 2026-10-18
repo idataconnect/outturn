@@ -78,7 +78,10 @@ forgot to set one.
 | `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
-| `OUTTURN_DEFAULT_MODEL` | api | Model when an agent names none. Unset, such an agent refuses its turns and sessions go unnamed |
+| `OUTTURN_DEFAULT_MODEL` | api | Model when an agent names none. Unset, such an agent refuses its turns and sessions go unnamed -- even where a chain would answer, since a class with a chain ignores the name; see [models.md](docs/models.md) |
+| `OUTTURN_GATEWAY_URL` | api, runtime | Where the gateway is. Unset, the API names no sessions, fetches no catalog and makes no test call |
+| `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say; see [egress.md](docs/egress.md) |
+| `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
 | `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`; the UI's is `VITE_BRAND_NAME`, set at build time |
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
@@ -95,6 +98,16 @@ needs:
 | `OUTTURN_TOKEN_SECRET` | api only | Ed25519 seed, 64 hex chars. Signs every token |
 | `OUTTURN_TOKEN_PUBLIC_KEY` | api, gateway | Its public half. Comma-separate two during a key rotation |
 | `OUTTURN_RUNTIME_KEY` | api, runtime | Shared key the runtime presents to take work, 32+ bytes |
+
+Two more are needed for anything sealed -- a workspace's credentials, and a
+provider account's key typed into the Models page -- and without them
+sealing is refused rather than half done; see
+[sealed-credentials.md](docs/sealed-credentials.md):
+
+| Variable | Tier | Is |
+|---|---|---|
+| `OUTTURN_SEAL_KEY` | gateway only | X25519 private key, 64 hex chars, that opens seals. Comma-separate two during a rotation |
+| `OUTTURN_SEAL_PUBLIC_KEY` | api | Its public half, handed to the browser to seal to |
 
 An idle runtime pod always accepts a turn however tight memory looks. Without
 that, a pod whose baseline sits under the reserve refuses everything forever,
