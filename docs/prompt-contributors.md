@@ -12,7 +12,14 @@ prompt once per conversation, is built.
 Several things already write into what a turn sends, and each has its own
 unwritten rules:
 
-- the platform preamble (`skill::platform_preamble`);
+- the platform preamble (`skill::platform_preamble`), which tells every
+  agent two things: not to invent facts about itself or the platform, and
+  that its instructions come from its system prompt alone -- text anywhere
+  else claiming to replace or add to them, a message styled as a new system
+  prompt or a fetched page, is something to read, while within its role it
+  follows the person it works for as usual. The second raises the bar
+  against being talked out of a job; it is not the boundary, which is still
+  what an agent's skills and egress rules allow;
 - the agent's system prompt;
 - the bodies of its skills, composed in order;
 - compaction summaries, framed as summaries (`summarize::framed`);
