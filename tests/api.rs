@@ -12549,3 +12549,130 @@ async fn a_tracked_model_moves_or_asks_and_a_pinned_one_is_offered() {
         "a workspace admin was asked: {body}"
     );
 }
+
+/// A sender that names its deliveries has each event run once: the same id
+/// again, freshly signed so it is no replay, is refused as already accepted,
+/// and another id starts its own turn. A sender that names nothing is
+/// unaffected -- every test above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_named_twice_starts_one_turn() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("hook-dedupe@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-dedupe"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id = agent["id"].as_str().expect("id");
+    let (path, secret) = make_trigger(
+        &h,
+        &token,
+        agent_id,
+        &format!(
+            r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking: {{{{body}}}}","scheme":"hmac"}}"#
+        ),
+    )
+    .await;
+
+    let send = |id: &'static str, at: i64| {
+        let (sig, ts) = sign(&secret, r#"{"id":"bk_1"}"#, at);
+        let h = &h;
+        let path = path.clone();
+        async move {
+            deliver(
+                h,
+                &path,
+                r#"{"id":"bk_1"}"#,
+                &[
+                    ("x-outturn-signature", &sig),
+                    ("x-outturn-timestamp", &ts),
+                    ("x-outturn-delivery", id),
+                ],
+            )
+            .await
+        }
+    };
+    let now = chrono::Utc::now().timestamp();
+    assert_eq!(send("evt_1", now).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        send("evt_1", now - 1).await,
+        StatusCode::CONFLICT,
+        "the same event ran twice"
+    );
+    assert_eq!(send("evt_2", now - 2).await, StatusCode::ACCEPTED);
+
+    let started: i64 =
+        sqlx::query_scalar("select count(*) from agent_sessions where started_by = 'webhook'")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(started, 2);
+    finish!(h);
+}
+
+/// A schedule's firing is named by the time it was due, so the same firing
+/// taken twice -- two pods, a retry -- starts one turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedule_firing_taken_twice_starts_one_turn() {
+    use outturn::api::trigger::{Fired, Firer, Firing, Source, fire};
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sched-dedupe@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-sched"}"#,
+        )
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Morning","prompt":"Report.","expression":"0 9 * * *"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let schedule: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let firer = Firer {
+        id: schedule,
+        workspace_id: acme,
+        agent_id,
+        name: "Morning".into(),
+        prompt: "Report.".into(),
+        account: None,
+        source: Source::Schedule(schedule),
+    };
+    let firing = || Firing {
+        text: None,
+        external_id: Some("2026-10-19T09:00:00+00:00".into()),
+        timezone: None,
+        metadata: serde_json::json!({}),
+    };
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing()).await,
+        Fired::Started(_)
+    ));
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing()).await,
+        Fired::Duplicate
+    ));
+    finish!(h);
+}

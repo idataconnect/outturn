@@ -380,37 +380,33 @@ pub async fn deliver(
         }
     }
 
-    match postgres::admit(&state.pool, trigger.id).await {
-        Ok(true) => {}
-        Ok(false) => {
-            release(&state, claimed.as_deref(), trigger.id, claimant).await;
-            return refuse(&state, &trigger, Refusal::RateLimited).await;
-        }
-        Err(e) => {
-            tracing::error!(error = %e, trigger_id = %trigger.id, "could not count a delivery");
-            release(&state, claimed.as_deref(), trigger.id, claimant).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
-        }
-    }
-
     // Lossy on purpose: a body that is not UTF-8 still becomes a prompt, badly
     // rather than not at all. Refusing here would mean a sender's encoding
     // choice silently stopping their integration, and the agent reading
     // mangled text can at least say so.
     let text = String::from_utf8_lossy(&body).into_owned();
 
-    let started = crate::trigger::start(
+    // The shared steps: seen before, the ceiling, the prompt, the turn.
+    let fired = crate::trigger::fire(
         &state.pool,
-        crate::trigger::Started {
+        &crate::trigger::Firer {
+            id: trigger.id,
             workspace_id: trigger.workspace_id,
             agent_id: trigger.agent_id,
-            title: trigger.name.clone(),
-            prompt: webhook::prompt_for(&trigger.prompt, &text),
+            name: trigger.name.clone(),
+            prompt: trigger.prompt.clone(),
             account: trigger.account.clone(),
+            source: crate::trigger::Source::Webhook(trigger.id),
+        },
+        crate::trigger::Firing {
+            text: Some(text),
+            external_id: header(webhook::DELIVERY_HEADER)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
             // No zone: nobody sent this from anywhere, so the agent's clock
             // reads UTC rather than pretending to know better.
             timezone: None,
-            source: crate::trigger::Source::Webhook(trigger.id),
             metadata: serde_json::json!({
                 "webhook_trigger_id": trigger.id,
                 "webhook_trigger_name": trigger.name,
@@ -419,8 +415,8 @@ pub async fn deliver(
     )
     .await;
 
-    match started {
-        Ok(session_id) => {
+    match fired {
+        crate::trigger::Fired::Started(session_id) => {
             tracing::info!(
                 trigger_id = %trigger.id,
                 session_id = %session_id,
@@ -433,7 +429,19 @@ pub async fn deliver(
             // told something untrue.
             (StatusCode::ACCEPTED, "").into_response()
         }
-        Err(e) => {
+        crate::trigger::Fired::Duplicate => {
+            // The event already became a turn. Released, since this request
+            // started nothing, and answered as a replay is: the sender holds
+            // the credential, so telling it the event landed is telling it
+            // something it may act on.
+            release(&state, claimed.as_deref(), trigger.id, claimant).await;
+            refuse(&state, &trigger, Refusal::Duplicate).await
+        }
+        crate::trigger::Fired::OverCeiling => {
+            release(&state, claimed.as_deref(), trigger.id, claimant).await;
+            refuse(&state, &trigger, Refusal::RateLimited).await
+        }
+        crate::trigger::Fired::Failed(e) => {
             tracing::error!(trigger_id = %trigger.id, error = %e, "a webhook could not start a turn");
             let _ = postgres::record_delivery(&state.pool, trigger.id, "failed", Some(&e)).await;
             release(&state, claimed.as_deref(), trigger.id, claimant).await;

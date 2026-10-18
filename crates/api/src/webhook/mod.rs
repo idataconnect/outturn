@@ -34,8 +34,12 @@ pub const SIGNATURE_HEADER: &str = "x-outturn-signature";
 pub const TIMESTAMP_HEADER: &str = "x-outturn-timestamp";
 pub const TOKEN_HEADER: &str = "x-outturn-token";
 
-/// What the body is substituted into.
-pub const BODY_PLACEHOLDER: &str = "{{body}}";
+pub use crate::trigger::{BODY_PLACEHOLDER, prompt_for};
+
+/// What a sender calls a delivery, where it names one, so the same event
+/// delivered twice starts one turn. Optional: without it a delivery has replay
+/// protection alone, as it always has.
+pub const DELIVERY_HEADER: &str = "x-outturn-delivery";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Trigger {
@@ -104,6 +108,8 @@ pub enum Refusal {
     TooLarge,
     RateLimited,
     Replayed,
+    /// The event, by the sender's own id for it, already started a turn.
+    Duplicate,
 }
 
 impl Refusal {
@@ -128,6 +134,8 @@ impl Refusal {
             // already been accepted, and sending it again will not produce a
             // second turn.
             Refusal::Replayed => StatusCode::CONFLICT,
+            // As a replay: the same event, already accepted.
+            Refusal::Duplicate => StatusCode::CONFLICT,
             _ => StatusCode::NOT_FOUND,
         }
     }
@@ -143,6 +151,7 @@ impl Refusal {
             Refusal::TooLarge => "the body was larger than the limit",
             Refusal::RateLimited => "the trigger's hourly ceiling was reached",
             Refusal::Replayed => "this delivery has already been accepted",
+            Refusal::Duplicate => "a delivery with this id has already been accepted",
         }
     }
 }
@@ -283,16 +292,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
-}
-
-/// The prompt a delivery produces.
-///
-/// The body goes where the template says, and nowhere else. A template with no
-/// placeholder is a trigger whose author wants the same prompt every time,
-/// which is unusual but not wrong -- the delivery is then only a signal that
-/// something happened.
-pub fn prompt_for(template: &str, body: &str) -> String {
-    template.replace(BODY_PLACEHOLDER, body)
 }
 
 #[cfg(test)]

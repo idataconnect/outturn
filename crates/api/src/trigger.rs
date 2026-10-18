@@ -56,7 +56,168 @@ pub struct Started {
 /// that exists with no job to answer it is a message nothing will ever notice.
 pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let session_id = start_in(&mut tx, started).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(session_id)
+}
 
+// -- The pipeline every trigger fires through ------------------------------------
+
+/// What a source hands on when its trigger fires: what arrived, and what the
+/// sender calls it. See docs/triggers.md, "One model for every trigger".
+pub struct Firing {
+    /// What arrived, put where the prompt says `{{body}}`. None for a firing
+    /// that brings nothing, as a schedule's does.
+    pub text: Option<String>,
+    /// What the sender calls this firing, so the same one delivered twice
+    /// runs once. None when the sender names nothing.
+    pub external_id: Option<String>,
+    /// The zone the agent's clock should read in.
+    pub timezone: Option<String>,
+    /// Recorded on the message, beside what `start` records.
+    pub metadata: serde_json::Value,
+}
+
+/// The trigger a firing is for, as its source read it.
+pub struct Firer {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub agent_id: Uuid,
+    pub name: String,
+    pub prompt: String,
+    pub account: Option<String>,
+    pub source: Source,
+}
+
+/// How a firing went.
+#[derive(Debug)]
+pub enum Fired {
+    Started(Uuid),
+    /// The sender's id for it was seen before; nothing was started.
+    Duplicate,
+    /// The trigger's hourly ceiling turned it away; nothing was started.
+    OverCeiling,
+    Failed(String),
+}
+
+/// What the body is substituted into.
+pub const BODY_PLACEHOLDER: &str = "{{body}}";
+
+/// Fires a trigger: refuses what was seen before, counts it against the
+/// ceiling, writes the prompt, and starts the turn -- the same steps in the
+/// same order for every kind, so none of them is a kind's to forget.
+///
+/// Seen before is checked first, so a duplicate does not spend the hourly
+/// allowance a real firing needs, and again in the transaction that starts
+/// the turn, where the record is written: two copies racing are then one turn
+/// and one `Duplicate`, never two turns.
+pub async fn fire(pool: &sqlx::PgPool, firer: &Firer, firing: Firing) -> Fired {
+    if let Some(external) = &firing.external_id {
+        let seen: Result<Option<i64>, _> = sqlx::query_scalar(
+            "select 1::bigint from trigger_firings where trigger_id = $1 and external_id = $2",
+        )
+        .bind(firer.id)
+        .bind(external)
+        .fetch_optional(pool)
+        .await;
+        match seen {
+            Ok(Some(_)) => return Fired::Duplicate,
+            Ok(None) => {}
+            Err(e) => return Fired::Failed(e.to_string()),
+        }
+    }
+
+    match admit(pool, firer.id).await {
+        Ok(true) => {}
+        Ok(false) => return Fired::OverCeiling,
+        Err(e) => return Fired::Failed(e.to_string()),
+    }
+
+    let prompt = match &firing.text {
+        Some(text) => prompt_for(&firer.prompt, text),
+        None => firer.prompt.clone(),
+    };
+    let started = Started {
+        workspace_id: firer.workspace_id,
+        agent_id: firer.agent_id,
+        title: firer.name.clone(),
+        prompt,
+        account: firer.account.clone(),
+        timezone: firing.timezone,
+        source: firer.source,
+        metadata: firing.metadata,
+    };
+
+    let run = async {
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        if let Some(external) = &firing.external_id {
+            let recorded = sqlx::query(
+                "insert into trigger_firings (trigger_id, external_id) values ($1, $2) \
+                 on conflict do nothing",
+            )
+            .bind(firer.id)
+            .bind(external)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+            if recorded.rows_affected() == 0 {
+                return Ok(None);
+            }
+        }
+        let session_id = start_in(&mut tx, started).await?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(Some(session_id))
+    };
+    match run.await {
+        Ok(Some(session_id)) => Fired::Started(session_id),
+        Ok(None) => Fired::Duplicate,
+        Err(e) => Fired::Failed(e),
+    }
+}
+
+/// The prompt a firing produces.
+///
+/// What arrived goes where the template says, and nowhere else. A template
+/// with no placeholder is a trigger whose author wants the same prompt every
+/// time, which is unusual but not wrong -- the firing is then only a signal
+/// that something happened.
+pub fn prompt_for(template: &str, body: &str) -> String {
+    template.replace(BODY_PLACEHOLDER, body)
+}
+
+/// Counts a firing against its trigger's hourly ceiling, and says whether it
+/// fits. A trigger with no ceiling always fits.
+///
+/// One statement, on the trigger's own row. In the same database as the work
+/// it bounds rather than in a cache, because this is a refusal and not a
+/// metric: a ceiling that fails open when its store is unreachable is not a
+/// ceiling. A fixed window, which admits up to twice the limit across a
+/// boundary -- the honest cost of one row and one statement, and twice the
+/// limit is still not a runaway. A refused firing is not counted, or a sender
+/// ignoring refusals would hold the window open for ever.
+pub async fn admit(pool: &sqlx::PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let admitted = sqlx::query(
+        "update triggers set \
+             window_start = case when window_start < now() - interval '1 hour' \
+                                 then now() else window_start end, \
+             window_count = case when window_start < now() - interval '1 hour' \
+                                 then 1 else window_count + 1 end \
+         where id = $1 \
+           and (max_per_hour is null \
+                or window_start < now() - interval '1 hour' or window_count < max_per_hour)",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(admitted.rows_affected() > 0)
+}
+
+/// As `start`, inside a transaction the caller commits -- so whatever else a
+/// firing records lands with its turn or not at all.
+async fn start_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    started: Started,
+) -> Result<Uuid, String> {
     let session_id = Uuid::now_v7();
     // Matched on the enum rather than on a string it maps to, so a third kind
     // of trigger fails to compile here until it says what it is called. An
@@ -78,7 +239,7 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     .bind(started.account.as_deref())
     .bind(started.source.id())
     .bind(started_by)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -95,7 +256,7 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     .bind(session_id)
     .bind(&started.prompt)
     .bind(&started.metadata)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -123,12 +284,12 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
          on conflict (session_id) do update set expires_at = excluded.expires_at",
     )
     .bind(session_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
 
     jobs::enqueue(
-        &mut *tx,
+        &mut **tx,
         started.workspace_id,
         crate::worker::CHAT_TURN,
         payload,
@@ -145,7 +306,7 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     // that arrives with no event is one the reader never sees appear -- and
     // the deltas of the reply that follows hang off nothing.
     outturn_core::events::append_on(
-        &mut tx,
+        tx,
         started.workspace_id,
         Some(session_id),
         "chat.message",
@@ -159,6 +320,5 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     .await
     .map_err(|e| e.to_string())?;
 
-    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(session_id)
 }

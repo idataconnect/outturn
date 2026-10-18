@@ -88,8 +88,8 @@ async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::Date
     // and every firing looks punctual.
     let (next, skipped) = advance(&cron, tz, owed, now);
 
-    match start_turn(pool, &schedule).await {
-        Ok(session_id) => {
+    match start_turn(pool, &schedule, owed).await {
+        crate::trigger::Fired::Started(session_id) => {
             tracing::info!(
                 schedule_id = %schedule.id,
                 session_id = %session_id,
@@ -99,7 +99,18 @@ async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::Date
             let status = if skipped > 0 { "skipped" } else { "ok" };
             record(pool, schedule.id, status, None, next, skipped).await;
         }
-        Err(e) => {
+        // This firing already ran -- the time it was due is its name, and a
+        // second taking of it is the same firing. Moved on without a turn.
+        crate::trigger::Fired::Duplicate => {
+            tracing::warn!(schedule_id = %schedule.id, %owed, "a schedule's firing had already run");
+            record(pool, schedule.id, "ok", None, next, skipped).await;
+        }
+        crate::trigger::Fired::OverCeiling => {
+            let why = "the trigger's hourly ceiling was reached";
+            tracing::warn!(schedule_id = %schedule.id, why, "a schedule could not fire");
+            record(pool, schedule.id, "failed", Some(why), next, skipped).await;
+        }
+        crate::trigger::Fired::Failed(e) => {
             tracing::error!(schedule_id = %schedule.id, error = %e, "a schedule could not fire");
             record(pool, schedule.id, "failed", Some(&e), next, skipped).await;
         }
@@ -135,20 +146,31 @@ async fn record(
     }
 }
 
-/// One firing's turn, through the shared trigger path.
-async fn start_turn(pool: &sqlx::PgPool, schedule: &super::Schedule) -> Result<Uuid, String> {
-    crate::trigger::start(
+/// One firing, through the pipeline every trigger fires through. Named by the
+/// time it was due, so the same firing taken twice starts one turn.
+async fn start_turn(
+    pool: &sqlx::PgPool,
+    schedule: &super::Schedule,
+    owed: chrono::DateTime<Utc>,
+) -> crate::trigger::Fired {
+    crate::trigger::fire(
         pool,
-        crate::trigger::Started {
+        &crate::trigger::Firer {
+            id: schedule.id,
             workspace_id: schedule.workspace_id,
             agent_id: schedule.agent_id,
-            title: schedule.name.clone(),
+            name: schedule.name.clone(),
             prompt: schedule.prompt.clone(),
             account: schedule.account.clone(),
+            source: crate::trigger::Source::Schedule(schedule.id),
+        },
+        crate::trigger::Firing {
+            // A schedule brings nothing but the time.
+            text: None,
+            external_id: Some(owed.to_rfc3339()),
             // The schedule's zone, so the agent's clock reads the way whoever
             // set it up expects rather than the way the pod's does.
             timezone: Some(schedule.timezone.clone()),
-            source: crate::trigger::Source::Schedule(schedule.id),
             metadata: serde_json::json!({
                 "schedule_id": schedule.id,
                 "schedule_name": schedule.name,

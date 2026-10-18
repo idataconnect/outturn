@@ -177,39 +177,6 @@ pub async fn by_path(pool: &PgPool, path: &str) -> Result<Option<Trigger>, sqlx:
     Ok(found.as_ref().map(row))
 }
 
-/// Counts a delivery against the trigger's ceiling, and says whether it fits.
-///
-/// One statement, on a row already being read, keyed by primary key. The
-/// counter is in the same database as the work it bounds rather than in a
-/// cache, because this is a refusal and not a metric: a ceiling that fails
-/// open when its store is unreachable is not a ceiling.
-///
-/// A fixed window -- the count resets when the current one is an hour old --
-/// rather than a sliding one. It admits up to twice the limit across a window
-/// boundary, which is the honest cost of it being one row and one statement.
-/// This exists to stop a runaway rather than to meter billing, and twice sixty
-/// is still not a runaway.
-///
-/// Returns `true` when the delivery may proceed. The `where` clause is what
-/// refuses: a row past its ceiling does not match, so nothing is updated and
-/// nothing is counted -- a refused delivery must not push the count further
-/// out, or a sender that ignores 429s would hold the window open for ever.
-pub async fn admit(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let admitted = sqlx::query(
-        "update triggers set \
-             window_start = case when window_start < now() - interval '1 hour' \
-                                 then now() else window_start end, \
-             window_count = case when window_start < now() - interval '1 hour' \
-                                 then 1 else window_count + 1 end \
-         where id = $1 \
-           and (window_start < now() - interval '1 hour' or window_count < max_per_hour)",
-    )
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(admitted.rows_affected() > 0)
-}
-
 /// Records that a delivery was turned away by the ceiling.
 ///
 /// Counted separately from the window, and never reset: a hook quietly
