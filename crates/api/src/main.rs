@@ -215,10 +215,20 @@ async fn main() {
     // Not fatal: an agent that names its model runs without it. But every
     // agent that does not will fail its turns, and nothing is named, so the
     // one place an operator is sure to look is told at once.
-    if std::env::var("OUTTURN_DEFAULT_MODEL").is_err() {
+    // A chain answering assistant traffic is the configured answer; the
+    // variable is only the fallback for a class no chain answers.
+    let chained: Option<i64> = sqlx::query_scalar(
+        "select 1::bigint from chain_assignments \
+         where workspace_id is null and traffic_type = 'assistant'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap_or(None);
+    if chained.is_none() && std::env::var("OUTTURN_DEFAULT_MODEL").is_err() {
         tracing::warn!(
-            "OUTTURN_DEFAULT_MODEL is not set: agents that name no model will refuse \
-             their turns, and sessions will not be named"
+            "no chain answers assistant traffic and OUTTURN_DEFAULT_MODEL is not set: \
+             agents that name no model will refuse their turns, and sessions will not \
+             be named. Platform -> Models -> Set up from a recipe configures one"
         );
     }
 

@@ -8,9 +8,9 @@
 //!
 //! The request goes through the gateway under its own traffic class,
 //! `session-name`, so an operator can route it to a small, cheap model with
-//! a chain of its own rather than a deployment. Nothing here names a
-//! model: absent a chain the gateway's default serves it, which is the same
-//! model that answered the turn.
+//! a chain of its own rather than a deployment. Without one it walks
+//! assistant's chain, so a deployment that set up one chain has its
+//! conversations named by it; with neither, `OUTTURN_DEFAULT_MODEL`.
 //!
 //! Runs in the API tier, like extraction: it is not work a turn is waiting
 //! on, and only this tier can write the title.
@@ -33,7 +33,7 @@ use super::chat::{AgentSession, ChatStore};
 pub const NAME: &str = "session.name";
 
 /// The class of traffic a naming request is, for the gateway to route.
-pub const TRAFFIC_TYPE: &str = "session-name";
+pub const TRAFFIC_TYPE: &str = outturn_core::chains::SESSION_NAME_TRAFFIC_TYPE;
 
 /// The most a title may be, whoever writes it. Long enough for a subject
 /// line, short enough to fit a sidebar.
@@ -128,12 +128,6 @@ pub fn spawn(
         tracing::info!("no OUTTURN_GATEWAY_URL; sessions will not be named");
         return;
     };
-    // The operator's model, since naming belongs to no agent. None configured
-    // means none chosen, and a name is not worth guessing one for.
-    let Ok(model) = std::env::var("OUTTURN_DEFAULT_MODEL") else {
-        tracing::info!("no OUTTURN_DEFAULT_MODEL; sessions will not be named");
-        return;
-    };
 
     tokio::spawn(async move {
         let client = reqwest::Client::new();
@@ -151,7 +145,7 @@ pub fn spawn(
                     };
                     for handle in claimed {
                         let job = handle.job;
-                        let done = match run_one(&client, &gateway_url, &model, &pool, chat.as_ref(), &minter, &job).await {
+                        let done = match run_one(&client, &gateway_url, &pool, chat.as_ref(), &minter, &job).await {
                             Ok(()) => jobs::complete(&pool, job.id, job.lease_token).await,
                             Err(e) => {
                                 tracing::warn!(job_id = %job.id, error = %e, "session naming failed");
@@ -168,10 +162,21 @@ pub fn spawn(
     });
 }
 
+/// The model a title is asked of, for the request to name: the first of the
+/// chain naming walks (its own, or assistant's), else the operator's. None
+/// configured means none chosen, and a name is not worth guessing one for.
+async fn naming_model(pool: &sqlx::PgPool, workspace_id: Uuid) -> anyhow::Result<Option<String>> {
+    let links = outturn_core::chains::links_for(pool, workspace_id, TRAFFIC_TYPE).await?;
+    Ok(links
+        .into_iter()
+        .next()
+        .map(|first| first.model)
+        .or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").ok()))
+}
+
 async fn run_one(
     client: &reqwest::Client,
     gateway_url: &str,
-    model: &str,
     pool: &sqlx::PgPool,
     chat: &dyn ChatStore,
     minter: &TokenMinter,
@@ -194,6 +199,13 @@ async fn run_one(
     if !session.title.is_empty() {
         return Ok(());
     }
+    let Some(model) = naming_model(pool, job.workspace_id).await? else {
+        tracing::info!(
+            "no chain answers naming and no OUTTURN_DEFAULT_MODEL; the session stays unnamed"
+        );
+        return Ok(());
+    };
+    let model = model.as_str();
 
     let naming_mode = job
         .payload

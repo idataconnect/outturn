@@ -78,7 +78,7 @@ forgot to set one.
 | `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
-| `OUTTURN_DEFAULT_MODEL` | api | Model when an agent names none. Unset, such an agent refuses its turns and sessions go unnamed -- even where a chain would answer, since a class with a chain ignores the name; see [models.md](docs/models.md) |
+| `OUTTURN_DEFAULT_MODEL` | api | Model for a class of traffic no chain answers, when the agent names none. Unset, such a turn is refused, and with no chain for naming either, sessions go unnamed; a chain makes it unnecessary -- see [models.md](docs/models.md) |
 | `OUTTURN_GATEWAY_URL` | api, runtime | Where the gateway is. Unset, the API names no sessions, fetches no catalog and makes no test call |
 | `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |

@@ -52,12 +52,19 @@ impl Link {
 /// static providers, which is where an unrouted class otherwise lands: a
 /// deployment that confined its assistant traffic to one provider would find
 /// its scheduled turns at a different vendor the day this class appeared.
+///
+/// Naming a conversation is the same: a deployment that set up one chain for
+/// its assistant traffic has said where its model requests go, and a title
+/// is one of them.
 fn borrows_from(traffic_type: &str) -> Option<&'static str> {
     match traffic_type {
-        BACKGROUND_TRAFFIC_TYPE => Some(DEFAULT_TRAFFIC_TYPE),
+        BACKGROUND_TRAFFIC_TYPE | SESSION_NAME_TRAFFIC_TYPE => Some(DEFAULT_TRAFFIC_TYPE),
         _ => None,
     }
 }
+
+/// Naming a conversation's class; see `api::naming`.
+pub const SESSION_NAME_TRAFFIC_TYPE: &str = "session-name";
 
 /// A traffic type's links, in the order to try them.
 ///

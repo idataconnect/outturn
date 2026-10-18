@@ -2059,15 +2059,16 @@ async fn background_traffic_borrows_the_assistant_routes_until_it_has_its_own() 
     finish!(db);
 }
 
-/// Only background borrows. Any other class nobody routed still comes back
-/// empty, so the gateway's fallback for it is unchanged.
+/// Only background and naming borrow. Any other class nobody routed still
+/// comes back empty -- vision above all, whose model has to be one that can
+/// see, which assistant's need not be.
 #[tokio::test]
 async fn other_unrouted_classes_borrow_nothing() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
 
     add_route(pool, None, "assistant", 10, "http://in-house", "careful").await;
-    let none = routing::routes_for(pool, workspace, "session-name")
+    let none = routing::routes_for(pool, workspace, "vision")
         .await
         .expect("routes");
     assert!(none.is_empty());
@@ -4871,5 +4872,27 @@ async fn a_reply_answered_by_a_fallback_says_which_and_why() {
         .unwrap();
     assert_eq!(count, 0);
 
+    finish!(db);
+}
+
+/// Naming a conversation walks assistant's chain until it has its own, as
+/// background traffic does: a deployment that set up one chain has its
+/// conversations named by it, with nothing else to configure.
+#[tokio::test]
+async fn naming_borrows_the_assistant_chain_until_it_has_its_own() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    add_route(pool, None, "assistant", 10, "http://answering", "big").await;
+    let named = |pool| async move {
+        outturn::chains::links_for(pool, workspace, "session-name")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|l| l.model)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(named(pool).await, ["big"]);
+    add_route(pool, None, "session-name", 10, "http://naming", "small").await;
+    assert_eq!(named(pool).await, ["small"]);
     finish!(db);
 }

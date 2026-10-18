@@ -1983,7 +1983,7 @@ impl Worker {
 
         // Resolved once: the prompt has to name the same model the request asks
         // for, or the agent is told one thing and served by another.
-        let model = model_for(&agent.policy)?;
+        let model = model_for(&self.pool, payload.workspace_id, &agent.policy, &traffic).await?;
 
         // Composed before the conversation is built, because a summary is
         // written against it: what the agent was told to do is what decides
@@ -2286,7 +2286,13 @@ impl Worker {
             .resolve_for_agent(workspace_id, agent.id)
             .await
             .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
-        let model = model_for(&agent.policy)?;
+        let model = model_for(
+            &self.pool,
+            workspace_id,
+            &agent.policy,
+            &traffic_type_for(&agent.policy, false),
+        )
+        .await?;
         let fresh_prompt =
             super::skill::compose_for_turn(&agent.system_prompt, &live_skills, &model);
 
@@ -2368,7 +2374,15 @@ impl Worker {
         let model: String = row.get("model");
         // Another model composes again on the next turn by itself; nothing to
         // offer here.
-        if model_for(&agent.policy).ok().as_deref() != Some(model.as_str()) {
+        let now = model_for(
+            &self.pool,
+            workspace_id,
+            &agent.policy,
+            &traffic_type_for(&agent.policy, false),
+        )
+        .await
+        .ok();
+        if now.as_deref() != Some(model.as_str()) {
             return Ok(PromptStatus {
                 composed_at: Some(row.get("composed_at")),
                 current: true,
@@ -3185,19 +3199,33 @@ fn traffic_type_for(policy: &serde_json::Value, nobody_waiting: bool) -> String 
     }
 }
 
-/// The agent's model, or the operator's where the agent names none.
+/// The model a turn on `traffic` will be asked of, so its prompt can name
+/// it: the first of the chain that answers the class, where one does. Else
+/// the agent's own model, else the operator's, for a class no chain answers.
 ///
 /// Nothing further. A model written into the code is one nobody chose: it
 /// answers every turn of a deployment that forgot to configure one, silently,
 /// and names whatever that deployment serves. Refusing says what is missing.
-fn model_for(policy: &serde_json::Value) -> anyhow::Result<String> {
+async fn model_for(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    policy: &serde_json::Value,
+    traffic: &str,
+) -> anyhow::Result<String> {
+    let links = outturn_core::chains::links_for(pool, workspace_id, traffic).await?;
+    if let Some(first) = links.into_iter().next() {
+        return Ok(first.model);
+    }
     policy
         .get("model")
         .and_then(|m| m.as_str())
         .map(str::to_string)
         .or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").ok())
         .ok_or_else(|| {
-            anyhow::anyhow!("no model: the agent names none and OUTTURN_DEFAULT_MODEL is not set")
+            anyhow::anyhow!(
+                "no model: no chain answers {traffic} traffic, the agent names none, \
+                 and OUTTURN_DEFAULT_MODEL is not set"
+            )
         })
 }
 
