@@ -102,8 +102,11 @@ async fn component_runs_a_turn_and_streams_progress() {
                 refresh_token: None,
                 // Named by whoever runs this, since it is their model and
                 // possibly their money: nothing here picks one for them.
-                default_model: std::env::var("OUTTURN_DEFAULT_MODEL")
-                    .expect("OUTTURN_DEFAULT_MODEL must name the model to run against"),
+                // What the request names. The gateway asks the first model of
+                // the chain assistant traffic walks whatever this says, but
+                // the guest's own requests carry it.
+                default_model: std::env::var("OUTTURN_TEST_MODEL")
+                    .expect("OUTTURN_TEST_MODEL must name the model to run against"),
                 // Not exercised here: these suites assert what a guest does with a
                 // reply, and thinking never reaches the guest.
                 reasoning: None,

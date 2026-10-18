@@ -1983,7 +1983,7 @@ impl Worker {
 
         // Resolved once: the prompt has to name the same model the request asks
         // for, or the agent is told one thing and served by another.
-        let model = model_for(&self.pool, payload.workspace_id, &agent.policy, &traffic).await?;
+        let model = model_for(&self.pool, payload.workspace_id, &traffic).await?;
 
         // Composed before the conversation is built, because a summary is
         // written against it: what the agent was told to do is what decides
@@ -2289,7 +2289,6 @@ impl Worker {
         let model = model_for(
             &self.pool,
             workspace_id,
-            &agent.policy,
             &traffic_type_for(&agent.policy, false),
         )
         .await?;
@@ -2377,7 +2376,6 @@ impl Worker {
         let now = model_for(
             &self.pool,
             workspace_id,
-            &agent.policy,
             &traffic_type_for(&agent.policy, false),
         )
         .await
@@ -3200,31 +3198,25 @@ fn traffic_type_for(policy: &serde_json::Value, nobody_waiting: bool) -> String 
 }
 
 /// The model a turn on `traffic` will be asked of, so its prompt can name
-/// it: the first of the chain that answers the class, where one does. Else
-/// the agent's own model, else the operator's, for a class no chain answers.
+/// it: the first of the chain that answers the class.
 ///
-/// Nothing further. A model written into the code is one nobody chose: it
-/// answers every turn of a deployment that forgot to configure one, silently,
-/// and names whatever that deployment serves. Refusing says what is missing.
+/// Nothing further. A model written into the code, or into an environment
+/// variable, is one nobody chose: it answers every turn of a deployment that
+/// forgot to configure one, silently. Refusing says what is missing.
 async fn model_for(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
-    policy: &serde_json::Value,
     traffic: &str,
 ) -> anyhow::Result<String> {
-    let links = outturn_core::chains::links_for(pool, workspace_id, traffic).await?;
-    if let Some(first) = links.into_iter().next() {
-        return Ok(first.model);
-    }
-    policy
-        .get("model")
-        .and_then(|m| m.as_str())
-        .map(str::to_string)
-        .or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").ok())
+    outturn_core::chains::links_for(pool, workspace_id, traffic)
+        .await?
+        .into_iter()
+        .next()
+        .map(|first| first.model)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no model: no chain answers {traffic} traffic, the agent names none, \
-                 and OUTTURN_DEFAULT_MODEL is not set"
+                "no model: no chain answers {traffic} traffic. The operator can give it one on \
+                 Platform, Models"
             )
         })
 }

@@ -738,7 +738,7 @@ async fn chat_completions(
     }
 
     // The same sentence the streaming route gives, for the same reader.
-    let msg = failure_message(last_error.as_ref());
+    let msg = unanswered(&passed, last_error.as_ref(), &traffic);
     Err((StatusCode::BAD_GATEWAY, msg))
 }
 
@@ -1005,7 +1005,7 @@ async fn chat_completions_stream(
     // The last failure's own sentence, capitalized, and nothing around it:
     // this is what the person whose turn failed is shown. "No provider could
     // stream" said only that something had, which every failure here does.
-    let message = failure_message(last_error.as_ref());
+    let message = unanswered(&passed, last_error.as_ref(), &traffic);
     if malformed {
         return (
             StatusCode::BAD_GATEWAY,
@@ -1023,6 +1023,22 @@ async fn chat_completions_stream(
 /// What a caller is told when no provider answered: the last failure's own
 /// sentence, or that there was nobody to ask. Public so a test standing in
 /// for the gateway says exactly what the gateway says.
+/// Why nothing answered: nothing was configured to, or what failed last.
+///
+/// Nothing tried means no chain answers the class -- or none of its models
+/// could be reached at all -- and there is no other answer: the gateway no
+/// longer keeps a provider of its own to fall back to, since one nobody
+/// chose would answer every unconfigured class silently.
+fn unanswered(passed: &Passed, last_error: Option<&ProviderError>, traffic: &str) -> String {
+    if passed.first.is_none() && last_error.is_none() {
+        return format!(
+            "No model is configured for {traffic} traffic. The operator can give it a chain on \
+             Platform, Models."
+        );
+    }
+    failure_message(last_error)
+}
+
 pub fn failure_message(last_error: Option<&ProviderError>) -> String {
     match last_error {
         Some(e) => sentence(&e.to_string()),

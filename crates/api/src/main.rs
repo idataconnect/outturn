@@ -212,11 +212,11 @@ async fn main() {
     // Unnamed conversations are given a title after their first turn, by a
     // model reached through the gateway. Absent OUTTURN_GATEWAY_URL this
     // logs once and sessions stay "New Session" until somebody names them.
-    // Not fatal: an agent that names its model runs without it. But every
-    // agent that does not will fail its turns, and nothing is named, so the
-    // one place an operator is sure to look is told at once.
-    // A chain answering assistant traffic is the configured answer; the
-    // variable is only the fallback for a class no chain answers.
+    //
+    // A deployment with no chain for assistant traffic refuses every turn and
+    // names nothing. Not fatal -- the first operator to sign in is offered
+    // the setup -- but the one place an operator is sure to look is told at
+    // once.
     let chained: Option<i64> = sqlx::query_scalar(
         "select 1::bigint from chain_assignments \
          where workspace_id is null and traffic_type = 'assistant'",
@@ -224,11 +224,16 @@ async fn main() {
     .fetch_optional(&pool)
     .await
     .unwrap_or(None);
-    if chained.is_none() && std::env::var("OUTTURN_DEFAULT_MODEL").is_err() {
+    if chained.is_none() {
         tracing::warn!(
-            "no chain answers assistant traffic and OUTTURN_DEFAULT_MODEL is not set: \
-             agents that name no model will refuse their turns, and sessions will not \
+            "no chain answers assistant traffic: turns will be refused and sessions will not \
              be named. Platform -> Models -> Set up from a recipe configures one"
+        );
+    }
+    if std::env::var("OUTTURN_DEFAULT_MODEL").is_ok() {
+        tracing::warn!(
+            "OUTTURN_DEFAULT_MODEL is set and no longer read: the model is the first of the \
+             chain each class of traffic walks"
         );
     }
 

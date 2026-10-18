@@ -55,6 +55,28 @@ const TEST_RUNTIME_KEY: &str = "test-runtime-key-test-runtime-key-test-runtime-k
 /// The gateway's seal key in these tests. Not a secret: a test's.
 const SEAL_KEY: &str = "0505050505050505050505050505050505050505050505050505050505050505";
 
+/// A chain answering assistant traffic, as every deployment that answers at
+/// all has: a turn's model is the first of its class's chain, and a turn
+/// with none is refused. Its model is `test-model`, which is what the tests
+/// that read a turn's model expect.
+async fn seed_assistant_chain(pool: &PgPool) {
+    sqlx::raw_sql(
+        "insert into provider_accounts (id, workspace_id, name, protocol, base_url) \
+             values ('01a00000-0000-7000-8000-000000000001', null, 'Test', 'openai', 'http://models.example.com'); \
+         insert into models (id, workspace_id, account_id, name, model) \
+             values ('01a00000-0000-7000-8000-000000000002', null, '01a00000-0000-7000-8000-000000000001', 'Test model', 'test-model'); \
+         insert into chains (id, workspace_id, name) \
+             values ('01a00000-0000-7000-8000-000000000003', null, 'Test'); \
+         insert into chain_links (chain_id, position, model_id) \
+             values ('01a00000-0000-7000-8000-000000000003', 0, '01a00000-0000-7000-8000-000000000002'); \
+         insert into chain_assignments (id, workspace_id, traffic_type, chain_id) \
+             values ('01a00000-0000-7000-8000-000000000004', null, 'assistant', '01a00000-0000-7000-8000-000000000003');",
+    )
+    .execute(pool)
+    .await
+    .expect("seed the assistant chain");
+}
+
 async fn harness() -> Harness {
     harness_parking_for(outturn::api::LONG_POLL).await
 }
@@ -68,6 +90,7 @@ async fn harness_parking_for(park: std::time::Duration) -> Harness {
     // run in parallel.
     let db = common::TestDb::new().await;
     let pool: PgPool = db.pool.clone();
+    seed_assistant_chain(&pool).await;
 
     // One seed, two minters: the app's, and one the test uses to issue the
     // platform's own credentials the way the platform does.
@@ -10783,15 +10806,12 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
     assert!(after.contains("Say two."), "{after}");
     assert_eq!(version, v2);
 
-    // Another model composes again: the preamble names it.
-    let req = Request::builder()
-        .method("PATCH")
-        .uri(format!("/v1/agents/{agent}"))
-        .header("authorization", format!("Bearer {admin}"))
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"policy":{"model":"other-model"}}"#))
+    // Another model composes again: the preamble names it. The model is the
+    // chain's, so it changes there -- as an upgrade would move it.
+    sqlx::query("update models set model = 'other-model' where model = 'test-model'")
+        .execute(&h.db.pool)
+        .await
         .unwrap();
-    assert_eq!(h.send(req).await.0, StatusCode::OK);
     let (third, _) = turn(running).await;
     assert!(third.contains("Say two."), "{third}");
     assert!(third.contains("other-model"), "{third}");
@@ -12154,7 +12174,12 @@ async fn the_operator_configures_accounts_models_and_chains() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let held = json(&body);
     assert_eq!(
-        held["chains"][0]["models"],
+        held["chains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == chain.as_str())
+            .unwrap()["models"],
         serde_json::json!([sonnet["id"], unheard["id"]])
     );
     assert_eq!(held["assignments"]["assistant"], chain.as_str());
@@ -12255,8 +12280,14 @@ async fn an_accounts_key_is_sealed_for_its_host_alone() {
 
     let (_, body) = h.get("/v1/platform/models", Some(&operator)).await;
     let held: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(held["accounts"][0]["credential_id"], id.to_string());
-    assert!(held["accounts"][0]["credential_env"].is_null());
+    let ours = held["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == account["id"])
+        .unwrap();
+    assert_eq!(ours["credential_id"], id.to_string());
+    assert!(ours["credential_env"].is_null());
 }
 
 /// A value for one model is checked against what that model accepts: Sonnet

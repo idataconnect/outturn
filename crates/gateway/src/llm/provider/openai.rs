@@ -32,16 +32,6 @@ impl OpenAiProvider {
         }
     }
 
-    /// Configured by base URL, so pointing at a local runtime is the same
-    /// operation as pointing at a hosted one.
-    pub fn from_env() -> Option<Self> {
-        let base_url = std::env::var("OPENAI_BASE_URL").ok()?;
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty());
-        Some(Self::new(base_url, api_key))
-    }
-
     fn request(&self, path: &str) -> reqwest::RequestBuilder {
         let builder = self.client.post(format!("{}{path}", self.base_url));
         match &self.api_key {

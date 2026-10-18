@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use outturn_core::auth::TokenValidator;
 use outturn_core::lifecycle::{self, Health};
 use outturn_gateway as gateway;
-use outturn_gateway::llm::provider::{LlmProvider, mock::MockProvider, openai::OpenAiProvider};
+use outturn_gateway::llm::provider::LlmProvider;
 
 #[tokio::main]
 async fn main() {
@@ -19,20 +19,17 @@ async fn main() {
     let auth = TokenValidator::from_env(outturn_core::auth::AUDIENCE_GATEWAY)
         .expect("failed to initialize token validator");
 
-    let mut providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
-
-    // One protocol, pointed wherever OPENAI_BASE_URL says: api.openai.com in
-    // production, a local ollama in development, anything else that speaks the
-    // same wire format without needing its own implementation.
-    if let Some(openai) = OpenAiProvider::from_env() {
-        tracing::info!("openai-protocol provider enabled");
-        providers.push(Arc::new(openai));
+    // Every model the gateway asks is configured in the database: a chain of
+    // models at provider accounts, per class of traffic (docs/models.md).
+    // Nothing is configured here, and a class no chain answers is refused
+    // rather than sent to a provider nobody chose for it.
+    if std::env::var("OPENAI_BASE_URL").is_ok() {
+        tracing::warn!(
+            "OPENAI_BASE_URL is set and no longer read: give the model an account and a chain on \
+             Platform -> Models instead"
+        );
     }
-
-    if providers.is_empty() {
-        tracing::warn!("no real providers configured, falling back to mock");
-        providers.push(Arc::new(MockProvider::new()));
-    }
+    let providers: Vec<Arc<dyn LlmProvider>> = Vec::new();
 
     // The breaker is shared state, so it needs the database. Optional on
     // purpose: without DATABASE_URL the gateway behaves exactly as it did

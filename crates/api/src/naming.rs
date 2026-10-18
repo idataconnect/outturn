@@ -10,7 +10,7 @@
 //! `session-name`, so an operator can route it to a small, cheap model with
 //! a chain of its own rather than a deployment. Without one it walks
 //! assistant's chain, so a deployment that set up one chain has its
-//! conversations named by it; with neither, `OUTTURN_DEFAULT_MODEL`.
+//! conversations named by it.
 //!
 //! Runs in the API tier, like extraction: it is not work a turn is waiting
 //! on, and only this tier can write the title.
@@ -163,15 +163,11 @@ pub fn spawn(
 }
 
 /// The model a title is asked of, for the request to name: the first of the
-/// chain naming walks (its own, or assistant's), else the operator's. None
-/// configured means none chosen, and a name is not worth guessing one for.
+/// chain naming walks, its own or assistant's. None configured means none
+/// chosen, and a name is not worth guessing one for.
 async fn naming_model(pool: &sqlx::PgPool, workspace_id: Uuid) -> anyhow::Result<Option<String>> {
     let links = outturn_core::chains::links_for(pool, workspace_id, TRAFFIC_TYPE).await?;
-    Ok(links
-        .into_iter()
-        .next()
-        .map(|first| first.model)
-        .or_else(|| std::env::var("OUTTURN_DEFAULT_MODEL").ok()))
+    Ok(links.into_iter().next().map(|first| first.model))
 }
 
 async fn run_one(
@@ -200,9 +196,7 @@ async fn run_one(
         return Ok(());
     }
     let Some(model) = naming_model(pool, job.workspace_id).await? else {
-        tracing::info!(
-            "no chain answers naming and no OUTTURN_DEFAULT_MODEL; the session stays unnamed"
-        );
+        tracing::info!("no chain answers naming; the session stays unnamed");
         return Ok(());
     };
     let model = model.as_str();
