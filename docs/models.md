@@ -455,7 +455,11 @@ Each phase leaves the platform working.
    A turn finishes on the version it began on: a moved model keeps its
    previous version and facts, and the gateway asks for that one when the
    turn's reply -- a UUIDv7, so it says when the turn began -- is older than
-   the move.
+   the move. One step of history is kept: a turn that began on A while its model
+   moved A to B and then to C finishes on B, a version it never began on.
+   Catalog checks are weekly and an upgrade is one move, so two inside one
+   turn is the case this leaves, and an upgrade is applied only from the
+   version it was read on, so two approvals at once make one move, not two.
 7. **The UI:** the chain editor, per-model settings, then first-run setup and
    recipes.
 8. **Bedrock**, which the "two doors" recipe needs. Begun: a `bedrock` route

@@ -17,7 +17,7 @@ use outturn_core::catalog;
 use outturn_core::facts::ModelFacts;
 use outturn_core::model_settings::{self, PER_MODEL, PLATFORM_WORKSPACE};
 
-use super::actions::{ActionStore, NewItem, PostgresActionStore, State, Target};
+use super::actions::{ActionError, ActionStore, NewItem, PostgresActionStore, State, Target};
 
 /// The action item kind for a version waiting on somebody.
 pub const KIND: &str = "model.upgrade";
@@ -132,7 +132,11 @@ pub async fn track(pool: &PgPool) -> Result<u64, sqlx::Error> {
         let changes = adjustments(pool, m.id, &facts).await?;
 
         if m.tracks.is_some() && changes.is_empty() {
-            apply(pool, m.id, &next, snapshot, &entry, &[]).await?;
+            if apply(pool, m.id, &m.model, &next, snapshot, &entry, &[]).await? != Applied::Done {
+                // Moved by somebody else since it was read; the next pass
+                // sees where it is now.
+                continue;
+            }
             tracing::info!(model = %m.id, from = %m.model, to = %next, "a tracked model moved to the newest in its line");
             moved += 1;
             continue;
@@ -229,47 +233,85 @@ pub async fn forget(pool: &PgPool, model_id: Uuid) -> Result<(), sqlx::Error> {
 /// Settles the open items about a model's upgrade.
 async fn settle_items(pool: &PgPool, model_id: Uuid, state: State) -> Result<(), sqlx::Error> {
     let open: Vec<Uuid> = sqlx::query_scalar(
+        // The kind written out, not bound: it is what lets the partial index
+        // on open upgrade items (migration 0046) be used.
         "select id from action_items \
-         where workspace_id = $1 and kind = $2 and state = 'pending' \
-           and payload->>'model_id' = $3",
+         where workspace_id = $1 and kind = 'model.upgrade' and state = 'pending' \
+           and payload->>'model_id' = $2",
     )
     .bind(PLATFORM_WORKSPACE)
-    .bind(KIND)
     .bind(model_id.to_string())
     .fetch_all(pool)
     .await?;
     let store = PostgresActionStore::new(pool.clone());
     for id in open {
-        // Lost to a colleague settling it first is the same outcome.
-        let _ = store.settle(PLATFORM_WORKSPACE, id, state, None).await;
+        match store.settle(PLATFORM_WORKSPACE, id, state, None).await {
+            // Lost to a colleague settling it first is the same outcome.
+            Ok(()) | Err(ActionError::NotFound) | Err(ActionError::NotPending(_)) => {}
+            // Anything else leaves a question open about a model that has
+            // moved on; said, so the stale item has an explanation.
+            Err(e) => {
+                tracing::error!(model = %model_id, item = %id, error = %e, "could not settle a model's upgrade question")
+            }
+        }
     }
     Ok(())
+}
+
+/// How an `apply` went.
+#[derive(Debug, PartialEq)]
+enum Applied {
+    Done,
+    /// The model is no longer on the version that was read.
+    ModelMoved,
+    /// A value to adjust is no longer the one that was shown.
+    ValueChanged,
 }
 
 /// Moves a model to `next`, with its facts, and makes the adjustments, in
 /// one step: never a new version with values it refuses, never adjusted
 /// values on the old one.
+///
+/// Only from the version it was read on, and only over the values that
+/// were shown: two approvals at once, or an approval beside a tracking pass,
+/// would otherwise move a model twice -- losing the version a running turn
+/// began on -- and an adjustment would overwrite a value somebody set since.
+/// Either way nothing is changed, and the caller is told which.
 async fn apply(
     pool: &PgPool,
     model_id: Uuid,
+    from: &str,
     next: &str,
     snapshot: Uuid,
     entry: &Value,
     changes: &[Adjustment],
-) -> Result<(), sqlx::Error> {
+) -> Result<Applied, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let on: Option<String> =
+        sqlx::query_scalar("select model from models where id = $1 for update")
+            .bind(model_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if on.as_deref() != Some(from) {
+        return Ok(Applied::ModelMoved);
+    }
     for change in changes {
-        sqlx::query(
+        let done = sqlx::query(
             "update setting_overrides set value = $5, updated_at = now() \
-             where workspace_id = $1 and agent_id = $2 and model_id = $3 and key = $4",
+             where workspace_id = $1 and agent_id = $2 and model_id = $3 and key = $4 \
+               and value = $6",
         )
         .bind(change.workspace_id)
         .bind(change.agent_id)
         .bind(model_id)
         .bind(&change.key)
         .bind(&change.to)
+        .bind(&change.from)
         .execute(&mut *tx)
         .await?;
+        if done.rows_affected() != 1 {
+            return Ok(Applied::ValueChanged);
+        }
     }
     // The name follows the version where it was the catalog's name for the
     // old one; a name somebody chose stays.
@@ -288,7 +330,8 @@ async fn apply(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    settle_items(pool, model_id, State::Resolved).await
+    settle_items(pool, model_id, State::Resolved).await?;
+    Ok(Applied::Done)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -310,7 +353,7 @@ pub enum UpgradeError {
 /// shown, so nobody approves one thing and gets another.
 pub async fn approve(pool: &PgPool, model_id: Uuid) -> Result<String, UpgradeError> {
     let row = sqlx::query(
-        "select catalog_provider, overrides, pending_model, pending_adjustments \
+        "select model, catalog_provider, overrides, pending_model, pending_adjustments \
          from models where id = $1 and workspace_id is null",
     )
     .bind(model_id)
@@ -319,6 +362,7 @@ pub async fn approve(pool: &PgPool, model_id: Uuid) -> Result<String, UpgradeErr
     .ok_or(UpgradeError::NotFound)?;
     let provider: Option<String> = row.get("catalog_provider");
     let overrides: Value = row.get("overrides");
+    let from: String = row.get("model");
     let (Some(provider), Some(next)) = (provider, row.get::<Option<String>, _>("pending_model"))
     else {
         return Err(UpgradeError::NothingPending);
@@ -346,6 +390,9 @@ pub async fn approve(pool: &PgPool, model_id: Uuid) -> Result<String, UpgradeErr
             .await?;
         return Err(UpgradeError::Changed);
     }
-    apply(pool, model_id, &next, snapshot, &entry, &now).await?;
-    Ok(next)
+    match apply(pool, model_id, &from, &next, snapshot, &entry, &now).await? {
+        Applied::Done => Ok(next),
+        Applied::ModelMoved => Err(UpgradeError::NothingPending),
+        Applied::ValueChanged => Err(UpgradeError::Changed),
+    }
 }
