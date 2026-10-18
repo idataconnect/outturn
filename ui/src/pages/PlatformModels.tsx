@@ -87,6 +87,12 @@ export default function PlatformModels() {
           Where this deployment's model requests go, and what it knows about the models providers offer.
           Visible to the operator only.
         </p>
+        <p className="mt-2 text-sm">
+          <Link to={paths.platformSetup} className="text-brand-700 dark:text-brand-400 underline underline-offset-2">
+            Set up from a recipe
+          </Link>
+          <span className="text-surface-500">: a chain, its keys and a test call, in one go.</span>
+        </p>
       </div>
 
       {config && !config.assignments.assistant && (

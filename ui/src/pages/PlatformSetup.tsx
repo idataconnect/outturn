@@ -46,7 +46,9 @@ export default function PlatformSetup() {
   const [choice, setChoice] = useState<string>('medium')
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [envs, setEnvs] = useState<Record<string, string>>({})
-  const [local, setLocal] = useState({ url: 'http://localhost:11434', model: '' })
+  // No default address: localhost here would be the gateway's own pod, not
+  // the server the model is on.
+  const [local, setLocal] = useState({ url: '', model: '' })
   const [steps, setSteps] = useState<Step[] | null>(null)
   const [tested, setTested] = useState<Tested | null>(null)
 
@@ -269,6 +271,7 @@ export default function PlatformSetup() {
               <input
                 type="url"
                 value={local.url}
+                placeholder="http://models.example.com:11434"
                 onChange={(e) => setLocal({ ...local, url: e.target.value })}
                 className={field}
               />
