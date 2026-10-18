@@ -1,10 +1,25 @@
 //! Reading and writing schedules, and the one statement that fires them.
+//!
+//! A schedule is a `triggers` row of kind `schedule`: its expression, zone and
+//! count of skipped firings are in `config`, and when it next fires is the
+//! table's `next_at`. Read back under the names a `Schedule` has always had,
+//! so nothing above this file knows the table changed.
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use super::{Schedule, ScheduleInput};
+
+/// The columns a `Schedule` is read from, by the names it gives them.
+macro_rules! columns {
+    () => {
+        "id, workspace_id, agent_id, name, prompt, config->>'expression' as expression, \
+         config->>'timezone' as timezone, enabled, account, owner_id, \
+         next_at as next_run_at, last_at as last_run_at, last_status, last_error, \
+         coalesce((config->>'skipped')::int, 0) as skipped, created_at"
+    };
+}
 
 fn row(r: &PgRow) -> Schedule {
     Schedule {
@@ -34,19 +49,20 @@ pub async fn list(
     after: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<Schedule>, sqlx::Error> {
-    let rows = sqlx::query(
-        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
-         from schedules \
-         where workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
-           and ($3::uuid is null or id > $3) \
-         order by id limit $4",
-    )
-        .bind(workspace_id)
-        .bind(agent_id)
-        .bind(after)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(concat!(
+        "select ",
+        columns!(),
+        " from triggers \
+          where kind = 'schedule' and workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
+            and ($3::uuid is null or id > $3) \
+          order by id limit $4"
+    ))
+    .bind(workspace_id)
+    .bind(agent_id)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.iter().map(row).collect())
 }
 
@@ -55,14 +71,15 @@ pub async fn get(
     workspace_id: Uuid,
     id: Uuid,
 ) -> Result<Option<Schedule>, sqlx::Error> {
-    let found = sqlx::query(
-        "select id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at \
-         from schedules where workspace_id = $1 and id = $2",
-    )
-        .bind(workspace_id)
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let found = sqlx::query(concat!(
+        "select ",
+        columns!(),
+        " from triggers where kind = 'schedule' and workspace_id = $1 and id = $2"
+    ))
+    .bind(workspace_id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(found.as_ref().map(row))
 }
 
@@ -73,26 +90,29 @@ pub async fn create(
     input: &ScheduleInput,
     next_run_at: Option<DateTime<Utc>>,
 ) -> Result<Schedule, sqlx::Error> {
-    let r = sqlx::query(
-        "insert into schedules \
-             (id, workspace_id, agent_id, name, prompt, expression, timezone, \
-              enabled, account, owner_id, next_run_at, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10) \
-         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
-    )
-        .bind(Uuid::now_v7())
-        .bind(workspace_id)
-        .bind(input.agent_id)
-        .bind(input.name.trim())
-        .bind(input.prompt.trim())
-        .bind(input.expression.trim())
-        .bind(input.timezone.trim())
-        .bind(input.enabled)
-        .bind(input.account.as_deref())
-        .bind(owner_id)
-        .bind(next_run_at)
-        .fetch_one(pool)
-        .await?;
+    let r = sqlx::query(concat!(
+        "insert into triggers \
+             (id, workspace_id, agent_id, kind, name, prompt, config, \
+              enabled, account, owner_id, next_at, created_by) \
+         values ($1, $2, $3, 'schedule', $4, $5, \
+                 jsonb_build_object('expression', $6::text, 'timezone', $7::text, 'skipped', 0), \
+                 $8, $9, $10, $11, $10) \
+         returning ",
+        columns!()
+    ))
+    .bind(Uuid::now_v7())
+    .bind(workspace_id)
+    .bind(input.agent_id)
+    .bind(input.name.trim())
+    .bind(input.prompt.trim())
+    .bind(input.expression.trim())
+    .bind(input.timezone.trim())
+    .bind(input.enabled)
+    .bind(input.account.as_deref())
+    .bind(owner_id)
+    .bind(next_run_at)
+    .fetch_one(pool)
+    .await?;
     Ok(row(&r))
 }
 
@@ -108,33 +128,37 @@ pub async fn update(
     input: &ScheduleInput,
     next_run_at: Option<DateTime<Utc>>,
 ) -> Result<Option<Schedule>, sqlx::Error> {
-    let found = sqlx::query(
-        "update schedules set \
-             name = $3, prompt = $4, expression = $5, timezone = $6, \
-             enabled = $7, account = $8, next_run_at = $9, updated_at = now() \
-         where workspace_id = $1 and id = $2 \
-         returning id, workspace_id, agent_id, name, prompt, expression, timezone, enabled, account, owner_id, next_run_at, last_run_at, last_status, last_error, skipped, created_at",
-    )
-        .bind(workspace_id)
-        .bind(id)
-        .bind(input.name.trim())
-        .bind(input.prompt.trim())
-        .bind(input.expression.trim())
-        .bind(input.timezone.trim())
-        .bind(input.enabled)
-        .bind(input.account.as_deref())
-        .bind(next_run_at)
-        .fetch_optional(pool)
-        .await?;
+    let found = sqlx::query(concat!(
+        "update triggers set \
+             name = $3, prompt = $4, \
+             config = config || jsonb_build_object('expression', $5::text, 'timezone', $6::text), \
+             enabled = $7, account = $8, next_at = $9, updated_at = now() \
+         where kind = 'schedule' and workspace_id = $1 and id = $2 \
+         returning ",
+        columns!()
+    ))
+    .bind(workspace_id)
+    .bind(id)
+    .bind(input.name.trim())
+    .bind(input.prompt.trim())
+    .bind(input.expression.trim())
+    .bind(input.timezone.trim())
+    .bind(input.enabled)
+    .bind(input.account.as_deref())
+    .bind(next_run_at)
+    .fetch_optional(pool)
+    .await?;
     Ok(found.as_ref().map(row))
 }
 
 pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("delete from schedules where workspace_id = $1 and id = $2")
-        .bind(workspace_id)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let done = sqlx::query(
+        "delete from triggers where kind = 'schedule' and workspace_id = $1 and id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(done.rows_affected() > 0)
 }
 
@@ -168,24 +192,23 @@ pub async fn take_due(
     // readable at all: RETURNING sees the new row, and Postgres has no OLD to
     // ask. `for update skip locked` in the CTE is also what stops two API pods
     // taking the same firing.
-    let found = sqlx::query(
+    let found = sqlx::query(concat!(
         "with due as ( \
-             select id, next_run_at from schedules \
-             where enabled and next_run_at is not null and next_run_at <= $1 \
-             order by next_run_at \
-             for update skip locked \
-             limit 1 \
-         ), \
-         taken as ( \
-             update schedules set next_run_at = null, updated_at = now() \
-             where id in (select id from due) \
-             returning id, workspace_id, agent_id, name, prompt, expression, timezone, \
-                       enabled, account, owner_id, next_run_at, last_run_at, last_status, \
-                       last_error, skipped, created_at \
-         ) \
-         select taken.*, due.next_run_at as was_due \
-         from taken join due on due.id = taken.id",
-    )
+                 select id, next_at from triggers \
+                 where kind = 'schedule' and enabled and next_at is not null and next_at <= $1 \
+                 order by next_at \
+                 for update skip locked \
+                 limit 1 \
+             ), \
+             taken as ( \
+                 update triggers set next_at = null, updated_at = now() \
+                 where id in (select id from due) \
+                 returning ",
+        columns!(),
+        " ) \
+             select taken.*, due.next_at as was_due \
+             from taken join due on due.id = taken.id"
+    ))
     .bind(now)
     .fetch_optional(pool)
     .await?;
@@ -208,9 +231,11 @@ pub async fn record_run(
     skipped: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update schedules set \
-             last_run_at = now(), last_status = $2, last_error = $3, \
-             next_run_at = $4, skipped = skipped + $5, updated_at = now() \
+        "update triggers set \
+             last_at = now(), last_status = $2, last_error = $3, next_at = $4, \
+             config = jsonb_set(config, '{skipped}', \
+                 to_jsonb(coalesce((config->>'skipped')::int, 0) + $5)), \
+             updated_at = now() \
          where id = $1",
     )
     .bind(id)

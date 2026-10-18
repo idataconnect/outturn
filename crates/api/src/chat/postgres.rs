@@ -467,11 +467,9 @@ impl ChatStore for PostgresChatStore {
             // `turn` is the live turn's state -- see `live_turn`.
             "select s.id, s.workspace_id, s.agent_id, s.user_id, s.title, s.account, \
                     s.last_active_at, live_turn(s.id) as turn, s.started_by, \
-                    coalesce(s.schedule_id, s.webhook_trigger_id) as trigger_id, \
-                    coalesce(sc.name, wh.name) as trigger_name \
+                    s.trigger_id, t.name as trigger_name \
              from agent_sessions s \
-             left join schedules sc on sc.id = s.schedule_id \
-             left join webhook_triggers wh on wh.id = s.webhook_trigger_id \
+             left join triggers t on t.id = s.trigger_id \
              where s.workspace_id = $1 \
                and ($2::uuid[] is null or s.agent_id = any($2) or s.user_id = $3) \
                and ($4::timestamptz is null or (s.last_active_at, s.id) < ($4, $5)) \
@@ -503,11 +501,9 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "select s.id, s.workspace_id, s.agent_id, s.user_id, s.title, s.account, \
                     s.last_active_at, live_turn(s.id) as turn, s.started_by, \
-                    coalesce(s.schedule_id, s.webhook_trigger_id) as trigger_id, \
-                    coalesce(sc.name, wh.name) as trigger_name \
+                    s.trigger_id, t.name as trigger_name \
              from agent_sessions s \
-             left join schedules sc on sc.id = s.schedule_id \
-             left join webhook_triggers wh on wh.id = s.webhook_trigger_id \
+             left join triggers t on t.id = s.trigger_id \
              where s.workspace_id = $1 and s.id = $2",
         )
         .bind(workspace_id)

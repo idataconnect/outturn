@@ -1,9 +1,23 @@
 //! Reading and writing triggers, and the one statement that admits a delivery.
+//!
+//! A webhook is a `triggers` row of kind `webhook`: its path, scheme and
+//! secret are in `config`. Read back under the names a `Trigger` has always
+//! had, so nothing above this file knows the table changed.
 
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
 use super::{Trigger, TriggerInput};
+
+/// The columns a webhook `Trigger` is read from, by the names it gives them.
+macro_rules! columns {
+    () => {
+        "id, workspace_id, agent_id, name, config->>'path' as path, \
+         config->>'scheme' as scheme, config->>'secret' as secret, prompt, enabled, \
+         account, owner_id, coalesce(max_per_hour, 60) as max_per_hour, last_at, \
+         last_status, last_error, refused, created_at"
+    };
+}
 
 fn row(r: &PgRow) -> Trigger {
     Trigger {
@@ -34,14 +48,14 @@ pub async fn list(
     after: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<Trigger>, sqlx::Error> {
-    let rows = sqlx::query(
-        "select id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \
-                account, owner_id, max_per_hour, last_at, last_status, last_error, refused, created_at \
-         from webhook_triggers \
-         where workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
-           and ($3::uuid is null or id > $3) \
-         order by id limit $4",
-    )
+    let rows = sqlx::query(concat!(
+        "select ",
+        columns!(),
+        " from triggers \
+          where kind = 'webhook' and workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
+            and ($3::uuid is null or id > $3) \
+          order by id limit $4"
+    ))
     .bind(workspace_id)
     .bind(agent_id)
     .bind(after)
@@ -56,11 +70,11 @@ pub async fn get(
     workspace_id: Uuid,
     id: Uuid,
 ) -> Result<Option<Trigger>, sqlx::Error> {
-    let found = sqlx::query(
-        "select id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \
-                account, owner_id, max_per_hour, last_at, last_status, last_error, refused, created_at \
-         from webhook_triggers where workspace_id = $1 and id = $2",
-    )
+    let found = sqlx::query(concat!(
+        "select ",
+        columns!(),
+        " from triggers where kind = 'webhook' and workspace_id = $1 and id = $2"
+    ))
     .bind(workspace_id)
     .bind(id)
     .fetch_optional(pool)
@@ -76,14 +90,16 @@ pub async fn create(
     secret: &str,
     input: &TriggerInput,
 ) -> Result<Trigger, sqlx::Error> {
-    let r = sqlx::query(
-        "insert into webhook_triggers \
-             (id, workspace_id, agent_id, name, path, scheme, secret, prompt, \
+    let r = sqlx::query(concat!(
+        "insert into triggers \
+             (id, workspace_id, agent_id, kind, name, config, prompt, \
               enabled, account, owner_id, max_per_hour, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $11) \
-         returning id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \
-                   account, owner_id, max_per_hour, last_at, last_status, last_error, refused, created_at",
-    )
+         values ($1, $2, $3, 'webhook', $4, \
+                 jsonb_build_object('path', $5::text, 'scheme', $6::text, 'secret', $7::text), \
+                 $8, $9, $10, $11, $12, $11) \
+         returning ",
+        columns!()
+    ))
     .bind(Uuid::now_v7())
     .bind(workspace_id)
     .bind(input.agent_id)
@@ -112,14 +128,14 @@ pub async fn update(
     id: Uuid,
     input: &TriggerInput,
 ) -> Result<Option<Trigger>, sqlx::Error> {
-    let found = sqlx::query(
-        "update webhook_triggers set \
-             name = $3, prompt = $4, scheme = $5, enabled = $6, account = $7, \
-             max_per_hour = $8, updated_at = now() \
-         where workspace_id = $1 and id = $2 \
-         returning id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \
-                   account, owner_id, max_per_hour, last_at, last_status, last_error, refused, created_at",
-    )
+    let found = sqlx::query(concat!(
+        "update triggers set \
+             name = $3, prompt = $4, config = config || jsonb_build_object('scheme', $5::text), \
+             enabled = $6, account = $7, max_per_hour = $8, updated_at = now() \
+         where kind = 'webhook' and workspace_id = $1 and id = $2 \
+         returning ",
+        columns!()
+    ))
     .bind(workspace_id)
     .bind(id)
     .bind(input.name.trim())
@@ -134,11 +150,13 @@ pub async fn update(
 }
 
 pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query("delete from webhook_triggers where workspace_id = $1 and id = $2")
-        .bind(workspace_id)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let done = sqlx::query(
+        "delete from triggers where kind = 'webhook' and workspace_id = $1 and id = $2",
+    )
+    .bind(workspace_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(done.rows_affected() > 0)
 }
 
@@ -148,11 +166,11 @@ pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool,
 /// whoever holds the URL. The path is the only thing that selects a row, and
 /// everything that decides whether the delivery is honored happens after.
 pub async fn by_path(pool: &PgPool, path: &str) -> Result<Option<Trigger>, sqlx::Error> {
-    let found = sqlx::query(
-        "select id, workspace_id, agent_id, name, path, scheme, secret, prompt, enabled, \
-                account, owner_id, max_per_hour, last_at, last_status, last_error, refused, created_at \
-         from webhook_triggers where path = $1",
-    )
+    let found = sqlx::query(concat!(
+        "select ",
+        columns!(),
+        " from triggers where kind = 'webhook' and config->>'path' = $1"
+    ))
     .bind(path)
     .fetch_optional(pool)
     .await?;
@@ -178,7 +196,7 @@ pub async fn by_path(pool: &PgPool, path: &str) -> Result<Option<Trigger>, sqlx:
 /// out, or a sender that ignores 429s would hold the window open for ever.
 pub async fn admit(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let admitted = sqlx::query(
-        "update webhook_triggers set \
+        "update triggers set \
              window_start = case when window_start < now() - interval '1 hour' \
                                  then now() else window_start end, \
              window_count = case when window_start < now() - interval '1 hour' \
@@ -209,7 +227,7 @@ pub async fn record_refusal(
     counts: bool,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update webhook_triggers set \
+        "update triggers set \
              refused = refused + case when $3 then 1 else 0 end, \
              last_at = now(), last_status = 'refused', \
              last_error = $2, updated_at = now() \
@@ -231,7 +249,7 @@ pub async fn record_delivery(
     error: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update webhook_triggers set \
+        "update triggers set \
              last_at = now(), last_status = $2, last_error = $3, updated_at = now() \
          where id = $1",
     )

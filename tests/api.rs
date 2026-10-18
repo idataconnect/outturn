@@ -5746,7 +5746,7 @@ async fn firing_a_schedule_produces_a_turn_nobody_sent() {
 
     // Owed an hour ago, so the firing is late and something was missed. Set
     // directly because waiting for the clock is not a test.
-    sqlx::query("update schedules set next_run_at = now() - interval '3 hours' where id = $1")
+    sqlx::query("update triggers set next_at = now() - interval '3 hours' where id = $1")
         .bind(id)
         .execute(&h.db.pool)
         .await
@@ -6263,7 +6263,7 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
     let created: Value = serde_json::from_str(&body).expect("json");
     let id: Uuid = created["id"].as_str().expect("id").parse().expect("uuid");
 
-    sqlx::query("update schedules set next_run_at = now() - interval '1 minute' where id = $1")
+    sqlx::query("update triggers set next_at = now() - interval '1 minute' where id = $1")
         .bind(id)
         .execute(&h.db.pool)
         .await
@@ -6297,7 +6297,7 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
         "select \
            (select count(*) from live_sessions where session_id = $1), \
            (select account from agent_sessions where id = $1), \
-           (select schedule_id from agent_sessions where id = $1), \
+           (select trigger_id from agent_sessions where id = $1), \
            (select count(*) from events where session_id = $1 and kind = 'chat.message')",
     )
     .bind(session)
@@ -6379,7 +6379,7 @@ async fn a_triggered_session_says_what_started_it_after_the_trigger_is_gone() {
     assert_eq!(started["id"], schedule_id.to_string());
     assert_eq!(started["name"], "Morning arrivals");
 
-    sqlx::query("delete from schedules where id = $1")
+    sqlx::query("delete from triggers where id = $1")
         .bind(schedule_id)
         .execute(&h.db.pool)
         .await
@@ -6796,12 +6796,11 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
     );
 
     // Exactly one session, so the replays produced no work.
-    let sessions: i64 = sqlx::query_scalar(
-        "select count(*) from agent_sessions where webhook_trigger_id is not null",
-    )
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("count");
+    let sessions: i64 =
+        sqlx::query_scalar("select count(*) from agent_sessions where started_by = 'webhook'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("count");
     assert_eq!(sessions, 1, "a replay started a turn");
 
     // A genuinely different event, signed at the same instant, is not a
@@ -7017,7 +7016,7 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
     // Raise the ceiling, as an operator would, and let the sender retry the
     // same signed request. It must be admitted: it never became a turn, so it
     // is not a replay of one.
-    sqlx::query("update webhook_triggers set max_per_hour = 100 where path = $1")
+    sqlx::query("update triggers set max_per_hour = 100 where config->>'path' = $1")
         .bind(&path)
         .execute(&h.db.pool)
         .await
@@ -7030,12 +7029,11 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
     );
 
     // Two turns, not one: the retry produced the turn the 429 had denied.
-    let sessions: i64 = sqlx::query_scalar(
-        "select count(*) from agent_sessions where webhook_trigger_id is not null",
-    )
-    .fetch_one(&h.db.pool)
-    .await
-    .expect("count");
+    let sessions: i64 =
+        sqlx::query_scalar("select count(*) from agent_sessions where started_by = 'webhook'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("count");
     assert_eq!(sessions, 2, "the retried delivery did not start a turn");
 
     // And now that it *has* become a turn, sending it a third time is a real
@@ -7145,7 +7143,7 @@ async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
 
     // And the racer's own bytes are retryable, which is what the release is
     // for: raise the ceiling and the event it was refused for still lands.
-    sqlx::query("update webhook_triggers set max_per_hour = 100 where path = $1")
+    sqlx::query("update triggers set max_per_hour = 100 where config->>'path' = $1")
         .bind(&path)
         .execute(&h.db.pool)
         .await

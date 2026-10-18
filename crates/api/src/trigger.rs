@@ -58,39 +58,29 @@ pub async fn start(pool: &sqlx::PgPool, started: Started) -> Result<Uuid, String
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
     let session_id = Uuid::now_v7();
-    // The source column differs and nothing else does, so the statement is
-    // written twice rather than built from a string -- sqlx takes literals,
-    // and two short literals are cheaper to read than a builder.
-    //
     // Matched on the enum rather than on a string it maps to, so a third kind
-    // of trigger fails to compile here rather than compiling and writing its
-    // id into the wrong column. An earlier version went through a
-    // `&'static str` with a catch-all arm, which threw away exactly the check
-    // this file was extracted to provide -- and docs/triggers.md already
-    // contemplates email as a third kind.
-    let inserted = match started.source {
-        Source::Schedule(_) => sqlx::query(
-            "insert into agent_sessions \
-                 (id, workspace_id, agent_id, user_id, title, account, schedule_id, started_by) \
-             values ($1, $2, $3, null, $4, $5, $6, 'schedule')",
-        ),
-        Source::Webhook(_) => sqlx::query(
-            "insert into agent_sessions \
-                 (id, workspace_id, agent_id, user_id, title, account, webhook_trigger_id, \
-                  started_by) \
-             values ($1, $2, $3, null, $4, $5, $6, 'webhook')",
-        ),
+    // of trigger fails to compile here until it says what it is called. An
+    // earlier version went through a `&'static str` with a catch-all arm,
+    // which threw away exactly the check this file was extracted to provide.
+    let started_by = match started.source {
+        Source::Schedule(_) => "schedule",
+        Source::Webhook(_) => "webhook",
     };
-    inserted
-        .bind(session_id)
-        .bind(started.workspace_id)
-        .bind(started.agent_id)
-        .bind(&started.title)
-        .bind(started.account.as_deref())
-        .bind(started.source.id())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "insert into agent_sessions \
+             (id, workspace_id, agent_id, user_id, title, account, trigger_id, started_by) \
+         values ($1, $2, $3, null, $4, $5, $6, $7)",
+    )
+    .bind(session_id)
+    .bind(started.workspace_id)
+    .bind(started.agent_id)
+    .bind(&started.title)
+    .bind(started.account.as_deref())
+    .bind(started.source.id())
+    .bind(started_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
 
     // A user message with no user. The role is what the model needs to see --
     // a turn with nothing in the user position has nothing to answer -- while

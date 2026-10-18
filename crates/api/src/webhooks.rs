@@ -241,8 +241,9 @@ pub async fn rotate_secret(
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
     let secret = unguessable(32);
     let rotated = sqlx::query(
-        "update webhook_triggers set secret = $3, updated_at = now() \
-         where workspace_id = $1 and id = $2",
+        "update triggers set config = jsonb_set(config, '{secret}', to_jsonb($3::text)), \
+             updated_at = now() \
+         where kind = 'webhook' and workspace_id = $1 and id = $2",
     )
     .bind(claims.workspace_id)
     .bind(id)

@@ -523,9 +523,8 @@ fn due_at(
 /// can see is paused.
 async fn owner_of(pool: &sqlx::PgPool, session_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
-        "select coalesce(s.user_id, sc.owner_id, w.owner_id) from agent_sessions s \
-         left join schedules sc on sc.id = s.schedule_id \
-         left join webhook_triggers w on w.id = s.webhook_trigger_id \
+        "select coalesce(s.user_id, t.owner_id) from agent_sessions s \
+         left join triggers t on t.id = s.trigger_id \
          where s.id = $1",
     )
     .bind(session_id)
