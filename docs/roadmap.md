@@ -18,8 +18,8 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **Phases 7 and 8 of [models](models.md):** the chain editor and
-   first-run setup, and Bedrock.
+1. **Phase 8 of [models](models.md):** Bedrock, which the same-model
+   recipe needs; and retiring `OUTTURN_DEFAULT_MODEL` now that setup exists.
 
 ## Tier 1 — independent
 
@@ -561,15 +561,13 @@ mattered, which is nearer compaction carry-over than user-declared memory, and
 evaluation problem, since knowing what was worth keeping means knowing what
 went wrong without it.
 
-**Models configured in the database.** Designed in [models.md](models.md):
+**Models configured in the database.** Built through phase 7 of [models.md](models.md):
 the catalog loaded on first launch, provider accounts, models and chains
 edited in the UI with sealed keys, settings per model, tracking the latest
 version without breaking, and first-run recipes. It replaces the routes page
 this entry used to describe, and its explicit fallback row: a chain is that
-fallback, drawn. Its first two phases -- recording the served model, and a
-retired model falling over to the next link -- stand alone and are worth
-doing first, since the second is what keeps a retirement from being an
-outage today.
+fallback, drawn. What remains is Bedrock, a workspace's own models, and an
+agent naming a chain of its own.
 
 ## Designed, and not yet tiered
 
