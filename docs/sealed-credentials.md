@@ -77,7 +77,7 @@ stored as the exact bytes that were fed to the AEAD, beside a parsed copy for
 reading. Bytes, because re-canonicalising JSON to check a tag is a way for a
 serializer upgrade to make every valid seal fail to open.
 
-- **`kind`** is `static`, `client_id` or `client_secret`. The gateway attaches
+- **`kind`** is `static`, `client_id`, `client_secret` or `provider` (below). The gateway attaches
   only a `static` credential as a header, and exchanges only a `client_*` pair.
   Without it a client secret, bound to the resource host for the token it buys,
   could be named by a rule as a plain header and sent there raw -- which the
@@ -266,10 +266,20 @@ in the platform workspace. Readable by the gateway for any workspace's turn,
 sealed once. Only the operator may store or rotate one, through the platform
 routes; every workspace route refuses `"*"`.
 
-**The gateway's own provider keys are not part of this.** `GEMINI_API_KEY` and
-the rest are not reachable from a rule, are not per workspace, and change when
-the operator changes provider, which is a deploy anyway. They stay in the
-environment.
+**The gateway's own provider keys are sealed too, as their own kind.** This
+document first said `GEMINI_API_KEY` and the rest stay in the environment,
+because changing provider was a deploy anyway. Configuring models in the
+database ([models.md](models.md#credentials)) made that untrue: a provider
+account's key is typed into the Models page and sealed in the browser, or
+made with `outturn-seal --provider`, and stored through
+`PUT /v1/platform/provider-accounts/{id}/key`. It is kind `provider`, bound to
+the account's host, naming neither a header nor a token endpoint -- its
+protocol decides where it goes -- and the egress path refuses that kind, so a
+platform key cannot be attached by a rule to an agent's own request at the
+same host and spent on something the operator never chose. Sealing one under
+an id that is already a workspace's credential is refused rather than
+pointing the account at somebody else's key. An account may still name an
+environment variable instead, read when the gateway starts.
 
 **Not `OUTTURN_GRANT_KEY`.** integrations.md keeps refresh tokens under a
 symmetric key only the gateway holds, and that is right, for a reason this
