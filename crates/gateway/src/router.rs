@@ -506,14 +506,17 @@ const REPLY_HEADER: &str = "x-outturn-reply";
 /// answered by another can say so (`reply_fallbacks`).
 #[derive(Default)]
 struct Passed {
-    first: Option<(Option<uuid::Uuid>, String)>,
+    /// The model tried first: its configured id, what it was asked for, and
+    /// what model it is whichever door it was reached through.
+    first: Option<(Option<uuid::Uuid>, String, Option<String>)>,
     why: Option<&'static str>,
 }
 
 impl Passed {
     fn trying(&mut self, attempt: &Attempt, model: &str) {
         if self.first.is_none() {
-            self.first = Some((attempt.model_id, model.to_string()));
+            let canonical = attempt.facts.as_ref().and_then(|f| f.canonical.clone());
+            self.first = Some((attempt.model_id, model.to_string(), canonical));
         }
     }
 
@@ -535,12 +538,20 @@ impl Passed {
         served: &Attempt,
         model: &str,
     ) {
-        let (Some(pool), Some(reply), Some((first_id, first))) =
+        let (Some(pool), Some(reply), Some((first_id, first, first_canonical))) =
             (&state.health, reply_id(headers), &self.first)
         else {
             return;
         };
-        if first == model {
+        // The same model through another door is not a change of model:
+        // Sonnet on Bedrock standing in for Sonnet at Anthropic answers as
+        // Sonnet. Said by the catalog where it knows both, else by name.
+        let served_canonical = served.facts.as_ref().and_then(|f| f.canonical.as_deref());
+        let same = match (first_canonical.as_deref(), served_canonical) {
+            (Some(a), Some(b)) => a == b,
+            _ => first == model,
+        };
+        if same {
             return;
         }
         let result = sqlx::query(

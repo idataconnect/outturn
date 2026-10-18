@@ -18,6 +18,10 @@ pub struct ModelFacts {
     pub output_limit: Option<u32>,
     /// How many tokens it reads at once.
     pub context_window: Option<u32>,
+    /// What model it is, whichever door it is reached through: Sonnet at
+    /// Anthropic and Sonnet on Bedrock share one, so a fallback between them
+    /// is the same model.
+    pub canonical: Option<String>,
     /// The effort levels it offers, lowest first.
     pub efforts: Vec<String>,
     /// Thinks adaptively, with effort as its control.
@@ -38,6 +42,7 @@ impl Default for ModelFacts {
             sampling: true,
             output_limit: None,
             context_window: None,
+            canonical: None,
             efforts: Vec::new(),
             adaptive_thinking: false,
             thinking_binding: false,
@@ -90,6 +95,7 @@ impl ModelFacts {
             context_window: merged["limit"]["context"]
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok()),
+            canonical: merged["canonical_model_id"].as_str().map(str::to_string),
             efforts,
             adaptive_thinking: merged["adaptive_thinking"].as_bool().unwrap_or(false),
             thinking_binding: merged["thinking_binding"].as_bool().unwrap_or(false),

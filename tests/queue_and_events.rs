@@ -4896,3 +4896,91 @@ async fn naming_borrows_the_assistant_chain_until_it_has_its_own() {
     assert_eq!(named(pool).await, ["small"]);
     finish!(db);
 }
+
+/// The same model through another door is not a change of model: a fallback
+/// from one id to another that the catalog says is the same model writes no
+/// note, and one between different models does, whatever their names.
+#[tokio::test]
+async fn a_fallback_to_the_same_model_elsewhere_is_not_a_change() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (down, _) = body_recorder(503).await;
+    let (up, _) = body_recorder(200).await;
+    add_route(pool, None, "assistant", 10, &down, "claude-sonnet-5-5").await;
+    add_route(
+        pool,
+        None,
+        "assistant",
+        20,
+        &up,
+        "us.anthropic.claude-sonnet-5-5",
+    )
+    .await;
+    let canonical = |model: &'static str, canonical: &'static str| async move {
+        sqlx::query(
+            "update models set facts = jsonb_build_object('canonical_model_id', $2::text) \
+             where model = $1",
+        )
+        .bind(model)
+        .bind(canonical)
+        .execute(pool)
+        .await
+        .unwrap();
+    };
+    let recorded = |reply: Uuid| async move {
+        sqlx::query_scalar::<_, i64>("select count(*) from reply_fallbacks where reply_id = $1")
+            .bind(reply)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    };
+    // A conversation for each, since a reply is written one at a time.
+    let reply = || async move {
+        let (session, store) = streamed_session(pool, workspace).await;
+        let id = store
+            .append_message(
+                session,
+                "assistant",
+                "",
+                None,
+                Default::default(),
+                Default::default(),
+                None,
+            )
+            .await
+            .expect("reply")
+            .id;
+        (session, id)
+    };
+
+    canonical("claude-sonnet-5-5", "anthropic/claude-sonnet-5-5").await;
+    canonical(
+        "us.anthropic.claude-sonnet-5-5",
+        "anthropic/claude-sonnet-5-5",
+    )
+    .await;
+    let (session, first) = reply().await;
+    assert_eq!(
+        ask_gateway_for(pool, workspace, session, Some(first)).await,
+        200
+    );
+    assert_eq!(
+        recorded(first).await,
+        0,
+        "the same model elsewhere was called a change"
+    );
+
+    canonical(
+        "us.anthropic.claude-sonnet-5-5",
+        "anthropic/claude-haiku-5-5",
+    )
+    .await;
+    let (session, second) = reply().await;
+    assert_eq!(
+        ask_gateway_for(pool, workspace, session, Some(second)).await,
+        200
+    );
+    assert_eq!(recorded(second).await, 1, "a different model was not noted");
+
+    finish!(db);
+}
