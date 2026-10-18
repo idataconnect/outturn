@@ -240,6 +240,42 @@ pub fn newest_in_line(
         .or_else(|| Some(current.to_string()))
 }
 
+/// The newest chat model of a family at a provider: text in and out, with
+/// tools, not a preview or a moving alias, and settled where anything
+/// settled is left. What a recipe names a tier by, so no model id is
+/// written down anywhere to go stale.
+pub fn newest_of_family(
+    catalog: &serde_json::Value,
+    provider: &str,
+    family: &str,
+) -> Option<String> {
+    let models = catalog.get(provider)?.get("models")?.as_object()?;
+    let chat: Vec<(&String, &serde_json::Value)> = models
+        .iter()
+        .filter(|(id, m)| {
+            m["family"] == family
+                && m["modalities"]["output"] == serde_json::json!(["text"])
+                && m["tool_call"] == true
+                && !id.ends_with("-latest")
+                && !id.contains("preview")
+        })
+        .collect();
+    let settled = |m: &serde_json::Value| {
+        !matches!(m["status"].as_str(), Some("alpha" | "beta" | "deprecated"))
+    };
+    let pool: Vec<_> = if chat.iter().any(|(_, m)| settled(m)) {
+        chat.into_iter().filter(|(_, m)| settled(m)).collect()
+    } else {
+        chat
+    };
+    pool.into_iter()
+        .max_by(|(a_id, a), (b_id, b)| {
+            let date = |m: &serde_json::Value| m["release_date"].as_str().unwrap_or("").to_string();
+            date(a).cmp(&date(b)).then(b_id.len().cmp(&a_id.len()))
+        })
+        .map(|(id, _)| id.clone())
+}
+
 fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = rest.split(['/', ':']).next()?;
@@ -277,6 +313,11 @@ mod tests {
             "gemini-3.1-pro-preview"
         );
         assert!(super::newest_in_line(&held, "anthropic", "no-such-model").is_none());
+        // A family's newest chat model, which is what a recipe asks for.
+        let family = |p, f| super::newest_of_family(&held, p, f).unwrap();
+        assert_eq!(family("anthropic", "claude-opus"), "claude-opus-5-5");
+        assert_eq!(family("google", "gemini-pro"), "gemini-2.5-pro");
+        assert_eq!(family("google", "gemini-flash"), "gemini-3.8-flash");
     }
 
     #[test]

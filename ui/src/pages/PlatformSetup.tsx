@@ -16,84 +16,21 @@ import {
   type Protocol,
   type Tested,
 } from '../lib/models'
+import { api } from '../lib/api'
 import { paths } from '../lib/paths'
 import { buttonPrimary, buttonQuiet, field, sectionBox } from '../components/models/styles'
 
-/** A provider a recipe needs an account at. */
-type Vendor = {
-  key: 'anthropic' | 'gemini'
-  name: string
-  protocol: Protocol
-  baseUrl: string
-  /** Where its key is usually found, offered for an operator whose keys
-   *  live in the gateway's environment. */
-  env: string
-}
+/** A provider a recipe needs an account at, as the API describes it. */
+type Vendor = { key: string; name: string; protocol: Protocol; base_url: string; env: string }
 
-const VENDORS: Record<Vendor['key'], Vendor> = {
-  anthropic: {
-    key: 'anthropic',
-    name: 'Anthropic',
-    protocol: 'anthropic',
-    baseUrl: 'https://api.anthropic.com',
-    env: 'ANTHROPIC_API_KEY',
-  },
-  gemini: {
-    key: 'gemini',
-    name: 'Google Gemini',
-    protocol: 'gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com',
-    env: 'GEMINI_API_KEY',
-  },
-}
-
-type Link_ = { vendor: Vendor['key']; model: string; label: string }
-
+/** A recipe: pairs of one tier from two vendors, each model the catalog's
+ *  newest in its family today, resolved by the API. */
 type Recipe = {
   id: string
   title: string
   summary: string
-  /** In order: the first is asked, the next when it is unavailable. */
-  links: Link_[]
-  /** What changes when the chain falls over, said before it is chosen. */
-  caveat: string
+  links: { vendor: Vendor; model: string | null; name: string | null }[]
 }
-
-/** Pairs of the same tier from two vendors, so a fallback answers about as
- *  well as what it stands in for; the tier is the choice. Each tracks the
- *  latest in its line. */
-const RECIPES: Recipe[] = [
-  {
-    id: 'high',
-    title: 'High tier',
-    summary: 'Claude Opus, falling back to Gemini Pro.',
-    links: [
-      { vendor: 'anthropic', model: 'claude-opus-5-5', label: 'Claude Opus (latest)' },
-      { vendor: 'gemini', model: 'gemini-2.5-pro', label: 'Gemini Pro (latest)' },
-    ],
-    caveat: 'A different family of model answers on fallback.',
-  },
-  {
-    id: 'medium',
-    title: 'Medium tier',
-    summary: 'Claude Sonnet, falling back to Gemini Flash.',
-    links: [
-      { vendor: 'anthropic', model: 'claude-sonnet-5-5', label: 'Claude Sonnet (latest)' },
-      { vendor: 'gemini', model: 'gemini-3.8-flash', label: 'Gemini Flash (latest)' },
-    ],
-    caveat: 'A different family of model answers on fallback.',
-  },
-  {
-    id: 'low',
-    title: 'Low tier',
-    summary: 'Claude Haiku, falling back to Gemini Flash-Lite.',
-    links: [
-      { vendor: 'anthropic', model: 'claude-haiku-5-5', label: 'Claude Haiku (latest)' },
-      { vendor: 'gemini', model: 'gemini-3.5-flash-lite', label: 'Gemini Flash-Lite (latest)' },
-    ],
-    caveat: 'A different family of model answers on fallback.',
-  },
-]
 
 type Step = { label: string; state: 'waiting' | 'running' | 'done' | 'failed'; error?: string }
 
@@ -104,6 +41,7 @@ type Step = { label: string; state: 'waiting' | 'running' | 'done' | 'failed'; e
  */
 export default function PlatformSetup() {
   const [held, setHeld] = useState<HeldCatalog | null>(null)
+  const [recipes, setRecipes] = useState<Recipe[]>([])
   const [config, setConfig] = useState<Configured | null>(null)
   const [choice, setChoice] = useState<string>('medium')
   const [keys, setKeys] = useState<Record<string, string>>({})
@@ -115,12 +53,17 @@ export default function PlatformSetup() {
   useEffect(() => {
     heldCatalog().then(setHeld).catch(() => setHeld(null))
     configured().then(setConfig).catch(() => setConfig(null))
+    api<Recipe[]>('/v1/platform/recipes').then(setRecipes).catch(() => setRecipes([]))
   }, [])
 
-  const recipe = RECIPES.find((r) => r.id === choice)
-  const vendors = recipe ? [...new Set(recipe.links.map((l) => l.vendor))].map((v) => VENDORS[v]) : []
+  const recipe = recipes.find((r) => r.id === choice)
+  const vendors = recipe
+    ? recipe.links.map((l) => l.vendor).filter((v, i, all) => all.findIndex((w) => w.key === v.key) === i)
+    : []
   const existing = (v: Vendor): Account | undefined =>
-    config?.accounts.find((a) => a.protocol === v.protocol && a.base_url === v.baseUrl)
+    config?.accounts.find((a) => a.protocol === v.protocol && a.base_url === v.base_url)
+  // A family the catalog has no chat model for cannot be set up from it.
+  const complete = recipe?.links.every((l) => l.model) ?? true
   const running = steps?.some((s) => s.state === 'running') ?? false
 
   async function setUp() {
@@ -152,7 +95,7 @@ export default function PlatformSetup() {
               createAccount({
                 name: v.name,
                 protocol: v.protocol,
-                base_url: v.baseUrl,
+                base_url: v.base_url,
                 ...(env && !keys[v.key] ? { credential_env: env } : {}),
               }),
             )) as Account
@@ -165,8 +108,8 @@ export default function PlatformSetup() {
           accounts.set(v.key, account)
         }
         for (const link of recipe.links) {
-          const model = (await run(`Add ${link.label}`, () =>
-            createModel({ account_id: accounts.get(link.vendor)!.id, model: link.model, tracks: true }),
+          const model = (await run(`Add ${link.name ?? link.model} (tracking the latest)`, () =>
+            createModel({ account_id: accounts.get(link.vendor.key)!.id, model: link.model!, tracks: true }),
           )) as { id: string }
           modelIds.push(model.id)
         }
@@ -199,7 +142,7 @@ export default function PlatformSetup() {
 
   const ready =
     recipe !== undefined
-      ? vendors.every((v) => existing(v) || keys[v.key]?.trim() || envs[v.key]?.trim())
+      ? complete && vendors.every((v) => existing(v) || keys[v.key]?.trim() || envs[v.key]?.trim())
       : local.url.trim() !== '' && local.model.trim() !== ''
 
   return (
@@ -230,7 +173,20 @@ export default function PlatformSetup() {
       <section className={sectionBox}>
         <h2 className="text-lg font-medium text-surface-900 dark:text-surface-100">2. A recipe</h2>
         <div role="radiogroup" aria-label="Recipes" className="grid gap-2 sm:grid-cols-2">
-          {[...RECIPES, { id: 'local', title: 'Local', summary: 'A model on your own server, such as ollama or llama.cpp.', links: [], caveat: 'No fallback: when it is down, nothing answers.' }].map(
+          {[
+            ...recipes.map((r) => ({
+              ...r,
+              caveat: r.links.some((l) => !l.model)
+                ? 'The catalog held has no model for part of this.'
+                : `Today: ${r.links.map((l) => l.name ?? l.model).join(', then ')}. A different family answers on fallback.`,
+            })),
+            {
+              id: 'local',
+              title: 'Local',
+              summary: 'A model on your own server, such as ollama or llama.cpp.',
+              caveat: 'No fallback: when it is down, nothing answers.',
+            },
+          ].map(
             (r) => (
               <button
                 key={r.id}

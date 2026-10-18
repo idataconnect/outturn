@@ -1881,6 +1881,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         )
         .route("/v1/platform/seal-key", get(super::models::seal_key))
         .route("/v1/platform/test-call", post(super::models::test_call))
+        .route("/v1/platform/recipes", get(super::models::recipes))
         .route(
             "/v1/platform/provider-accounts/{id}/catalog",
             get(super::models::account_catalog),

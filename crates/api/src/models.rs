@@ -303,7 +303,7 @@ pub async fn seal_account_key(
     }
 
     let mut tx = state.pool.begin().await.map_err(internal)?;
-    sqlx::query(
+    let written = sqlx::query(
         "insert into credentials (id, workspace_id, name, binding, sealed, key_id, created_by) \
          values ($1, null, $2, $3, $4, $5, $6) \
          on conflict (id) do update set binding = $3, sealed = $4, key_id = $5, \
@@ -319,6 +319,14 @@ pub async fn seal_account_key(
     .execute(&mut *tx)
     .await
     .map_err(internal)?;
+    // An id that is a workspace's credential writes nothing, and the account
+    // must not be pointed at it: its key is not the platform's to use.
+    if written.rows_affected() != 1 {
+        return Err((
+            StatusCode::CONFLICT,
+            "that credential id belongs to a workspace; seal the key under a new one".into(),
+        ));
+    }
     // The environment variable goes: an account has one key or the other.
     sqlx::query(
         "update provider_accounts set credential_id = $2, credential_env = null where id = $1",
@@ -1020,19 +1028,149 @@ pub async fn test_call(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(e) => return Ok(Json(failed(format!("the answer could not be read: {e}")))),
+    };
     if !status.is_success() {
         return Ok(Json(failed(body.chars().take(500).collect())));
     }
-    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    // A pass is a reply: an answer that is not one -- a proxy's page, an
+    // empty body -- is a failure, said with what came instead.
+    let parsed: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(Json(failed(format!(
+                "the answer was not a model's reply: {}",
+                body.chars().take(200).collect::<String>()
+            ))));
+        }
+    };
+    let Some(reply) = parsed["choices"][0]["message"]["content"].as_str() else {
+        return Ok(Json(failed("the answer held no reply".into())));
+    };
     Ok(Json(Tested {
         ok: true,
         model: parsed["model"].as_str().map(str::to_string),
         endpoint,
-        reply: parsed["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.trim().to_string()),
+        reply: Some(reply.trim().to_string()),
         error: None,
         elapsed_ms,
     }))
+}
+
+// -- Recipes -------------------------------------------------------------------
+
+/// A provider a recipe needs an account at.
+#[derive(Debug, Serialize)]
+pub struct Vendor {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub protocol: &'static str,
+    pub base_url: &'static str,
+    /// Where its key is usually found, for an operator whose keys live in
+    /// the gateway's environment.
+    pub env: &'static str,
+    /// The catalog's id for it.
+    #[serde(skip)]
+    catalog: &'static str,
+}
+
+const ANTHROPIC: Vendor = Vendor {
+    key: "anthropic",
+    name: "Anthropic",
+    protocol: "anthropic",
+    base_url: "https://api.anthropic.com",
+    env: "ANTHROPIC_API_KEY",
+    catalog: "anthropic",
+};
+
+const GEMINI: Vendor = Vendor {
+    key: "gemini",
+    name: "Google Gemini",
+    protocol: "gemini",
+    base_url: "https://generativelanguage.googleapis.com",
+    env: "GEMINI_API_KEY",
+    catalog: "google",
+};
+
+/// Pairs of the same tier from two vendors, so a fallback answers about as
+/// well as what it stands in for. Named by family, never by model: which
+/// model a tier is today is the catalog's to say.
+const RECIPES: &[(&str, &str, &str, &[(&Vendor, &str)])] = &[
+    (
+        "high",
+        "High tier",
+        "Claude Opus, falling back to Gemini Pro.",
+        &[(&ANTHROPIC, "claude-opus"), (&GEMINI, "gemini-pro")],
+    ),
+    (
+        "medium",
+        "Medium tier",
+        "Claude Sonnet, falling back to Gemini Flash.",
+        &[(&ANTHROPIC, "claude-sonnet"), (&GEMINI, "gemini-flash")],
+    ),
+    (
+        "low",
+        "Low tier",
+        "Claude Haiku, falling back to Gemini Flash-Lite.",
+        &[(&ANTHROPIC, "claude-haiku"), (&GEMINI, "gemini-flash-lite")],
+    ),
+];
+
+#[derive(Debug, Serialize)]
+pub struct RecipeLink {
+    pub vendor: &'static Vendor,
+    /// The family's newest chat model in the catalog held, or none when the
+    /// catalog has none -- and the recipe cannot be set up.
+    pub model: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Recipe {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    /// In order: the first is asked, the next when it is unavailable.
+    pub links: Vec<RecipeLink>,
+}
+
+pub async fn recipes(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<Recipe>>, ApiError> {
+    operator(&state, &headers)?;
+    let held: serde_json::Value =
+        sqlx::query_scalar("select models from catalog_snapshots order by fetched_at desc limit 1")
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal)?
+            .unwrap_or_default();
+    Ok(Json(
+        RECIPES
+            .iter()
+            .map(|(id, title, summary, links)| Recipe {
+                id,
+                title,
+                summary,
+                links: links
+                    .iter()
+                    .map(|(vendor, family)| {
+                        let model = catalog::newest_of_family(&held, vendor.catalog, family);
+                        let name = model
+                            .as_deref()
+                            .and_then(|m| catalog::entry(&held, vendor.catalog, m))
+                            .and_then(|e| e["name"].as_str())
+                            .map(str::to_string);
+                        RecipeLink {
+                            vendor,
+                            model,
+                            name,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+    ))
 }
