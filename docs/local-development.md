@@ -67,8 +67,8 @@ does.
 
 ## Models
 
-Local development runs against ollama through the OpenAI protocol
-(`OPENAI_BASE_URL`, no key). **Use qwen3.5.** It works well enough for most
+Local development runs against ollama through the OpenAI protocol, with no
+key. **Use qwen3.5.** It works well enough for most
 tasks, including tool use. It fits in an 8Gi card when using 8-bit quantized
 KV.
 
@@ -76,14 +76,17 @@ Setting thinking to off will sometimes cause strange behavior around tool
 calling, such as increasing the number of pointless tool calls, and stopping
 the turn right after a tool call without continuing.
 
-That is the gateway's static provider, which answers any class with no
-chain. A chain configured on Platform → Models, or made by a recipe on
-Platform → Setup, takes over its class, so trying a hosted model locally is
-an account, a key and a chain on that page rather than a manifest
-([models.md](models.md)). The Local recipe's address is the gateway's, not
-the browser's: `localhost` there is the gateway pod, so give it the address
-in `OPENAI_BASE_URL` above, and an in-network address needs its host in
-`OUTTURN_INTERNAL_HOSTS` before the gateway will call it.
+The `platform-settings` Job gives assistant and background traffic a chain
+to it on a cluster's first start -- an account at the model server's address
+from inside the cluster, the model described by hand, and a chain of one --
+and leaves it alone once anything answers assistant traffic. Change it on
+Platform → Models like any other chain; trying a hosted model locally is an
+account, a key and a chain on that page rather than a manifest
+([models.md](models.md)). An address is the gateway's, not the browser's:
+`localhost` there is the gateway pod, so the Job uses the Docker bridge
+(`172.18.0.1`) or `host.docker.internal`, and a private address needs its
+host in `OUTTURN_INTERNAL_HOSTS` before the gateway will call it, which the
+overlay and the dev scripts open for the model server.
 
 On a Mac, `scripts/dev-mac.sh` builds on the `local-mac` overlay instead:
 ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
@@ -226,11 +229,14 @@ whoever starts the server.
 
 `scripts/lib/dev.sh` already writes `k8s/overlays/.generated` for each run: the
 base, plus whichever `--with` components were asked for. It now also patches
-two values from the answers:
+the `platform-settings` Job from the answers:
 
-- `OUTTURN_DEFAULT_MODEL` on the API, to the served model
-- `CONTEXT_BUDGET` on the `platform-settings` Job, which PUTs it as the
-  operator's `context_budget` once the API is up
+- `CONTEXT_BUDGET`, which it PUTs as the operator's `context_budget` once the
+  API is up
+- `MODEL`, `MODEL_URL` and `CONTEXT_WINDOW`, for the chain it makes when
+  nothing answers assistant traffic yet
+
+and adds the model server's address to `OUTTURN_INTERNAL_HOSTS`.
 
 The committed overlays keep their own values as fallbacks, so
 `kubectl apply -k k8s/overlays/local` and `skaffold dev -p mac` still work with

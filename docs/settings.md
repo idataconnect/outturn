@@ -162,8 +162,8 @@ and how much of the conversation the model is shown:
   two non-empty replies. Usually the best title, later.
 
 Either way the namer checks again before it writes, so a title a person set
-while the job waited is kept. Without a default model (`OUTTURN_DEFAULT_MODEL`)
-sessions go unnamed whatever this says.
+while the job waited is kept. With no chain for naming -- its own, or
+assistant's, which it borrows -- sessions go unnamed whatever this says.
 
 ## Prompt repetition
 

@@ -50,18 +50,19 @@ own class so an operator can point it at a small model with a row. More come
 as they are needed -- `customer-service`, `summarize`, `compaction` -- and
 each is a row set, not code.
 
-Absent a row for a class, the gateway's static providers serve it, so a class
-costs nothing to introduce -- with one exception. `background` borrows
-`assistant`'s routes until it has its own, because the static providers can
-be a different vendor from the one assistant traffic was confined to, and a
-deployment should not find its scheduled turns somewhere new the day the
-class appeared.
+Absent a chain for a class, it is refused, with a message saying where to
+give it one: the gateway keeps no provider of its own to fall back to, since
+one nobody chose would answer every unconfigured class silently. Two classes
+borrow instead. `background` and `session-name` walk `assistant`'s chain
+until they have their own, because a deployment that said where its
+assistant traffic goes has said where a scheduled turn or a title should
+go too. `vision` never borrows: its model has to be one that can see.
 
 Absent is not the same as rejected. A class whose rows all exist and are all
 turned down -- every base URL pointing inside the network with no operator
 having opened that host, or no credential held for any of them -- is refused
-rather than served by the static providers. A route was configured and declined,
-and the static list is a different vendor with a different model: a deployment
+rather than served by anything else. A route was configured and declined, and
+anything else would be a different vendor with a different model: a deployment
 confined to an in-cluster provider would otherwise begin sending its prompts to
 a public API without saying so, and a momentarily missing credential would
 silently downgrade the model mid-conversation. Refusing is what somebody

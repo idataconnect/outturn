@@ -67,10 +67,11 @@ scripts/dev-secrets.sh --print   # the seeded admin@outturn.local password
 
 ## Tunables
 
-Environment variables, all optional. All but one have defaults in the code
-beside the constant they replace; the model does not, because a model written
-into the code is one nobody chose, answering every turn of a deployment that
-forgot to set one.
+Environment variables, all optional, each with its default in the code beside
+the constant it replaces. Which model answers is not among them: a model in
+the environment is one nobody chose, answering every turn of a deployment
+that forgot to choose. Models are configured on Platform → Models, which
+offers a recipe to an operator signing in to a deployment that has none.
 
 | Variable | Tier | Bounds |
 |---|---|---|
@@ -78,7 +79,6 @@ forgot to set one.
 | `OUTTURN_MEMORY_RESERVE_BYTES` | runtime | Working-set headroom kept clear of the cgroup limit |
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
-| `OUTTURN_DEFAULT_MODEL` | api | Model for a class of traffic no chain answers, when the agent names none. Unset, such a turn is refused, and with no chain for naming either, sessions go unnamed; a chain makes it unnecessary -- see [models.md](docs/models.md) |
 | `OUTTURN_GATEWAY_URL` | api, runtime | Where the gateway is. Unset, the API names no sessions, fetches no catalog and makes no test call |
 | `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |

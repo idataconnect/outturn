@@ -19,7 +19,7 @@ Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **Phase 8 of [models](models.md):** Bedrock, which the same-model
-   recipe needs; and retiring `OUTTURN_DEFAULT_MODEL` now that setup exists.
+   recipe needs.
 
 ## Tier 1 — independent
 

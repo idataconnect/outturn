@@ -10,7 +10,7 @@ waits.
 ## Why redo it
 
 What exists is halfway between two designs. A model is named statically --
-`OUTTURN_DEFAULT_MODEL`, or a name in an agent's policy -- and routing is a
+an environment variable, or a name in an agent's policy -- and routing is a
 table nothing edits but SQL, keyed by a credential that is an environment
 variable. Settings that only mean something to a model -- temperature, how
 hard to think -- cascade operator to workspace to agent with no idea which
@@ -376,7 +376,7 @@ decides.
 
 | Today | Becomes |
 |---|---|
-| `OUTTURN_DEFAULT_MODEL` | Removed after migration. On first start of the new version, if set and no models are configured, it seeds a hand-entered model on the deployment's OpenAI-protocol account and a chain of one, so an existing deployment keeps answering. |
+| `OUTTURN_DEFAULT_MODEL` | Removed. Not seeded into a chain, as first planned: the API never knew where the gateway's static provider (`OPENAI_BASE_URL`) pointed. A deployment that answered through them gives assistant traffic a chain on Platform → Models before it upgrades -- or after, when the first turn's refusal says to. Set, either is said at startup and not read. |
 | `traffic_routes` | Migrated: each distinct endpoint and credential becomes a provider account, each row a model, each class's rows a chain in priority order. |
 | `credential_ref` env vars | Kept as an account's credential option; new accounts default to sealed. |
 | `temperature`, `reasoning_effort`, `context_budget` overrides | Copied onto every configured model where valid for it; a value that is invalid for a model is dropped for that model and reported once. |
@@ -452,11 +452,9 @@ Each phase leaves the platform working.
    - **An agent naming a chain**, which replaces `policy.model`: an agent can
      already name a traffic class, and a class can be given any chain, so
      nothing is lost meanwhile.
-   - **`OUTTURN_DEFAULT_MODEL`** and the gateway's static providers stay
-     until first-run setup (phase 7) can replace them. A class with no chain
-     still falls to the static providers with the requested model, as an
-     unrouted class always has. `traffic_routes` is kept, unread, for a
-     release.
+   - **`OUTTURN_DEFAULT_MODEL`** and the gateway's static providers stayed
+     until first-run setup could replace them; they are gone since (phase
+     7). `traffic_routes` is kept, unread, for a release.
 5. **Model-scoped settings.** Built. `?model=<id>` on the settings routes
    reads and writes one model's values, and a value saved for one model is
    checked against its facts (`model_settings::valid_for`); `/v1/models`
@@ -516,12 +514,13 @@ Each phase leaves the platform working.
    runs a recipe with its keys and a test call (*First run*), and the
    gateway records a fallback against the reply it answered (*Requests*).
 
-   Left for later: `OUTTURN_DEFAULT_MODEL` and the static providers were to
-   go once setup could replace them, and have not. A turn still needs a
-   model name before the gateway is asked -- the agent's or the default --
-   and refuses without one, though a class with a chain ignores the name;
-   session naming likewise. So a deployment set up only through the page
-   must still set the variable to something.
+   `OUTTURN_DEFAULT_MODEL` and the gateway's static provider
+   (`OPENAI_BASE_URL`) are gone. A turn's model is the first of the chain
+   its class walks, which is what its prompt names; a class with no chain
+   is refused, saying where to give it one. `background` and `session-name`
+   borrow `assistant`'s chain until they have their own; `vision` borrows
+   nothing. Either variable still set is said once at startup, and not
+   read. Local development's chain is made by the `platform-settings` Job.
 8. **Bedrock**, which the "two doors" recipe needs. Begun: a `bedrock` route
    protocol for Claude through Invoke -- the Anthropic body and events, so the
    same model behaves the same through either door -- authenticated with a
