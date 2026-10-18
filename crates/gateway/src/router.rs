@@ -239,23 +239,30 @@ impl GatewayState {
     /// A route naming something unparseable, or a host that does not resolve,
     /// is dropped rather than refused: it was already going to fail, and
     /// failing here says why once instead of on every request.
+    #[cfg(test)]
     fn route_is_reachable(&self, route: &routing::Route) -> bool {
+        self.route_turned_away(route).is_none()
+    }
+
+    /// Why a route may not be called, in a sentence for whoever's turn it
+    /// failed; none when it may.
+    fn route_turned_away(&self, route: &routing::Route) -> Option<String> {
         let Ok(url) = reqwest::Url::parse(&route.base_url) else {
             tracing::warn!(base_url = %route.base_url, "a route's base URL is not a URL; skipping it");
-            return false;
+            return Some(format!("{} is not a URL", route.base_url));
         };
         let Some(host) = url.host_str() else {
             tracing::warn!(base_url = %route.base_url, "a route's base URL names no host; skipping it");
-            return false;
+            return Some(format!("{} names no host", route.base_url));
         };
         let Some(port) = url.port_or_known_default() else {
-            return false;
+            return Some(format!("{} names no port", route.base_url));
         };
 
         // Opened settles it, by name or by address, which is the case a
         // deliberately configured internal route takes.
         if self.internal.allows(host, port) {
-            return true;
+            return None;
         }
 
         // Otherwise only a literal address is judged here, and a name is left
@@ -277,9 +284,13 @@ impl GatewayState {
                     base_url = %route.base_url,
                     "a route points inside the network and no operator opened that host; skipping it"
                 );
-                false
+                Some(format!(
+                    "{} is inside the network, and the gateway reaches such an address only where \
+                     OUTTURN_INTERNAL_HOSTS opens it",
+                    route.base_url
+                ))
             }
-            _ => true,
+            _ => None,
         }
     }
 
@@ -294,7 +305,12 @@ impl GatewayState {
         workspace_id: uuid::Uuid,
         traffic_type: &str,
         began: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Vec<Attempt> {
+    ) -> (Vec<Attempt>, Vec<String>) {
+        // Why each configured route was turned away, for the message when
+        // none is left: a chain that exists and was refused is not a class
+        // with no chain, and saying so sent somebody to configure what they
+        // already had.
+        let mut turned_away = Vec::new();
         if let Some(pool) = &self.health {
             match routing::routes_for_turn(pool, workspace_id, traffic_type, began).await {
                 Ok(routes) if !routes.is_empty() => {
@@ -306,7 +322,8 @@ impl GatewayState {
                         // so workspace-owned ones are a shape the schema
                         // allows -- vetting here means whoever builds their
                         // API does not have to notice.
-                        if !self.route_is_reachable(&route) {
+                        if let Some(why) = self.route_turned_away(&route) {
+                            turned_away.push(why);
                             continue;
                         }
                         if let Some(provider) = self
@@ -320,6 +337,11 @@ impl GatewayState {
                                 facts: Some(route.facts),
                                 model_id: Some(route.model_id),
                             });
+                        } else {
+                            turned_away.push(format!(
+                                "{} at {} has no key the gateway can use",
+                                route.model, route.base_url
+                            ));
                         }
                     }
                     // Returned as it stands, empty or not. Falling through to
@@ -343,7 +365,7 @@ impl GatewayState {
                             "every configured route was rejected; this traffic type cannot be served"
                         );
                     }
-                    return attempts;
+                    return (attempts, turned_away);
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -352,7 +374,8 @@ impl GatewayState {
             }
         }
 
-        self.providers
+        let fallback = self
+            .providers
             .iter()
             .map(|p| Attempt {
                 provider: Arc::clone(p),
@@ -360,7 +383,8 @@ impl GatewayState {
                 facts: None,
                 model_id: None,
             })
-            .collect()
+            .collect();
+        (fallback, turned_away)
     }
 
     /// Fills in what the caller left to the settings: the temperature and
@@ -510,6 +534,8 @@ struct Passed {
     /// what model it is whichever door it was reached through.
     first: Option<(Option<uuid::Uuid>, String, Option<String>)>,
     why: Option<&'static str>,
+    /// Why configured routes were not tried at all.
+    turned_away: Vec<String>,
 }
 
 impl Passed {
@@ -675,10 +701,11 @@ async fn chat_completions(
     let traffic = traffic_type(&headers);
 
     let mut passed = Passed::default();
-    for attempt in state
+    let (attempts, turned_away) = state
         .attempts(claims.workspace_id, &traffic, turn_began(&headers))
-        .await
-    {
+        .await;
+    passed.turned_away = turned_away;
+    for attempt in attempts {
         let provider = &attempt.provider;
         let model = attempt
             .model
@@ -907,10 +934,11 @@ async fn chat_completions_stream(
     let mut last_error = None;
 
     let mut passed = Passed::default();
-    for attempt in state
+    let (attempts, turned_away) = state
         .attempts(claims.workspace_id, &traffic, turn_began(&headers))
-        .await
-    {
+        .await;
+    passed.turned_away = turned_away;
+    for attempt in attempts {
         let provider = &attempt.provider;
         let model = attempt
             .model
@@ -1042,6 +1070,12 @@ async fn chat_completions_stream(
 /// chose would answer every unconfigured class silently.
 fn unanswered(passed: &Passed, last_error: Option<&ProviderError>, traffic: &str) -> String {
     if passed.first.is_none() && last_error.is_none() {
+        if !passed.turned_away.is_empty() {
+            return format!(
+                "Every model configured for {traffic} traffic was turned away: {}.",
+                passed.turned_away.join("; ")
+            );
+        }
         return format!(
             "No model is configured for {traffic} traffic. The operator can give it a chain on \
              Platform, Models."
@@ -1110,6 +1144,24 @@ mod tests {
     }
 
     /// A route pointed at the public internet is not this list's business.
+    /// A chain whose every route was turned away says why, rather than that
+    /// nothing is configured -- which sent somebody to configure the chain
+    /// they already had.
+    #[test]
+    fn a_refused_chain_is_not_called_unconfigured() {
+        let shut = gateway("");
+        let mut passed = Passed::default();
+        passed.turned_away.push(
+            shut.route_turned_away(&route("http://172.18.0.1:11434"))
+                .expect("a private address nobody opened"),
+        );
+        let said = unanswered(&passed, None, "assistant");
+        assert!(said.contains("turned away"), "{said}");
+        assert!(said.contains("OUTTURN_INTERNAL_HOSTS"), "{said}");
+        let none = unanswered(&Passed::default(), None, "assistant");
+        assert!(none.starts_with("No model is configured"), "{none}");
+    }
+
     #[test]
     fn a_public_route_is_reachable_without_anybody_opening_it() {
         let state = gateway("");
