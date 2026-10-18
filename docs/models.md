@@ -2,9 +2,10 @@
 
 Which models a deployment can use, how they are chosen and chained, how each
 is configured, and how the platform keeps working as models are released,
-renamed and retired. Designed; replaces [model-catalog.md](model-catalog.md)
-and the parts of [routing.md](routing.md) and [settings.md](settings.md) that
-dealt with models. Nothing here is built.
+renamed and retired. Replaces [model-catalog.md](model-catalog.md) and the
+parts of [routing.md](routing.md) and [settings.md](settings.md) that dealt
+with models. Mostly built: *Order of work*, at the end, says what is and what
+waits.
 
 ## Why redo it
 
@@ -277,20 +278,35 @@ Platform page.
 
 1. **The catalog** is the shipped snapshot or something newer, with its age
    shown, and the file import and hand entry offered beside it.
-2. **A recipe**, each a chain with its accounts and models filled in:
+2. **A recipe**, each a chain with its accounts and models filled in. What is
+   built pairs the same tier from two vendors, so a fallback answers about as
+   well as what it stands in for:
 
-   | Recipe | Chain | Caveats shown |
-   |---|---|---|
-   | Claude, two doors | Sonnet (Latest) on Bedrock → Sonnet (Latest) on Anthropic | none: same model |
-   | Claude, direct | Sonnet (Latest) on Anthropic → Haiku (Latest) on Anthropic | smaller model on fallback |
-   | Fast first | Gemini Flash (Latest) → Sonnet (Latest) | different family |
-   | Mixed vendors | Sonnet (Latest) → Gemini Pro (Latest) | different family |
-   | Local | a hand-entered model on ollama or llama.cpp | no fallback: says so |
-   | Start empty | -- | -- |
+   | Recipe | Chain |
+   |---|---|
+   | High tier | Claude Opus (Latest) → Gemini Pro (Latest) |
+   | Medium tier | Claude Sonnet (Latest) → Gemini Flash (Latest) |
+   | Low tier | Claude Haiku (Latest) → Gemini Flash-Lite (Latest) |
+   | Local | one model on an OpenAI-protocol server -- ollama, llama.cpp -- which says it has no fallback |
 
-   Every recipe can be reversed or edited before it is saved.
+   A recipe names families, never models: the API resolves each to the
+   newest chat model in that family in the catalog held
+   (`catalog::newest_of_family`), so a recipe written into a release does
+   not set up an old model with an upgrade waiting on day one, and the page
+   says which models that is today. A family the catalog lacks makes the
+   recipe unavailable rather than guessed at. Everything a recipe makes is
+   ordinary configuration, edited afterwards on the Models page, and an
+   account already configured at the same provider is used rather than made
+   again. The same-model "two doors" recipe waits on Bedrock (phase 8).
 3. **Keys**, one per provider the recipe uses, sealed in the browser.
-4. **A test call** through the chain, which shows what answered.
+4. **A test call** through the chain, which shows what answered:
+   `POST /v1/platform/test-call`, a few words sent through the gateway as the
+   platform's own traffic of a class, with a turn token that reaches the
+   model and nothing else. It names no model -- the chain decides -- and
+   passes only on a reply, since a proxy's error page answers 200 too.
+
+The Models page offers setup while no chain answers assistant traffic; it is
+at Platform → Setup either way.
 
 "Different family" caveats say what changes when the chain falls over: the
 answer's voice and quality, the thinking and the cache starting again, and
@@ -298,14 +314,28 @@ whether skills certified on one model have been tried on the other.
 
 ## The chain editor
 
+Built, on Platform → Models, beside the accounts and models it draws from.
 The page a beginner has to understand at a glance. A chain is drawn as cards
 left to right, joined by arrows labeled with what moves a request along --
 "if unavailable", "if rate limited", "if refused" -- each card showing the
 model, its provider, whether it is tracking "Latest" and what that currently
 means, and a badge where a link changes model family. A card's settings open
-beside it and offer only what that model supports. Drag to reorder; a chain's
-traffic classes and agents are listed under it, so changing it shows what it
-reaches.
+beside it and offer only what that model supports. A model is moved earlier or
+later with buttons rather than dragged, which needs no library and works
+from the keyboard. Under the chains, each traffic class and the chain it
+walks. Not yet: the "if rate limited" labels per arrow, and the agents a
+chain reaches, which wait on an agent naming a chain.
+
+**An account** is a protocol, a base URL and a key. The key is typed in and
+sealed in the browser as a `provider` key bound to the account's host -- the
+API never sees it (`PUT /v1/platform/provider-accounts/{id}/key`, with the
+gateway's public key from `/v1/platform/seal-key`) -- or named as a variable
+in the gateway's environment. **A model** is chosen from what the catalog
+has at the account's provider, newest first
+(`/v1/platform/provider-accounts/{id}/catalog`), tracking the latest in its
+line or pinned; or described by hand where the catalog does not cover the
+account. A model waiting on an upgrade shows why and what approving would
+change, beside the button that does it.
 
 ## Requests
 
@@ -324,6 +354,20 @@ What the gateway does per call, replacing what it does now:
   provider refused for being malformed is refused everywhere and ends the walk.
 - **Record** the served model, the account, the chain position and whether the
   model changed, on the ledger and the reply.
+
+**When a fallback answered.** A change of model is recorded against the
+reply by the gateway, the tier that walked the chain and saw the first link
+fail, in `reply_fallbacks`: the model tried first, the one that answered, and
+why the first was passed over -- unavailable, rate limited, no longer
+offered, or resting after failing. A row of its own rather than a key in the
+reply's metadata, which the API writes whole when the turn ends and would
+race. Only a change of model counts; the same model through another door is
+not one. The first change in a reply is the one kept, and only a reply in the
+turn token's own session can be annotated, since the reply id is the
+runtime's word. `GET /v1/agent-sessions/{id}/model-changes` reads them, and
+the conversation shows "Agent model changed" under such a reply, opening to
+say from which model to which and why, so staff know when the voice may
+differ.
 
 The runtime and the guest name no model. A turn asks for its class; the chain
 decides.
@@ -460,8 +504,24 @@ Each phase leaves the platform working.
    Catalog checks are weekly and an upgrade is one move, so two inside one
    turn is the case this leaves, and an upgrade is applied only from the
    version it was read on, so two approvals at once make one move, not two.
-7. **The UI:** the chain editor, per-model settings, then first-run setup and
-   recipes.
+7. **The UI.** Built. Platform → Models configures accounts, models and
+   chains and which chain each class walks (*The chain editor*, above).
+   Every settings page has a picker above it -- every model, or one this
+   level may choose for -- and picking one shows only the settings about a
+   model, offers only the effort levels it takes, and says which value
+   wins; a level's value for every model shows as inherited, not as the
+   model's own. A `model.upgrade` item in the inbox names the model and the
+   two versions, says why it waits and what upgrading would change, and
+   approves it there; deleting the model withdraws it. Platform → Setup
+   runs a recipe with its keys and a test call (*First run*), and the
+   gateway records a fallback against the reply it answered (*Requests*).
+
+   Left for later: `OUTTURN_DEFAULT_MODEL` and the static providers were to
+   go once setup could replace them, and have not. A turn still needs a
+   model name before the gateway is asked -- the agent's or the default --
+   and refuses without one, though a class with a chain ignores the name;
+   session naming likewise. So a deployment set up only through the page
+   must still set the variable to something.
 8. **Bedrock**, which the "two doors" recipe needs. Begun: a `bedrock` route
    protocol for Claude through Invoke -- the Anthropic body and events, so the
    same model behaves the same through either door -- authenticated with a
@@ -495,6 +555,7 @@ Each phase leaves the platform working.
 - **Bedrock:** Invoke is the way in, and is begun with API keys. Whether AWS
   request signing is needed before the recipe is offered, or API keys are
   enough to start.
-- **The recipe list:** the table above is a first draft.
+- **The recipe list:** tiers from two vendors and a local model are built;
+  whether a same-vendor pair (Sonnet falling to Haiku) is worth offering.
 - **Who may configure a workspace's models:** a new authority, or the existing
   workspace settings one ([authorities.md](authorities.md)).
