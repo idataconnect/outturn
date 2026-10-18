@@ -84,6 +84,7 @@ nav:
       - Models and spend:
           - Routing: routing.md
           - Models: models.md
+          - Amazon Bedrock: bedrock.md
           - Usage: usage.md
           - Prompt caching: caching.md
           - Thinking: thinking.md

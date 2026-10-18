@@ -528,8 +528,11 @@ Each phase leaves the platform working.
    (`provider/bedrock.rs`), and signed with AWS keys (SigV4,
    `provider/sigv4.rs`) when a route names no API key: the gateway's
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, for the
-   region in the endpoint's host or `AWS_REGION`. Not yet: a role assumed
-   through a pod's web identity, and a real call against AWS.
+   region in the endpoint's host or `AWS_REGION`. Since: a role for the
+   gateway's service account or its pod's identity, refreshed before it
+   expires; the two-doors recipe, region and all; and a fallback between
+   doors not counted as a change of model. Set up in
+   [bedrock.md](bedrock.md). Not yet: a real call against AWS.
 
    **How it is tested without an AWS account.** Three parts, each proving
    what the others cannot:

@@ -18,8 +18,9 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **Phase 8 of [models](models.md):** Bedrock, which the same-model
-   recipe needs.
+1. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+   account: everything in [bedrock.md](bedrock.md) is tried against
+   stand-ins only, and the two-doors recipe says so until then.
 
 ## Tier 1 — independent
 
