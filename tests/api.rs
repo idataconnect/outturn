@@ -12676,3 +12676,88 @@ async fn a_schedule_firing_taken_twice_starts_one_turn() {
     ));
     finish!(h);
 }
+
+/// A model change is noted where it happens: three replies answered by the
+/// same fallback carry one note, on the first; a reply back on the first
+/// model carries none; and the fallback answering again is a change again.
+#[tokio::test]
+async fn a_model_change_is_noted_once_where_it_happens() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("changes@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-changes"}"#,
+        )
+        .await;
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&token),
+            &format!(r#"{{"agent_id":"{agent}","title":""}}"#),
+        )
+        .await;
+    let session: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Who answered each reply, in order, and whether it was a fallback.
+    let replies = [
+        ("backup", true),
+        ("backup", true),
+        ("backup", true),
+        ("first", false),
+        ("backup", true),
+    ];
+    let mut ids = Vec::new();
+    for (model, fell_back) in replies {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "insert into agent_messages (id, session_id, role, content, model) \
+             values ($1, $2, 'assistant', 'hi', $3)",
+        )
+        .bind(id)
+        .bind(session)
+        .bind(model)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+        if fell_back {
+            sqlx::query(
+                "insert into reply_fallbacks (reply_id, session_id, configured_model, \
+                     served_model, reason) values ($1, $2, 'first', 'backup', 'was unavailable')",
+            )
+            .bind(id)
+            .bind(session)
+            .execute(&h.db.pool)
+            .await
+            .unwrap();
+        }
+        ids.push(id.to_string());
+    }
+
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session}/model-changes"),
+            Some(&token),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let noted: Vec<String> = serde_json::from_str::<Vec<Value>>(&body)
+        .unwrap()
+        .iter()
+        .map(|c| c["reply_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(noted, [ids[0].clone(), ids[4].clone()]);
+    finish!(h);
+}

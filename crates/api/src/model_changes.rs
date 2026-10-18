@@ -1,5 +1,6 @@
-//! The replies in a conversation that a model other than the one its chain
-//! tried first answered, and why: what the gateway recorded as it fell over
+//! Where a conversation's model changed: the replies a model other than the
+//! one its chain tried first answered, where the reply before was not answered
+//! by that model too, and why: what the gateway recorded as it fell over
 //! (`reply_fallbacks`). Read beside the transcript, so staff can see when a
 //! fallback answered and the voice may differ. See docs/models.md.
 
@@ -44,9 +45,21 @@ pub async fn list(
         Ownership::Suffices,
     )
     .await?;
+    // Only where the model changes in the conversation: a reply answered by
+    // the same fallback as the reply before it says nothing new, and a
+    // conversation whose first model stays down would otherwise carry the
+    // note on every reply. Compared with what served the reply before, which
+    // each reply records.
     let rows = sqlx::query(
-        "select reply_id, configured_model, configured_name, served_model, served_name, reason \
-         from reply_fallbacks where session_id = $1 order by reply_id",
+        "with replies as ( \
+             select id, lag(model) over (order by id) as before \
+             from agent_messages where session_id = $1 and role = 'assistant' \
+         ) \
+         select f.reply_id, f.configured_model, f.configured_name, f.served_model, \
+                f.served_name, f.reason \
+         from reply_fallbacks f join replies r on r.id = f.reply_id \
+         where f.session_id = $1 and r.before is distinct from f.served_model \
+         order by f.reply_id",
     )
     .bind(id)
     .fetch_all(&state.pool)

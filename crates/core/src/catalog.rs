@@ -374,7 +374,10 @@ mod tests {
             "privatemode-ai": {"api": "http://localhost:8080/v1", "models": {}},
             "lmstudio": {"api": "http://127.0.0.1:1234/v1", "models": {}},
         });
-        assert_eq!(super::provider_for(&local, "openai", "http://localhost:11434"), None);
+        assert_eq!(
+            super::provider_for(&local, "openai", "http://localhost:11434"),
+            None
+        );
         assert_eq!(
             super::provider_for(&local, "openai", "http://127.0.0.1:1234/v1").as_deref(),
             Some("lmstudio")
