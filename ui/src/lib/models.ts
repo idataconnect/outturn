@@ -149,3 +149,6 @@ export type Tested = {
 /** One short request through the chain a class walks. Spends a few tokens. */
 export const testCall = (trafficType = 'assistant') =>
   api<Tested>('/v1/platform/test-call', { method: 'POST', body: JSON.stringify({ traffic_type: trafficType }) })
+
+export const updateAccount = (id: string, change: { name?: string; base_url?: string; credential_env?: string }) =>
+  api<Account>(`/v1/platform/provider-accounts/${id}`, { method: 'PATCH', body: JSON.stringify(change) })

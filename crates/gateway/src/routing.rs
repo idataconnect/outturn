@@ -103,6 +103,10 @@ pub struct ProviderCache {
 
 struct Built {
     provider: Arc<dyn LlmProvider>,
+    /// Where it was built to go, and in which protocol: an account edited on
+    /// the Models page is rebuilt rather than sent on to where it was.
+    base_url: String,
+    protocol: String,
     /// The sealed key it was built with, so a rotated or revoked one is
     /// noticed: the credential cache hands back a different one, or none.
     sealed: Option<Arc<Opened>>,
@@ -131,7 +135,10 @@ impl ProviderCache {
                 (Some(was), Some(now)) => Arc::ptr_eq(was, now),
                 _ => false,
             };
-            if same_key {
+            if same_key
+                && existing.base_url == route.base_url
+                && existing.protocol == route.provider
+            {
                 return Some(Arc::clone(&existing.provider));
             }
         }
@@ -219,6 +226,8 @@ impl ProviderCache {
             route.account,
             Built {
                 provider: Arc::clone(&provider),
+                base_url: route.base_url.clone(),
+                protocol: route.provider.clone(),
                 sealed: opened,
             },
         );

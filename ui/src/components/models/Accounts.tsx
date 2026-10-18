@@ -1,7 +1,15 @@
 import { useState } from 'react'
-import { KeyRound, Plus, Server, Trash2 } from 'lucide-react'
+import { KeyRound, Pencil, Plus, Server, Trash2 } from 'lucide-react'
 
-import { createAccount, deleteAccount, PROTOCOLS, sealAccountKey, type Account, type Protocol } from '../../lib/models'
+import {
+  createAccount,
+  deleteAccount,
+  PROTOCOLS,
+  sealAccountKey,
+  updateAccount,
+  type Account,
+  type Protocol,
+} from '../../lib/models'
 import { buttonPrimary, buttonQuiet, field, sectionBox } from './styles'
 
 /** What each protocol is, for the form: the vendor whose wire format it is. */
@@ -33,6 +41,7 @@ function keyState(account: Account): string {
 export default function Accounts({ accounts, reload }: { accounts: Account[]; reload: () => void }) {
   const [adding, setAdding] = useState(false)
   const [sealing, setSealing] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const attempt = async (what: () => Promise<unknown>) => {
@@ -83,6 +92,14 @@ export default function Accounts({ accounts, reload }: { accounts: Account[]; re
                 <button
                   type="button"
                   className={buttonQuiet}
+                  aria-label={`Edit ${account.name}`}
+                  onClick={() => setEditing(editing === account.id ? null : account.id)}
+                >
+                  <Pencil size={14} aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  className={buttonQuiet}
                   onClick={() => setSealing(sealing === account.id ? null : account.id)}
                 >
                   <KeyRound size={14} aria-hidden />
@@ -102,6 +119,15 @@ export default function Accounts({ accounts, reload }: { accounts: Account[]; re
                 </button>
               </div>
             </div>
+            {editing === account.id && (
+              <EditForm
+                account={account}
+                onSave={async (change) => {
+                  if (await attempt(() => updateAccount(account.id, change))) setEditing(null)
+                }}
+                onCancel={() => setEditing(null)}
+              />
+            )}
             {sealing === account.id && (
               <KeyForm
                 account={account}
@@ -130,6 +156,64 @@ export default function Accounts({ accounts, reload }: { accounts: Account[]; re
         </p>
       )}
     </section>
+  )
+}
+
+function EditForm({
+  account,
+  onSave,
+  onCancel,
+}: {
+  account: Account
+  onSave: (change: { name: string; base_url: string; credential_env?: string }) => Promise<void>
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(account.name)
+  const [baseUrl, setBaseUrl] = useState(account.base_url)
+  const [env, setEnv] = useState(account.credential_env ?? '')
+  const [busy, setBusy] = useState(false)
+  return (
+    <form
+      className="space-y-2"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        setBusy(true)
+        await onSave({
+          name: name.trim(),
+          base_url: baseUrl.trim(),
+          // A sealed key and a variable are one or the other.
+          ...(account.credential_id ? {} : { credential_env: env.trim() }),
+        })
+        setBusy(false)
+      }}
+    >
+      <label className="block text-sm text-surface-700 dark:text-surface-300">
+        Name
+        <input value={name} onChange={(e) => setName(e.target.value)} className={field} required />
+      </label>
+      <label className="block text-sm text-surface-700 dark:text-surface-300">
+        Base URL
+        <input type="url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className={field} required />
+      </label>
+      {account.credential_id ? (
+        <p className="text-xs text-surface-500">
+          The key is sealed to this account's host, so a new host needs a new key afterwards.
+        </p>
+      ) : (
+        <label className="block text-sm text-surface-700 dark:text-surface-300">
+          Key from the gateway's environment
+          <input value={env} onChange={(e) => setEnv(e.target.value)} placeholder="None" className={field} />
+        </label>
+      )}
+      <div className="flex gap-2">
+        <button type="submit" className={buttonPrimary} disabled={busy || baseUrl.trim() === ''}>
+          Save
+        </button>
+        <button type="button" className={buttonQuiet} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   )
 }
 

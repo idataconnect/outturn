@@ -12761,3 +12761,84 @@ async fn a_model_change_is_noted_once_where_it_happens() {
     assert_eq!(noted, [ids[0].clone(), ids[4].clone()]);
     finish!(h);
 }
+
+/// An account can be renamed and moved; one whose key is sealed may move
+/// only within its host, since the key opens nowhere else.
+#[tokio::test]
+async fn an_account_moves_only_where_its_key_still_opens() {
+    use base64::Engine as _;
+    use outturn::egress::seal;
+
+    let h = harness_or_skip!();
+    let (_acme, operator, _admin) = template_people(&h).await;
+    let (_, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            r#"{"name":"Local","protocol":"openai","base_url":"http://localhost:11434"}"#,
+        )
+        .await;
+    let account: Value = serde_json::from_str(&body).unwrap();
+    let uri = format!(
+        "/v1/platform/provider-accounts/{}",
+        account["id"].as_str().unwrap()
+    );
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &uri,
+        &operator,
+        r#"{"name":"Laptop","base_url":"http://models.example.com:11434"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let moved: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(moved["name"], "Laptop");
+    assert_eq!(moved["base_url"], "http://models.example.com:11434");
+
+    // Seal a key to that host, and the account may no longer leave it.
+    let public = seal::public_of(SEAL_KEY).unwrap();
+    let id = Uuid::now_v7();
+    let binding = serde_json::to_vec(&serde_json::json!({
+        "credential": id, "kind": "provider", "workspaces": ["*"],
+        "hosts": ["models.example.com"],
+    }))
+    .unwrap();
+    let sealed = seal::seal(&public, &binding, b"k").unwrap();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        &format!("{uri}/key"),
+        &operator,
+        &serde_json::json!({
+            "id": id, "name": "key", "binding": b64(&binding),
+            "sealed": b64(&sealed), "key_id": seal::key_id(&public),
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _) = send_as(
+        &h,
+        "PATCH",
+        &uri,
+        &operator,
+        r#"{"base_url":"http://elsewhere.example.com:11434"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a sealed key's account left its host"
+    );
+    let (status, _) = send_as(
+        &h,
+        "PATCH",
+        &uri,
+        &operator,
+        r#"{"base_url":"https://models.example.com/v1"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the same host refused");
+}

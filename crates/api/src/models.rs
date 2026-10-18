@@ -341,6 +341,93 @@ pub async fn seal_account_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AccountChange {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// A variable in the gateway's environment; empty clears it.
+    #[serde(default)]
+    pub credential_env: Option<String>,
+}
+
+/// Renames an account, moves it, or changes which variable its key is in.
+///
+/// A sealed key is bound to the host it was sealed for, so moving an account
+/// with one to another host is refused: the key would not open there, and
+/// the account would fail every request with nothing on the page saying why.
+/// The same host on another port or path keeps its key.
+pub async fn update_account(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AccountChange>,
+) -> Result<Json<Account>, ApiError> {
+    let actor = operator(&state, &headers)?;
+    let row = sqlx::query(
+        "select base_url, credential_id from provider_accounts \
+         where id = $1 and workspace_id is null",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| not_found("account"))?;
+    let was: String = row.get("base_url");
+    let sealed: Option<Uuid> = row.get("credential_id");
+    let base_url = input.base_url.map(|u| u.trim().to_string());
+    if let Some(url) = &base_url {
+        let host = host_of(url)?;
+        if sealed.is_some() && host != host_of(&was)? {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "this account's key is sealed to {}; replace the key after moving it, or move \
+                     it to the same host",
+                    host_of(&was)?
+                ),
+            ));
+        }
+    }
+    let env = input.credential_env.map(|v| v.trim().to_string());
+    if env.as_deref().is_some_and(|v| !v.is_empty()) && sealed.is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            "this account's key is sealed; it has one key or the other".into(),
+        ));
+    }
+    let r = sqlx::query(
+        "update provider_accounts set \
+             name = coalesce($2, name), base_url = coalesce($3, base_url), \
+             credential_env = case when $4::text is null then credential_env \
+                                   when $4 = '' then null else $4 end \
+         where id = $1 and workspace_id is null \
+         returning id, name, protocol, base_url, credential_env, credential_id",
+    )
+    .bind(id)
+    .bind(
+        input
+            .name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty()),
+    )
+    .bind(&base_url)
+    .bind(&env)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal)?;
+    tracing::info!(%actor, account = %id, "provider account changed");
+    Ok(Json(Account {
+        id: r.get("id"),
+        name: r.get("name"),
+        protocol: r.get("protocol"),
+        base_url: r.get("base_url"),
+        credential_env: r.get("credential_env"),
+        credential_id: r.get("credential_id"),
+    }))
+}
+
 pub async fn delete_account(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
