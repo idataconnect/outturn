@@ -69,11 +69,13 @@ mattered, which is nearer to carry-over than to user-declared memory, and
 anything, an evaluation problem: knowing what was worth keeping means knowing
 what went wrong without it. Left out of this design on purpose.
 
-**For webhooks the answer is external identity.** A hook that fires per booking
-wants one session per booking, so a later event about the same booking lands in
-the conversation that already discussed it. That means a mapping from the
-sender's id to a session, which the schedule case does not need and should not
-be made to carry.
+**The same for every other trigger.** A hook that fires per booking was once
+going to want one session per booking, so a later event about it landed in the
+conversation that discussed it -- a mapping from the sender's id to a session.
+Decided against: a trigger is work done on arrival, each firing its own, and
+keeping a thread together is what a channel does (*Triggers are not
+channels*). What an agent needs from earlier firings it reads, through history
+access, rather than carrying in every prompt.
 
 ## What runs away, and what notices
 
@@ -438,7 +440,6 @@ produced it:
 ```
 text         what arrived: a webhook's body, an email's text, nothing for a schedule
 external_id  what the sender calls it: a delivery's id, an email's Message-ID
-thread_id    what it belongs to, where the source knows: In-Reply-To, a booking id
 sender       who it claims to be from: an address, a signing key's holder
 metadata     anything else worth recording on the message
 ```
@@ -456,9 +457,14 @@ Then one pipeline, in this order, for every kind:
    for a schedule; the signature or shared secret for a webhook, already
    checked by its source; an allowlist and the mail server's own verdict for
    email.
-4. **Session**: new per firing, or the session an earlier firing in the same
-   thread started -- the external-identity mapping *Which session* describes,
-   built once here rather than per kind.
+4. **Session**: a new one per firing, for every kind. A trigger is work done
+   on arrival -- classify this email, route it, draft the welcome note --
+   and each firing is its own piece of it, as each schedule run already is.
+   Keeping an email thread or a booking's events in one session is a
+   conversation, which is a channel's business (below), not a trigger's. An
+   agent that needs what earlier firings found reads them, through history
+   access ([history-access.md](history-access.md)), rather than having
+   them in every prompt.
 5. **Prompt**: the trigger's template around the text, as webhooks do now.
 6. **`trigger::start`**, unchanged.
 
@@ -483,8 +489,7 @@ prompt template, enabled, account, owner, the ceiling and its window, the
 last firing's time, status and error, who made it and when -- with `kind`
 and a `config` for what one kind has alone: a schedule's expression, zone and
 next run; a webhook's path, scheme and sealed secret; a mailbox's address and
-cursor. `trigger_firings` holds the dedupe keys, and `trigger_threads` maps a
-thread to its session. Migrated from `schedules` and `webhook_triggers`
+cursor. `trigger_firings` holds the dedupe keys. Migrated from `schedules` and `webhook_triggers`
 keeping their ids, so a webhook's address and anything linking a schedule do
 not change.
 
@@ -503,16 +508,20 @@ as now; adding one asks which kind first.
 2. The concurrent ceiling, for both, since the pipeline is where it goes.
 3. One API and one page.
 4. Email, as a third source (below).
-5. Threading for webhooks, keyed on a field of the body the trigger names.
 
-### What is still to decide
+### Triggers are not channels
 
-- **When a thread is finished.** A booking's conversation should not run for a
-  year. A thread with no firing for some days starts a new session; how many
-  days, and whether it is the trigger's to say.
-- **Two firings racing into one thread.** The session's serial key queues their
-  turns, which is right; whether the second should wait for the first's reply
-  before its prompt is written is not settled.
+A channel is a conversation over another medium -- Slack, email, SMS --
+where the agent's reply goes back the way the message came, and replies in
+one thread stay one conversation. A trigger is one-way: something arrives,
+the agent works, and what it produces goes wherever its tools send it. A
+channel would use a trigger source for its inbound half, and add what a
+trigger deliberately has not: sending the reply, a thread kept as one
+session, and a sender mapped to a person. It also reopens a decision this
+platform has taken -- seats for the people who run a deployment and for a
+tenant's staff, and none for a tenant's own customers -- since an SMS
+channel is a tenant's customer talking to the agent directly. Undesigned;
+on the roadmap.
 
 ## Email
 
@@ -542,9 +551,7 @@ existing shared mailbox watched, with what it needs worked out already:
   makes every other outbound call, under an egress rule and a sealed
   credential bound to the mail host; the API's worker says when to poll.
 
-Either way, two things are email's own. **Threading**, which is the pipeline's
-thread mapping with `In-Reply-To` and `References` naming the thread. And
-**the sender**: anybody can send email to an address, so it is not merely
+Either way, one thing is email's own: **the sender**. anybody can send email to an address, so it is not merely
 untrusted but unauthenticated in a way a signed webhook is not. An allowlist of
 sending addresses, and the receiving server's SPF and DKIM verdict from its
 `Authentication-Results` header, is enough for a long time. The body is the

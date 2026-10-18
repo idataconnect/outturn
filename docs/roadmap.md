@@ -491,6 +491,14 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
+**Channels: Slack, email and SMS as conversations.** An agent spoken to
+through another medium, its reply sent back the way the message came and a
+thread kept as one conversation. Built on a trigger source for the inbound
+half ([triggers.md](triggers.md), *Triggers are not channels*), with sending
+and the mapping of a sender to a person as its own. It also reopens who may
+talk to an agent at all: a channel open to a tenant's customers is a seat
+this platform has deliberately not had.
+
 **Notifications, and the inbox that shows them.**
 [triggers.md](triggers.md) needs them twice over: a reply nobody asked for is
 useless if nothing says it arrived, and a schedule failing every morning is a
