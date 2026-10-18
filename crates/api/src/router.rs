@@ -1880,6 +1880,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             axum::routing::delete(super::models::delete_account),
         )
         .route("/v1/platform/seal-key", get(super::models::seal_key))
+        .route("/v1/platform/test-call", post(super::models::test_call))
         .route(
             "/v1/platform/provider-accounts/{id}/catalog",
             get(super::models::account_catalog),

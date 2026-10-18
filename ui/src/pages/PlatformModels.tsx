@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BookOpen, RefreshCw, Upload } from 'lucide-react'
 import { heldCatalog, importCatalog, refreshCatalog, type HeldCatalog } from '../lib/catalog'
+import { Link } from 'react-router'
 import { configured, type Configured } from '../lib/models'
+import { paths } from '../lib/paths'
+import { buttonPrimary } from '../components/models/styles'
 import Accounts from '../components/models/Accounts'
 import Models from '../components/models/Models'
 import Chains from '../components/models/Chains'
@@ -85,6 +88,17 @@ export default function PlatformModels() {
           Visible to the operator only.
         </p>
       </div>
+
+      {config && !config.assignments.assistant && (
+        <div className="rounded-lg border border-brand-300 dark:border-brand-700 bg-brand-50 dark:bg-brand-950 p-4 flex items-center justify-between gap-4">
+          <p className="text-sm text-surface-800 dark:text-surface-200">
+            No chain answers assistant traffic yet. A recipe sets one up, with its keys and a test call.
+          </p>
+          <Link to={paths.platformSetup} className={buttonPrimary}>
+            Set up from a recipe
+          </Link>
+        </div>
+      )}
 
       {config && (
         <>

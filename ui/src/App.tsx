@@ -56,6 +56,7 @@ import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
 import PlatformDefaults from './pages/PlatformDefaults'
 import PlatformModels from './pages/PlatformModels'
+import PlatformSetup from './pages/PlatformSetup'
 import AgentTemplates from './pages/AgentTemplates'
 import AgentTemplateEditor from './pages/AgentTemplateEditor'
 import Inbox from './pages/Inbox'
@@ -676,6 +677,7 @@ function Shell() {
             />
             <Route path="defaults" element={<PlatformDefaults />} />
             <Route path="models" element={<PlatformModels />} />
+            <Route path="setup" element={<PlatformSetup />} />
             <Route path="agent-templates" element={<AgentTemplates />} />
             <Route path="agent-templates/new" element={<AgentTemplateEditor />} />
             <Route path="agent-templates/:id" element={<AgentTemplateEditor />} />

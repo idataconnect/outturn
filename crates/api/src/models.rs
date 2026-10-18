@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use outturn_core::catalog;
 use outturn_core::egress::seal::Kind;
+use outturn_core::model_settings::PLATFORM_WORKSPACE;
 
 use super::router::{ApiError, ApiState};
 
@@ -908,4 +909,130 @@ pub async fn account_catalog(
         .collect();
     models.sort_by(|a, b| b.release_date.cmp(&a.release_date).then(a.id.cmp(&b.id)));
     Ok(Json(AccountCatalog { provider, models }))
+}
+
+// -- A test call ---------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TestCall {
+    /// The class of traffic to send it as; `assistant` when left out.
+    #[serde(default)]
+    pub traffic_type: Option<String>,
+}
+
+/// What answered a test call, or why nothing did.
+#[derive(Debug, Serialize)]
+pub struct Tested {
+    pub ok: bool,
+    /// The model that answered, as the gateway reported it.
+    pub model: Option<String>,
+    /// The endpoint it was reached at.
+    pub endpoint: Option<String>,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+    pub elapsed_ms: u64,
+}
+
+/// One short request through the gateway, as the platform's own traffic of a
+/// class: whether the chain that class walks answers, and which model did.
+/// Spends a few tokens of whatever the chain's first working model costs.
+pub async fn test_call(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<TestCall>,
+) -> Result<Json<Tested>, ApiError> {
+    use outturn_core::llm::{ChatCompletionRequest, Message, MessageContent, Role};
+    operator(&state, &headers)?;
+    let traffic = input
+        .traffic_type
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| outturn_core::protocol::DEFAULT_TRAFFIC_TYPE.to_string());
+    let gateway = std::env::var("OUTTURN_GATEWAY_URL").map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this deployment names no gateway (OUTTURN_GATEWAY_URL)".to_string(),
+        )
+    })?;
+    // A turn of nobody's: a session id that names no conversation, in the
+    // platform's workspace, reaching the model and nothing else.
+    let token = state
+        .minter
+        .mint_turn(
+            Uuid::now_v7(),
+            PLATFORM_WORKSPACE,
+            outturn_core::egress::commit::empty_root(),
+            outturn_core::egress::gate::Gates::none().root(PLATFORM_WORKSPACE),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let request = ChatCompletionRequest {
+        model: String::new(),
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text(
+                "Reply with a short greeting, five words at most.".into(),
+            ),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            thinking_blocks: Vec::new(),
+            signed_by: None,
+        }],
+        temperature: None,
+        max_tokens: Some(256),
+        tools: None,
+        reasoning_effort: Some("none".into()),
+        stream: false,
+        stream_options: None,
+        facts: None,
+    };
+    let started = std::time::Instant::now();
+    let sent = outturn_core::http_client::reporting_client()
+        .post(format!(
+            "{}/v1/chat/completions",
+            gateway.trim_end_matches('/')
+        ))
+        .bearer_auth(&token)
+        .header(outturn_core::protocol::TRAFFIC_HEADER, &traffic)
+        .timeout(std::time::Duration::from_secs(120))
+        .json(&request)
+        .send()
+        .await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let failed = |error: String| Tested {
+        ok: false,
+        model: None,
+        endpoint: None,
+        reply: None,
+        error: Some(error),
+        elapsed_ms,
+    };
+    let response = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(Json(failed(format!(
+                "the gateway could not be reached: {e}"
+            ))));
+        }
+    };
+    let endpoint = response
+        .headers()
+        .get("x-outturn-provider")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Ok(Json(failed(body.chars().take(500).collect())));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    Ok(Json(Tested {
+        ok: true,
+        model: parsed["model"].as_str().map(str::to_string),
+        endpoint,
+        reply: parsed["choices"][0]["message"]["content"]
+            .as_str()
+            .map(|s| s.trim().to_string()),
+        error: None,
+        elapsed_ms,
+    }))
 }

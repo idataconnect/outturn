@@ -28,6 +28,7 @@ export const paths = {
   workspace: (id: string) => `/platform/workspaces/${id}`,
   platformDefaults: '/platform/defaults',
   platformModels: '/platform/models',
+  platformSetup: '/platform/setup',
   agentTemplates: '/platform/agent-templates',
   agentTemplateNew: '/platform/agent-templates/new',
   agentTemplate: (id: string) => `/platform/agent-templates/${id}`,

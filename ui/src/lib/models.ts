@@ -135,3 +135,17 @@ export const unassign = (trafficType: string) =>
 
 /** The classes of traffic there are; see docs/routing.md. */
 export const TRAFFIC_CLASSES = ['assistant', 'background', 'session-name', 'vision'] as const
+
+/** What answered a test call, or why nothing did. */
+export type Tested = {
+  ok: boolean
+  model: string | null
+  endpoint: string | null
+  reply: string | null
+  error: string | null
+  elapsed_ms: number
+}
+
+/** One short request through the chain a class walks. Spends a few tokens. */
+export const testCall = (trafficType = 'assistant') =>
+  api<Tested>('/v1/platform/test-call', { method: 'POST', body: JSON.stringify({ traffic_type: trafficType }) })
