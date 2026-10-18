@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod aws_credentials;
 pub mod bedrock;
 pub mod gemini;
 pub mod mock;

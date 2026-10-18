@@ -28,31 +28,27 @@ const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 pub enum Auth {
     /// A Bedrock API key, as a bearer token.
     ApiKey(String),
-    /// AWS keys, signing each request for a region.
+    /// AWS keys -- given, or a role's -- signing each request for a region.
     Signed {
-        credentials: super::sigv4::Credentials,
+        credentials: std::sync::Arc<super::aws_credentials::AwsCredentials>,
         region: String,
     },
 }
 
 impl Auth {
-    /// The keys AWS's own tools read, from the gateway's environment, signing
-    /// for the endpoint's region: from its host (`bedrock-runtime.<region>.
+    /// The gateway's AWS credentials -- keys, a role for its service
+    /// account, or its pod's identity (`aws_credentials`) -- signing for the
+    /// endpoint's region: from its host (`bedrock-runtime.<region>.
     /// amazonaws.com`), else `AWS_REGION`, which a local emulator's host does
-    /// not carry. None when no keys are set.
+    /// not carry. None when the gateway was given none.
     pub fn from_aws_environment(base_url: &str) -> Option<Self> {
-        let var = |name| {
-            std::env::var(name)
-                .ok()
-                .filter(|v: &String| !v.trim().is_empty())
-        };
-        let credentials = super::sigv4::Credentials {
-            access_key_id: var("AWS_ACCESS_KEY_ID")?,
-            secret_access_key: var("AWS_SECRET_ACCESS_KEY")?,
-            session_token: var("AWS_SESSION_TOKEN"),
-        };
+        let credentials = super::aws_credentials::AwsCredentials::shared()?;
         let region = region_of(base_url)
-            .or_else(|| var("AWS_REGION"))
+            .or_else(|| {
+                std::env::var("AWS_REGION")
+                    .ok()
+                    .filter(|r| !r.trim().is_empty())
+            })
             .unwrap_or_else(|| "us-east-1".to_string());
         Some(Self::Signed {
             credentials,
@@ -89,7 +85,11 @@ impl BedrockProvider {
 
     /// A POST of `body` to `url`, authenticated. Signed requests sign the body
     /// as it will be sent, so it is serialized once, here, and sent as bytes.
-    fn post(&self, url: &str, body: &serde_json::Value) -> reqwest::RequestBuilder {
+    async fn post(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
         let bytes = serde_json::to_vec(body).unwrap_or_default();
         let request = self
             .client
@@ -116,16 +116,9 @@ impl BedrockProvider {
                     .map(|u| u.path().to_string())
                     .unwrap_or_default();
                 let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+                let keys = credentials.current().await?;
                 let signed = super::sigv4::sign(
-                    "POST",
-                    &host,
-                    &path,
-                    "",
-                    &bytes,
-                    credentials,
-                    region,
-                    "bedrock",
-                    &amz_date,
+                    "POST", &host, &path, "", &bytes, &keys, region, "bedrock", &amz_date,
                 );
                 signed
                     .headers
@@ -135,7 +128,7 @@ impl BedrockProvider {
                     })
             }
         };
-        request.body(bytes)
+        Ok(request.body(bytes))
     }
 
     /// Where a model is invoked. The id goes in the path, escaped: Bedrock's
@@ -196,6 +189,7 @@ impl LlmProvider for BedrockProvider {
     ) -> Result<ChatCompletionResponse, ProviderError> {
         let resp = self
             .post(&self.url(&request.model, false), &Self::body(request)?)
+            .await?
             .send()
             .await
             .map_err(|e| ProviderError::transport(&e))?;
@@ -219,6 +213,7 @@ impl LlmProvider for BedrockProvider {
     ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
         let response = self
             .post(&self.url(&request.model, true), &Self::body(request)?)
+            .await?
             .header("accept", "application/vnd.amazon.eventstream")
             .send()
             .await
@@ -719,7 +714,9 @@ mod tests {
         let provider = BedrockProvider::new(
             format!("http://{addr}"),
             Auth::Signed {
-                credentials,
+                credentials: std::sync::Arc::new(
+                    crate::llm::provider::aws_credentials::AwsCredentials::fixed(credentials),
+                ),
                 region: "eu-west-2".into(),
             },
         );
