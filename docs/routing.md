@@ -78,14 +78,16 @@ because nobody is ever watching them.
 
 ## Rows as the whole of routing
 
-Built: `traffic_routes` with a null workspace meaning the operator's default and a
-workspace's rows replacing it; attempts tried in priority order, skipping any
-whose circuit is open.
+Built: a chain per class, the operator's by default, which a workspace's own
+would replace once a workspace can have one; its links tried in order,
+skipping any whose circuit is open. `traffic_routes` was where this lived
+first and is kept, unread, for a release.
 
-Designed: two more columns on each row.
+Designed, in part built: two more facts about each link.
 
-**Credential owner.** Today every credential is an environment variable on the
-gateway pod, so every key is the operator's. A row will say whether its key is
+**Credential owner.** Today every key is the operator's: a provider account's
+key is a variable in the gateway's environment or a sealed `provider` key
+the operator typed into the Models page ([models.md](models.md#credentials)). A row will say whether its key is
 *operator-held* (an env var, as now) or *workspace-held* (a key the workspace
 entered, stored by the gateway encrypted under a master key from its own
 environment). The gateway is already the only tier that holds credentials, so
@@ -108,8 +110,11 @@ holds artifacts each rejects. A skill certified on one model declares that it
 accepts same-model fallback only; the workspace cannot loosen that, the operator
 can.
 
-The editor infers the kind from model names so the obvious cases need no
-labeling.
+The editor infers the kind so the obvious cases need no labeling. Built so
+far: the chain editor marks a link to a different family, and the gateway
+records a change of model against the reply it answered, shown under it as
+"Agent model changed" ([models.md](models.md#requests)); a workspace opting in
+waits on a workspace having chains of its own.
 
 ## The surcharge fallback
 
