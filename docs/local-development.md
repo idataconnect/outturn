@@ -76,6 +76,15 @@ Setting thinking to off will sometimes cause strange behavior around tool
 calling, such as increasing the number of pointless tool calls, and stopping
 the turn right after a tool call without continuing.
 
+That is the gateway's static provider, which answers any class with no
+chain. A chain configured on Platform → Models, or made by a recipe on
+Platform → Setup, takes over its class, so trying a hosted model locally is
+an account, a key and a chain on that page rather than a manifest
+([models.md](models.md)). The Local recipe's address is the gateway's, not
+the browser's: `localhost` there is the gateway pod, so give it the address
+in `OPENAI_BASE_URL` above, and an in-network address needs its host in
+`OUTTURN_INTERNAL_HOSTS` before the gateway will call it.
+
 On a Mac, `scripts/dev-mac.sh` builds on the `local-mac` overlay instead:
 ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
 the suggestion. Both scripts share `scripts/lib/dev.sh`, so `--with` and
