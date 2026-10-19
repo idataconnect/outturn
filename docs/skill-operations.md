@@ -44,25 +44,29 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
    operation:
      method: POST
      url: http://outturn-hollowbrook:8084/bookings
-     body:
-       type: object
-       required: [room_id, guest_name, arrival, departure]
-       properties:
-         room_id: { type: string }
-         guest_name: { type: string }
-         arrival: { type: string, format: date }
-         departure: { type: string, format: date }
+     body: [room_id, guest_name, arrival, departure]
    ---
    ```
 
-   Path parameters are named in the URL, `/bookings/{id}`, and appear in the
-   schema like any other argument; query parameters are declared under
-   `query`. A `GET` has no `body`.
+   Arguments are flat lists of names, not a schema, because the frontmatter
+   parser reads scalars and flat lists and refuses everything else (see
+   `crates/api/src/skill/frontmatter.rs` for why it is that narrow):
+
+   - `body` and `query` name the JSON body's fields and the query string's
+     parameters. A `GET` or `HEAD` has no body.
+   - A path parameter is a whole segment of the URL, `/bookings/{id}`, and is
+     always a required string.
+   - `optional` names the body or query fields that may be left out; the rest
+     are required.
+   - `integer`, `number` and `boolean` type the fields that are not strings.
+
+   A name lives in one place, and a qualifier must name a field that is sent:
+   a typo in `optional` would otherwise leave required the field it meant.
 
 2. **The guest offers it as a deferred tool**, `hollowbrook.create_booking`,
    named by skill and operation so two skills cannot collide. Its description
    is the first paragraph of the file's prose -- what the operation *is* -- and
-   its parameters are the declared schema. `load_tools` loads it like any
+   its parameters are the declared arguments. `load_tools` loads it like any
    other, so the call every small model tried first is now the right one.
 
 3. **A call becomes the `fetch_url` request** the file describes: the method,
@@ -78,20 +82,27 @@ get from it is the shape of a request.
 `fetch_url` stays too, for everything that is not a declared operation. A
 skill without `operation` blocks works exactly as it does today.
 
-## Why a translation, and why in the guest
+## Why a translation, and where it happens
 
 [roadmap.md](roadmap.md), *Tool registration*, left this as a fork: a
 registered tool in the guest needs its definition to cross the WIT boundary,
 and in the host it is a tool the component does not reason about. Both are
 right about *registering* a tool. This is narrower. It registers nothing: an
-operation is a file the guest can already read, translated into a call it can
-already make.
+operation is a declaration the API has already read, translated into a call
+the guest can already make.
 
-So it touches less than the fork suggests:
+**The API parses; the guest is handed the result.** The frontmatter is parsed
+at publish, where a malformed declaration is refused to the person publishing
+it. The guest cannot share that parser -- it is a wasm component whose one
+dependency is a JSON library -- and reading and parsing every operation file
+at the start of every turn would be work done again for an answer that cannot
+have changed. So the turn carries the bound skills' operations, already
+parsed, and the guest asks for them through one host function,
+`skill-operations`, as it asks for `eager-tools` now. That is the only
+interface change, and it adds a question rather than changing an answer.
 
-- **No interface change.** The guest reads the bound skills' files through
-  `read_object` and their operations through the same parser the API runs at
-  publish, and it calls `fetch` as it does now. `wit/agent.wit` is unchanged.
+Everything downstream is untouched:
+
 - **No gateway change.** The request that arrives is an ordinary egress
   request. The egress rule, the credential binding, the approval gate and the
   commitment all apply to it as they would to the same request composed by
@@ -105,7 +116,7 @@ So it touches less than the fork suggests:
 
 The declaration is the one place the operation's shape is written. The tool
 the model is offered and the request the guest builds are both read from it,
-by the same parser, from the version the turn bound. They cannot drift, because
+parsed once by the API, from the version the turn bound. They cannot drift, because
 there is nothing to drift between.
 
 What can disagree is a gate and an operation written in one file by hand:
@@ -113,6 +124,20 @@ What can disagree is a gate and an operation written in one file by hand:
 `/charge`. The parser refuses that at publish -- a gate in a file with an
 operation must match that operation -- so the disagreement is found by whoever
 wrote it rather than by an agent that could not be charged for.
+
+## Outside outturn
+
+A skill here resembles the public Agent Skills convention without claiming
+compatibility ([skill-packages.md](skill-packages.md)), and an operation file
+is already a level that convention has no equivalent of. `operation` changes
+nothing there. What it would change is the prose: once the tool builds the
+request, the "The call" section that told a model the method and URL is
+redundant here -- and the only thing an agent elsewhere had to go on.
+
+So the prose may drop it, and wherever a skill leaves this platform the line
+is generated back from the declaration, so it is still written once.
+
+## The wizard
 
 The OpenAPI wizard already writes these files from a specification; it writes
 the `operation` block from the same operation it writes the prose from, so a
@@ -138,8 +163,10 @@ the shape is right: a booking that small models spent an afternoon fumbling shou
 
 In order:
 
-- `operation` in the frontmatter parser, with the publish-time check against a
-  gate in the same file.
+- ~~`operation` in the frontmatter parser, with the publish-time check
+  against a gate in the same file.~~ Built.
+- The operations stored with a version, and carried to the turn.
+- `skill-operations` in `wit/agent.wit`, answered by the runtime.
 - The guest offering declared operations as deferred tools, and translating a
   call into `fetch`.
 - The wizard writing `operation` blocks.

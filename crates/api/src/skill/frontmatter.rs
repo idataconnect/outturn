@@ -9,8 +9,12 @@
 //! is what an agent is told; a declaration up here is what this tier acts on.
 //! Anything a model needs to know belongs in the body where it can see it.
 //!
-//! Parsed by hand rather than with a YAML crate. The contract is three scalar
-//! keys under one heading, and it is deliberately that narrow: a full YAML
+//! Two headings are understood: `approval`, and `operation` -- what request an
+//! operation is, so the agent can be offered it as a tool (see
+//! `docs/skill-operations.md`).
+//!
+//! Parsed by hand rather than with a YAML crate. The contract is scalar keys
+//! and flat lists under a heading, and it is deliberately that narrow: a full YAML
 //! reader would accept anchors, aliases, multi-document streams and nested
 //! collections, none of which mean anything here, and every one of which would
 //! be a shape somebody eventually writes and expects to work. What this accepts
@@ -54,10 +58,50 @@ pub struct ApprovalRule {
     pub binds: Vec<String>,
 }
 
+/// The request an operation is, declared so the agent can be offered it as a
+/// tool and the request built for it. See `docs/skill-operations.md`.
+///
+/// Arguments are flat lists of names rather than a schema: a schema would mean
+/// nested collections, which this parser refuses to read, and the names with a
+/// type where one is not a string are what a tool's parameters need.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Operation {
+    /// Upper case.
+    pub method: String,
+    /// Absolute, `http` or `https`, with a path parameter as `{name}` in its
+    /// path. No query string: that is `query`.
+    pub url: String,
+    /// The JSON body's fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<String>,
+    /// The query string's parameters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query: Vec<String>,
+    /// Body or query fields that may be left out. Everything else is required,
+    /// path parameters always.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+    /// Body or query fields by type, where the type is not a string.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub integer: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub number: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boolean: Vec<String>,
+}
+
+impl Operation {
+    /// The URL's path parameters, in the order they appear.
+    pub fn path_params(&self) -> Vec<String> {
+        placeholders(url_path(&self.url)).unwrap_or_default()
+    }
+}
+
 /// What a file's frontmatter said, and the body below it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed<'a> {
     pub approval: Option<ApprovalRule>,
+    pub operation: Option<Operation>,
     /// Everything after the closing fence. The whole file when there was no
     /// frontmatter, which is nearly every file.
     pub body: &'a str,
@@ -85,6 +129,7 @@ pub fn parse(source: &str) -> Result<Parsed<'_>, FrontmatterError> {
     let Some(rest) = strip_open_fence(source) else {
         return Ok(Parsed {
             approval: None,
+            operation: None,
             body: source,
         });
     };
@@ -93,8 +138,14 @@ pub fn parse(source: &str) -> Result<Parsed<'_>, FrontmatterError> {
         return Err(FrontmatterError::Unterminated);
     };
 
+    let approval = approval_from(yaml)?;
+    let operation = operation_from(yaml)?;
+    if let (Some(rule), Some(op)) = (&approval, &operation) {
+        gate_fits_operation(rule, op)?;
+    }
     Ok(Parsed {
-        approval: approval_from(yaml)?,
+        approval,
+        operation,
         body,
     })
 }
@@ -127,18 +178,19 @@ fn split_at_close_fence(rest: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Reads the `approval:` block, if there is one.
+/// The `key: value` lines under one top-level heading, in order, or `None`
+/// when the heading is not there.
 ///
 /// Deliberately not a general YAML reader: one heading at column zero, and
 /// `key: value` lines indented under it. Anything else under the heading is
-/// refused rather than ignored, because a rule half-read is a rule half-applied.
-fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
+/// refused rather than ignored, because a declaration half-read is one
+/// half-applied. Values come back unquoted and never empty.
+fn block<'y>(
+    yaml: &'y str,
+    heading: &str,
+) -> Result<Option<Vec<(&'y str, &'y str)>>, FrontmatterError> {
     let mut inside = false;
-    let mut requires = None;
-    let mut matches = None;
-    let mut covers = None;
-    let mut identified_by = None;
-    let mut binds: Option<Vec<String>> = None;
+    let mut found = None;
 
     for raw in yaml.lines() {
         let line = raw.trim_end();
@@ -163,13 +215,21 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
                     continue;
                 }
             };
-            inside = key == "approval";
-            // A rule written as a scalar is not the shape, and skipping it as an
+            inside = key == heading;
+            // A block written as a scalar is not the shape, and skipping it as an
             // unknown key would leave a gated operation ungated.
             if inside && !value.is_empty() {
-                return Err(FrontmatterError::Invalid(
-                    "approval takes a block of keys, not a value".into(),
-                ));
+                return Err(FrontmatterError::Invalid(format!(
+                    "{heading} takes a block of keys, not a value"
+                )));
+            }
+            if inside {
+                if found.is_some() {
+                    return Err(FrontmatterError::Invalid(format!(
+                        "{heading} is given twice"
+                    )));
+                }
+                found = Some(Vec::new());
             }
             continue;
         }
@@ -191,18 +251,33 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         // Two values for one key is a contradiction, and picking one means a
         // reviewer who read the first has approved something else. Refused
         // rather than resolved.
+        let entries = found.as_mut().expect("inside a block that was found");
+        if entries.iter().any(|(k, _)| *k == key) {
+            return Err(FrontmatterError::Invalid(format!("{key} is given twice")));
+        }
+        entries.push((key, value));
+    }
+    Ok(found)
+}
+
+/// Reads the `approval:` block, if there is one.
+fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
+    let mut requires = None;
+    let mut matches = None;
+    let mut covers = None;
+    let mut identified_by = None;
+    let mut binds: Option<Vec<String>> = None;
+
+    for (key, value) in block(yaml, "approval")?.unwrap_or_default() {
         let slot = match key {
             "requires" => &mut requires,
             "matches" => &mut matches,
             "covers" => &mut covers,
             "identified_by" => &mut identified_by,
             // A list rather than a scalar, so it is taken here and the scalar
-            // slot machinery below is left for the keys that are one value.
+            // slots above are left for the keys that are one value.
             "binds" => {
-                if binds.is_some() {
-                    return Err(FrontmatterError::Invalid("binds is given twice".into()));
-                }
-                binds = Some(parse_binds(value)?);
+                binds = Some(parse_list(key, value)?);
                 continue;
             }
             other => {
@@ -211,9 +286,6 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
                 )));
             }
         };
-        if slot.is_some() {
-            return Err(FrontmatterError::Invalid(format!("{key} is given twice")));
-        }
         *slot = Some(value.to_string());
     }
 
@@ -283,6 +355,239 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         covers,
         identified_by,
     }))
+}
+
+/// Reads the `operation:` block, if there is one.
+///
+/// Refused when malformed, as `approval` is, though for a gentler reason: an
+/// operation half-read is a tool offered with the wrong arguments, which the
+/// model then calls and the recipient refuses, and nobody is told why.
+fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
+    let Some(entries) = block(yaml, "operation")? else {
+        return Ok(None);
+    };
+    let mut method = None;
+    let mut url = None;
+    let mut lists: [(&str, Vec<String>); 6] = [
+        ("body", Vec::new()),
+        ("query", Vec::new()),
+        ("optional", Vec::new()),
+        ("integer", Vec::new()),
+        ("number", Vec::new()),
+        ("boolean", Vec::new()),
+    ];
+    for (key, value) in entries {
+        match key {
+            "method" => method = Some(value.to_ascii_uppercase()),
+            "url" => url = Some(value.to_string()),
+            other => {
+                let Some((_, list)) = lists.iter_mut().find(|(name, _)| *name == other) else {
+                    return Err(FrontmatterError::Invalid(format!(
+                        "{other} is not a key of operation"
+                    )));
+                };
+                *list = parse_list(key, value)?;
+            }
+        }
+    }
+    let [
+        (_, body),
+        (_, query),
+        (_, optional),
+        (_, integer),
+        (_, number),
+        (_, boolean),
+    ] = lists;
+
+    let Some(method) = method else {
+        return Err(FrontmatterError::Invalid(
+            "operation needs a method, e.g. `POST`".into(),
+        ));
+    };
+    if !outturn_core::egress::gate::METHODS.contains(&method.as_str()) {
+        return Err(FrontmatterError::Invalid(format!(
+            "{method} is not a method an operation can use"
+        )));
+    }
+    let Some(url) = url else {
+        return Err(FrontmatterError::Invalid(
+            "operation needs a url saying where the request goes".into(),
+        ));
+    };
+    check_url(&url)?;
+    if !body.is_empty() && matches!(method.as_str(), "GET" | "HEAD") {
+        return Err(FrontmatterError::Invalid(format!(
+            "a {method} has no body; its arguments go in query"
+        )));
+    }
+
+    // One name, one place. A field that is both in the body and the query, or
+    // both a path parameter and either, is sent twice or not at all, and which
+    // is a guess.
+    let path = placeholders(url_path(&url))?;
+    let mut seen: Vec<&str> = Vec::new();
+    for name in path.iter().chain(&body).chain(&query) {
+        if seen.contains(&name.as_str()) {
+            return Err(FrontmatterError::Invalid(format!(
+                "{name} is named twice among the path, body and query"
+            )));
+        }
+        seen.push(name);
+    }
+    // What qualifies a field has to name one the request carries. A path
+    // parameter is always a required string, so it is not among them.
+    let carried = |name: &String| body.contains(name) || query.contains(name);
+    for (key, list) in [
+        ("optional", &optional),
+        ("integer", &integer),
+        ("number", &number),
+        ("boolean", &boolean),
+    ] {
+        if let Some(stray) = list.iter().find(|n| !carried(n)) {
+            return Err(FrontmatterError::Invalid(format!(
+                "{key} names {stray}, which is not in body or query"
+            )));
+        }
+    }
+    let typed: Vec<&String> = integer.iter().chain(&number).chain(&boolean).collect();
+    if let Some(twice) = typed
+        .iter()
+        .enumerate()
+        .find(|(i, n)| typed[..*i].contains(n))
+        .map(|(_, n)| n)
+    {
+        return Err(FrontmatterError::Invalid(format!(
+            "{twice} is given more than one type"
+        )));
+    }
+
+    Ok(Some(Operation {
+        method,
+        url,
+        body,
+        query,
+        optional,
+        integer,
+        number,
+        boolean,
+    }))
+}
+
+/// Checks an operation's URL is absolute and carries no query of its own.
+fn check_url(value: &str) -> Result<(), FrontmatterError> {
+    // Placeholders are not valid URL characters, so they are swapped for a
+    // stand-in before parsing; their shape is checked by `placeholders`.
+    let plain: String = {
+        let mut out = String::new();
+        let mut inside = false;
+        for c in value.chars() {
+            match c {
+                '{' => inside = true,
+                '}' => {
+                    inside = false;
+                    out.push('x');
+                }
+                _ if inside => {}
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    let parsed = url::Url::parse(&plain)
+        .map_err(|e| FrontmatterError::Invalid(format!("{value} is not a URL: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(FrontmatterError::Invalid(format!(
+            "{value} is not http or https"
+        )));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(FrontmatterError::Invalid(format!(
+            "{value} carries a query or fragment; query parameters go in query"
+        )));
+    }
+    if value[..value.find("://").map_or(0, |i| i + 3)].contains('{')
+        || url_authority(value).contains('{')
+    {
+        return Err(FrontmatterError::Invalid(format!(
+            "{value} has a parameter outside its path; only the path may have one"
+        )));
+    }
+    Ok(())
+}
+
+/// The part of an absolute URL between `://` and the path.
+fn url_authority(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split('/').next().unwrap_or("")
+}
+
+/// The path of an absolute URL, as written: placeholders left in.
+fn url_path(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.find('/').map_or("/", |i| &rest[i..])
+}
+
+/// The `{name}` parameters in a path, in order.
+///
+/// A parameter is a whole segment: `/bookings/{id}`, not `/bookings/bk_{id}`.
+/// Part of a segment would have to be matched by a gate's pattern, which can
+/// only end in a star.
+fn placeholders(path: &str) -> Result<Vec<String>, FrontmatterError> {
+    let mut names = Vec::new();
+    for segment in path.split('/') {
+        if !segment.contains('{') && !segment.contains('}') {
+            continue;
+        }
+        let name = segment
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .ok_or_else(|| {
+                FrontmatterError::Invalid(format!(
+                    "{segment} is not a path parameter; one is a whole segment, like {{id}}"
+                ))
+            })?;
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
+
+/// Checks a gate in the same file as an operation applies to that operation.
+///
+/// Both are written by hand in one file, so they can disagree: a gate on
+/// `POST /charges` beside an operation posting to `/charge` gates nothing the
+/// agent sends. Refused at publish, where whoever wrote it finds out, rather
+/// than by a charge nobody approved.
+fn gate_fits_operation(rule: &ApprovalRule, op: &Operation) -> Result<(), FrontmatterError> {
+    let (method, pattern) = rule
+        .matches
+        .split_once(' ')
+        .map(|(m, p)| (m.trim().to_ascii_uppercase(), p.trim()))
+        .unwrap_or_default();
+    let path = url_path(&op.url);
+    let fits = method == op.method
+        && match pattern.strip_suffix('*') {
+            Some(prefix) => path.starts_with(prefix),
+            // Without a star the gate matches one literal path, which a path
+            // with a parameter in it never is.
+            None => pattern == path && !path.contains('{'),
+        };
+    if !fits {
+        return Err(FrontmatterError::Invalid(format!(
+            "the approval matches {}, which is not this operation's {} {path}",
+            rule.matches, op.method
+        )));
+    }
+    // A grant is keyed on body fields. One the operation never sends would be
+    // keyed on nothing, and cover every request.
+    for field in rule.binds.iter().chain(&rule.identified_by) {
+        if !op.body.contains(field) {
+            return Err(FrontmatterError::Invalid(format!(
+                "the approval binds {field}, which is not in this operation's body"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Checks a `matches` is a method and an absolute path.
@@ -645,15 +950,15 @@ mod what_it_must_not_do_quietly {
     }
 }
 
-/// The `binds` list: `[a, b]` or a bare `a`.
+/// A list of names: `[a, b]` or a bare `a`.
 ///
 /// Hand-parsed like the rest of this module, and narrow on purpose. A flow
 /// sequence of quoted or bare scalars is the whole contract; a block sequence,
 /// a nested collection or an anchor is refused rather than half-read.
-fn parse_binds(value: &str) -> Result<Vec<String>, FrontmatterError> {
+fn parse_list(key: &str, value: &str) -> Result<Vec<String>, FrontmatterError> {
     let inner = match value.strip_prefix('[') {
         Some(rest) => rest.strip_suffix(']').ok_or_else(|| {
-            FrontmatterError::Invalid("binds opens a list and does not close it".into())
+            FrontmatterError::Invalid(format!("{key} opens a list and does not close it"))
         })?,
         // A bare scalar, which is the one-field case written the obvious way.
         None => value,
@@ -663,19 +968,194 @@ fn parse_binds(value: &str) -> Result<Vec<String>, FrontmatterError> {
     for raw in inner.split(',') {
         let field = unquote(raw.trim())?;
         if field.is_empty() {
-            return Err(FrontmatterError::Invalid(
-                "binds has an empty field name".into(),
-            ));
+            return Err(FrontmatterError::Invalid(format!(
+                "{key} has an empty field name"
+            )));
         }
-        // A duplicate would be hashed twice and mean nothing more than once,
-        // but it is a declaration somebody got wrong and the digest it produces
-        // is not the one they meant.
+        // In `binds` a duplicate would be hashed twice and mean nothing more
+        // than once, but it is a declaration somebody got wrong and the digest
+        // it produces is not the one they meant. Anywhere else it is the same
+        // mistake.
         if fields.iter().any(|f| f == field) {
             return Err(FrontmatterError::Invalid(format!(
-                "binds names {field} twice"
+                "{key} names {field} twice"
             )));
         }
         fields.push(field.to_string());
     }
     Ok(fields)
+}
+
+#[cfg(test)]
+mod operations {
+    use super::*;
+
+    const BOOKING: &str = "---\noperation:\n  method: post\n  url: http://outturn-hollowbrook:8084/bookings\n  body: [room_id, guest_name, arrival, departure, notes]\n  optional: [notes]\n---\n# create_booking\n";
+
+    fn refused(source: &str) -> String {
+        match parse(source) {
+            Err(FrontmatterError::Invalid(why)) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_operation_is_read() {
+        let parsed = parse(BOOKING).expect("parse");
+        let op = parsed.operation.expect("an operation");
+        assert_eq!(op.method, "POST", "upper case, as a request's method is");
+        assert_eq!(op.url, "http://outturn-hollowbrook:8084/bookings");
+        assert_eq!(
+            op.body,
+            ["room_id", "guest_name", "arrival", "departure", "notes"]
+        );
+        assert_eq!(op.optional, ["notes"]);
+        assert!(op.path_params().is_empty());
+        assert_eq!(parsed.approval, None);
+        assert_eq!(parsed.body, "# create_booking\n");
+    }
+
+    #[test]
+    fn path_parameters_come_from_the_url() {
+        let parsed = parse(
+            "---\noperation:\n  method: GET\n  url: http://h:8084/rooms/{room_id}/nights/{date}\n---\n",
+        )
+        .expect("parse");
+        assert_eq!(
+            parsed.operation.expect("op").path_params(),
+            ["room_id", "date"]
+        );
+    }
+
+    #[test]
+    fn query_and_types_are_read() {
+        let parsed = parse(
+            "---\noperation:\n  method: GET\n  url: https://h/availability\n  query: [arrival, departure, guests]\n  integer: [guests]\n  optional: [guests]\n---\n",
+        )
+        .expect("parse");
+        let op = parsed.operation.expect("op");
+        assert_eq!(op.query, ["arrival", "departure", "guests"]);
+        assert_eq!(op.integer, ["guests"]);
+    }
+
+    #[test]
+    fn a_method_and_a_url_are_required() {
+        refused("---\noperation:\n  url: http://h/x\n---\n");
+        refused("---\noperation:\n  method: GET\n---\n");
+        refused("---\noperation:\n  method: FETCH\n  url: http://h/x\n---\n");
+    }
+
+    #[test]
+    fn the_url_must_be_absolute_http_without_a_query() {
+        refused("---\noperation:\n  method: GET\n  url: /bookings\n---\n");
+        refused("---\noperation:\n  method: GET\n  url: ftp://h/x\n---\n");
+        refused("---\noperation:\n  method: GET\n  url: http://h/x?all=1\n---\n");
+    }
+
+    #[test]
+    fn a_parameter_is_a_whole_path_segment() {
+        refused("---\noperation:\n  method: GET\n  url: http://h/bookings/bk_{id}\n---\n");
+        refused("---\noperation:\n  method: GET\n  url: http://h/bookings/{}\n---\n");
+        refused("---\noperation:\n  method: GET\n  url: http://{host}/bookings\n---\n");
+    }
+
+    #[test]
+    fn a_get_has_no_body() {
+        let why = refused("---\noperation:\n  method: GET\n  url: http://h/x\n  body: [a]\n---\n");
+        assert!(why.contains("query"), "{why}");
+    }
+
+    #[test]
+    fn a_name_lives_in_one_place() {
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/x\n  body: [a]\n  query: [a]\n---\n",
+        );
+        refused("---\noperation:\n  method: PUT\n  url: http://h/x/{a}\n  body: [a]\n---\n");
+    }
+
+    #[test]
+    fn a_qualifier_must_name_a_field_that_is_sent() {
+        // A typo in `optional` would leave the field it meant required, and the
+        // model asked for something the author meant it could leave out.
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/x\n  body: [a]\n  optional: [b]\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/x\n  body: [a]\n  integer: [b]\n---\n",
+        );
+        // A path parameter is always a required string.
+        refused("---\noperation:\n  method: GET\n  url: http://h/x/{a}\n  optional: [a]\n---\n");
+    }
+
+    #[test]
+    fn a_field_has_one_type() {
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/x\n  body: [a]\n  integer: [a]\n  boolean: [a]\n---\n",
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_operation_is_refused() {
+        refused("---\noperation:\n  method: POST\n  url: http://h/x\n  headers: [x]\n---\n");
+    }
+
+    #[test]
+    fn operation_as_a_scalar_is_refused() {
+        refused("---\noperation: create_booking\n---\n");
+    }
+
+    #[test]
+    fn a_block_given_twice_is_refused() {
+        refused(
+            "---\noperation:\n  method: GET\n  url: http://h/a\noperation:\n  url: http://h/b\n---\n",
+        );
+    }
+
+    const CHARGE: &str = "  url: http://h:8084/charges\n  body: [payment_account_id, booking_id, amount_pence, idempotency_key]\n  integer: [amount_pence]\n";
+
+    #[test]
+    fn a_gate_that_fits_its_operation_is_accepted() {
+        let source = format!(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [payment_account_id, booking_id, amount_pence]\n  covers: booking\n  identified_by: booking_id\noperation:\n  method: POST\n{CHARGE}---\n"
+        );
+        let parsed = parse(&source).expect("parse");
+        assert!(parsed.approval.is_some() && parsed.operation.is_some());
+    }
+
+    #[test]
+    fn a_gate_on_another_path_is_refused() {
+        // The file gates /charges and the agent posts to /charge: nothing it
+        // sends is gated, and the file says otherwise.
+        let why = refused(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount]\noperation:\n  method: POST\n  url: http://h/charge\n  body: [amount]\n---\n",
+        );
+        assert!(why.contains("/charge"), "{why}");
+    }
+
+    #[test]
+    fn a_gate_on_another_method_is_refused() {
+        refused(
+            "---\napproval:\n  requires: charge\n  matches: PUT /charges\n  binds: [amount]\noperation:\n  method: POST\n  url: http://h/charges\n  body: [amount]\n---\n",
+        );
+    }
+
+    #[test]
+    fn a_star_covers_a_path_parameter_and_a_literal_does_not() {
+        parse(
+            "---\napproval:\n  requires: cancel\n  matches: DELETE /bookings/*\n  binds: [reason]\noperation:\n  method: DELETE\n  url: http://h/bookings/{id}\n  body: [reason]\n---\n",
+        )
+        .expect("a star covers the id");
+        refused(
+            "---\napproval:\n  requires: cancel\n  matches: DELETE /bookings/{id}\n  binds: [reason]\noperation:\n  method: DELETE\n  url: http://h/bookings/{id}\n  body: [reason]\n---\n",
+        );
+    }
+
+    #[test]
+    fn a_gate_binding_a_field_the_operation_never_sends_is_refused() {
+        // A grant keyed on a field that is never there is keyed on nothing.
+        let why = refused(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [amount_pence]\noperation:\n  method: POST\n  url: http://h/charges\n  body: [amount]\n---\n",
+        );
+        assert!(why.contains("amount_pence"), "{why}");
+    }
 }
