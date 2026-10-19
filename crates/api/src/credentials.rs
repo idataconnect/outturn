@@ -334,6 +334,40 @@ pub async fn binding_of(
     Ok(row.and_then(|r| Binding::parse(&r.get::<Vec<u8>, _>("binding")).ok()))
 }
 
+/// The scheme, host and port a test is sent to: the caller's origin when its
+/// host is the rule's, or `https://` and the rule's host.
+///
+/// Rules are kept without a port, so a host served on another one -- an
+/// in-cluster service on 8080 -- was tested on 443 and refused, and the key
+/// looked broken when the address was.
+fn origin_for(origin: Option<&str>, host: &str) -> Result<String, ApiError> {
+    let Some(origin) = origin else {
+        return Ok(format!("https://{host}"));
+    };
+    let parsed = reqwest::Url::parse(origin).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{origin} is not a URL: {e}"),
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{origin} is not http or https"),
+        ));
+    }
+    if parsed.host_str() != Some(host) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{origin} is not {host}, which is the host this key is for"),
+        ));
+    }
+    Ok(match parsed.port() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
+    })
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct TestCall {
     /// What to ask for, under the host: `/api/items`. A GET, and only a GET --
@@ -341,6 +375,11 @@ pub struct TestCall {
     /// be an answer nobody asked for.
     #[serde(default)]
     pub path: Option<String>,
+    /// Where the host is answered, `http://petstore:8080`, when that is not
+    /// `https://` and the default port -- a generated skill's base URL says.
+    /// Its host has to be the rule's: this picks the door, never the building.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 /// What the host said to one GET made with the credential.
@@ -434,7 +473,7 @@ pub async fn test(
             StatusCode::CONFLICT,
             "no egress rule sends this credential yet, so there is nothing to test".to_string(),
         ))?;
-    let url = format!("https://{}{path}", rule.host);
+    let url = format!("{}{path}", origin_for(input.origin.as_deref(), &rule.host)?);
     // The same request with the credential taken off the rule, which is the
     // control: what the host says to somebody without the key.
     let mut bare = rule.clone();
@@ -503,6 +542,28 @@ async fn fetch(
             format!("the gateway's answer was unreadable: {e}"),
         )
     })
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_for;
+
+    #[test]
+    fn a_test_goes_to_the_port_the_skill_names_on_the_rules_host() {
+        assert_eq!(
+            origin_for(None, "books.example.com").unwrap(),
+            "https://books.example.com"
+        );
+        assert_eq!(
+            origin_for(Some("http://petstore:8080"), "petstore").unwrap(),
+            "http://petstore:8080"
+        );
+        assert!(
+            origin_for(Some("http://elsewhere:8080"), "petstore").is_err(),
+            "another host"
+        );
+        assert!(origin_for(Some("ftp://petstore"), "petstore").is_err());
+    }
 }
 
 #[cfg(test)]

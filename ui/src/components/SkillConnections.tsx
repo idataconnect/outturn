@@ -33,10 +33,18 @@ export default function SkillConnections({
   skillName,
   workspaceId,
   testPath,
+  baseUrl,
+  reloads = 0,
 }: {
   hosts: string[]
   skillName: string
   workspaceId: string
+  /** A generated skill's base URL, whose scheme and port a test is sent to:
+   *  a rule names only the host. */
+  baseUrl?: string | null
+  /** Bumped by the page when a host is allowed, so the connection it asks for
+   *  next is here without a reload. */
+  reloads?: number
   /** A path this skill's key is for, to test with. A generated skill offers
    *  one of its own reads; the root of an API usually answers anybody. */
   testPath?: string
@@ -61,7 +69,7 @@ export default function SkillConnections({
 
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, reloads])
 
   const shown = (rules ?? []).filter((r) => hosts.includes(r.host))
   if (rules === null || shown.length === 0) return null
@@ -96,6 +104,7 @@ export default function SkillConnections({
             workspaceId={workspaceId}
             onChanged={load}
             testPath={testPath}
+            origin={originOf(baseUrl, rule.host)}
           />
         ))}
       </ul>
@@ -122,6 +131,17 @@ function describeTest(t: Tested): string {
   }
 }
 
+/** A base URL's origin, when it is this host's -- a skill can reach several. */
+function originOf(baseUrl: string | null | undefined, host: string): string | undefined {
+  if (!baseUrl) return undefined
+  try {
+    const url = new URL(baseUrl)
+    return url.hostname === host ? url.origin : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function Connection({
   rule,
   credential,
@@ -129,6 +149,7 @@ export function Connection({
   workspaceId,
   onChanged,
   testPath,
+  origin,
 }: {
   rule: EgressRule
   credential: Credential | null
@@ -137,6 +158,7 @@ export function Connection({
   workspaceId: string
   onChanged: () => Promise<void>
   testPath?: string
+  origin?: string
 }) {
   const connected = rule.credential !== null
   // Closed until asked for: plenty of hosts take no key at all, and a form
@@ -179,7 +201,7 @@ export function Connection({
 
   const test = () =>
     run(async () => {
-      if (rule.credential) setTested(await testCredential(rule.credential, path))
+      if (rule.credential) setTested(await testCredential(rule.credential, path, origin))
     })
 
   const remove = () => {

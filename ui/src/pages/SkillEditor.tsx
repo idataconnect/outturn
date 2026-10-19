@@ -124,7 +124,11 @@ export default function SkillEditor() {
   /** A read from the skill's own specification, with no parameters to fill,
    *  to test its key against: the root of an API usually answers anybody. */
   const [testPath, setTestPath] = useState<string | undefined>(undefined)
+  /** The generated skill's base URL, whose scheme and port a key's test uses. */
+  const [baseUrl, setBaseUrl] = useState<string | null>(null)
   const [reloads, setReloads] = useState(0)
+  /** Bumped when hosts are allowed, so the connections below catch up. */
+  const [allowed, setAllowed] = useState(0)
   const writable = editable && !derived
   // An override speaks about its base's instructions and carries no files of
   // its own; the API refuses them.
@@ -283,6 +287,7 @@ export default function SkillEditor() {
     try {
       await approveHosts(skill.id)
       setSkill(await getSkill(skill.id))
+      setAllowed((n) => n + 1)
       setError(null)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to allow those hosts')
@@ -404,7 +409,10 @@ export default function SkillEditor() {
           editable={isOperator && canWrite}
           onDerived={setDerived}
           onPublished={() => setReloads((n) => n + 1)}
-          onOutline={(outline, baseUrl) => setTestPath(readToTest(outline, baseUrl))}
+          onOutline={(outline, baseUrl) => {
+            setTestPath(readToTest(outline, baseUrl))
+            setBaseUrl(baseUrl)
+          }}
         />
       )}
 
@@ -414,6 +422,8 @@ export default function SkillEditor() {
           skillName={skill.name}
           workspaceId={workspaceId}
           testPath={testPath}
+          baseUrl={baseUrl}
+          reloads={allowed}
         />
       )}
 

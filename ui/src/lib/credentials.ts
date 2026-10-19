@@ -134,8 +134,10 @@ export const removeRule = (id: string) => api<void>(`/v1/egress-rules/${id}`, { 
 export const revokeCredential = (id: string) =>
   api<Credential>(`/v1/credentials/${id}`, { method: 'DELETE' })
 
-export const testCredential = (credential: string, path: string) =>
+/** `origin` is where the host answers, `http://petstore:8080`, when that is
+ *  not https on the default port; its host has to be the rule's. */
+export const testCredential = (credential: string, path: string, origin?: string) =>
   api<Tested>(`/v1/credentials/${credential}/test`, {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, ...(origin ? { origin } : {}) }),
   })
