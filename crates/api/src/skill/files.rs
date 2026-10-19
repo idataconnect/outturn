@@ -123,8 +123,143 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
             w[0].0.path
         )));
     }
+    expand_schemas(&mut out)?;
     link(&mut out);
     Ok(out)
+}
+
+/// Where a skill keeps the types its operations' schemas refer to.
+pub const TYPES_FILE: &str = "types.json";
+
+/// The deepest a type is expanded inside another. Past it, and for a type
+/// that contains itself, the rest is "an object" -- a provider takes each
+/// tool's schema whole, so it cannot point back at itself.
+const TYPE_DEPTH: usize = 6;
+
+/// How large one tool's expanded schema may be. It is sent with every round
+/// the tool is loaded in.
+pub const MAX_SCHEMA_BYTES: usize = 24 * 1024;
+
+/// Replaces each operation's references to the skill's shared types with the
+/// types themselves, so what is stored is what a provider can take.
+///
+/// The file keeps the references -- a type written once per skill, easy to
+/// read and impossible to let drift -- and the expansion happens here, once,
+/// where every file of the version is in hand.
+fn expand_schemas(files: &mut [(SkillFile, Vec<u8>)]) -> Result<(), SkillError> {
+    let types: serde_json::Map<String, serde_json::Value> =
+        match files.iter().find(|(f, _)| f.path == TYPES_FILE) {
+            Some((_, bytes)) => serde_json::from_slice::<serde_json::Value>(bytes)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+                .ok_or_else(|| {
+                    SkillError::Invalid(format!("{TYPES_FILE} is a JSON object of named types"))
+                })?,
+            None => serde_json::Map::new(),
+        };
+    for (file, _) in files.iter_mut() {
+        let Some(op) = file.operation.as_mut() else {
+            continue;
+        };
+        let Some(schema) = op.schema.take() else {
+            continue;
+        };
+        let expanded = expand(&schema, &types, &mut Vec::new())
+            .map_err(|e| SkillError::Invalid(format!("{}: {e}", file.path)))?;
+        let bytes = serde_json::to_vec(&expanded)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
+        if bytes > MAX_SCHEMA_BYTES {
+            return Err(SkillError::Invalid(format!(
+                "{}: its schema is {bytes} bytes expanded; a tool's may be at most {MAX_SCHEMA_BYTES}",
+                file.path
+            )));
+        }
+        op.schema = Some(expanded);
+    }
+    Ok(())
+}
+
+/// One value with its type references replaced, `stack` holding the types
+/// being expanded around it.
+fn expand(
+    value: &serde_json::Value,
+    types: &serde_json::Map<String, serde_json::Value>,
+    stack: &mut Vec<String>,
+) -> Result<serde_json::Value, String> {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+                let name = reference
+                    .strip_prefix("#/types/")
+                    .ok_or_else(|| format!("{reference} is not a #/types/ reference"))?;
+                let found = types
+                    .get(name)
+                    .ok_or_else(|| format!("{name} is not in {TYPES_FILE}"))?;
+                if stack.iter().any(|t| t == name) || stack.len() >= TYPE_DEPTH {
+                    return Ok(serde_json::json!({ "type": "object" }));
+                }
+                stack.push(name.to_string());
+                let out = expand(found, types, stack);
+                stack.pop();
+                return out;
+            }
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), expand(v, types, stack)?)))
+                .collect::<Result<serde_json::Map<_, _>, String>>()
+                .map(Value::Object)
+        }
+        Value::Array(items) => items
+            .iter()
+            .map(|v| expand(v, types, stack))
+            .collect::<Result<Vec<_>, String>>()
+            .map(Value::Array),
+        other => Ok(other.clone()),
+    }
+}
+
+#[cfg(test)]
+mod expansion {
+    use super::*;
+
+    fn types() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "Category": {"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}},
+            "Node": {"type": "object", "properties": {"child": {"$ref": "#/types/Node"}}}
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn a_reference_becomes_its_type() {
+        let schema = serde_json::json!({"type": "object", "properties": {"category": {"$ref": "#/types/Category"}}});
+        let out = expand(&schema, &types(), &mut Vec::new()).unwrap();
+        assert_eq!(
+            out["properties"]["category"]["properties"]["name"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn a_type_that_contains_itself_stops_at_an_object() {
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"root": {"$ref": "#/types/Node"}}});
+        let out = expand(&schema, &types(), &mut Vec::new()).unwrap();
+        assert_eq!(
+            out["properties"]["root"]["properties"]["child"],
+            serde_json::json!({"type": "object"})
+        );
+    }
+
+    #[test]
+    fn an_unknown_type_is_refused() {
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"x": {"$ref": "#/types/Nope"}}});
+        assert!(expand(&schema, &types(), &mut Vec::new()).is_err());
+    }
 }
 
 /// Records which of the set each file names. Done where the content is in hand,

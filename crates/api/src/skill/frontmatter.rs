@@ -21,6 +21,8 @@
 //! is what `docs/approvals.md` documents, and it refuses the rest by not
 //! understanding it.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 /// What an operation's file declares about needing approval.
@@ -93,6 +95,14 @@ pub struct Operation {
     /// scalars is not something a flat declaration can say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub list: Vec<String>,
+    /// The arguments as JSON Schema, where the flat lists above cannot say
+    /// them -- nested objects, enums. Written in the file with references to
+    /// the skill's shared types (`{"$ref": "#/types/Category"}`, from its
+    /// `types.json`), and stored with them expanded at publish, since a
+    /// provider takes each tool's schema standing alone. See
+    /// `docs/skill-operations.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
     /// What the operation is, for the tool's description: the first paragraph
     /// of the prose below the fence. Taken rather than declared, because the
     /// prose already says it and a second copy is one to fall out of date.
@@ -101,6 +111,42 @@ pub struct Operation {
 }
 
 impl Operation {
+    /// The tool's arguments as JSON Schema: the declared one, or the one the
+    /// flat lists describe. One shape for the guest to read either way.
+    pub fn arguments_schema(&self) -> serde_json::Value {
+        if let Some(schema) = &self.schema {
+            return schema.clone();
+        }
+        let mut properties = serde_json::Map::new();
+        let mut required = Vec::new();
+        for name in self
+            .path_params()
+            .iter()
+            .chain(&self.body)
+            .chain(&self.query)
+        {
+            let kind = if self.integer.contains(name) {
+                "integer"
+            } else if self.number.contains(name) {
+                "number"
+            } else if self.boolean.contains(name) {
+                "boolean"
+            } else {
+                "string"
+            };
+            let schema = if self.list.contains(name) {
+                serde_json::json!({ "type": "array", "items": { "type": kind } })
+            } else {
+                serde_json::json!({ "type": kind })
+            };
+            properties.insert(name.clone(), schema);
+            if !self.optional.contains(name) {
+                required.push(name.clone());
+            }
+        }
+        serde_json::json!({ "type": "object", "properties": properties, "required": required })
+    }
+
     /// The URL's path parameters, in the order they appear.
     pub fn path_params(&self) -> Vec<String> {
         placeholders(url_path(&self.url)).unwrap_or_default()
@@ -201,11 +247,12 @@ fn split_at_close_fence(rest: &str) -> Option<(&str, &str)> {
 fn block<'y>(
     yaml: &'y str,
     heading: &str,
-) -> Result<Option<Vec<(&'y str, &'y str)>>, FrontmatterError> {
+) -> Result<Option<Vec<(&'y str, Cow<'y, str>)>>, FrontmatterError> {
     let mut inside = false;
-    let mut found = None;
+    let mut found: Option<Vec<(&'y str, Cow<'y, str>)>> = None;
+    let mut lines = yaml.lines().peekable();
 
-    for raw in yaml.lines() {
+    while let Some(raw) = lines.next() {
         let line = raw.trim_end();
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
@@ -257,7 +304,35 @@ fn block<'y>(
             )));
         };
         let key = key.trim();
-        let value = unquote(value.trim())?;
+        let value = if value.trim() == "|" {
+            // A block of text: every following line indented past the key's,
+            // with the indentation they share taken off. The one value that
+            // spans lines -- an operation's schema, which is JSON and wants to
+            // be read laid out rather than on one line.
+            let own = line.len() - line.trim_start().len();
+            let mut taken: Vec<&str> = Vec::new();
+            while let Some(next) = lines.peek() {
+                let depth = next.len() - next.trim_start().len();
+                if !next.trim().is_empty() && depth <= own {
+                    break;
+                }
+                taken.push(next.trim_end());
+                lines.next();
+            }
+            let common = taken
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.len() - l.trim_start().len())
+                .min()
+                .unwrap_or(0);
+            let text: Vec<&str> = taken
+                .iter()
+                .map(|l| l.get(common..).unwrap_or(""))
+                .collect();
+            Cow::Owned(text.join("\n").trim().to_string())
+        } else {
+            Cow::Borrowed(unquote(value.trim())?)
+        };
         if value.is_empty() {
             return Err(FrontmatterError::Invalid(format!("{key} has no value")));
         }
@@ -290,7 +365,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             // A list rather than a scalar, so it is taken here and the scalar
             // slots above are left for the keys that are one value.
             "binds" => {
-                binds = Some(parse_list(key, value)?);
+                binds = Some(parse_list(key, &value)?);
                 continue;
             }
             other => {
@@ -381,6 +456,7 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     };
     let mut method = None;
     let mut url = None;
+    let mut schema = None;
     let mut lists: [(&str, Vec<String>); 7] = [
         ("body", Vec::new()),
         ("query", Vec::new()),
@@ -394,13 +470,25 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         match key {
             "method" => method = Some(value.to_ascii_uppercase()),
             "url" => url = Some(value.to_string()),
+            "schema" => {
+                let parsed: serde_json::Value = serde_json::from_str(&value)
+                    .map_err(|e| FrontmatterError::Invalid(format!("schema is not JSON: {e}")))?;
+                if parsed.get("type").and_then(|t| t.as_str()) != Some("object")
+                    || !parsed.get("properties").is_some_and(|p| p.is_object())
+                {
+                    return Err(FrontmatterError::Invalid(
+                        "schema is an object with properties: the tool's arguments".into(),
+                    ));
+                }
+                schema = Some(parsed);
+            }
             other => {
                 let Some((_, list)) = lists.iter_mut().find(|(name, _)| *name == other) else {
                     return Err(FrontmatterError::Invalid(format!(
                         "{other} is not a key of operation"
                     )));
                 };
-                *list = parse_list(key, value)?;
+                *list = parse_list(key, &value)?;
             }
         }
     }
@@ -477,6 +565,47 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         )));
     }
 
+    // With a schema, it says the types and what is required, and the body is
+    // whatever it names that the path and the query do not.
+    let mut body = body;
+    if let Some(schema) = &schema {
+        if !(optional.is_empty() && integer.is_empty() && number.is_empty())
+            || !(boolean.is_empty() && list.is_empty())
+        {
+            return Err(FrontmatterError::Invalid(
+                "with a schema, the schema says which fields are optional and what type each is"
+                    .into(),
+            ));
+        }
+        let props: Vec<&String> = schema["properties"]
+            .as_object()
+            .map(|p| p.keys().collect())
+            .unwrap_or_default();
+        if let Some(missing) = path.iter().chain(&query).find(|n| !props.contains(n)) {
+            return Err(FrontmatterError::Invalid(format!(
+                "{missing} is in the url or query but not in the schema"
+            )));
+        }
+        let rest: Vec<String> = props
+            .into_iter()
+            .filter(|p| !path.contains(p) && !query.contains(p))
+            .cloned()
+            .collect();
+        if !body.is_empty() && body != rest {
+            return Err(FrontmatterError::Invalid(
+                "with a schema, the body is what it names beyond the path and query; leave body out"
+                    .into(),
+            ));
+        }
+        if !rest.is_empty() && matches!(method.as_str(), "GET" | "HEAD") {
+            return Err(FrontmatterError::Invalid(format!(
+                "a {method} has no body, so {} has to be in query",
+                rest.join(", ")
+            )));
+        }
+        body = rest;
+    }
+
     Ok(Some(Operation {
         method,
         url,
@@ -487,6 +616,7 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         number,
         boolean,
         list,
+        schema,
         summary: String::new(),
     }))
 }
@@ -1189,6 +1319,38 @@ mod operations {
             "a list of integers is a list and a type"
         );
         refused("---\noperation:\n  method: GET\n  url: http://h/pets\n  list: [tags]\n---\n");
+    }
+
+    #[test]
+    fn a_schema_is_read_laid_out_and_names_the_body() {
+        let parsed = parse(
+            "---\noperation:\n  method: POST\n  url: http://h/pets/{owner}\n  query: [notify]\n  schema: |\n    {\n      \"type\": \"object\",\n      \"required\": [\"name\"],\n      \"properties\": {\n        \"owner\": {\"type\": \"string\"},\n        \"notify\": {\"type\": \"boolean\"},\n        \"name\": {\"type\": \"string\"},\n        \"category\": {\"$ref\": \"#/types/Category\"}\n      }\n    }\n---\n# add\n",
+        )
+        .expect("parse");
+        let op = parsed.operation.expect("op");
+        assert_eq!(
+            op.body,
+            ["category", "name"],
+            "what the path and query do not take"
+        );
+        assert_eq!(
+            op.arguments_schema()["required"],
+            serde_json::json!(["name"])
+        );
+        assert_eq!(parsed.body, "# add\n");
+    }
+
+    #[test]
+    fn a_schema_must_cover_the_path_and_leave_types_to_itself() {
+        refused(
+            "---\noperation:\n  method: GET\n  url: http://h/pets/{id}\n  schema: |\n    {\"type\": \"object\", \"properties\": {}}\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/pets\n  integer: [n]\n  schema: |\n    {\"type\": \"object\", \"properties\": {\"n\": {\"type\": \"integer\"}}}\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: GET\n  url: http://h/pets\n  schema: |\n    {\"type\": \"object\", \"properties\": {\"q\": {\"type\": \"string\"}}}\n---\n",
+        );
     }
 
     #[test]
