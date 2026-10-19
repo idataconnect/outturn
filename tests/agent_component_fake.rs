@@ -2956,3 +2956,20 @@ async fn a_path_parameter_is_encoded() {
         "http://inn.example.com/rooms/..%2Fadmin%3Fx%3D1/bookings"
     );
 }
+
+/// A manifest that says operations are tools teaches a model to ask for one
+/// as `<skill>_<operation>`. Where that operation is not a tool, the model is
+/// pointed at its file rather than only told no such tool exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loading_an_undeclared_operation_by_its_tool_name_points_at_its_file() {
+    let store = Arc::new(outturn::storage::MemoryStorage::new());
+    let result = with_skill_file(
+        store,
+        "load_tools",
+        r#"{"names":["inn_book"]}"#,
+        vec!["session".into()],
+    )
+    .await;
+    assert!(result.contains("skill/inn/book.md"), "{result}");
+    assert!(result.contains("fetch_url"), "{result}");
+}

@@ -589,9 +589,35 @@ fn skill_operations(names: &[String]) -> Vec<(String, String)> {
             let file = format!("/{name}.md");
             files
                 .iter()
-                .find(|f| f.path.ends_with(&file))
+                .find(|f| f.path.ends_with(&file) || tool_name_of(&f.path) == *name)
                 .map(|f| (name.clone(), f.path.clone()))
         })
+        .collect()
+}
+
+/// The name a skill file's operation has as a tool, `<slug>_<operation>`, as
+/// the API composes it.
+///
+/// Matched as well as the bare name, because a manifest that says operations
+/// are tools teaches a model to ask for them that way -- and for one that is
+/// not a tool, being told only "no such tool" leaves it nowhere to go, where
+/// being pointed at the file lets it make the call by hand.
+fn tool_name_of(path: &str) -> String {
+    let rest = path.strip_prefix("skill/").unwrap_or(path);
+    let rest = rest.strip_suffix(".md").unwrap_or(rest);
+    let Some((slug, stem)) = rest.split_once('/') else {
+        return String::new();
+    };
+    format!("{slug}_{stem}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
         .collect()
 }
 
