@@ -1,5 +1,8 @@
 [workspace]
 members = ["crates/core", "crates/api", "crates/gateway", "crates/runtime"]
+# The agent component builds for wasm on its own toolchain, and is not one of
+# the tiers; inside the workspace its build refuses to start.
+exclude = ["agents/default"]
 # The whole workspace, so `cargo test` still means every test -- not only the
 # root package's integration suites.
 default-members = [".", "crates/core", "crates/api", "crates/gateway", "crates/runtime"]
