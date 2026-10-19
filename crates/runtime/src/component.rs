@@ -47,7 +47,8 @@ pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
-    Message, ObjectInfo, TimerDue, ToolActivity, ToolCall, ToolDefinition, ToolOutcome, Usage,
+    Message, ObjectInfo, SkillOperation, TimerDue, ToolActivity, ToolCall, ToolDefinition,
+    ToolOutcome, Usage,
 };
 
 use outturn_core::utf8::describe_binary;
@@ -301,6 +302,9 @@ pub struct AgentHost {
     /// can name them and hand over definitions on request, and this says which
     /// are worth the rounds they would otherwise cost. Empty defers everything.
     eager_tools: Vec<String>,
+    /// The bound skills' operations, offered to the model as tools. Handed to
+    /// the guest as the API sent them; see `docs/skill-operations.md`.
+    skill_operations: Vec<outturn_core::protocol::work::SkillOperation>,
     /// Model calls made so far this turn, counted host-side so a guest that
     /// ignores `limits` still cannot exceed them.
     rounds_used: u32,
@@ -1559,6 +1563,25 @@ impl outturn::agent::host::Host for AgentHost {
         self.eager_tools.clone()
     }
 
+    async fn skill_operations(&mut self) -> Vec<SkillOperation> {
+        self.skill_operations
+            .iter()
+            .map(|o| SkillOperation {
+                name: o.name.clone(),
+                description: o.description.clone(),
+                file: o.file.clone(),
+                method: o.method.clone(),
+                url: o.url.clone(),
+                body: o.body.clone(),
+                query: o.query.clone(),
+                optional: o.optional.clone(),
+                integer: o.integer.clone(),
+                number: o.number.clone(),
+                boolean: o.boolean.clone(),
+            })
+            .collect()
+    }
+
     async fn tool_started(&mut self, activity: ToolActivity) {
         tracing::info!(
             session_id = %self.session_id,
@@ -2181,6 +2204,8 @@ pub struct RunOptions {
     /// to an explicit request from the guest. Names the component does not
     /// have are ignored, so a stale policy is harmless.
     pub eager_tools: Vec<String>,
+    /// The bound skills' operations, offered to the model as tools.
+    pub skill_operations: Vec<outturn_core::protocol::work::SkillOperation>,
     /// The reply being written, so messages absorbed mid-turn can name it.
     pub reply_id: uuid::Uuid,
     /// Object storage the guest may reach, within its workspace's own space.
@@ -2327,6 +2352,7 @@ impl AgentRunner {
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
             eager_tools: options.eager_tools,
+            skill_operations: options.skill_operations,
             rounds_used: 0,
             arrivals: Vec::new(),
             reply_id: options.reply_id,

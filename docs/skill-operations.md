@@ -63,15 +63,21 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
    A name lives in one place, and a qualifier must name a field that is sent:
    a typo in `optional` would otherwise leave required the field it meant.
 
-2. **The guest offers it as a deferred tool**, `hollowbrook.create_booking`,
-   named by skill and operation so two skills cannot collide. Its description
+2. **The guest offers it as a deferred tool**, `hollowbrook_create_booking`,
+   named by skill and file so two skills cannot collide, and reduced to the
+   letters, digits, `_` and `-` every provider accepts in a tool name. Its description
    is the first paragraph of the file's prose -- what the operation *is* -- and
    its parameters are the declared arguments. `load_tools` loads it like any
-   other, so the call every small model tried first is now the right one.
+   other -- and by the name its skill's manifest lists it under,
+   `create_booking`, where one bound operation has that name. That is the
+   name a model reading the manifest asks for, so the call every small model
+   tried first is now the right one.
 
 3. **A call becomes the `fetch_url` request** the file describes: the method,
-   the URL with its path parameters filled in, the query, `Content-Type:
-   application/json` and the body. It goes out through the same host import, so
+   the URL with its path parameters filled in and encoded, the query,
+   `Content-Type: application/json` and the body. A call missing a required
+   argument, or carrying one the operation does not take, is not sent: half a
+   request that reached the recipient may already have done something. It goes out through the same host import, so
    the result the model sees is the one `fetch_url` would have returned.
 
 The prose stays, and stops being required reading. The body of the file is
@@ -165,10 +171,10 @@ In order:
 
 - ~~`operation` in the frontmatter parser, with the publish-time check
   against a gate in the same file.~~ Built.
-- The operations stored with a version, and carried to the turn.
-- `skill-operations` in `wit/agent.wit`, answered by the runtime.
-- The guest offering declared operations as deferred tools, and translating a
-  call into `fetch`.
+- ~~The operations stored with a version, and carried to the turn.~~ Built.
+- ~~`skill-operations` in `wit/agent.wit`, answered by the runtime.~~ Built.
+- ~~The guest offering declared operations as deferred tools, and translating
+  a call into `fetch`.~~ Built.
 - The wizard writing `operation` blocks.
 - Hollowbrook's files converted, and an end-to-end test against the fake
   gateway that books a room through the tool.

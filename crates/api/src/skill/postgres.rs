@@ -176,14 +176,15 @@ async fn write_files(
 ) -> Result<(), SkillError> {
     for f in files {
         sqlx::query(
-            "insert into skill_version_files (version_id, path, sha256, bytes, links) \
-             values ($1, $2, $3, $4, $5)",
+            "insert into skill_version_files (version_id, path, sha256, bytes, links, operation) \
+             values ($1, $2, $3, $4, $5, $6)",
         )
         .bind(version_id)
         .bind(&f.path)
         .bind(&f.sha256)
         .bind(f.bytes)
         .bind(&f.links)
+        .bind(f.operation.as_ref().map(sqlx::types::Json))
         .execute(&mut **tx)
         .await
         .map_err(internal)?;
@@ -191,12 +192,21 @@ async fn write_files(
     Ok(())
 }
 
+/// A stored operation, read back. One that no longer parses -- written by a
+/// later version of this platform, say -- is no tool rather than a failed
+/// turn: the file is still there to be read.
+fn operation_of(row: &sqlx::postgres::PgRow) -> Option<super::Operation> {
+    let value: Option<serde_json::Value> = row.get("operation");
+    value.and_then(|v| serde_json::from_value(v).ok())
+}
+
 async fn files_of<'e, E>(executor: E, version_id: Uuid) -> Result<Vec<SkillFile>, SkillError>
 where
     E: sqlx::PgExecutor<'e>,
 {
     let rows = sqlx::query(
-        "select path, sha256, bytes, links from skill_version_files where version_id = $1 order by path",
+        "select path, sha256, bytes, links, operation from skill_version_files \
+         where version_id = $1 order by path",
     )
     .bind(version_id)
     .fetch_all(executor)
@@ -209,6 +219,7 @@ where
             sha256: r.get("sha256"),
             bytes: r.get("bytes"),
             links: r.get("links"),
+            operation: operation_of(r),
         })
         .collect())
 }
@@ -628,7 +639,7 @@ impl SkillStore for PostgresSkillStore {
                     u.display_name as author_name, ",
             crate::operator_staff_sql!("v.created_by"),
             " as author_staff, \
-                    h.hosts, f.files, f.file_sizes, f.file_hashes, f.file_links \
+                    h.hosts, f.files, f.file_sizes, f.file_hashes, f.file_links, f.file_operations \
              from skill_versions v \
              left join users u on u.id = v.created_by \
              left join lateral ( \
@@ -639,7 +650,8 @@ impl SkillStore for PostgresSkillStore {
                  select coalesce(array_agg(path order by path), '{}') as files, \
                         coalesce(array_agg(bytes order by path), '{}') as file_sizes, \
                         coalesce(array_agg(sha256 order by path), '{}') as file_hashes, \
-                        coalesce(jsonb_agg(links order by path), '[]') as file_links \
+                        coalesce(jsonb_agg(links order by path), '[]') as file_links, \
+                        coalesce(jsonb_agg(operation order by path), '[]') as file_operations \
                  from skill_version_files where version_id = v.id \
              ) f on true \
              where v.skill_id = $1 \
@@ -662,16 +674,26 @@ impl SkillStore for PostgresSkillStore {
                 // Through JSON because Postgres arrays cannot nest ragged ones.
                 let links: Vec<Option<Vec<String>>> =
                     serde_json::from_value(r.get("file_links")).unwrap_or_default();
+                // Each read on its own, so one that no longer parses costs that
+                // file its tool rather than every file its operation.
+                let operations: Vec<Option<super::Operation>> =
+                    serde_json::from_value::<Vec<serde_json::Value>>(r.get("file_operations"))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|v| serde_json::from_value(v).ok())
+                        .collect();
                 let files = paths
                     .into_iter()
                     .zip(hashes)
                     .zip(sizes)
                     .zip(links.into_iter().chain(std::iter::repeat(None)))
-                    .map(|(((path, sha256), bytes), links)| SkillFile {
+                    .zip(operations.into_iter().chain(std::iter::repeat(None)))
+                    .map(|((((path, sha256), bytes), links), operation)| SkillFile {
                         path,
                         sha256,
                         bytes,
                         links,
+                        operation,
                     })
                     .collect();
                 SkillVersion {
@@ -1046,7 +1068,7 @@ impl SkillStore for PostgresSkillStore {
         let versions: Vec<Uuid> = rows.iter().map(|r| r.get("version_id")).collect();
         let mut files: std::collections::HashMap<Uuid, Vec<SkillFile>> = Default::default();
         for f in sqlx::query(
-            "select version_id, path, sha256, bytes from skill_version_files \
+            "select version_id, path, sha256, bytes, operation from skill_version_files \
              where version_id = any($1) order by path",
         )
         .bind(&versions)
@@ -1062,6 +1084,7 @@ impl SkillStore for PostgresSkillStore {
                     sha256: f.get("sha256"),
                     bytes: f.get("bytes"),
                     links: None,
+                    operation: operation_of(&f),
                 });
         }
 

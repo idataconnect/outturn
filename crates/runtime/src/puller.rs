@@ -322,6 +322,7 @@ impl Puller {
             // A template agent's, chosen by its operator; empty for every other
             // agent, which reaches each tool through the guest's loader.
             eager_tools: request.eager_tools.clone(),
+            skill_operations: request.skill_operations.clone(),
             reply_id: request.reply_id,
             storage: self.storage.clone(),
             workspace_id: request.workspace_id,

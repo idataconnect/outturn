@@ -595,6 +595,7 @@ pub async fn regenerate(
             sha256: hex::encode(Sha256::digest(content.as_bytes())),
             bytes: content.len() as i32,
             links: None,
+            operation: None,
         })
         .collect();
     let changed = super::skill::changes(

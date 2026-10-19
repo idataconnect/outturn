@@ -19,7 +19,8 @@ use std::collections::BTreeSet;
 use bindings::exports::outturn::agent::agent::Guest;
 use bindings::outturn::agent::host::{
     ContentPart,
-    self, Arrival, CompletionRequest, Message, ToolActivity, ToolCall, ToolDefinition, ToolOutcome,
+    self, Arrival, CompletionRequest, Message, SkillOperation, ToolActivity, ToolCall,
+    ToolDefinition, ToolOutcome,
 };
 
 struct Component;
@@ -70,6 +71,218 @@ fn eager_tools() -> BTreeSet<String> {
     host::eager_tools().into_iter().collect()
 }
 
+/// The bound skills' operations, each a tool of its own. See
+/// `docs/skill-operations.md`.
+///
+/// Asked of the host once and kept: like the eager set it cannot change
+/// mid-turn, and `all_tools` -- which reads it -- is consulted many times a
+/// round. A name that collides with one of this component's own tools is not
+/// offered, so a skill cannot shadow `read_object`.
+fn operations() -> &'static [SkillOperation] {
+    static OPERATIONS: std::sync::OnceLock<Vec<SkillOperation>> = std::sync::OnceLock::new();
+    OPERATIONS.get_or_init(|| {
+        let builtin: Vec<String> = builtin_tools().into_iter().map(|t| t.name).collect();
+        host::skill_operations()
+            .into_iter()
+            .filter(|op| {
+                let clash = builtin.contains(&op.name) || op.name == LOAD_TOOLS;
+                if clash {
+                    host::log(
+                        "warn",
+                        &format!("{} is this component's own tool; the operation is not offered", op.name),
+                    );
+                }
+                !clash
+            })
+            .collect()
+    })
+}
+
+/// An operation as the model is offered it: its prose for a description, its
+/// declared arguments for parameters.
+///
+/// The file is named in the description because the summary is one paragraph,
+/// and the judgment calls -- charge only after booking -- are in the rest.
+fn operation_tool(op: &SkillOperation) -> ToolDefinition {
+    let path = op_path_params(op);
+    let mut properties = serde_json::Map::new();
+    let mut required: Vec<String> = Vec::new();
+    for name in path.iter().chain(&op.body).chain(&op.query) {
+        let kind = if op.integer.contains(name) {
+            "integer"
+        } else if op.number.contains(name) {
+            "number"
+        } else if op.boolean.contains(name) {
+            "boolean"
+        } else {
+            "string"
+        };
+        properties.insert(name.clone(), serde_json::json!({ "type": kind }));
+        if !op.optional.contains(name) {
+            required.push(name.clone());
+        }
+    }
+    properties.insert(
+        ACTION.to_string(),
+        serde_json::json!({
+            "type": "string",
+            "description": "A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking which rooms are free."
+        }),
+    );
+    required.push(ACTION.to_string());
+    let description = if op.description.is_empty() {
+        format!("{} {}. Read {} for how to use it.", op.method, op.url, op.file)
+    } else {
+        format!("{} Read {} for when and how to use it.", op.description, op.file)
+    };
+    ToolDefinition {
+        name: op.name.clone(),
+        description,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        })
+        .to_string(),
+    }
+}
+
+/// The `{name}` segments of an operation's URL path, in order.
+fn op_path_params(op: &SkillOperation) -> Vec<String> {
+    let rest = op.url.split_once("://").map_or(op.url.as_str(), |(_, r)| r);
+    let path = rest.find('/').map_or("", |i| &rest[i..]);
+    path.split('/')
+        .filter_map(|seg| seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The name a model asked for, as the tool it means.
+///
+/// An exact name, or an operation's own name as its skill's manifest lists it:
+/// `check_availability` for `hollowbrook_check_availability`, when exactly one
+/// bound operation's file is called that. The manifest names operations that
+/// way, so a model reading it asks for them that way, and the loader honoring
+/// the name it was shown is the interface being consistent rather than a
+/// guess. Two skills with an operation of one name are ambiguous, and neither
+/// is chosen.
+fn resolve_name(name: &str, available: &[String]) -> Option<String> {
+    if available.iter().any(|a| a == name) {
+        return Some(name.to_string());
+    }
+    let file = format!("/{name}.md");
+    let mut matching = operations()
+        .iter()
+        .filter(|op| op.file.ends_with(&file) && available.contains(&op.name));
+    match (matching.next(), matching.next()) {
+        (Some(op), None) => Some(op.name.clone()),
+        _ => None,
+    }
+}
+
+/// Makes the request an operation declares, from the arguments the model gave.
+///
+/// Built here rather than composed by the model, which is the point: the
+/// method, the URL, the content type and the shape of the body come from the
+/// declaration, so a model cannot leave one out. Arguments are checked before
+/// anything is sent -- a missing field or one the operation does not take is
+/// answered with what is wrong, because a request that went out half-formed may
+/// already have done something.
+fn call_operation(op: &SkillOperation, args: &serde_json::Value) -> String {
+    let empty = serde_json::Map::new();
+    let given = args.as_object().unwrap_or(&empty);
+    let path = op_path_params(op);
+
+    let unknown: Vec<&str> = given
+        .keys()
+        .map(String::as_str)
+        .filter(|k| {
+            *k != ACTION
+                && !path.iter().any(|p| p == k)
+                && !op.body.iter().any(|b| b == k)
+                && !op.query.iter().any(|q| q == k)
+        })
+        .collect();
+    let missing: Vec<&str> = path
+        .iter()
+        .chain(&op.body)
+        .chain(&op.query)
+        .filter(|n| !op.optional.contains(n))
+        .filter(|n| given.get(n.as_str()).is_none_or(serde_json::Value::is_null))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() || !missing.is_empty() {
+        let mut problems = Vec::new();
+        if !missing.is_empty() {
+            problems.push(format!("missing {}", missing.join(", ")));
+        }
+        if !unknown.is_empty() {
+            problems.push(format!("{} takes no {}", op.name, unknown.join(", ")));
+        }
+        return serde_json::json!({
+            "error": format!("not sent: {}", problems.join("; ")),
+        })
+        .to_string();
+    }
+
+    // A value as it goes into a URL: a string as itself, anything else as its
+    // JSON text, so `2` and `true` read as they would in a query string.
+    let text = |v: &serde_json::Value| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+
+    let mut url = op.url.clone();
+    for name in &path {
+        let value = given.get(name).map(text).unwrap_or_default();
+        url = url.replace(&format!("{{{name}}}"), &percent_encode(&value));
+    }
+    let query: Vec<String> = op
+        .query
+        .iter()
+        .filter_map(|name| {
+            let value = given.get(name).filter(|v| !v.is_null())?;
+            Some(format!("{}={}", percent_encode(name), percent_encode(&text(value))))
+        })
+        .collect();
+    if !query.is_empty() {
+        url = format!("{url}?{}", query.join("&"));
+    }
+
+    let body: serde_json::Map<String, serde_json::Value> = op
+        .body
+        .iter()
+        .filter_map(|name| {
+            let value = given.get(name).filter(|v| !v.is_null())?;
+            Some((name.clone(), value.clone()))
+        })
+        .collect();
+    let (headers, body) = if op.body.is_empty() {
+        (Vec::new(), None)
+    } else {
+        (
+            vec![("Content-Type".to_string(), "application/json".to_string())],
+            Some(serde_json::Value::Object(body).to_string()),
+        )
+    };
+    fetch(op.method.clone(), url, headers, body)
+}
+
+/// Percent-encodes everything outside the unreserved set, so a value cannot
+/// add a path segment or a query parameter of its own.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 /// How much of a file a single read puts in front of the model.
 ///
 /// Comfortably under the generic tool ceiling, so an assembled head-and-tail
@@ -99,6 +312,13 @@ const ACTION: &str = "action";
 /// added to one and forgotten in the other -- the same reason the ceilings
 /// below are interpolated rather than written out.
 fn all_tools() -> Vec<ToolDefinition> {
+    let mut tools = builtin_tools();
+    tools.extend(operations().iter().map(operation_tool));
+    tools
+}
+
+/// This component's own tools, without the skills' operations.
+fn builtin_tools() -> Vec<ToolDefinition> {
     vec![
     ToolDefinition {
         name: READ_OBJECT.to_string(),
@@ -460,9 +680,15 @@ fn load_tools(
         .to_string();
     }
 
-    let (found, missing): (Vec<String>, Vec<String>) = requested
-        .into_iter()
-        .partition(|name| available.contains(name));
+    let mut found: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for name in requested {
+        match resolve_name(&name, &available) {
+            Some(tool) if !found.contains(&tool) => found.push(tool),
+            Some(_) => {}
+            None => missing.push(name),
+        }
+    }
 
     for name in &found {
         loaded.insert(name.clone());
@@ -575,8 +801,8 @@ fn already_loaded(conversation: &[Message], eager: &BTreeSet<String>) -> BTreeSe
             // Checked against the deferred set, so a name the model invented
             // does not enter the loaded set and get offered as a tool that
             // does not exist.
-            if available.contains(&name.to_string()) {
-                loaded.insert(name.to_string());
+            if let Some(tool) = resolve_name(name, &available) {
+                loaded.insert(tool);
             }
         }
     }
@@ -1115,11 +1341,22 @@ fn fetch_url(args: &serde_json::Value) -> String {
         .and_then(|b| b.as_str())
         .map(str::to_string);
 
+    fetch(method, url.to_string(), headers, body)
+}
+
+/// Sends a request through the host and reports what came back, in the one
+/// shape `fetch_url` and an operation share.
+fn fetch(
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+) -> String {
     // Echoed in the result, so the reader can see what was asked for.
     let requested = method.clone();
     match host::fetch(&host::HttpRequest {
         method,
-        url: url.to_string(),
+        url: url.clone(),
         headers,
         body,
     }) {
@@ -1203,6 +1440,9 @@ fn run_tool(
                 if clock.timezone.is_empty() { "UTC" } else { &clock.timezone },
                 clock.abbreviation,
             )
+        }
+        name if let Some(op) = operations().iter().find(|op| op.name == name) => {
+            call_operation(op, &args)
         }
         // Reported to the model rather than failing the turn: it can recover
         // by answering without the tool, where an error ends the conversation.

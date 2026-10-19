@@ -13,7 +13,7 @@ pub use files::{
 // The declaration at the top of an operation's file. Named rather than the
 // module made public, as `files` and `postgres` beside it are: a caller wants
 // these four things and not the parser's internals.
-pub use frontmatter::{ApprovalRule, FrontmatterError, Parsed, parse};
+pub use frontmatter::{ApprovalRule, FrontmatterError, Operation, Parsed, parse};
 
 pub use postgres::PostgresSkillStore;
 
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::actor::Actor;
+use outturn_core::protocol::work::SkillOperation;
 use outturn_core::storage::scope;
 
 /// What a skill is: prose in its own right, or instructions layered over one.
@@ -254,6 +255,11 @@ pub struct SkillFile {
     /// while the content is in hand. `None` for a file published before they
     /// were recorded, until `files::link` is run over it again.
     pub links: Option<Vec<String>>,
+    /// The request this file declares it is, parsed at publish. `None` for a
+    /// file that declares none, and for one published before they were
+    /// recorded. See `docs/skill-operations.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<Operation>,
 }
 
 /// Two files are the same file when their path and content are: `links`
@@ -432,6 +438,67 @@ pub fn objects_for_turn(skills: &[ResolvedSkill]) -> Vec<scope::SkillObject> {
             })
         })
         .collect()
+}
+
+/// The operations a turn's skills declare, as the tools the guest offers.
+///
+/// Only from the files the turn can reach, so an operation is offered exactly
+/// when its file is readable -- the tool and the prose it came from are never
+/// one without the other.
+pub fn operations_for_turn(skills: &[ResolvedSkill]) -> Vec<SkillOperation> {
+    let mut out: Vec<SkillOperation> = Vec::new();
+    for s in with_reachable_files(skills) {
+        for f in &s.files {
+            let Some(op) = &f.operation else {
+                continue;
+            };
+            let name = operation_tool_name(&s.slug, &f.path);
+            // Two files whose names reduce to one tool -- `a/b.md` and `a_b.md`
+            // -- would make a call ambiguous. The first keeps the name; the
+            // other is still reachable as prose and `fetch_url`.
+            if out.iter().any(|o| o.name == name) {
+                tracing::warn!(slug = %s.slug, path = %f.path, tool = %name,
+                    "two operations reduce to one tool name; the later is not offered");
+                continue;
+            }
+            out.push(SkillOperation {
+                name,
+                description: op.summary.clone(),
+                file: scope::skill_object_path(&s.slug, &f.path),
+                method: op.method.clone(),
+                url: op.url.clone(),
+                body: op.body.clone(),
+                query: op.query.clone(),
+                optional: op.optional.clone(),
+                integer: op.integer.clone(),
+                number: op.number.clone(),
+                boolean: op.boolean.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// An operation's tool name: the skill's slug and the file's path without
+/// `.md`, as `hollowbrook_create_booking`.
+///
+/// Reduced to what every provider accepts in a tool name -- letters, digits,
+/// `_` and `-`, at most 64 -- because a name one provider refuses fails the
+/// whole request, not just the tool.
+pub fn operation_tool_name(slug: &str, path: &str) -> String {
+    let stem = path.strip_suffix(".md").unwrap_or(path);
+    let name: String = format!("{slug}_{stem}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    name
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -865,11 +932,65 @@ mod tests {
             sha256: "x".into(),
             bytes: 1,
             links: None,
+            operation: None,
         }];
         let plain = skill("Plain", "Be kind.", SkillKind::Standalone);
         let composed = compose("", &[inn, plain]);
         assert!(composed.contains("`skill/inn/`"), "{composed}");
         assert_eq!(composed.matches("reference files").count(), 1, "{composed}");
+    }
+
+    #[test]
+    fn an_operations_tool_name_is_its_skill_and_file() {
+        assert_eq!(
+            operation_tool_name("hollowbrook", "create_booking.md"),
+            "hollowbrook_create_booking"
+        );
+        // Reduced to what every provider accepts, since one refused name
+        // fails the whole request.
+        assert_eq!(
+            operation_tool_name("crm", "v2/contacts.list.md"),
+            "crm_v2_contacts_list"
+        );
+        assert_eq!(operation_tool_name(&"a".repeat(80), "x.md").len(), 64);
+    }
+
+    #[test]
+    fn only_files_that_declare_an_operation_become_tools() {
+        let op = |url: &str| Operation {
+            method: "GET".into(),
+            url: url.into(),
+            body: vec![],
+            query: vec!["arrival".into()],
+            optional: vec![],
+            integer: vec![],
+            number: vec![],
+            boolean: vec![],
+            summary: "Which rooms are free.".into(),
+        };
+        let file = |path: &str, operation: Option<Operation>| SkillFile {
+            path: path.into(),
+            sha256: path.into(),
+            bytes: 1,
+            links: None,
+            operation,
+        };
+        let mut inn = skill("Inn", "", SkillKind::Standalone);
+        inn.files = vec![
+            file("index.md", None),
+            file(
+                "rooms/free.md",
+                Some(op("http://inn.example.com/availability")),
+            ),
+            // Reduces to the same tool name, so it is not offered twice.
+            file("rooms_free.md", Some(op("http://inn.example.com/other"))),
+        ];
+        let ops = operations_for_turn(&[inn]);
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert_eq!(ops[0].name, "inn_rooms_free");
+        assert_eq!(ops[0].file, "skill/inn/rooms/free.md");
+        assert_eq!(ops[0].description, "Which rooms are free.");
+        assert_eq!(ops[0].query, ["arrival"]);
     }
 
     #[test]
@@ -879,6 +1000,7 @@ mod tests {
             sha256: content.into(),
             bytes: 1,
             links: None,
+            operation: None,
         };
         let mut ours = skill("CRM", "", SkillKind::Standalone);
         ours.owner = Uuid::from_u128(1);

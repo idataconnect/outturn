@@ -101,6 +101,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // them all by default; the tests that are about deferral say so by
         // clearing this.
         eager_tools: ALL_TOOLS.iter().map(|n| n.to_string()).collect(),
+        skill_operations: Vec::new(),
     }
 }
 
@@ -2782,4 +2783,176 @@ async fn a_call_without_arguments_goes_back_as_an_empty_object() {
         .expect("the call, replayed")["tool_calls"][0]
         .clone();
     assert_eq!(call["function"]["arguments"], "{}", "{call}");
+}
+
+// -- Skill operations as tools --------------------------------------------------
+//
+// See docs/skill-operations.md. A bound skill's declared operation is a tool of
+// its own, and calling it is the request its file declares -- built here, so a
+// model cannot leave out the method, the content type or the body's shape.
+
+/// An operation declared by `skill/inn/book.md`: a booking posted to a room.
+fn booking() -> outturn::protocol::work::SkillOperation {
+    outturn::protocol::work::SkillOperation {
+        name: "inn_book".into(),
+        description: "Reserve a room for a date range.".into(),
+        file: "skill/inn/book.md".into(),
+        method: "POST".into(),
+        url: "http://inn.example.com/rooms/{room_id}/bookings".into(),
+        body: vec!["guest_name".into(), "nights".into(), "notes".into()],
+        optional: vec!["notes".into()],
+        integer: vec!["nights".into()],
+        ..Default::default()
+    }
+}
+
+/// Runs a turn with `booking` bound and the inn reachable, answering every
+/// outbound request with a 201. Returns the gateway, for what it was asked to
+/// fetch, and the tool results in order.
+async fn with_booking(behavior: Behavior, eager: Vec<String>) -> (FakeGateway, Vec<String>) {
+    let gateway = FakeGateway::start(behavior).await;
+    gateway.answer_egress(201, r#"{"id":"bk_1"}"#);
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push(outcome.details.clone());
+        })
+    };
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+    options.eager_tools = eager;
+    options.skill_operations = vec![booking()];
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+
+    runner()
+        .run(
+            &component(),
+            user("Book the garden room."),
+            String::new(),
+            options,
+        )
+        .await
+        .expect("run");
+    let results = seen.lock().unwrap().clone();
+    (gateway, results)
+}
+
+/// Deferred like every other tool, so its name is in the loader's list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operation_is_offered_through_the_loader() {
+    let (gateway, _) = with_booking(Behavior::Reply("Hello.".into()), Vec::new()).await;
+    let tools = gateway.requests()[0]["tools"].to_string();
+    assert!(tools.contains("inn_book"), "{tools}");
+}
+
+/// The call is the request the file declares: the method, the path with its
+/// parameter filled in, a JSON body of the declared fields typed as declared,
+/// and the content type a model left out once and was refused for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calling_an_operation_makes_the_request_its_file_declares() {
+    let (gateway, results) = with_booking(
+        Behavior::ToolThenReply {
+            name: "inn_book".into(),
+            arguments:
+                r#"{"room_id":"garden","guest_name":"Jo Okafor","nights":2,"action":"Booking"}"#
+                    .into(),
+            reply: "Booked.".into(),
+        },
+        vec!["inn_book".into()],
+    )
+    .await;
+
+    let fetched = gateway.fetched();
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    let request = &fetched[0];
+    assert_eq!(request["method"], "POST");
+    assert_eq!(
+        request["url"],
+        "http://inn.example.com/rooms/garden/bookings"
+    );
+    assert!(
+        request["headers"].to_string().contains("application/json"),
+        "{request}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(request["body"].as_str().expect("a body")).expect("json");
+    assert_eq!(
+        body,
+        serde_json::json!({"guest_name": "Jo Okafor", "nights": 2})
+    );
+    assert!(results[0].contains("201"), "{}", results[0]);
+}
+
+/// A request missing what it needs is not sent: half a booking that reached
+/// the recipient may already have done something.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operation_missing_an_argument_is_not_sent() {
+    let (gateway, results) = with_booking(
+        Behavior::ToolThenReply {
+            name: "inn_book".into(),
+            arguments: r#"{"room_id":"garden","nights":2,"color":"red","action":"Booking"}"#.into(),
+            reply: "Hm.".into(),
+        },
+        vec!["inn_book".into()],
+    )
+    .await;
+
+    assert!(gateway.fetched().is_empty(), "{:?}", gateway.fetched());
+    assert!(results[0].contains("missing guest_name"), "{}", results[0]);
+    assert!(results[0].contains("color"), "{}", results[0]);
+}
+
+/// The skill's manifest lists an operation by its own name, so that is the
+/// name a model asks the loader for -- and the loader gives it the tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operation_loads_by_the_name_its_skill_lists() {
+    let (gateway, results) = with_booking(
+        Behavior::LoadThenToolThenReply {
+            load: vec!["book".into()],
+            name: "inn_book".into(),
+            arguments: r#"{"room_id":"garden","guest_name":"Jo","nights":1,"action":"Booking"}"#
+                .into(),
+            reply: "Booked.".into(),
+        },
+        Vec::new(),
+    )
+    .await;
+
+    assert!(results[0].contains("inn_book"), "{}", results[0]);
+    assert!(!results[0].contains("error"), "{}", results[0]);
+    assert_eq!(
+        gateway.fetched().len(),
+        1,
+        "the loaded tool was not callable"
+    );
+}
+
+/// A value cannot add a path segment or a parameter of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_path_parameter_is_encoded() {
+    let (gateway, _) = with_booking(
+        Behavior::ToolThenReply {
+            name: "inn_book".into(),
+            arguments:
+                r#"{"room_id":"../admin?x=1","guest_name":"Jo","nights":1,"action":"Booking"}"#
+                    .into(),
+            reply: "Booked.".into(),
+        },
+        vec!["inn_book".into()],
+    )
+    .await;
+
+    let url = gateway.fetched()[0]["url"].as_str().unwrap().to_string();
+    assert_eq!(
+        url,
+        "http://inn.example.com/rooms/..%2Fadmin%3Fx%3D1/bookings"
+    );
 }

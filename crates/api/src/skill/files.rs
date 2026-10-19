@@ -95,11 +95,14 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
         // is refused and why each refusal is a rule that would otherwise be
         // half-applied -- and a version is immutable, so a bad declaration
         // published is one somebody has to publish over.
-        if let Ok(text) = std::str::from_utf8(&bytes)
-            && let Err(e) = super::frontmatter::parse(text)
-        {
-            return Err(SkillError::Invalid(format!("{}: {e}", file.path)));
-        }
+        let operation = match std::str::from_utf8(&bytes) {
+            Ok(text) => {
+                super::frontmatter::parse(text)
+                    .map_err(|e| SkillError::Invalid(format!("{}: {e}", file.path)))?
+                    .operation
+            }
+            Err(_) => None,
+        };
 
         let sha256 = hex::encode(Sha256::digest(&bytes));
         out.push((
@@ -108,6 +111,7 @@ pub fn prepare(files: Vec<NewFile>) -> Result<Vec<(SkillFile, Vec<u8>)>, SkillEr
                 sha256,
                 bytes: bytes.len() as i32,
                 links: None,
+                operation,
             },
             bytes,
         ));

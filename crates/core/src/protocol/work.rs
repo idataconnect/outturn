@@ -89,6 +89,38 @@ pub struct ExecuteRequest {
     /// from an older API -- defers every tool to the guest's loader.
     #[serde(default)]
     pub eager_tools: Vec<String>,
+    /// The bound skills' operations, offered to the model as tools. Empty from
+    /// an older API, which leaves operations to be called through `fetch_url`
+    /// as before. See `docs/skill-operations.md`.
+    #[serde(default)]
+    pub skill_operations: Vec<SkillOperation>,
+}
+
+/// A request a bound skill's file declares, as a tool the guest offers.
+///
+/// Parsed and checked by the API at publish; the runtime hands it to the guest
+/// unchanged.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SkillOperation {
+    /// The tool's name, unique among the turn's operations.
+    pub name: String,
+    pub description: String,
+    /// The operation's file, as the agent reads it: `skill/<slug>/<path>`.
+    pub file: String,
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub body: Vec<String>,
+    #[serde(default)]
+    pub query: Vec<String>,
+    #[serde(default)]
+    pub optional: Vec<String>,
+    #[serde(default)]
+    pub integer: Vec<String>,
+    #[serde(default)]
+    pub number: Vec<String>,
+    #[serde(default)]
+    pub boolean: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

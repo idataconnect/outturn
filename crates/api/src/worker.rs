@@ -2172,6 +2172,7 @@ impl Worker {
                 write_scopes: settings.write_scopes,
                 read_scopes: settings.read_scopes,
                 skill_files: super::skill::objects_for_turn(&skills),
+                skill_operations: super::skill::operations_for_turn(&skills),
                 conversation,
                 // Composed with the model that will serve this turn, so an agent
                 // asked what it is has something true to read rather than a gap to

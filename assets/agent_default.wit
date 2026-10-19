@@ -407,6 +407,40 @@ interface host {
     /// invite re-reading what cannot change.
     eager-tools: func() -> list<string>;
 
+    /// A bound skill's operation: a request its file declares, offered to the
+    /// model as a tool of its own. See docs/skill-operations.md.
+    ///
+    /// Already parsed and checked by the API at publish, so the guest builds
+    /// a request from it rather than reading anything. A call becomes an
+    /// ordinary `fetch`, so it reaches nothing a hand-written request could
+    /// not.
+    record skill-operation {
+        /// The tool's name, unique among the turn's operations.
+        name: string,
+        /// What the operation is, from the first paragraph of its file.
+        description: string,
+        /// The operation's file, `skill/<slug>/<path>`, for the judgment
+        /// calls its prose holds.
+        file: string,
+        /// Upper case.
+        method: string,
+        /// Absolute, with a path parameter as `{name}` in a segment of its own.
+        url: string,
+        body: list<string>,
+        query: list<string>,
+        /// Body or query fields that may be left out. The rest are required,
+        /// and a path parameter always is.
+        optional: list<string>,
+        /// Body or query fields by type, where the type is not a string.
+        integer: list<string>,
+        number: list<string>,
+        boolean: list<string>,
+    }
+
+    /// The operations of the skills this turn was bound to. Read once at the
+    /// start of a turn, like `eager-tools`.
+    skill-operations: func() -> list<skill-operation>;
+
     /// The wall clock of whoever is being talked to.
     ///
     /// Carries the day name and zone abbreviation rather than only a

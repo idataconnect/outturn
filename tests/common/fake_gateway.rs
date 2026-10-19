@@ -113,6 +113,12 @@ struct GatewayInner {
     calls: Mutex<usize>,
     /// Requests received, for asserting what the caller actually sent.
     seen: Mutex<Vec<serde_json::Value>>,
+    /// What `/v1/egress` answers with, when a test has said; until then it
+    /// is not found, as it was before the route existed, so a fetch handed
+    /// over still comes back refused.
+    egress: Mutex<Option<(u16, String)>>,
+    /// Requests the agent asked the gateway to make.
+    fetched: Mutex<Vec<serde_json::Value>>,
 }
 
 impl FakeGateway {
@@ -122,11 +128,14 @@ impl FakeGateway {
             behavior: Mutex::new(behavior),
             calls: Mutex::new(0),
             seen: Mutex::new(Vec::new()),
+            egress: Mutex::new(None),
+            fetched: Mutex::new(Vec::new()),
         });
 
         let app = Router::new()
             .route("/v1/chat/completions", post(completions))
             .route("/v1/chat/completions/stream", post(completions_stream))
+            .route("/v1/egress", post(egress))
             .with_state(Arc::clone(&inner));
 
         // Port 0 lets the OS choose, so tests never contend for a fixed one.
@@ -154,6 +163,35 @@ impl FakeGateway {
     pub fn requests(&self) -> Vec<serde_json::Value> {
         self.state.seen.lock().unwrap().clone()
     }
+
+    /// Answers every outbound request the agent makes with this status and
+    /// body, as the upstream's reply relayed by the gateway.
+    pub fn answer_egress(&self, status: u16, body: &str) {
+        *self.state.egress.lock().unwrap() = Some((status, body.to_string()));
+    }
+
+    /// The outbound requests the agent asked for, as the gateway received
+    /// them: method, url, headers and body.
+    pub fn fetched(&self) -> Vec<serde_json::Value> {
+        self.state.fetched.lock().unwrap().clone()
+    }
+}
+
+async fn egress(
+    State(state): State<Arc<GatewayInner>>,
+    Json(request): Json<serde_json::Value>,
+) -> Response {
+    let Some((status, body)) = state.egress.lock().unwrap().clone() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    state.fetched.lock().unwrap().push(request);
+    Json(serde_json::json!({
+        "status": status,
+        "headers": [],
+        "body": body,
+        "truncated": false,
+    }))
+    .into_response()
 }
 
 /// Splits text into small pieces, so a caller that only handles whole

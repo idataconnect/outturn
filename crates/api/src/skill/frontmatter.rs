@@ -88,6 +88,11 @@ pub struct Operation {
     pub number: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boolean: Vec<String>,
+    /// What the operation is, for the tool's description: the first paragraph
+    /// of the prose below the fence. Taken rather than declared, because the
+    /// prose already says it and a second copy is one to fall out of date.
+    #[serde(default)]
+    pub summary: String,
 }
 
 impl Operation {
@@ -139,7 +144,10 @@ pub fn parse(source: &str) -> Result<Parsed<'_>, FrontmatterError> {
     };
 
     let approval = approval_from(yaml)?;
-    let operation = operation_from(yaml)?;
+    let operation = operation_from(yaml)?.map(|op| Operation {
+        summary: first_paragraph(body),
+        ..op
+    });
     if let (Some(rule), Some(op)) = (&approval, &operation) {
         gate_fits_operation(rule, op)?;
     }
@@ -470,7 +478,28 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         integer,
         number,
         boolean,
+        summary: String::new(),
     }))
+}
+
+/// The first paragraph of prose, past any heading, on one line.
+///
+/// Capped, because it becomes a tool description sent with every request the
+/// tool is offered in, and a file whose opening runs on would cost that on
+/// every round.
+fn first_paragraph(body: &str) -> String {
+    const MAX: usize = 400;
+    let paragraph: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .skip_while(|l| l.is_empty() || l.starts_with('#'))
+        .take_while(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let joined = paragraph.join(" ");
+    match joined.char_indices().nth(MAX) {
+        Some((cut, _)) => format!("{}...", joined[..cut].trim_end()),
+        None => joined,
+    }
 }
 
 /// Checks an operation's URL is absolute and carries no query of its own.
@@ -1011,8 +1040,21 @@ mod operations {
         );
         assert_eq!(op.optional, ["notes"]);
         assert!(op.path_params().is_empty());
+        assert_eq!(op.summary, "");
         assert_eq!(parsed.approval, None);
         assert_eq!(parsed.body, "# create_booking\n");
+    }
+
+    #[test]
+    fn the_summary_is_the_first_paragraph_of_the_prose() {
+        let parsed = parse(
+            "---\noperation:\n  method: POST\n  url: http://h/bookings\n---\n\n# create_booking\n\nReserve a room\nfor a date range.\n\n## The call\n",
+        )
+        .expect("parse");
+        assert_eq!(
+            parsed.operation.expect("op").summary,
+            "Reserve a room for a date range."
+        );
     }
 
     #[test]

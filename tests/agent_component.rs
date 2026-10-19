@@ -131,6 +131,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 max_tool_rounds: 100,
                 // As the runtime runs a turn: every tool behind the loader.
                 eager_tools: Vec::new(),
+                skill_operations: Vec::new(),
                 reply_id: Uuid::now_v7(),
                 idle_timeout: outturn::http_client::IDLE_TIMEOUT,
                 admission: None,

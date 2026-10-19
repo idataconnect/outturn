@@ -488,6 +488,56 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// A bound skill's operation: a request its file declares, offered to the
+            /// model as a tool of its own. See docs/skill-operations.md.
+            ///
+            /// Already parsed and checked by the API at publish, so the guest builds
+            /// a request from it rather than reading anything. A call becomes an
+            /// ordinary `fetch`, so it reaches nothing a hand-written request could
+            /// not.
+            #[derive(Clone)]
+            pub struct SkillOperation {
+                /// The tool's name, unique among the turn's operations.
+                pub name: _rt::String,
+                /// What the operation is, from the first paragraph of its file.
+                pub description: _rt::String,
+                /// The operation's file, `skill/<slug>/<path>`, for the judgment
+                /// calls its prose holds.
+                pub file: _rt::String,
+                /// Upper case.
+                pub method: _rt::String,
+                /// Absolute, with a path parameter as `{name}` in a segment of its own.
+                pub url: _rt::String,
+                pub body: _rt::Vec<_rt::String>,
+                pub query: _rt::Vec<_rt::String>,
+                /// Body or query fields that may be left out. The rest are required,
+                /// and a path parameter always is.
+                pub optional: _rt::Vec<_rt::String>,
+                /// Body or query fields by type, where the type is not a string.
+                pub integer: _rt::Vec<_rt::String>,
+                pub number: _rt::Vec<_rt::String>,
+                pub boolean: _rt::Vec<_rt::String>,
+            }
+            impl ::core::fmt::Debug for SkillOperation {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("SkillOperation")
+                        .field("name", &self.name)
+                        .field("description", &self.description)
+                        .field("file", &self.file)
+                        .field("method", &self.method)
+                        .field("url", &self.url)
+                        .field("body", &self.body)
+                        .field("query", &self.query)
+                        .field("optional", &self.optional)
+                        .field("integer", &self.integer)
+                        .field("number", &self.number)
+                        .field("boolean", &self.boolean)
+                        .finish()
+                }
+            }
             /// The wall clock of whoever is being talked to.
             ///
             /// Carries the day name and zone abbreviation rather than only a
@@ -2508,6 +2558,312 @@ pub mod outturn {
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
+            /// The operations of the skills this turn was bound to. Read once at the
+            /// start of a turn, like `eager-tools`.
+            pub fn skill_operations() -> _rt::Vec<SkillOperation> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 2
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let ptr0 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
+                    unsafe extern "C" {
+                        #[link_name = "skill-operations"]
+                        fn wit_import1(_: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import1(_: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import1(ptr0) };
+                    let l2 = *ptr0.add(0).cast::<*mut u8>();
+                    let l3 = *ptr0
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let base55 = l2;
+                    let len55 = l3;
+                    let mut result55 = _rt::Vec::with_capacity(len55);
+                    for i in 0..len55 {
+                        let base = base55
+                            .add(i * (22 * ::core::mem::size_of::<*const u8>()));
+                        let e55 = {
+                            let l4 = *base.add(0).cast::<*mut u8>();
+                            let l5 = *base
+                                .add(::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len6 = l5;
+                            let bytes6 = _rt::Vec::from_raw_parts(l4.cast(), len6, len6);
+                            let l7 = *base
+                                .add(2 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l8 = *base
+                                .add(3 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len9 = l8;
+                            let bytes9 = _rt::Vec::from_raw_parts(l7.cast(), len9, len9);
+                            let l10 = *base
+                                .add(4 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l11 = *base
+                                .add(5 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len12 = l11;
+                            let bytes12 = _rt::Vec::from_raw_parts(
+                                l10.cast(),
+                                len12,
+                                len12,
+                            );
+                            let l13 = *base
+                                .add(6 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l14 = *base
+                                .add(7 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len15 = l14;
+                            let bytes15 = _rt::Vec::from_raw_parts(
+                                l13.cast(),
+                                len15,
+                                len15,
+                            );
+                            let l16 = *base
+                                .add(8 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l17 = *base
+                                .add(9 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let len18 = l17;
+                            let bytes18 = _rt::Vec::from_raw_parts(
+                                l16.cast(),
+                                len18,
+                                len18,
+                            );
+                            let l19 = *base
+                                .add(10 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l20 = *base
+                                .add(11 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base24 = l19;
+                            let len24 = l20;
+                            let mut result24 = _rt::Vec::with_capacity(len24);
+                            for i in 0..len24 {
+                                let base = base24
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e24 = {
+                                    let l21 = *base.add(0).cast::<*mut u8>();
+                                    let l22 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len23 = l22;
+                                    let bytes23 = _rt::Vec::from_raw_parts(
+                                        l21.cast(),
+                                        len23,
+                                        len23,
+                                    );
+                                    _rt::string_lift(bytes23)
+                                };
+                                result24.push(e24);
+                            }
+                            _rt::cabi_dealloc(
+                                base24,
+                                len24 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l25 = *base
+                                .add(12 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l26 = *base
+                                .add(13 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base30 = l25;
+                            let len30 = l26;
+                            let mut result30 = _rt::Vec::with_capacity(len30);
+                            for i in 0..len30 {
+                                let base = base30
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e30 = {
+                                    let l27 = *base.add(0).cast::<*mut u8>();
+                                    let l28 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len29 = l28;
+                                    let bytes29 = _rt::Vec::from_raw_parts(
+                                        l27.cast(),
+                                        len29,
+                                        len29,
+                                    );
+                                    _rt::string_lift(bytes29)
+                                };
+                                result30.push(e30);
+                            }
+                            _rt::cabi_dealloc(
+                                base30,
+                                len30 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l31 = *base
+                                .add(14 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l32 = *base
+                                .add(15 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base36 = l31;
+                            let len36 = l32;
+                            let mut result36 = _rt::Vec::with_capacity(len36);
+                            for i in 0..len36 {
+                                let base = base36
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e36 = {
+                                    let l33 = *base.add(0).cast::<*mut u8>();
+                                    let l34 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len35 = l34;
+                                    let bytes35 = _rt::Vec::from_raw_parts(
+                                        l33.cast(),
+                                        len35,
+                                        len35,
+                                    );
+                                    _rt::string_lift(bytes35)
+                                };
+                                result36.push(e36);
+                            }
+                            _rt::cabi_dealloc(
+                                base36,
+                                len36 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l37 = *base
+                                .add(16 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l38 = *base
+                                .add(17 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base42 = l37;
+                            let len42 = l38;
+                            let mut result42 = _rt::Vec::with_capacity(len42);
+                            for i in 0..len42 {
+                                let base = base42
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e42 = {
+                                    let l39 = *base.add(0).cast::<*mut u8>();
+                                    let l40 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len41 = l40;
+                                    let bytes41 = _rt::Vec::from_raw_parts(
+                                        l39.cast(),
+                                        len41,
+                                        len41,
+                                    );
+                                    _rt::string_lift(bytes41)
+                                };
+                                result42.push(e42);
+                            }
+                            _rt::cabi_dealloc(
+                                base42,
+                                len42 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l43 = *base
+                                .add(18 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l44 = *base
+                                .add(19 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base48 = l43;
+                            let len48 = l44;
+                            let mut result48 = _rt::Vec::with_capacity(len48);
+                            for i in 0..len48 {
+                                let base = base48
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e48 = {
+                                    let l45 = *base.add(0).cast::<*mut u8>();
+                                    let l46 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len47 = l46;
+                                    let bytes47 = _rt::Vec::from_raw_parts(
+                                        l45.cast(),
+                                        len47,
+                                        len47,
+                                    );
+                                    _rt::string_lift(bytes47)
+                                };
+                                result48.push(e48);
+                            }
+                            _rt::cabi_dealloc(
+                                base48,
+                                len48 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            let l49 = *base
+                                .add(20 * ::core::mem::size_of::<*const u8>())
+                                .cast::<*mut u8>();
+                            let l50 = *base
+                                .add(21 * ::core::mem::size_of::<*const u8>())
+                                .cast::<usize>();
+                            let base54 = l49;
+                            let len54 = l50;
+                            let mut result54 = _rt::Vec::with_capacity(len54);
+                            for i in 0..len54 {
+                                let base = base54
+                                    .add(i * (2 * ::core::mem::size_of::<*const u8>()));
+                                let e54 = {
+                                    let l51 = *base.add(0).cast::<*mut u8>();
+                                    let l52 = *base
+                                        .add(::core::mem::size_of::<*const u8>())
+                                        .cast::<usize>();
+                                    let len53 = l52;
+                                    let bytes53 = _rt::Vec::from_raw_parts(
+                                        l51.cast(),
+                                        len53,
+                                        len53,
+                                    );
+                                    _rt::string_lift(bytes53)
+                                };
+                                result54.push(e54);
+                            }
+                            _rt::cabi_dealloc(
+                                base54,
+                                len54 * (2 * ::core::mem::size_of::<*const u8>()),
+                                ::core::mem::size_of::<*const u8>(),
+                            );
+                            SkillOperation {
+                                name: _rt::string_lift(bytes6),
+                                description: _rt::string_lift(bytes9),
+                                file: _rt::string_lift(bytes12),
+                                method: _rt::string_lift(bytes15),
+                                url: _rt::string_lift(bytes18),
+                                body: result24,
+                                query: result30,
+                                optional: result36,
+                                integer: result42,
+                                number: result48,
+                                boolean: result54,
+                            }
+                        };
+                        result55.push(e55);
+                    }
+                    _rt::cabi_dealloc(
+                        base55,
+                        len55 * (22 * ::core::mem::size_of::<*const u8>()),
+                        ::core::mem::size_of::<*const u8>(),
+                    );
+                    let result56 = result55;
+                    result56
+                }
+            }
+            #[allow(unused_unsafe, clippy::all)]
             /// Calls a model.
             ///
             /// The credential is attached host-side, so the guest names a request and
@@ -3647,9 +4003,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2101] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb3\x0f\x01A\x02\x01\
-A\x05\x01Br\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2243] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xc1\x10\x01A\x02\x01\
+A\x05\x01Bw\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -3666,33 +4022,36 @@ eaders\x1c\x04bodys\x09truncated\x7f\x04\0\x0dhttp-response\x03\0\x1f\x01q\x02\x
 at\x01s\0\x07seconds\x01w\0\x04\0\x09timer-due\x03\0!\x01r\x04\x02ids\x07details\
 s\x07contents\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0#\x01r\x02\x07contents\x08\
 deliverys\x04\0\x07arrival\x03\0%\x01r\x02\x0fmax-tool-roundsy\x09cancelled\x7f\x04\
-\0\x06limits\x03\0'\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\
-\0\x05clock\x03\0)\x01h\x19\x01p}\x01j\0\x01s\x01@\x02\x04self+\x05chunk,\0-\x04\
-\0\x1b[method]object-writer.write\x01.\x01i\x19\x01j\x01\x18\x01s\x01@\x01\x06wr\
-iter/\00\x04\0\x1c[static]object-writer.finish\x011\x01h\x1a\x01j\x01,\x01s\x01@\
-\x02\x04self2\x03leny\03\x04\0\x1a[method]object-reader.read\x014\x01@\x03\x04pa\
-ths\x06offsetw\x03leny\03\x04\0\x0bread-object\x015\x01j\x01s\x01s\x01@\x02\x04p\
-aths\x08questions\06\x04\0\x0edescribe-image\x017\x04\0\x0aread-bytes\x015\x01@\x01\
-\x04paths\00\x04\0\x0bstat-object\x018\x01j\x01w\x01s\x01@\x02\x04paths\x04data,\
-\09\x04\0\x0cwrite-object\x01:\x01j\x01/\x01s\x01@\x01\x04paths\0;\x04\0\x0bopen\
--writer\x01<\x01i\x1a\x01j\x01=\x01s\x01@\x01\x04paths\0>\x04\0\x0bopen-reader\x01\
-?\x01@\x02\x08markdowns\x0bdestinations\00\x04\0\x0arender-pdf\x01@\x01@\x01\x04\
-paths\0-\x04\0\x0ddelete-object\x01A\x01j\x01\x20\x01s\x01@\x01\x07request\x1e\0\
-\xc2\0\x04\0\x05fetch\x01C\x01@\x02\x07secondsw\x06reasons\06\x04\0\x05sleep\x01\
-D\x01@\x02\x03due\"\x06reasons\06\x04\0\x09set-timer\x01E\x01@\0\06\x04\0\x0blis\
-t-timers\x01F\x01@\x01\x02ids\06\x04\0\x0ccancel-timer\x01G\x01p\x18\x01j\x01\xc8\
-\0\x01s\x01@\x01\x06prefixs\0\xc9\0\x04\0\x0clist-objects\x01J\x01@\x01\x07outco\
-me$\x01\0\x04\0\x0dtool-finished\x01K\x01@\x01\x08activity\x16\x01\0\x04\0\x0cto\
-ol-started\x01L\x01p&\x01@\0\0\xcd\0\x04\0\x0dpending-input\x01N\x01@\0\0(\x04\0\
-\x0ecurrent-limits\x01O\x01ps\x01@\0\0\xd0\0\x04\0\x0beager-tools\x01Q\x01j\x01\x14\
-\x01s\x01@\x01\x07request\x0f\0\xd2\0\x04\0\x04chat\x01S\x01@\0\0*\x04\0\x0ccurr\
-ent-time\x01T\x01@\x01\x04texts\x01\0\x04\0\x08progress\x01U\x01@\x02\x05levels\x07\
-messages\x01\0\x04\0\x03log\x01V\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\
-\0\0\x07message\x01B\x06\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01\
-j\x01s\x01s\x01@\x02\x0cconversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\
-\x04\x04\0\x19outturn:agent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-wor\
-ld@0.1.0\x04\0\x0b\x11\x01\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cproce\
-ssed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\0\x06limits\x03\0'\x01ps\x01r\x0b\x04names\x0bdescriptions\x04files\x06methods\x03\
+urls\x04body)\x05query)\x08optional)\x07integer)\x06number)\x07boolean)\x04\0\x0f\
+skill-operation\x03\0*\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviation\
+s\x04\0\x05clock\x03\0,\x01h\x19\x01p}\x01j\0\x01s\x01@\x02\x04self.\x05chunk/\0\
+0\x04\0\x1b[method]object-writer.write\x011\x01i\x19\x01j\x01\x18\x01s\x01@\x01\x06\
+writer2\03\x04\0\x1c[static]object-writer.finish\x014\x01h\x1a\x01j\x01/\x01s\x01\
+@\x02\x04self5\x03leny\06\x04\0\x1a[method]object-reader.read\x017\x01@\x03\x04p\
+aths\x06offsetw\x03leny\06\x04\0\x0bread-object\x018\x01j\x01s\x01s\x01@\x02\x04\
+paths\x08questions\09\x04\0\x0edescribe-image\x01:\x04\0\x0aread-bytes\x018\x01@\
+\x01\x04paths\03\x04\0\x0bstat-object\x01;\x01j\x01w\x01s\x01@\x02\x04paths\x04d\
+ata/\0<\x04\0\x0cwrite-object\x01=\x01j\x012\x01s\x01@\x01\x04paths\0>\x04\0\x0b\
+open-writer\x01?\x01i\x1a\x01j\x01\xc0\0\x01s\x01@\x01\x04paths\0\xc1\0\x04\0\x0b\
+open-reader\x01B\x01@\x02\x08markdowns\x0bdestinations\03\x04\0\x0arender-pdf\x01\
+C\x01@\x01\x04paths\00\x04\0\x0ddelete-object\x01D\x01j\x01\x20\x01s\x01@\x01\x07\
+request\x1e\0\xc5\0\x04\0\x05fetch\x01F\x01@\x02\x07secondsw\x06reasons\09\x04\0\
+\x05sleep\x01G\x01@\x02\x03due\"\x06reasons\09\x04\0\x09set-timer\x01H\x01@\0\09\
+\x04\0\x0blist-timers\x01I\x01@\x01\x02ids\09\x04\0\x0ccancel-timer\x01J\x01p\x18\
+\x01j\x01\xcb\0\x01s\x01@\x01\x06prefixs\0\xcc\0\x04\0\x0clist-objects\x01M\x01@\
+\x01\x07outcome$\x01\0\x04\0\x0dtool-finished\x01N\x01@\x01\x08activity\x16\x01\0\
+\x04\0\x0ctool-started\x01O\x01p&\x01@\0\0\xd0\0\x04\0\x0dpending-input\x01Q\x01\
+@\0\0(\x04\0\x0ecurrent-limits\x01R\x01@\0\0)\x04\0\x0beager-tools\x01S\x01p+\x01\
+@\0\0\xd4\0\x04\0\x10skill-operations\x01U\x01j\x01\x14\x01s\x01@\x01\x07request\
+\x0f\0\xd6\0\x04\0\x04chat\x01W\x01@\0\0-\x04\0\x0ccurrent-time\x01X\x01@\x01\x04\
+texts\x01\0\x04\0\x08progress\x01Y\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03\
+log\x01Z\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\
+\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0c\
+conversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:a\
+gent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\
+\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compone\
+nt\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
