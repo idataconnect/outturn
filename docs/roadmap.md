@@ -378,6 +378,12 @@ declaring that host, and an agent completing a task against it with
 
 No spec, and no scheduled place in this list, which is deliberate.
 
+The evidence arrived, and it asked for less than registration.
+[skill-operations.md](skill-operations.md) offers a skill's declared operations
+as tools by translating each call, in the guest, into the `fetch_url` request
+its file already describes: no interface change and no new trust. What follows
+is still the question for a tool that is not an operation in a skill.
+
 Tools live inside the guest: `all_tools()` is a literal vector and `run_tool`
 matches on the name, so the set is fixed when the wasm is built. Nothing
 outside can add one. The question is whether that matters, and the answer

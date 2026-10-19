@@ -99,6 +99,7 @@ nav:
           - Skills as packages: skill-packages.md
           - Skill bundles: skill-bundles.md
           - The OpenAPI wizard: openapi-wizard.md
+          - Skill operations as tools: skill-operations.md
           - Telling somebody their skill is not working: skill-evaluation.md
       - Running turns:
           - Triggers: triggers.md

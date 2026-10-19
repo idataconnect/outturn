@@ -144,7 +144,8 @@ tenant's agent, which has neither.
 ## Frontmatter, and what may live in it
 
 A file may open with YAML between `---` fences. Today one key is defined --
-`approval`, in [approvals.md](approvals.md) -- and the reason it belongs here
+`approval`, in [approvals.md](approvals.md); `operation`, designed in
+[skill-operations.md](skill-operations.md), would be the second -- and the reason it belongs here
 rather than anywhere else is everything this document argues: a version is
 immutable and published whole, so what a rule said on a date is recorded rather
 than inferred; it is written under `SkillsWrite` rather than

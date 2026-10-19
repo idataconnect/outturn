@@ -278,6 +278,7 @@ are near before changing it.
   [client-credentials.md](docs/client-credentials.md).
 - Skills: [skill-packages.md](docs/skill-packages.md),
   [openapi-wizard.md](docs/openapi-wizard.md),
+  [skill-operations.md](docs/skill-operations.md),
   [skill-bundles.md](docs/skill-bundles.md),
   [skill-evaluation.md](docs/skill-evaluation.md).
 - Running turns: [triggers.md](docs/triggers.md),
