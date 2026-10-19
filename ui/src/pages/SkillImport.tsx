@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { ArrowLeft, FileUp } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import {
   createFromOpenApi,
+  listSkills,
   previewOpenApi,
   authKindLabel,
   type OpenApiPreview,
@@ -49,6 +50,14 @@ export default function SkillImport() {
   const [created, setCreated] = useState<{ skill: Skill; form: Form } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The slugs already taken, so a collision is said beside the field while
+  // the slug is typed rather than by the create that refuses it.
+  const [taken, setTaken] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    listSkills()
+      .then((skills) => setTaken(new Set(skills.map((s) => s.slug))))
+      .catch(() => setTaken(new Set()))
+  }, [created])
 
   // Sent as text: the API tells JSON from YAML, so there is one reader of
   // the format rather than two that might disagree.
@@ -221,6 +230,11 @@ export default function SkillImport() {
               Lowercase letters, digits and hyphens. Agents read its files as{' '}
               <code>skill/{form.slug || '…'}/…</code>
             </span>
+            {taken.has(form.slug.trim()) && (
+              <span className="mt-1 block text-xs text-amber-700 dark:text-amber-400">
+                Another skill already has this slug, so it needs a different one.
+              </span>
+            )}
           </label>
           <label className="block">
             <span className={label}>Description</span>
@@ -237,6 +251,13 @@ export default function SkillImport() {
             {!preview.base_url && (
               <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
                 The specification names no server, so this has to come from you.
+              </span>
+            )}
+            {form.base_url.trim().toLowerCase().startsWith('http://') && (
+              <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
+                Plain http. A key is never sent over it unless an operator names this host and
+                port in <code>OUTTURN_INTERNAL_HOSTS</code>, as one inside the network; anywhere
+                else, connect the API over https.
               </span>
             )}
           </label>
@@ -273,7 +294,13 @@ export default function SkillImport() {
             <button
               type="submit"
               className={primary}
-              disabled={busy || !form.name.trim() || !form.slug.trim() || !form.base_url.trim()}
+              disabled={
+                busy ||
+                !form.name.trim() ||
+                !form.slug.trim() ||
+                taken.has(form.slug.trim()) ||
+                !form.base_url.trim()
+              }
             >
               {busy ? 'Creating…' : 'Create skill'}
             </button>
