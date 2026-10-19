@@ -142,7 +142,9 @@ export function Connection({
   // Closed until asked for: plenty of hosts take no key at all, and a form
   // open on each of them reads as something left undone.
   const [editing, setEditing] = useState(false)
-  const [header, setHeader] = useState(rule.header ?? 'authorization')
+  // The skill's own word first: an API that takes `api_key` is not helped by
+  // a form offering `authorization`.
+  const [header, setHeader] = useState(rule.header ?? rule.suggested_header ?? 'authorization')
   const [secret, setSecret] = useState('')
   const [path, setPath] = useState(testPath ?? '')
   const [busy, setBusy] = useState(false)
@@ -234,8 +236,14 @@ export function Connection({
               className="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
             />
             <span className="mt-1 block text-surface-500 dark:text-surface-400">
-              The whole header value, exactly as the API wants it. For most APIs that is{' '}
-              <span className="font-mono">Bearer</span> followed by the key.
+              The whole header value, exactly as the API wants it.
+              {header === 'authorization' && (
+                <>
+                  {' '}
+                  For most APIs that is <span className="font-mono">Bearer</span> followed by the
+                  key.
+                </>
+              )}
             </span>
           </label>
           <div className="flex gap-2">

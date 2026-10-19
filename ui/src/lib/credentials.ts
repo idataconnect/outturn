@@ -9,6 +9,8 @@ export type EgressRule = {
   credential_env: string | null
   credential: string | null
   enabled: boolean
+  /** The header the skill that opened this host says its key travels in. */
+  suggested_header?: string
 }
 
 /** A sealed credential, as anybody may see it: where it goes, never what it is. */

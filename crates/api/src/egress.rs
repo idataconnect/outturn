@@ -118,6 +118,12 @@ pub struct Rule {
     /// before bindings existed looks configured and is not.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unbound: bool,
+    /// The header the skill that opened this host says its key travels in,
+    /// for a form connecting one to start from. Without it the form offered
+    /// `authorization` to an API that takes `api_key`, and a key connected
+    /// as offered went in a header the API never reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_header: Option<String>,
 }
 
 impl Rule {
@@ -179,7 +185,10 @@ pub async fn list(
     let rows = sqlx::query(concat!(
         "select id, ",
         rule_columns!(),
-        ", enabled from egress_rules \
+        ", enabled, \
+         (select lower(s.auth_header) from skill_sources s \
+           where s.skill_id = egress_rules.from_skill_id) as suggested_header \
+         from egress_rules \
          where workspace_id = $1 and ($2::uuid is null or id > $2) order by id limit $3"
     ))
     .bind(workspace_id)
@@ -189,7 +198,13 @@ pub async fn list(
     .await
     .map_err(|e| RuleError::Database(e.to_string()))?;
 
-    let mut rules: Vec<Rule> = rows.iter().map(read_rule).collect();
+    let mut rules: Vec<Rule> = rows
+        .iter()
+        .map(|row| Rule {
+            suggested_header: row.get("suggested_header"),
+            ..read_rule(row)
+        })
+        .collect();
     for rule in &mut rules {
         rule.unbound = bindings
             .check_rule(workspace_id, &rule.as_egress_rule())
@@ -447,6 +462,7 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
         client: read_client(row),
         enabled: row.get("enabled"),
         unbound: false,
+        suggested_header: None,
     }
 }
 
