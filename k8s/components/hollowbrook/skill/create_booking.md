@@ -1,11 +1,14 @@
+---
+operation:
+  method: POST
+  url: http://outturn-hollowbrook:8084/bookings
+  body: [room_id, guest_name, arrival, departure]
+---
+
 # create_booking
 
 Reserve a room for a date range. The stay's total is worked out and returned,
 so you are not asked to calculate it.
-
-## The call
-
-`fetch_url` with `POST http://outturn-hollowbrook:8084/bookings`, sending JSON.
 
 ## What to send
 

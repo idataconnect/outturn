@@ -1,11 +1,13 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/rooms
+---
+
 # list_rooms
 
 Every room the house has, whether or not it is free. To find out what is free
 for particular dates, use `check_availability` instead.
-
-## The call
-
-`fetch_url` with `GET http://outturn-hollowbrook:8084/rooms`. No parameters.
 
 ## What comes back
 

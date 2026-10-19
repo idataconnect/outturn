@@ -1,11 +1,12 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/bookings/{booking_id}
+---
+
 # get_booking
 
 One booking, by the id it was given when it was made.
-
-## The call
-
-`fetch_url` with `GET http://outturn-hollowbrook:8084/bookings/{id}`, putting
-the id in the path.
 
 ## What comes back
 

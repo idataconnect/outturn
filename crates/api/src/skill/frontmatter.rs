@@ -869,12 +869,11 @@ mod against_the_real_files {
         );
     }
 
-    /// And the operations that need no approval declare none.
-    ///
-    /// The point of the default being absence: a file documenting a read is an
-    /// ordinary markdown file with no preamble.
+    /// And the operations that need no approval declare none -- but every
+    /// operation declares the request it is, so the agent is offered it as a
+    /// tool, and the manifest declares nothing.
     #[test]
-    fn the_reads_declare_nothing() {
+    fn the_reads_declare_an_operation_and_no_approval() {
         for name in [
             "list_rooms",
             "get_room",
@@ -890,8 +889,46 @@ mod against_the_real_files {
             let source = std::fs::read_to_string(&path).expect(&path);
             let parsed = parse(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(parsed.approval, None, "{name} should need no approval");
-            assert_eq!(parsed.body, source, "{name} has no frontmatter to strip");
+            let op = parsed
+                .operation
+                .unwrap_or_else(|| panic!("{name} declares no operation"));
+            assert_eq!(op.method, "GET", "{name}");
+            assert!(!op.summary.is_empty(), "{name} has no summary for its tool");
+            assert!(
+                parsed.body.trim_start().starts_with(&format!("# {name}")),
+                "{name}: the body should start after the fence"
+            );
         }
+    }
+
+    #[test]
+    fn the_writes_declare_what_they_send() {
+        let read = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/../../k8s/components/hollowbrook/skill/{name}.md",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect(name)
+        };
+        let booking = parse(&read("create_booking"))
+            .expect("parses")
+            .operation
+            .expect("an operation");
+        assert_eq!(booking.method, "POST");
+        assert_eq!(
+            booking.body,
+            ["room_id", "guest_name", "arrival", "departure"]
+        );
+
+        let charge_source = read("charge_payment_account");
+        let charge = parse(&charge_source).expect("parses");
+        let op = charge.operation.expect("an operation");
+        assert_eq!(op.integer, ["amount_pence"]);
+        assert!(op.body.contains(&"idempotency_key".to_string()));
+
+        let index_source = read("index");
+        let index = parse(&index_source).expect("parses");
+        assert_eq!(index.operation, None, "the manifest is not an operation");
     }
 }
 

@@ -1,3 +1,9 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/rooms/{room_id}
+---
+
 # get_room
 
 What one room is actually like — where it is in the house, what is in it, what
@@ -6,11 +12,6 @@ it overlooks, and anything about it worth knowing before booking.
 `list_rooms` does not carry this. It has what you need to tell rooms apart —
 the name, what it sleeps, what it costs — and nothing more, so listing three
 rooms does not mean reading three descriptions.
-
-## The call
-
-`fetch_url` with `GET http://outturn-hollowbrook:8084/rooms/{id}`, putting the
-room's id in the path.
 
 ## What comes back
 

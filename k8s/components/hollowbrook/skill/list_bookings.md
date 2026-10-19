@@ -1,11 +1,17 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/bookings
+---
+
 # list_bookings
 
 Every booking the house currently holds, oldest first.
 
-## The call
+## What to send
 
-`fetch_url` with `GET http://outturn-hollowbrook:8084/bookings`. No parameters,
-and no way to filter — read what comes back and pick out what you need.
+Nothing, and there is no way to filter — read what comes back and pick out
+what you need.
 
 ## What comes back
 

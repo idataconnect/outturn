@@ -1,11 +1,13 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/payment-accounts
+---
+
 # list_payment_accounts
 
 The cards the house already holds, by handle. Use this to find which payment
 account belongs to a guest before charging one.
-
-## The call
-
-`fetch_url` with `GET http://outturn-hollowbrook:8084/payment-accounts`.
 
 ## What comes back
 

@@ -1,12 +1,16 @@
+---
+operation:
+  method: GET
+  url: http://outturn-hollowbrook:8084/availability
+  query: [arrival, departure]
+---
+
 # check_availability
 
 Which rooms are free for a stay, and what the stay would cost. The total is
 worked out for you, so you do not have to multiply a rate by the nights.
 
-## The call
-
-`fetch_url` with
-`GET http://outturn-hollowbrook:8084/availability?arrival=YYYY-MM-DD&departure=YYYY-MM-DD`.
+## What to send
 
 Both are required. `departure` must be after `arrival`.
 

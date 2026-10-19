@@ -5,6 +5,11 @@ approval:
   binds: [payment_account_id, booking_id, amount_pence]
   covers: booking
   identified_by: booking_id
+operation:
+  method: POST
+  url: http://outturn-hollowbrook:8084/charges
+  body: [payment_account_id, booking_id, amount_pence, idempotency_key]
+  integer: [amount_pence]
 ---
 
 # charge_payment_account
@@ -12,15 +17,11 @@ approval:
 Take money for a booking against a card the house holds.
 
 **Somebody has to approve this before it happens.** You do not ask them and you
-do not wait for them in the conversation: make the call as described below, and
+do not wait for them in the conversation: call it, and
 if an approval is needed the platform holds the turn, asks whoever may answer,
 and runs this turn again once they have. Tell the guest you are putting it
 through and that you will confirm — then stop. You will pick up where you left
 off.
-
-## The call
-
-`fetch_url` with `POST http://outturn-hollowbrook:8084/charges`, sending JSON.
 
 ## What to send
 
