@@ -510,8 +510,9 @@ its arguments as flat lists -- so the agent is offered it as a tool and the
 request is built for it ([skill-operations.md](skill-operations.md)). The
 manifest then tells a model to load operations by name and call them.
 
-Not every operation fits. The frontmatter reads flat lists of scalar fields
-and a path parameter that is a whole segment, so an operation with a required
+Not every operation fits. The frontmatter reads flat lists of scalar fields,
+and of lists of scalars -- a search by tags -- and a path parameter that is a
+whole segment, so an operation with a required
 nested field, or a parameter in part of a segment, is written as before: its
 call spelled out for `fetch_url`, and the manifest saying which kind each is
 -- "most" or "some" by how many fit. Declaring such an operation anyway would

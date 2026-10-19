@@ -473,6 +473,7 @@ pub fn operations_for_turn(skills: &[ResolvedSkill]) -> Vec<SkillOperation> {
                 integer: op.integer.clone(),
                 number: op.number.clone(),
                 boolean: op.boolean.clone(),
+                list: op.list.clone(),
             });
         }
     }
@@ -966,6 +967,7 @@ mod tests {
             integer: vec![],
             number: vec![],
             boolean: vec![],
+            list: vec![],
             summary: "Which rooms are free.".into(),
         };
         let file = |path: &str, operation: Option<Operation>| SkillFile {

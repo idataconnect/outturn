@@ -250,23 +250,34 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
     };
-    let scalar = |schema: &parse::SchemaInfo| {
-        matches!(
-            schema.type_name.as_str(),
-            "string" | "integer" | "number" | "boolean"
-        )
+    let is_scalar = |t: &str| matches!(t, "string" | "integer" | "number" | "boolean");
+    // A list of scalars is declared as a list of its item type: `tags` as
+    // strings, sent `tags=a&tags=b`. Anything deeper is not sayable flat.
+    let list_of = |schema: &parse::SchemaInfo| {
+        (schema.type_name == "array")
+            .then_some(schema.items_type.as_deref())
+            .flatten()
+            .filter(|t| is_scalar(t))
+            .map(str::to_string)
     };
+    let scalar = |schema: &parse::SchemaInfo| {
+        is_scalar(schema.type_name.as_str()) || list_of(schema).is_some()
+    };
+    let mut list: Vec<&str> = Vec::new();
 
     let mut body = Vec::new();
     let mut query = Vec::new();
     let mut optional = Vec::new();
     // Each field that is not a string, under the key naming its type.
     let mut typed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let type_key = |schema: &parse::SchemaInfo| match schema.type_name.as_str() {
-        "integer" => Some("integer"),
-        "number" => Some("number"),
-        "boolean" => Some("boolean"),
-        _ => None,
+    let type_key = |schema: &parse::SchemaInfo| {
+        let item = list_of(schema).unwrap_or_else(|| schema.type_name.clone());
+        match item.as_str() {
+            "integer" => Some("integer"),
+            "number" => Some("number"),
+            "boolean" => Some("boolean"),
+            _ => None,
+        }
     };
 
     for p in &op.parameters {
@@ -296,6 +307,9 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
                 }
                 if let Some(key) = type_key(&p.schema) {
                     typed.entry(key).or_default().push(&p.name);
+                }
+                if list_of(&p.schema).is_some() {
+                    list.push(&p.name);
                 }
             }
             // A header or cookie is not the model's to send: the credential
@@ -331,6 +345,9 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
             if let Some(key) = type_key(&f.schema) {
                 typed.entry(key).or_default().push(&f.name);
             }
+            if list_of(&f.schema).is_some() {
+                list.push(&f.name);
+            }
         }
         if body.is_empty() {
             return None;
@@ -341,17 +358,18 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
     writeln!(out, "operation:").unwrap();
     writeln!(out, "  method: {}", op.method.to_ascii_uppercase()).unwrap();
     writeln!(out, "  url: {}{}", base_url.trim_end_matches('/'), op.path).unwrap();
-    let list = |out: &mut String, key: &str, names: &[&str]| {
+    let write_list = |out: &mut String, key: &str, names: &[&str]| {
         if !names.is_empty() {
             writeln!(out, "  {key}: [{}]", names.join(", ")).unwrap();
         }
     };
-    list(&mut out, "body", &body);
-    list(&mut out, "query", &query);
-    list(&mut out, "optional", &optional);
+    write_list(&mut out, "body", &body);
+    write_list(&mut out, "query", &query);
+    write_list(&mut out, "optional", &optional);
     for (key, names) in &typed {
-        list(&mut out, key, names);
+        write_list(&mut out, key, names);
     }
+    write_list(&mut out, "list", &list);
     Some(out.trim_end().to_string())
 }
 

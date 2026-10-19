@@ -117,7 +117,12 @@ fn operation_tool(op: &SkillOperation) -> ToolDefinition {
         } else {
             "string"
         };
-        properties.insert(name.clone(), serde_json::json!({ "type": kind }));
+        let schema = if op.list.contains(name) {
+            serde_json::json!({ "type": "array", "items": { "type": kind } })
+        } else {
+            serde_json::json!({ "type": kind })
+        };
+        properties.insert(name.clone(), schema);
         if !op.optional.contains(name) {
             required.push(name.clone());
         }
@@ -237,12 +242,21 @@ fn call_operation(op: &SkillOperation, args: &serde_json::Value) -> String {
         let value = given.get(name).map(text).unwrap_or_default();
         url = url.replace(&format!("{{{name}}}"), &percent_encode(&value));
     }
+    // A list goes as the parameter repeated, `tags=a&tags=b` -- what OpenAPI
+    // means by a query array unless it says otherwise.
     let query: Vec<String> = op
         .query
         .iter()
-        .filter_map(|name| {
-            let value = given.get(name).filter(|v| !v.is_null())?;
-            Some(format!("{}={}", percent_encode(name), percent_encode(&text(value))))
+        .flat_map(|name| {
+            let values: Vec<&serde_json::Value> = match given.get(name) {
+                None | Some(serde_json::Value::Null) => Vec::new(),
+                Some(serde_json::Value::Array(items)) => items.iter().collect(),
+                Some(one) => vec![one],
+            };
+            values
+                .into_iter()
+                .map(|v| format!("{}={}", percent_encode(name), percent_encode(&text(v))))
+                .collect::<Vec<_>>()
         })
         .collect();
     if !query.is_empty() {
@@ -1434,6 +1448,7 @@ fn run_tool(
     call: &ToolCall,
     eager: &BTreeSet<String>,
     loaded: &mut BTreeSet<String>,
+    failed: &mut Vec<(String, String, String)>,
 ) -> Message {
     let args: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
@@ -1512,7 +1527,30 @@ fn run_tool(
         .ok()
         .and_then(|v| v.get("error").map(|e| !e.is_null()))
         .unwrap_or(false);
+    // The same call failing the same way again. Models retry a refused call
+    // unchanged -- five identical posts to one endpoint, six identical searches
+    // -- and each costs a round to learn nothing new. Said once it is seen,
+    // with the result, so the model reads it where it reads the failure.
+    // Compared without the action label, which the model rewords each try.
+    let refused = is_error
+        || serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|v| v.get("status").and_then(|s| s.as_u64()))
+            .is_some_and(|status| status >= 400);
+    let attempt = (call.name.clone(), split_action(&call.arguments).1, content.clone());
+    let repeated = refused && failed.contains(&attempt);
+    if refused && !repeated {
+        failed.push(attempt);
+    }
     let for_model = for_the_model(&content);
+    let for_model = if repeated {
+        format!(
+            "{for_model}\n\nThis exact call already failed this way earlier in this turn. \
+             Change something about it, or stop and say what went wrong."
+        )
+    } else {
+        for_model
+    };
     host::tool_finished(&ToolOutcome {
         id: call.id.clone(),
         details: content.clone(),
@@ -1595,6 +1633,11 @@ impl Guest for Component {
         // call it then makes costs a round to reload something it never
         // forgot.
         let mut loaded = already_loaded(&messages, &eager);
+
+        // Calls that failed this turn, with what they returned, so the same
+        // failure a second time can be pointed out. Turn state: a retry on a
+        // later turn may follow something the person changed.
+        let mut failed: Vec<(String, String, String)> = Vec::new();
 
         let mut round: u32 = 0;
         loop {
@@ -1746,7 +1789,7 @@ impl Guest for Component {
                 tool_call_id: None,
             });
             for call in &round_calls {
-                messages.push(run_tool(call, &eager, &mut loaded));
+                messages.push(run_tool(call, &eager, &mut loaded, &mut failed));
             }
 
             // Injected after the results and before the next model call: the

@@ -3009,3 +3009,90 @@ async fn a_chosen_content_type_and_a_plain_body_are_left_alone() {
     assert!(headers.contains("x-www-form-urlencoded"), "{headers}");
     assert!(!headers.contains("application/json"), "{headers}");
 }
+
+/// A list in a query goes as the parameter repeated, which is what an
+/// OpenAPI query array means unless the specification says otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_list_argument_is_repeated_in_the_query() {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "inn_find".into(),
+        arguments: r#"{"tags":["quiet","garden view"],"action":"Searching"}"#.into(),
+        reply: "Found.".into(),
+    })
+    .await;
+    gateway.answer_egress(200, "[]");
+    let mut options = options(&gateway, None);
+    options.eager_tools = vec!["inn_find".into()];
+    options.skill_operations = vec![outturn::protocol::work::SkillOperation {
+        name: "inn_find".into(),
+        file: "skill/inn/find.md".into(),
+        method: "GET".into(),
+        url: "http://inn.example.com/rooms".into(),
+        query: vec!["tags".into()],
+        list: vec!["tags".into()],
+        ..Default::default()
+    }];
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(&component(), user("Quiet rooms?"), String::new(), options)
+        .await
+        .expect("run");
+    let url = gateway.fetched()[0]["url"].as_str().unwrap().to_string();
+    assert_eq!(
+        url,
+        "http://inn.example.com/rooms?tags=quiet&tags=garden%20view"
+    );
+    let tools = gateway.requests()[0]["tools"].to_string();
+    assert!(tools.contains(r#""type":"array""#), "{tools}");
+}
+
+/// The same call failing the same way a second time is pointed out, with
+/// the result, rather than answered as if it were news. The action label is
+/// reworded each try, so it is not part of what makes two calls the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repeated_failure_is_pointed_out() {
+    let gateway = FakeGateway::start(Behavior::AlwaysToolCall {
+        name: "inn_book".into(),
+        arguments: r#"{"room_id":"garden","guest_name":"Jo","nights":1,"action":"Booking"}"#.into(),
+        content: "Trying.".into(),
+    })
+    .await;
+    gateway.answer_egress(500, r#"{"code":500}"#);
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push(outcome.content.clone());
+        })
+    };
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+    options.max_tool_rounds = 3;
+    options.eager_tools = vec!["inn_book".into()];
+    options.skill_operations = vec![booking()];
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(&component(), user("Book it."), String::new(), options)
+        .await
+        .expect("run");
+    let results = seen.lock().unwrap().clone();
+    assert!(results.len() >= 2, "{results:?}");
+    assert!(!results[0].contains("already failed"), "{}", results[0]);
+    assert!(
+        results[1].contains("already failed this way"),
+        "{}",
+        results[1]
+    );
+}

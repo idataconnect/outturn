@@ -88,6 +88,11 @@ pub struct Operation {
     pub number: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boolean: Vec<String>,
+    /// Body or query fields that are lists of their type: `tags` in a query
+    /// as `?tags=a&tags=b`, or a JSON array in a body. A list of anything but
+    /// scalars is not something a flat declaration can say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub list: Vec<String>,
     /// What the operation is, for the tool's description: the first paragraph
     /// of the prose below the fence. Taken rather than declared, because the
     /// prose already says it and a second copy is one to fall out of date.
@@ -376,13 +381,14 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     };
     let mut method = None;
     let mut url = None;
-    let mut lists: [(&str, Vec<String>); 6] = [
+    let mut lists: [(&str, Vec<String>); 7] = [
         ("body", Vec::new()),
         ("query", Vec::new()),
         ("optional", Vec::new()),
         ("integer", Vec::new()),
         ("number", Vec::new()),
         ("boolean", Vec::new()),
+        ("list", Vec::new()),
     ];
     for (key, value) in entries {
         match key {
@@ -405,6 +411,7 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         (_, integer),
         (_, number),
         (_, boolean),
+        (_, list),
     ] = lists;
 
     let Some(method) = method else {
@@ -445,13 +452,14 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     // What qualifies a field has to name one the request carries. A path
     // parameter is always a required string, so it is not among them.
     let carried = |name: &String| body.contains(name) || query.contains(name);
-    for (key, list) in [
+    for (key, names) in [
         ("optional", &optional),
         ("integer", &integer),
         ("number", &number),
         ("boolean", &boolean),
+        ("list", &list),
     ] {
-        if let Some(stray) = list.iter().find(|n| !carried(n)) {
+        if let Some(stray) = names.iter().find(|n| !carried(n)) {
             return Err(FrontmatterError::Invalid(format!(
                 "{key} names {stray}, which is not in body or query"
             )));
@@ -478,6 +486,7 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         integer,
         number,
         boolean,
+        list,
         summary: String::new(),
     }))
 }
@@ -1164,6 +1173,22 @@ mod operations {
         );
         // A path parameter is always a required string.
         refused("---\noperation:\n  method: GET\n  url: http://h/x/{a}\n  optional: [a]\n---\n");
+    }
+
+    #[test]
+    fn a_list_is_read_and_must_name_a_field_that_is_sent() {
+        let parsed = parse(
+            "---\noperation:\n  method: GET\n  url: http://h/pets\n  query: [tags, ids]\n  list: [tags, ids]\n  integer: [ids]\n---\n",
+        )
+        .expect("parse");
+        let op = parsed.operation.expect("op");
+        assert_eq!(op.list, ["tags", "ids"]);
+        assert_eq!(
+            op.integer,
+            ["ids"],
+            "a list of integers is a list and a type"
+        );
+        refused("---\noperation:\n  method: GET\n  url: http://h/pets\n  list: [tags]\n---\n");
     }
 
     #[test]

@@ -121,6 +121,9 @@ pub struct SkillOperation {
     pub number: Vec<String>,
     #[serde(default)]
     pub boolean: Vec<String>,
+    /// Body or query fields that are lists of their type.
+    #[serde(default)]
+    pub list: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

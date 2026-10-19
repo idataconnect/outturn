@@ -1578,6 +1578,7 @@ impl outturn::agent::host::Host for AgentHost {
                 integer: o.integer.clone(),
                 number: o.number.clone(),
                 boolean: o.boolean.clone(),
+                list: o.list.clone(),
             })
             .collect()
     }

@@ -1335,20 +1335,19 @@ fn shop_input() -> WizardInput {
 }
 
 #[test]
-fn a_header_or_an_optional_list_does_not_stop_an_operation_being_a_tool() {
+fn a_header_does_not_stop_an_operation_being_a_tool() {
     // A specification marks a header required when it means "required if the
-    // token is a JWT", and an optional parameter the tool cannot type is one
-    // it does without. Neither is reason to leave the operation uncallable.
+    // token is a JWT", which is no reason to leave the operation uncallable.
     let output = generate(&shop_input()).unwrap();
     let file = &output.files["get_order.md"];
     let op = crate::skill::parse(file)
         .unwrap()
         .operation
         .expect("get_order is a tool");
-    assert!(
-        op.query.is_empty(),
-        "the list parameter is left out: {op:?}"
-    );
+    // And a list of strings is a list the tool takes, not one it leaves out:
+    // a pet store's search by tags answers 400 without its tags.
+    assert_eq!(op.query, ["expand"], "{op:?}");
+    assert_eq!(op.list, ["expand"], "{op:?}");
     assert!(
         file.contains("which this tool does not send"),
         "the header is described, as one the tool leaves out: {file}"

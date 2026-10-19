@@ -59,6 +59,9 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
    - `optional` names the body or query fields that may be left out; the rest
      are required.
    - `integer`, `number` and `boolean` type the fields that are not strings.
+   - `list` names the fields that are lists of their type: a query parameter
+     sent repeated, `tags=a&tags=b`, or a JSON array in a body. A list of
+     integers is in both `list` and `integer`.
 
    A name lives in one place, and a qualifier must name a field that is sent:
    a typo in `optional` would otherwise leave required the field it meant.
