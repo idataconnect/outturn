@@ -2973,3 +2973,39 @@ async fn loading_an_undeclared_operation_by_its_tool_name_points_at_its_file() {
     assert!(result.contains("skill/inn/book.md"), "{result}");
     assert!(result.contains("fetch_url"), "{result}");
 }
+
+/// A JSON body sent without a content type goes as JSON: no server reads an
+/// unlabeled body that way, and models forget the header often enough that
+/// two APIs in one week refused a body that was right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unlabeled_json_body_is_sent_as_json() {
+    let (gateway, _) = with_booking(
+        Behavior::ToolThenReply {
+            name: "fetch_url".into(),
+            arguments: r#"{"method":"POST","url":"http://inn.example.com/pets","body":"{\"name\":\"Biscuit\"}","action":"Adding a pet"}"#.into(),
+            reply: "Added.".into(),
+        },
+        vec!["fetch_url".into()],
+    )
+    .await;
+    let headers = gateway.fetched()[0]["headers"].to_string();
+    assert!(headers.contains("application/json"), "{headers}");
+}
+
+/// A content type the model chose is its own, and a body that is not JSON is
+/// not labeled as if it were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chosen_content_type_and_a_plain_body_are_left_alone() {
+    let (gateway, _) = with_booking(
+        Behavior::ToolThenReply {
+            name: "fetch_url".into(),
+            arguments: r#"{"method":"POST","url":"http://inn.example.com/pets","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"name=Biscuit","action":"Adding a pet"}"#.into(),
+            reply: "Added.".into(),
+        },
+        vec!["fetch_url".into()],
+    )
+    .await;
+    let headers = gateway.fetched()[0]["headers"].to_string();
+    assert!(headers.contains("x-www-form-urlencoded"), "{headers}");
+    assert!(!headers.contains("application/json"), "{headers}");
+}

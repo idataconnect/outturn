@@ -1367,6 +1367,25 @@ fn fetch_url(args: &serde_json::Value) -> String {
         .and_then(|b| b.as_str())
         .map(str::to_string);
 
+    // A JSON body sent without saying so. Models write the JSON and forget the
+    // header -- one booking was refused 415 and retried until it took the room
+    // twice, and another API answered 400 to a body that was right -- and no
+    // server reads an unlabeled body as JSON. Said for the model only where it
+    // said nothing: a content type it chose is its own.
+    let mut headers = headers;
+    let labeled = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+    let json = body.as_deref().is_some_and(|b| {
+        matches!(
+            serde_json::from_str::<serde_json::Value>(b),
+            Ok(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+        )
+    });
+    if json && !labeled {
+        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    }
+
     fetch(method, url.to_string(), headers, body)
 }
 
