@@ -141,7 +141,8 @@ request, the "The call" section that told a model the method and URL is
 redundant here -- and the only thing an agent elsewhere had to go on.
 
 So the prose may drop it, and wherever a skill leaves this platform the line
-is generated back from the declaration, so it is still written once.
+is generated back from the declaration, so it is still written once. Nothing
+exports a skill yet; this is what an export has to do when one is built.
 
 ## The wizard
 
@@ -175,7 +176,8 @@ In order:
 - ~~`skill-operations` in `wit/agent.wit`, answered by the runtime.~~ Built.
 - ~~The guest offering declared operations as deferred tools, and translating
   a call into `fetch`.~~ Built.
-- The wizard writing `operation` blocks.
+- ~~The wizard writing `operation` blocks.~~ Built; see
+  [openapi-wizard.md](openapi-wizard.md), *Operations as tools*.
 - Hollowbrook's files converted, and an end-to-end test against the fake
   gateway that books a room through the tool.
 - `identity`, with [idempotency.md](idempotency.md).

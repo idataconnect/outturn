@@ -1147,3 +1147,150 @@ mod annotations {
         assert!(!out.body.contains("- x") && !out.body.contains("- y"));
     }
 }
+
+// -- Operations as tools ------------------------------------------------------
+//
+// See docs/skill-operations.md. An operation the frontmatter can describe is
+// declared, so the agent is offered it as a tool; one it cannot is written as
+// before, with the call spelled out for `fetch_url`.
+
+fn small_input(annotations: Vec<Annotation>) -> WizardInput {
+    WizardInput {
+        spec_json: small_spec(),
+        slug: "testapi".to_string(),
+        base_url: "https://api.example.com".to_string(),
+        auth_header: Some("Authorization".into()),
+        annotations,
+    }
+}
+
+#[test]
+fn an_operation_the_frontmatter_can_say_is_declared() {
+    let output = generate(&small_input(Vec::new())).unwrap();
+
+    let create = crate::skill::parse(&output.files["create_item.md"])
+        .unwrap()
+        .operation
+        .expect("create_item is a tool");
+    assert_eq!(create.method, "POST");
+    assert_eq!(create.url, "https://api.example.com/items");
+    assert_eq!(create.body, ["name", "price"]);
+    assert_eq!(create.optional, ["price"]);
+    assert_eq!(create.number, ["price"]);
+    assert_eq!(create.summary, "Create a new item");
+
+    let get = crate::skill::parse(&output.files["get_item.md"])
+        .unwrap()
+        .operation
+        .expect("get_item is a tool");
+    assert_eq!(get.url, "https://api.example.com/items/{id}");
+    assert_eq!(get.path_params(), ["id"]);
+
+    let list = crate::skill::parse(&output.files["list_items.md"])
+        .unwrap()
+        .operation
+        .expect("list_items is a tool");
+    assert_eq!(list.query, ["page"]);
+    assert_eq!(list.optional, ["page"]);
+}
+
+#[test]
+fn a_declared_operation_does_not_spell_out_its_call() {
+    // The tool builds the request; a URL in the prose would be a second copy
+    // for a model to compose from by hand.
+    let output = generate(&small_input(Vec::new())).unwrap();
+    let file = &output.files["create_item.md"];
+    assert!(!file.contains("## The call"), "{file}");
+    assert!(!file.contains("fetch_url"), "{file}");
+    // What to send stays: it is what the arguments mean.
+    assert!(file.contains("## What to send"), "{file}");
+    assert!(output.body.contains("load_tools"), "{}", output.body);
+    assert!(output.body.contains("tool of its own"), "{}", output.body);
+}
+
+#[test]
+fn an_operation_the_frontmatter_cannot_say_keeps_its_call() {
+    // A nested field has no type a flat list can give it, so the operation is
+    // left to prose and `fetch_url` rather than offered with the wrong shape.
+    let spec = serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1.0"},
+        "paths": {
+            "/orders": {"post": {
+                "operationId": "createOrder",
+                "summary": "Place an order",
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "lines": {"type": "array", "items": {"type": "object"}},
+                        "note": {"type": "string"}
+                    }
+                }}}},
+                "responses": {"201": {"description": "Created"}}
+            }},
+            "/orders/{id}": {"get": {
+                "operationId": "getOrder",
+                "summary": "One order",
+                "parameters": [{"name": "id", "in": "path", "required": true,
+                                "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "OK"}}
+            }}
+        }
+    }))
+    .unwrap();
+    let output = generate(&WizardInput {
+        spec_json: spec,
+        slug: "shop".into(),
+        base_url: "https://shop.example.com".into(),
+        auth_header: None,
+        annotations: Vec::new(),
+    })
+    .unwrap();
+
+    let create = &output.files["create_order.md"];
+    assert!(
+        crate::skill::parse(create).unwrap().operation.is_none(),
+        "{create}"
+    );
+    assert!(create.contains("## The call"), "{create}");
+    assert!(create.contains("fetch_url"), "{create}");
+    assert!(
+        crate::skill::parse(&output.files["get_order.md"])
+            .unwrap()
+            .operation
+            .is_some()
+    );
+    assert!(output.body.contains("Most operations"), "{}", output.body);
+}
+
+#[test]
+fn an_approval_rule_and_its_operation_share_the_frontmatter() {
+    let output = generate(&small_input(vec![Annotation {
+        target: Target::Operation("create_item".into()),
+        kind: AnnotationKind::Approval(
+            "approval:\n  requires: create\n  matches: POST /items\n  binds: [name, price]".into(),
+        ),
+    }]))
+    .unwrap();
+    let parsed = crate::skill::parse(&output.files["create_item.md"]).unwrap();
+    assert!(parsed.approval.is_some(), "the gate is kept");
+    assert!(parsed.operation.is_some(), "and the operation beside it");
+}
+
+#[test]
+fn an_approval_rule_that_does_not_fit_leaves_the_operation_undeclared() {
+    // The person's rule is kept as written; declaring the operation beside it
+    // would make a file publishing refuses, so the call is spelled out instead.
+    let output = generate(&small_input(vec![Annotation {
+        target: Target::Operation("create_item".into()),
+        kind: AnnotationKind::Approval(
+            "approval:\n  requires: create\n  matches: POST /things\n  binds: [name]".into(),
+        ),
+    }]))
+    .unwrap();
+    let file = &output.files["create_item.md"];
+    let parsed = crate::skill::parse(file).unwrap();
+    assert!(parsed.approval.is_some());
+    assert!(parsed.operation.is_none(), "{file}");
+    assert!(file.contains("## The call"), "{file}");
+}

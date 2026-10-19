@@ -117,8 +117,11 @@ there is enough context for it to be unambiguous.
 
 The operation, in the order somebody would need it:
 
+- Its `operation` block, as frontmatter, where the frontmatter can describe
+  it -- see *Operations as tools* below.
 - What it does, in a sentence.
-- The call: method and full URL, with path parameters marked.
+- The call: method and full URL, with path parameters marked -- only for an
+  operation that is not declared, since a declared one's tool builds it.
 - Parameters: required ones first, each with its type and any constraint the
   specification states. Optional ones after, and only those with a described
   effect -- an optional parameter nobody can explain is noise.
@@ -500,13 +503,30 @@ to annotate an operator's operations -- its own business rules on a shared
 integration -- is the case overrides were invented for, at a finer grain, and is
 not settled here.
 
+## Operations as tools
+
+Each operation's file declares it in an `operation` block -- method, URL, and
+its arguments as flat lists -- so the agent is offered it as a tool and the
+request is built for it ([skill-operations.md](skill-operations.md)). The
+manifest then tells a model to load operations by name and call them.
+
+Not every operation fits. The frontmatter reads flat lists of scalar fields
+and a path parameter that is a whole segment, so an operation with a nested
+body, a required header the platform does not attach, or a parameter in part
+of a segment is written as before: its call spelled out for `fetch_url`, and
+the manifest saying which kind each is. Declaring such an operation anyway
+would offer a tool whose arguments are not what the recipient takes.
+
+A person's approval rule goes into the same frontmatter. Where the rule does
+not fit the operation -- it gates another path, or binds a field the body does
+not have -- publishing would refuse the file, so the operation is left
+undeclared and the rule kept as it was written.
+
 ## What this does not do
 
-**It does not generate tool definitions.** The output is prose an agent reads
-and composes `fetch_url` from. If that turns out not to be enough --
-[roadmap.md](roadmap.md) describes when it might not be -- the same parsed
-specification produces tool definitions instead, and only the consumer changes.
-The manifest-and-detail split survives either way.
+**It does not generate tool definitions for what a flat list cannot say.** An
+operation outside the frontmatter's narrow shape stays prose, composed into
+`fetch_url` by the model. The manifest-and-detail split survives either way.
 
 **It does not constrain what the agent sends.** A conduit operation -- one
 whose arguments decide who is reached rather than what is read -- cannot be

@@ -130,10 +130,13 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
 
     let mut files = BTreeMap::new();
 
+    let mut declared = 0;
     for op in &api.operations {
-        let detail = render::detail(op, &input.base_url, auth_header, &notes);
+        let (detail, tool) = render::detail(op, &input.base_url, auth_header, &notes);
+        declared += usize::from(tool);
         files.insert(format!("{}.md", op.name), detail);
     }
+    let tools = render::Tools::of(declared, api.operations.len());
 
     let body = if needs_categories {
         for (cat_slug, cat) in &categories {
@@ -141,9 +144,9 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
                 render::category_manifest_with_ops(cat, &api.operations, &input.slug, &notes);
             files.insert(format!("{cat_slug}.md"), manifest);
         }
-        render::category_body(&input.slug, &categories, auth_header, &notes)
+        render::category_body(&input.slug, &categories, auth_header, &notes, tools)
     } else {
-        render::flat_body(&input.slug, &api.operations, auth_header, &notes)
+        render::flat_body(&input.slug, &api.operations, auth_header, &notes, tools)
     };
 
     Ok(WizardOutput {

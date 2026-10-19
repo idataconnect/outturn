@@ -54,6 +54,25 @@ impl<'a> Notes<'a> {
     }
 }
 
+/// How many of a skill's operations are tools, which decides what the
+/// manifest tells a model to do with one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tools {
+    All,
+    Some,
+    None,
+}
+
+impl Tools {
+    pub fn of(declared: usize, total: usize) -> Self {
+        match declared {
+            0 => Tools::None,
+            n if n == total => Tools::All,
+            _ => Tools::Some,
+        }
+    }
+}
+
 /// Notes as a list under their own heading, so a reader can tell what a
 /// person added from what the specification said.
 fn write_notes(out: &mut String, notes: &[&str]) {
@@ -73,6 +92,7 @@ pub fn flat_body(
     operations: &[parse::Operation],
     auth_header: Option<&str>,
     notes: &Notes,
+    tools: Tools,
 ) -> String {
     let mut out = String::new();
 
@@ -88,21 +108,25 @@ pub fn flat_body(
     first.extend(labeled.iter().map(String::as_str));
     write_notes(&mut out, &first);
 
-    writeln!(
-        out,
-        "Each operation has a file saying how to call it; read the file for an"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "operation before using it, with `read_object`. Do not guess a call from its"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "name here — this list says what exists, not how to ask for it."
-    )
-    .unwrap();
+    let how = match tools {
+        Tools::All => {
+            "Each operation is a tool of its own: load it with `load_tools` by its name\n\
+             below and call it. Its file says what it takes and when to use it; read it\n\
+             with `read_object` before an operation you have not used."
+        }
+        Tools::Some => {
+            "Most operations are tools of their own: load one with `load_tools` by its\n\
+             name below and call it. Read an operation's file with `read_object` before\n\
+             using it; where the file spells out the call, the operation is not a tool,\n\
+             so make that call with `fetch_url`."
+        }
+        Tools::None => {
+            "Each operation has a file saying how to call it; read the file for an\n\
+             operation before using it, with `read_object`. Do not guess a call from its\n\
+             name here — this list says what exists, not how to ask for it."
+        }
+    };
+    writeln!(out, "{how}").unwrap();
     writeln!(out).unwrap();
 
     for op in operations {
@@ -117,27 +141,34 @@ pub fn category_body(
     categories: &BTreeMap<String, Category>,
     auth_header: Option<&str>,
     notes: &Notes,
+    tools: Tools,
 ) -> String {
     let mut out = String::new();
 
     write_auth_preamble(&mut out, auth_header);
     write_notes(&mut out, &notes.skill);
 
-    writeln!(
-        out,
-        "Operations are grouped by category. Read the category file to see what"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "operations are available, then read an operation's own file before calling"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "it. Use `read_object` for both. Do not guess a call from its name."
-    )
-    .unwrap();
+    let how = match tools {
+        Tools::All => {
+            "Operations are grouped by category, and each is a tool of its own. Read the\n\
+             category file with `read_object` to see what there is, then load an\n\
+             operation with `load_tools` by its name and call it. Read an operation's own\n\
+             file before one you have not used."
+        }
+        Tools::Some => {
+            "Operations are grouped by category, and most are tools of their own. Read\n\
+             the category file with `read_object` to see what there is, then load an\n\
+             operation with `load_tools` by its name and call it. Read an operation's own\n\
+             file before using it; where it spells out the call, the operation is not a\n\
+             tool, so make that call with `fetch_url`."
+        }
+        Tools::None => {
+            "Operations are grouped by category. Read the category file to see what\n\
+             operations are available, then read an operation's own file before calling\n\
+             it. Use `read_object` for both. Do not guess a call from its name."
+        }
+    };
+    writeln!(out, "{how}").unwrap();
     writeln!(out).unwrap();
 
     for cat in categories.values() {
@@ -181,18 +212,145 @@ pub fn category_manifest_with_ops(
     out
 }
 
+/// The `operation:` block that makes an operation a tool, or `None` where the
+/// frontmatter cannot say what the specification does.
+///
+/// The frontmatter is deliberately narrow -- flat lists of scalar fields, a
+/// path parameter a whole segment -- and an operation outside it is left to
+/// its prose and `fetch_url`, as every operation was before. Half-declaring
+/// one would be worse: a tool whose arguments are not what the recipient
+/// takes is called confidently and refused, and nobody is told why.
+pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> {
+    // A name goes into a flat list, so it has to read back as itself.
+    let plain = |name: &str| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    };
+    let scalar = |schema: &parse::SchemaInfo| {
+        matches!(
+            schema.type_name.as_str(),
+            "string" | "integer" | "number" | "boolean"
+        )
+    };
+
+    let mut body = Vec::new();
+    let mut query = Vec::new();
+    let mut optional = Vec::new();
+    // Each field that is not a string, under the key naming its type.
+    let mut typed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let type_key = |schema: &parse::SchemaInfo| match schema.type_name.as_str() {
+        "integer" => Some("integer"),
+        "number" => Some("number"),
+        "boolean" => Some("boolean"),
+        _ => None,
+    };
+
+    for p in &op.parameters {
+        match p.location.as_str() {
+            // Always a required string, named in the path itself.
+            "path" => {
+                if !p
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    return None;
+                }
+            }
+            "query" => {
+                if !plain(&p.name) || !scalar(&p.schema) {
+                    return None;
+                }
+                query.push(p.name.as_str());
+                if !p.required {
+                    optional.push(p.name.as_str());
+                }
+                if let Some(key) = type_key(&p.schema) {
+                    typed.entry(key).or_default().push(&p.name);
+                }
+            }
+            // A header or cookie the platform does not attach is one a tool
+            // cannot send. Optional ones are left out rather than refused.
+            _ if p.required => return None,
+            _ => {}
+        }
+    }
+    if let Some(request) = &op.request_body {
+        // A body with no fields this can name is one it cannot build.
+        if request.fields.is_empty() {
+            return None;
+        }
+        for f in &request.fields {
+            if !plain(&f.name) || !scalar(&f.schema) {
+                return None;
+            }
+            body.push(f.name.as_str());
+            if !f.required {
+                optional.push(f.name.as_str());
+            }
+            if let Some(key) = type_key(&f.schema) {
+                typed.entry(key).or_default().push(&f.name);
+            }
+        }
+    }
+
+    let mut out = String::new();
+    writeln!(out, "operation:").unwrap();
+    writeln!(out, "  method: {}", op.method.to_ascii_uppercase()).unwrap();
+    writeln!(out, "  url: {}{}", base_url.trim_end_matches('/'), op.path).unwrap();
+    let list = |out: &mut String, key: &str, names: &[&str]| {
+        if !names.is_empty() {
+            writeln!(out, "  {key}: [{}]", names.join(", ")).unwrap();
+        }
+    };
+    list(&mut out, "body", &body);
+    list(&mut out, "query", &query);
+    list(&mut out, "optional", &optional);
+    for (key, names) in &typed {
+        list(&mut out, key, names);
+    }
+    Some(out.trim_end().to_string())
+}
+
+/// An operation's file, and whether it declares the operation as a tool.
+///
+/// The declaration is kept only if the file it makes parses as the platform
+/// will parse it at publish -- which includes a person's approval rule fitting
+/// the operation beside it. Where it does not, the file is written as before,
+/// with the call spelled out for `fetch_url`, rather than the wizard producing
+/// something publishing refuses.
 pub fn detail(
     op: &parse::Operation,
     base_url: &str,
     auth_header: Option<&str>,
     notes: &Notes,
+) -> (String, bool) {
+    if let Some(block) = operation_block(op, base_url) {
+        let file = detail_with(op, base_url, auth_header, notes, Some(&block));
+        if crate::skill::frontmatter::parse(&file).is_ok() {
+            return (file, true);
+        }
+    }
+    (detail_with(op, base_url, auth_header, notes, None), false)
+}
+
+fn detail_with(
+    op: &parse::Operation,
+    base_url: &str,
+    auth_header: Option<&str>,
+    notes: &Notes,
+    operation: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
-    // The approval rule first, as frontmatter: what the platform reads, before
-    // anything the model does.
-    if let Some(yaml) = notes.approval.get(op.name.as_str()) {
-        writeln!(out, "---\n{}\n---\n", yaml.trim()).unwrap();
+    // The approval rule and the operation first, as frontmatter: what the
+    // platform reads, before anything the model does.
+    let approval = notes.approval.get(op.name.as_str()).map(|y| y.trim());
+    let frontmatter: Vec<&str> = approval.into_iter().chain(operation).collect();
+    if !frontmatter.is_empty() {
+        writeln!(out, "---\n{}\n---\n", frontmatter.join("\n")).unwrap();
     }
     writeln!(out, "# {}", op.name).unwrap();
     writeln!(out).unwrap();
@@ -219,17 +377,43 @@ pub fn detail(
             .unwrap_or_default(),
     );
 
-    // The call
-    writeln!(out, "## The call").unwrap();
-    writeln!(out).unwrap();
-
-    let url = format!("{}{}", base_url.trim_end_matches('/'), op.path);
     let query_params: Vec<_> = op
         .parameters
         .iter()
         .filter(|p| p.location == "query" && p.required)
         .collect();
 
+    // The call, spelled out only where no tool makes it: a declared operation
+    // is built from its frontmatter, and the URL here would be a second copy
+    // for a model to compose from by hand.
+    if operation.is_none() {
+        write_call(&mut out, op, base_url, auth_header, &query_params);
+    } else if let Some(header) = auth_header {
+        // Still said, so a model wondering how it is signed in is not left to
+        // guess -- and so it does not go looking for a header to set.
+        writeln!(
+            out,
+            "The `{header}` header is attached by the platform; do not set it."
+        )
+        .unwrap();
+    }
+
+    write_arguments(&mut out, op, &query_params);
+    write_responses(&mut out, op);
+    out
+}
+
+fn write_call(
+    out: &mut String,
+    op: &parse::Operation,
+    base_url: &str,
+    auth_header: Option<&str>,
+    query_params: &[&parse::Parameter],
+) {
+    writeln!(out, "## The call").unwrap();
+    writeln!(out).unwrap();
+
+    let url = format!("{}{}", base_url.trim_end_matches('/'), op.path);
     if query_params.is_empty() {
         writeln!(out, "`fetch_url` with `{} {}`.", op.method, url).unwrap();
     } else {
@@ -255,7 +439,9 @@ pub fn detail(
         )
         .unwrap();
     }
+}
 
+fn write_arguments(out: &mut String, op: &parse::Operation, query_params: &[&parse::Parameter]) {
     // Parameters (non-auth, non-query-required already shown in URL)
     let path_params: Vec<_> = op
         .parameters
@@ -285,13 +471,13 @@ pub fn detail(
 
         if !path_params.is_empty() {
             for p in &path_params {
-                write_parameter(&mut out, p, true);
+                write_parameter(out, p, true);
             }
         }
 
         // Required query params (already in URL, but document them)
-        for p in &query_params {
-            write_parameter(&mut out, p, true);
+        for p in query_params {
+            write_parameter(out, p, true);
         }
 
         if !optional_query.is_empty() {
@@ -303,13 +489,13 @@ pub fn detail(
             for p in &optional_query {
                 // Only include optional params that have a description
                 if !p.description.is_empty() {
-                    write_parameter(&mut out, p, false);
+                    write_parameter(out, p, false);
                 }
             }
         }
 
         for p in &other_headers {
-            write_parameter(&mut out, p, p.required);
+            write_parameter(out, p, p.required);
         }
     }
 
@@ -332,7 +518,7 @@ pub fn detail(
         optional.sort_by(|a, b| a.name.cmp(&b.name));
 
         for f in &required {
-            write_body_field(&mut out, f);
+            write_body_field(out, f);
         }
 
         if !optional.is_empty() {
@@ -343,13 +529,14 @@ pub fn detail(
             }
             for f in &optional {
                 if !f.description.is_empty() {
-                    write_body_field(&mut out, f);
+                    write_body_field(out, f);
                 }
             }
         }
     }
+}
 
-    // Responses
+fn write_responses(out: &mut String, op: &parse::Operation) {
     if !op.responses.is_empty() {
         writeln!(out).unwrap();
         writeln!(out, "## What comes back").unwrap();
@@ -368,14 +555,12 @@ pub fn detail(
                 writeln!(out, "{label}, with:").unwrap();
                 writeln!(out).unwrap();
                 for f in &resp.fields {
-                    write_body_field(&mut out, f);
+                    write_body_field(out, f);
                 }
             }
             writeln!(out).unwrap();
         }
     }
-
-    out
 }
 
 fn write_auth_preamble(out: &mut String, auth_header: Option<&str>) {
