@@ -250,22 +250,20 @@ pub async fn fetch(
         );
     }
 
-    // A credential travels only where it cannot be read on the way. A
-    // workspace that configured a key for a host did not consent to it going
-    // out in clear because a model typed http.
-    if (rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some())
-        && url.scheme() != "https"
-    {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!("{host} has a credential configured, so it can only be reached over https"),
-        ));
-    }
-
     let port = url.port_or_known_default().ok_or((
         StatusCode::BAD_REQUEST,
         "that URL names no port and its scheme implies none".to_string(),
     ))?;
+
+    if !may_carry_credential(rule, url.scheme(), state.internal.allows(&host, port)) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "{host} has a credential configured, so it can only be reached over https, \
+                 unless an operator names {host}:{port} in OUTTURN_INTERNAL_HOSTS"
+            ),
+        ));
+    }
 
     // The check a workspace cannot waive. An allowed name that resolves into
     // the cluster is still refused, and the answer is pinned so the check and
@@ -492,6 +490,25 @@ pub async fn fetch(
     }
 }
 
+/// Whether a request may go out with this rule's credential on it.
+///
+/// A credential travels only where it cannot be read on the way: a workspace
+/// that configured a key for a host did not consent to it going out in clear
+/// because a model typed http. The exception is a host an operator opened in
+/// `OUTTURN_INTERNAL_HOSTS` -- inside the network running this service, where
+/// plain http between services is ordinary and the operator, not a workspace,
+/// said the host belongs there. The same exception a token endpoint gets
+/// (`client.rs`).
+fn may_carry_credential(
+    rule: &outturn_core::egress::rule::EgressRule,
+    scheme: &str,
+    operator_opened: bool,
+) -> bool {
+    let carries =
+        rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some();
+    !carries || scheme == "https" || operator_opened
+}
+
 /// What a caller is allowed to reach, as far as this tier can tell.
 ///
 /// Split out so the decision can be tested without a socket: everything up to
@@ -510,6 +527,35 @@ pub(crate) fn credential_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_goes_in_clear_only_to_a_host_an_operator_opened() {
+        let keyed = EgressRule {
+            host: "petstore".into(),
+            header: Some("api_key".into()),
+            credential_env: None,
+            client: None,
+            credential: Some(uuid::Uuid::now_v7()),
+        };
+        assert!(may_carry_credential(&keyed, "https", false));
+        assert!(
+            !may_carry_credential(&keyed, "http", false),
+            "a model typed http"
+        );
+        assert!(
+            may_carry_credential(&keyed, "http", true),
+            "inside the network, by the operator's word"
+        );
+        let keyless = EgressRule {
+            credential: None,
+            header: None,
+            ..keyed
+        };
+        assert!(
+            may_carry_credential(&keyless, "http", false),
+            "nothing to protect"
+        );
+    }
 
     use outturn_core::egress::rule::EgressRule;
 
