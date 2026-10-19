@@ -48,9 +48,39 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
    ---
    ```
 
-   Arguments are flat lists of names, not a schema, because the frontmatter
-   parser reads scalars and flat lists and refuses everything else (see
-   `crates/api/src/skill/frontmatter.rs` for why it is that narrow):
+   Arguments are declared one of two ways.
+
+   **A schema**, which the OpenAPI wizard writes: the tool's arguments as one
+   JSON Schema object -- path and query parameters beside the body's fields --
+   in an indented block, with `query: [...]` naming what goes in the query
+   string. Path parameters are named in the URL, and whatever else the schema
+   names is the body.
+
+   ```yaml
+   operation:
+     method: POST
+     url: http://petstore:8080/api/v3/pet
+     schema: |
+       {
+         "type": "object",
+         "required": ["name", "photoUrls"],
+         "properties": {
+           "name": {"type": "string"},
+           "category": {"$ref": "#/types/Category"},
+           "photoUrls": {"type": "array", "items": {"type": "string"}}
+         }
+       }
+   ```
+
+   A type more than one operation uses is written once, in the skill's
+   `types.json`, and referred to as `#/types/Name`. Publishing expands the
+   references, because a provider takes each tool's schema standing alone and
+   some refuse references outright; a type that contains itself stops at "an
+   object", and an expanded schema over 24KB is refused. So the file reads the
+   way a person would write it, and what a turn is given is what a provider
+   accepts.
+
+   **Flat lists**, the shorthand for writing one by hand, as Hollowbrook does:
 
    - `body` and `query` name the JSON body's fields and the query string's
      parameters. A `GET` or `HEAD` has no body.
@@ -63,6 +93,8 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
      sent repeated, `tags=a&tags=b`, or a JSON array in a body. A list of
      integers is in both `list` and `integer`.
 
+   They describe the same schema, which is the only thing a turn is given.
+
    A name lives in one place, and a qualifier must name a field that is sent:
    a typo in `optional` would otherwise leave required the field it meant.
 
@@ -70,7 +102,7 @@ An operation is a tool. Its file says what it is, and the guest does the rest:
    named by skill and file so two skills cannot collide, and reduced to the
    letters, digits, `_` and `-` every provider accepts in a tool name. Its description
    is the first paragraph of the file's prose -- what the operation *is* -- and
-   its parameters are the declared arguments. `load_tools` loads it like any
+   its parameters are its schema. `load_tools` loads it like any
    other -- and by the name its skill's manifest lists it under,
    `create_booking`, where one bound operation has that name. That is the
    name a model reading the manifest asks for, so the call every small model

@@ -506,19 +506,21 @@ not settled here.
 ## Operations as tools
 
 Each operation's file declares it in an `operation` block -- method, URL, and
-its arguments as flat lists -- so the agent is offered it as a tool and the
+its arguments as a JSON Schema -- so the agent is offered it as a tool and the
 request is built for it ([skill-operations.md](skill-operations.md)). The
 manifest then tells a model to load operations by name and call them.
 
-Not every operation fits. The frontmatter reads flat lists of scalar fields,
-and of lists of scalars -- a search by tags -- and a path parameter that is a
-whole segment, so an operation with a required
-nested field, or a parameter in part of a segment, is written as before: its
-call spelled out for `fetch_url`, and the manifest saying which kind each is
--- "most" or "some" by how many fit. Declaring such an operation anyway would
-offer a tool whose arguments are not what the recipient takes. An *optional*
-field the frontmatter cannot type is left out of the tool instead, since the
-operation works without it.
+The schema is translated from the specification's, which is OpenAPI's dialect
+rather than JSON Schema's: a named component becomes a shared type of the
+skill, kept once in `types.json`; other references are followed; `allOf` is
+merged into one object; `nullable` becomes a type list; and what a request
+does not send -- a `readOnly` field, an example, an XML hint -- is left out.
+Path and query parameters sit beside the body's fields as one object.
+
+Not every operation fits. A body that is not JSON -- an upload, a form -- or
+not an object, or a schema that expands past what is worth sending each round,
+is written as before: its call spelled out for `fetch_url`, and the manifest
+saying which kind each is -- "most" or "some" by how many fit.
 
 A header is never the model's to send, so it never keeps an operation from
 being a tool: the credential is attached by the platform, and any other header
