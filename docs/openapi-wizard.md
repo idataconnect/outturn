@@ -511,11 +511,24 @@ request is built for it ([skill-operations.md](skill-operations.md)). The
 manifest then tells a model to load operations by name and call them.
 
 Not every operation fits. The frontmatter reads flat lists of scalar fields
-and a path parameter that is a whole segment, so an operation with a nested
-body, a required header the platform does not attach, or a parameter in part
-of a segment is written as before: its call spelled out for `fetch_url`, and
-the manifest saying which kind each is. Declaring such an operation anyway
-would offer a tool whose arguments are not what the recipient takes.
+and a path parameter that is a whole segment, so an operation with a required
+nested field, or a parameter in part of a segment, is written as before: its
+call spelled out for `fetch_url`, and the manifest saying which kind each is
+-- "most" or "some" by how many fit. Declaring such an operation anyway would
+offer a tool whose arguments are not what the recipient takes. An *optional*
+field the frontmatter cannot type is left out of the tool instead, since the
+operation works without it.
+
+A header is never the model's to send, so it never keeps an operation from
+being a tool: the credential is attached by the platform, and any other header
+is left out and described in the prose as one the tool does not send. Not
+refused when the specification marks it required, because that mark is often a
+condition the format cannot state. One accounting API marks an organization
+header required on 313 operations and means "required if the token is a JWT";
+with an API key it is not needed at all, and refusing on the mark left every
+operation a model would reach for uncallable. A header an API really needs on
+every call is a fixed value the connection should supply and the gateway
+attach -- not built yet.
 
 A person's approval rule goes into the same frontmatter. Where the rule does
 not fit the operation -- it gates another path, or binds a field the body does

@@ -134,14 +134,16 @@ fn detail_file_structure() {
     let output = generate(&input).unwrap();
     let detail = &output.files["create_item.md"];
 
+    // The operation is declared, so the frontmatter comes first and the
+    // prose starts after it.
+    let parsed = crate::skill::parse(detail).unwrap();
     assert!(
-        detail.starts_with("# create_item\n"),
+        parsed.body.trim_start().starts_with("# create_item\n"),
         "starts with heading: {detail}"
     );
-    assert!(detail.contains("## The call"), "has call section");
-    assert!(
-        detail.contains("POST https://api.example.com/items"),
-        "has method and url: {detail}"
+    assert_eq!(
+        parsed.operation.expect("declared").url,
+        "https://api.example.com/items"
     );
     assert!(
         detail.contains("## What to send"),
@@ -473,8 +475,13 @@ fn detail_says_fetch_url() {
         annotations: Vec::new(),
     };
     let output = generate(&input).unwrap();
+    // Every operation here is a tool, so none spells out a call.
     let detail = &output.files["list_items.md"];
+    assert!(!detail.contains("fetch_url"), "{detail}");
 
+    // One that cannot be declared still says how to make the call by hand.
+    let output = generate(&shop_input()).unwrap();
+    let detail = &output.files["create_order.md"];
     assert!(
         detail.contains("fetch_url"),
         "detail must tell agent to use fetch_url: {detail}"
@@ -541,11 +548,24 @@ fn bigcapital_spec() {
         .find(|k| k.contains("create_item"))
         .expect("should have a create_item operation");
     let detail = &output.files[create_item_key];
-    assert!(detail.contains("fetch_url"), "detail should use fetch_url");
     assert!(
         detail.contains("books.example.com"),
         "detail should have base URL"
     );
+
+    // Its organization header is marked required on nearly every operation,
+    // and is only needed with a JWT; an API key needs none. That mark must not
+    // keep the operations people use from being tools.
+    for name in ["get_customers.md", "get_sale_invoices.md", "create_customer.md"] {
+        let parsed = crate::skill::parse(&output.files[name]).unwrap();
+        assert!(parsed.operation.is_some(), "{name} should be a tool");
+    }
+    let declared = output
+        .files
+        .values()
+        .filter(|f| crate::skill::parse(f).is_ok_and(|p| p.operation.is_some()))
+        .count();
+    eprintln!("{declared} operations declared as tools");
 
     // Print summary for manual inspection
     eprintln!(
@@ -1212,40 +1232,7 @@ fn a_declared_operation_does_not_spell_out_its_call() {
 fn an_operation_the_frontmatter_cannot_say_keeps_its_call() {
     // A nested field has no type a flat list can give it, so the operation is
     // left to prose and `fetch_url` rather than offered with the wrong shape.
-    let spec = serde_json::to_vec(&serde_json::json!({
-        "openapi": "3.0.0",
-        "info": {"title": "Test", "version": "1.0"},
-        "paths": {
-            "/orders": {"post": {
-                "operationId": "createOrder",
-                "summary": "Place an order",
-                "requestBody": {"required": true, "content": {"application/json": {"schema": {
-                    "type": "object",
-                    "properties": {
-                        "lines": {"type": "array", "items": {"type": "object"}},
-                        "note": {"type": "string"}
-                    }
-                }}}},
-                "responses": {"201": {"description": "Created"}}
-            }},
-            "/orders/{id}": {"get": {
-                "operationId": "getOrder",
-                "summary": "One order",
-                "parameters": [{"name": "id", "in": "path", "required": true,
-                                "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "OK"}}
-            }}
-        }
-    }))
-    .unwrap();
-    let output = generate(&WizardInput {
-        spec_json: spec,
-        slug: "shop".into(),
-        base_url: "https://shop.example.com".into(),
-        auth_header: None,
-        annotations: Vec::new(),
-    })
-    .unwrap();
+    let output = generate(&shop_input()).unwrap();
 
     let create = &output.files["create_order.md"];
     assert!(
@@ -1260,7 +1247,7 @@ fn an_operation_the_frontmatter_cannot_say_keeps_its_call() {
             .operation
             .is_some()
     );
-    assert!(output.body.contains("Most operations"), "{}", output.body);
+    assert!(output.body.contains("Some operations"), "{}", output.body);
 }
 
 #[test]
@@ -1293,4 +1280,70 @@ fn an_approval_rule_that_does_not_fit_leaves_the_operation_undeclared() {
     assert!(parsed.approval.is_some());
     assert!(parsed.operation.is_none(), "{file}");
     assert!(file.contains("## The call"), "{file}");
+}
+
+/// A shop whose order takes a nested list, which a flat list cannot type, so
+/// placing one cannot be declared -- and an order read by id, which can.
+fn shop_input() -> WizardInput {
+    let spec = serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1.0"},
+        "paths": {
+            "/orders": {"post": {
+                "operationId": "createOrder",
+                "summary": "Place an order",
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "required": ["lines"],
+                    "properties": {
+                        "lines": {"type": "array", "items": {"type": "object"}},
+                        "note": {"type": "string"}
+                    }
+                }}}},
+                "responses": {"201": {"description": "Created"}}
+            }},
+            "/orders/{id}": {"get": {
+                "operationId": "getOrder",
+                "summary": "One order",
+                "parameters": [
+                    {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+                    {"name": "tenant-id", "in": "header", "required": true,
+                     "description": "Required if the token is a JWT.", "schema": {"type": "string"}},
+                    {"name": "expand", "in": "query", "required": false,
+                     "schema": {"type": "array", "items": {"type": "string"}}}
+                ],
+                "responses": {"200": {"description": "OK"}}
+            }}
+        }
+    }))
+    .unwrap();
+    WizardInput {
+        spec_json: spec,
+        slug: "shop".into(),
+        base_url: "https://shop.example.com".into(),
+        auth_header: None,
+        annotations: Vec::new(),
+    }
+}
+
+#[test]
+fn a_header_or_an_optional_list_does_not_stop_an_operation_being_a_tool() {
+    // A specification marks a header required when it means "required if the
+    // token is a JWT", and an optional parameter the tool cannot type is one
+    // it does without. Neither is reason to leave the operation uncallable.
+    let output = generate(&shop_input()).unwrap();
+    let file = &output.files["get_order.md"];
+    let op = crate::skill::parse(file)
+        .unwrap()
+        .operation
+        .expect("get_order is a tool");
+    assert!(
+        op.query.is_empty(),
+        "the list parameter is left out: {op:?}"
+    );
+    assert!(
+        file.contains("which this tool does not send"),
+        "the header is described, as one the tool leaves out: {file}"
+    );
+    assert!(file.contains("tenant-id"), "{file}");
 }

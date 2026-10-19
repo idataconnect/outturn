@@ -59,6 +59,9 @@ impl<'a> Notes<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tools {
     All,
+    /// More than half: the manifest says "most", which is what a model
+    /// reading it should expect of the next operation it looks for.
+    Most,
     Some,
     None,
 }
@@ -68,8 +71,25 @@ impl Tools {
         match declared {
             0 => Tools::None,
             n if n == total => Tools::All,
+            n if n * 2 > total => Tools::Most,
             _ => Tools::Some,
         }
+    }
+
+    /// "most" or "some", for the sentences that describe a mixed skill.
+    fn share(self) -> &'static str {
+        match self {
+            Tools::Most => "most",
+            _ => "some",
+        }
+    }
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -114,12 +134,13 @@ pub fn flat_body(
              below and call it. Its file says what it takes and when to use it; read it\n\
              with `read_object` before an operation you have not used."
         }
-        Tools::Some => {
-            "Most operations are tools of their own: load one with `load_tools` by its\n\
+        Tools::Most | Tools::Some => &format!(
+            "{} operations are tools of their own: load one with `load_tools` by its\n\
              name below and call it. Read an operation's file with `read_object` before\n\
              using it; where the file spells out the call, the operation is not a tool,\n\
-             so make that call with `fetch_url`."
-        }
+             so make that call with `fetch_url`.",
+            capitalized(tools.share())
+        ),
         Tools::None => {
             "Each operation has a file saying how to call it; read the file for an\n\
              operation before using it, with `read_object`. Do not guess a call from its\n\
@@ -155,13 +176,14 @@ pub fn category_body(
              operation with `load_tools` by its name and call it. Read an operation's own\n\
              file before one you have not used."
         }
-        Tools::Some => {
-            "Operations are grouped by category, and most are tools of their own. Read\n\
+        Tools::Most | Tools::Some => &format!(
+            "Operations are grouped by category, and {} are tools of their own. Read\n\
              the category file with `read_object` to see what there is, then load an\n\
              operation with `load_tools` by its name and call it. Read an operation's own\n\
              file before using it; where it spells out the call, the operation is not a\n\
-             tool, so make that call with `fetch_url`."
-        }
+             tool, so make that call with `fetch_url`.",
+            tools.share()
+        ),
         Tools::None => {
             "Operations are grouped by category. Read the category file to see what\n\
              operations are available, then read an operation's own file before calling\n\
@@ -261,7 +283,12 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
             }
             "query" => {
                 if !plain(&p.name) || !scalar(&p.schema) {
-                    return None;
+                    // An optional parameter the tool cannot type is one it
+                    // does without; a required one it cannot send at all.
+                    if p.required {
+                        return None;
+                    }
+                    continue;
                 }
                 query.push(p.name.as_str());
                 if !p.required {
@@ -271,9 +298,14 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
                     typed.entry(key).or_default().push(&p.name);
                 }
             }
-            // A header or cookie the platform does not attach is one a tool
-            // cannot send. Optional ones are left out rather than refused.
-            _ if p.required => return None,
+            // A header or cookie is not the model's to send: the credential
+            // is attached by the platform and stripped before this, and any
+            // other is left out of the tool. Not refused when the specification
+            // marks it required, because that mark is often a condition it
+            // has no way to state -- one API's organization header is
+            // "required if the token is a JWT", and an API key needs none.
+            // Its description stays in the prose for whoever finds it is
+            // needed after all.
             _ => {}
         }
     }
@@ -284,7 +316,10 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
         }
         for f in &request.fields {
             if !plain(&f.name) || !scalar(&f.schema) {
-                return None;
+                if f.required {
+                    return None;
+                }
+                continue;
             }
             body.push(f.name.as_str());
             if !f.required {
@@ -293,6 +328,9 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
             if let Some(key) = type_key(&f.schema) {
                 typed.entry(key).or_default().push(&f.name);
             }
+        }
+        if body.is_empty() {
+            return None;
         }
     }
 
@@ -398,7 +436,7 @@ fn detail_with(
         .unwrap();
     }
 
-    write_arguments(&mut out, op, &query_params);
+    write_arguments(&mut out, op, &query_params, operation.is_some());
     write_responses(&mut out, op);
     out
 }
@@ -441,7 +479,12 @@ fn write_call(
     }
 }
 
-fn write_arguments(out: &mut String, op: &parse::Operation, query_params: &[&parse::Parameter]) {
+fn write_arguments(
+    out: &mut String,
+    op: &parse::Operation,
+    query_params: &[&parse::Parameter],
+    declared: bool,
+) {
     // Parameters (non-auth, non-query-required already shown in URL)
     let path_params: Vec<_> = op
         .parameters
@@ -494,6 +537,18 @@ fn write_arguments(out: &mut String, op: &parse::Operation, query_params: &[&par
             }
         }
 
+        // A declared operation's tool sends no header but the credential,
+        // which the platform attaches, so a header listed as if the model
+        // should pass it would be an argument the tool refuses.
+        if declared && !other_headers.is_empty() {
+            writeln!(out).unwrap();
+            writeln!(
+                out,
+                "Headers the specification lists, which this tool does not send:"
+            )
+            .unwrap();
+            writeln!(out).unwrap();
+        }
         for p in &other_headers {
             write_parameter(out, p, p.required);
         }
