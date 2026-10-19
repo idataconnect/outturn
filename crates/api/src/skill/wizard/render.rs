@@ -234,143 +234,44 @@ pub fn category_manifest_with_ops(
     out
 }
 
-/// The `operation:` block that makes an operation a tool, or `None` where the
-/// frontmatter cannot say what the specification does.
+/// The `operation:` block that makes an operation a tool, with its arguments
+/// as a schema and the schema itself, or `None` where they cannot be one --
+/// a body that is not JSON or not an object, or a schema too large to send
+/// with every round.
 ///
-/// The frontmatter is deliberately narrow -- flat lists of scalar fields, a
-/// path parameter a whole segment -- and an operation outside it is left to
-/// its prose and `fetch_url`, as every operation was before. Half-declaring
-/// one would be worse: a tool whose arguments are not what the recipient
-/// takes is called confidently and refused, and nobody is told why.
-pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> {
-    // A name goes into a flat list, so it has to read back as itself.
-    let plain = |name: &str| {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    };
-    let is_scalar = |t: &str| matches!(t, "string" | "integer" | "number" | "boolean");
-    // A list of scalars is declared as a list of its item type: `tags` as
-    // strings, sent `tags=a&tags=b`. Anything deeper is not sayable flat.
-    let list_of = |schema: &parse::SchemaInfo| {
-        (schema.type_name == "array")
-            .then_some(schema.items_type.as_deref())
-            .flatten()
-            .filter(|t| is_scalar(t))
-            .map(str::to_string)
-    };
-    let scalar = |schema: &parse::SchemaInfo| {
-        is_scalar(schema.type_name.as_str()) || list_of(schema).is_some()
-    };
-    let mut list: Vec<&str> = Vec::new();
-
-    let mut body = Vec::new();
-    let mut query = Vec::new();
-    let mut optional = Vec::new();
-    // Each field that is not a string, under the key naming its type.
-    let mut typed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let type_key = |schema: &parse::SchemaInfo| {
-        let item = list_of(schema).unwrap_or_else(|| schema.type_name.clone());
-        match item.as_str() {
-            "integer" => Some("integer"),
-            "number" => Some("number"),
-            "boolean" => Some("boolean"),
-            _ => None,
-        }
-    };
-
-    for p in &op.parameters {
-        match p.location.as_str() {
-            // Always a required string, named in the path itself.
-            "path" => {
-                if !p
-                    .name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    return None;
-                }
-            }
-            "query" => {
-                if !plain(&p.name) || !scalar(&p.schema) {
-                    // An optional parameter the tool cannot type is one it
-                    // does without; a required one it cannot send at all.
-                    if p.required {
-                        return None;
-                    }
-                    continue;
-                }
-                query.push(p.name.as_str());
-                if !p.required {
-                    optional.push(p.name.as_str());
-                }
-                if let Some(key) = type_key(&p.schema) {
-                    typed.entry(key).or_default().push(&p.name);
-                }
-                if list_of(&p.schema).is_some() {
-                    list.push(&p.name);
-                }
-            }
-            // A header or cookie is not the model's to send: the credential
-            // is attached by the platform and stripped before this, and any
-            // other is left out of the tool. Not refused when the specification
-            // marks it required, because that mark is often a condition it
-            // has no way to state -- one API's organization header is
-            // "required if the token is a JWT", and an API key needs none.
-            // Its description stays in the prose for whoever finds it is
-            // needed after all.
-            _ => {}
-        }
-    }
-    if let Some(request) = &op.request_body {
-        // A body with no fields this can name is one it cannot build -- and
-        // one that is not JSON, an upload or a form, is one a tool sending
-        // JSON cannot send. Not dropped as an optional field is: an upload
-        // without its file is not the operation at all.
-        if !request.is_json() || request.fields.is_empty() {
-            return None;
-        }
-        for f in &request.fields {
-            if !plain(&f.name) || !scalar(&f.schema) {
-                if f.required {
-                    return None;
-                }
-                continue;
-            }
-            body.push(f.name.as_str());
-            if !f.required {
-                optional.push(f.name.as_str());
-            }
-            if let Some(key) = type_key(&f.schema) {
-                typed.entry(key).or_default().push(&f.name);
-            }
-            if list_of(&f.schema).is_some() {
-                list.push(&f.name);
-            }
-        }
-        if body.is_empty() {
-            return None;
-        }
+/// A header never stops it: the credential is attached by the platform and
+/// stripped before this, and any other is left out of the tool and described
+/// in the prose as one the tool does not send. A specification often marks one
+/// required when it means "required if the token is a JWT".
+pub fn operation_block(
+    op: &parse::Operation,
+    base_url: &str,
+    root: &serde_json::Value,
+    types: &mut super::schema::Types,
+) -> Option<(String, serde_json::Value)> {
+    let (schema, query) = super::schema::arguments(op, root, types)?;
+    // Sized as it will be sent: expanded, standing alone.
+    let expanded = crate::skill::files::expand_types(&schema, types).ok()?;
+    let bytes = serde_json::to_vec(&expanded)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
+    if bytes > crate::skill::files::MAX_SCHEMA_BYTES {
+        return None;
     }
 
     let mut out = String::new();
     writeln!(out, "operation:").unwrap();
     writeln!(out, "  method: {}", op.method.to_ascii_uppercase()).unwrap();
     writeln!(out, "  url: {}{}", base_url.trim_end_matches('/'), op.path).unwrap();
-    let write_list = |out: &mut String, key: &str, names: &[&str]| {
-        if !names.is_empty() {
-            writeln!(out, "  {key}: [{}]", names.join(", ")).unwrap();
-        }
-    };
-    write_list(&mut out, "body", &body);
-    write_list(&mut out, "query", &query);
-    write_list(&mut out, "optional", &optional);
-    for (key, names) in &typed {
-        write_list(&mut out, key, names);
+    if !query.is_empty() {
+        writeln!(out, "  query: [{}]", query.join(", ")).unwrap();
     }
-    write_list(&mut out, "list", &list);
-    Some(out.trim_end().to_string())
+    writeln!(out, "  schema: |").unwrap();
+    let pretty = serde_json::to_string_pretty(&schema).ok()?;
+    for line in pretty.lines() {
+        writeln!(out, "    {line}").unwrap();
+    }
+    Some((out.trim_end().to_string(), schema))
 }
 
 /// An operation's file, and whether it declares the operation as a tool.
@@ -385,14 +286,16 @@ pub fn detail(
     base_url: &str,
     auth_header: Option<&str>,
     notes: &Notes,
-) -> (String, bool) {
-    if let Some(block) = operation_block(op, base_url) {
+    root: &serde_json::Value,
+    types: &mut super::schema::Types,
+) -> (String, Option<serde_json::Value>) {
+    if let Some((block, schema)) = operation_block(op, base_url, root, types) {
         let file = detail_with(op, base_url, auth_header, notes, Some(&block));
         if crate::skill::frontmatter::parse(&file).is_ok() {
-            return (file, true);
+            return (file, Some(schema));
         }
     }
-    (detail_with(op, base_url, auth_header, notes, None), false)
+    (detail_with(op, base_url, auth_header, notes, None), None)
 }
 
 fn detail_with(

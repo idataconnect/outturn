@@ -1,6 +1,7 @@
 mod parse;
 mod preview;
 mod render;
+mod schema;
 
 use std::collections::BTreeMap;
 
@@ -77,6 +78,7 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
     }
 
     let mut api = parse::parse(&input.spec_json)?;
+    let root = parse::document(&input.spec_json)?;
     let auth_header = input
         .auth_header
         .as_deref()
@@ -130,13 +132,24 @@ pub fn generate(input: &WizardInput) -> Result<WizardOutput, ParseError> {
 
     let mut files = BTreeMap::new();
 
-    let mut declared = 0;
+    let mut types = schema::Types::new();
+    let mut declared: Vec<serde_json::Value> = Vec::new();
     for op in &api.operations {
-        let (detail, tool) = render::detail(op, &input.base_url, auth_header, &notes);
-        declared += usize::from(tool);
+        let (detail, schema) =
+            render::detail(op, &input.base_url, auth_header, &notes, &root, &mut types);
+        declared.extend(schema);
         files.insert(format!("{}.md", op.name), detail);
     }
-    let tools = render::Tools::of(declared, api.operations.len());
+    let tools = render::Tools::of(declared.len(), api.operations.len());
+    // The types the tools use, once for the skill. An operation left to prose
+    // may have reached types nobody declared refers to, so they are pruned.
+    let used = schema::reachable(&declared.iter().collect::<Vec<_>>(), &types);
+    if !used.is_empty() {
+        files.insert(
+            crate::skill::files::TYPES_FILE.to_string(),
+            serde_json::to_string_pretty(&serde_json::Value::Object(used)).unwrap_or_default(),
+        );
+    }
 
     let body = if needs_categories {
         for (cat_slug, cat) in &categories {

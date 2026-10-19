@@ -180,6 +180,15 @@ fn expand_schemas(files: &mut [(SkillFile, Vec<u8>)]) -> Result<(), SkillError> 
     Ok(())
 }
 
+/// A schema with the skill's type references replaced, as publishing stores
+/// it: what the wizard sizes a tool by before declaring it.
+pub(crate) fn expand_types(
+    schema: &serde_json::Value,
+    types: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    expand(schema, types, &mut Vec::new())
+}
+
 /// One value with its type references replaced, `stack` holding the types
 /// being expanded around it.
 fn expand(

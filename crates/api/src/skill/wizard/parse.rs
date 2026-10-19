@@ -62,6 +62,10 @@ pub struct Parameter {
     pub required: bool,
     pub description: String,
     pub schema: SchemaInfo,
+    /// The schema as the specification wrote it, references and all, for the
+    /// tool's arguments (`super::schema`). `SchemaInfo` is the summary prose
+    /// is written from.
+    pub raw: Value,
 }
 
 pub struct RequestBody {
@@ -73,6 +77,8 @@ pub struct RequestBody {
     /// a form's `application/x-www-form-urlencoded` -- with no fields, so a body
     /// that is not JSON is still known to be there.
     pub media: String,
+    /// The JSON body's schema as written, for the tool's arguments.
+    pub raw: Option<Value>,
 }
 
 impl RequestBody {
@@ -359,6 +365,7 @@ fn extract_parameters(
                 required,
                 description,
                 schema,
+                raw: obj.get("schema").cloned().unwrap_or(Value::Null),
             })
         })
         .collect()
@@ -459,6 +466,7 @@ fn extract_request_body(
             required,
             fields: Vec::new(),
             media,
+            raw: None,
         });
     };
 
@@ -470,6 +478,7 @@ fn extract_request_body(
         required,
         fields,
         media: "application/json".into(),
+        raw: Some(schema.clone()),
     })
 }
 

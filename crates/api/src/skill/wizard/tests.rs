@@ -570,6 +570,17 @@ fn bigcapital_spec() {
         .filter(|f| crate::skill::parse(f).is_ok_and(|p| p.operation.is_some()))
         .count();
     eprintln!("{declared} operations declared as tools");
+    let largest = output.files.iter().max_by_key(|(_, f)| f.len()).unwrap();
+    eprintln!("largest file {} at {} bytes", largest.0, largest.1.len());
+    // Every file has to publish: a version refuses one past what an agent
+    // reads in one call.
+    for (name, file) in &output.files {
+        assert!(
+            file.len() <= crate::skill::files::MAX_FILE_BYTES,
+            "{name} is {} bytes",
+            file.len()
+        );
+    }
 
     // Print summary for manual inspection
     eprintln!(
@@ -1199,8 +1210,9 @@ fn an_operation_the_frontmatter_can_say_is_declared() {
     assert_eq!(create.method, "POST");
     assert_eq!(create.url, "https://api.example.com/items");
     assert_eq!(create.body, ["name", "price"]);
-    assert_eq!(create.optional, ["price"]);
-    assert_eq!(create.number, ["price"]);
+    let args = create.arguments_schema();
+    assert_eq!(args["required"], serde_json::json!(["name"]));
+    assert_eq!(args["properties"]["price"]["type"], "number");
     assert_eq!(create.summary, "Create a new item");
 
     let get = crate::skill::parse(&output.files["get_item.md"])
@@ -1215,7 +1227,10 @@ fn an_operation_the_frontmatter_can_say_is_declared() {
         .operation
         .expect("list_items is a tool");
     assert_eq!(list.query, ["page"]);
-    assert_eq!(list.optional, ["page"]);
+    assert!(
+        list.arguments_schema().get("required").is_none(),
+        "page is optional"
+    );
 }
 
 #[test]
@@ -1234,8 +1249,9 @@ fn a_declared_operation_does_not_spell_out_its_call() {
 
 #[test]
 fn an_operation_the_frontmatter_cannot_say_keeps_its_call() {
-    // A nested field has no type a flat list can give it, so the operation is
-    // left to prose and `fetch_url` rather than offered with the wrong shape.
+    // A body that is a bare array is not an object of arguments, so the
+    // operation is left to prose and `fetch_url` rather than offered with the
+    // wrong shape.
     let output = generate(&shop_input()).unwrap();
 
     let create = &output.files["create_order.md"];
@@ -1290,8 +1306,9 @@ fn an_approval_rule_that_does_not_fit_leaves_the_operation_undeclared() {
     assert!(file.contains("## The call"), "{file}");
 }
 
-/// A shop whose order takes a nested list, which a flat list cannot type, so
-/// placing one cannot be declared -- and an order read by id, which can.
+/// A shop whose order is placed with a bare JSON array, which is not an object
+/// of arguments, so placing one cannot be declared -- and an order read by id,
+/// which can.
 fn shop_input() -> WizardInput {
     let spec = serde_json::to_vec(&serde_json::json!({
         "openapi": "3.0.0",
@@ -1301,12 +1318,8 @@ fn shop_input() -> WizardInput {
                 "operationId": "createOrder",
                 "summary": "Place an order",
                 "requestBody": {"required": true, "content": {"application/json": {"schema": {
-                    "type": "object",
-                    "required": ["lines"],
-                    "properties": {
-                        "lines": {"type": "array", "items": {"type": "object"}},
-                        "note": {"type": "string"}
-                    }
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"sku": {"type": "string"}}}
                 }}}},
                 "responses": {"201": {"description": "Created"}}
             }},
@@ -1347,7 +1360,11 @@ fn a_header_does_not_stop_an_operation_being_a_tool() {
     // And a list of strings is a list the tool takes, not one it leaves out:
     // a pet store's search by tags answers 400 without its tags.
     assert_eq!(op.query, ["expand"], "{op:?}");
-    assert_eq!(op.list, ["expand"], "{op:?}");
+    assert_eq!(
+        op.arguments_schema()["properties"]["expand"]["type"],
+        "array",
+        "{op:?}"
+    );
     assert!(
         file.contains("which this tool does not send"),
         "the header is described, as one the tool leaves out: {file}"
@@ -1392,4 +1409,61 @@ fn a_body_that_is_not_json_is_not_declared_or_forgotten() {
     );
     assert!(file.contains("application/octet-stream"), "{file}");
     assert!(file.contains("## The call"), "{file}");
+}
+
+#[test]
+fn a_nested_body_is_a_tool_with_its_types_shared() {
+    // What the flat lists could not say: a pet's category is an object, and a
+    // type two operations use is written once, in types.json.
+    let spec = serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Pets", "version": "1"},
+        "paths": {
+            "/pet": {
+                "post": {"operationId": "addPet", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "OK"}}},
+                "put": {"operationId": "updatePet", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}}, "responses": {"200": {"description": "OK"}}}
+            }
+        },
+        "components": {"schemas": {
+            "Category": {"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}},
+            "Pet": {"type": "object", "required": ["name"], "properties": {
+                "id": {"type": "integer", "readOnly": true},
+                "name": {"type": "string"},
+                "category": {"$ref": "#/components/schemas/Category"},
+                "status": {"type": "string", "enum": ["available", "sold"]}
+            }}
+        }}
+    }))
+    .unwrap();
+    let output = generate(&WizardInput {
+        spec_json: spec,
+        slug: "pets".into(),
+        base_url: "https://pets.example.com".into(),
+        auth_header: None,
+        annotations: Vec::new(),
+    })
+    .unwrap();
+    let add = crate::skill::parse(&output.files["add_pet.md"])
+        .unwrap()
+        .operation
+        .expect("add_pet is a tool");
+    let args = add.arguments_schema();
+    assert_eq!(
+        args["properties"]["category"],
+        serde_json::json!({"$ref": "#/types/Category"})
+    );
+    assert_eq!(
+        args["properties"]["status"]["enum"],
+        serde_json::json!(["available", "sold"])
+    );
+    assert!(
+        args["properties"].get("id").is_none(),
+        "readOnly is the server's"
+    );
+    let types: serde_json::Value = serde_json::from_str(&output.files["types.json"]).unwrap();
+    assert!(types.get("Category").is_some(), "{types}");
+    assert!(
+        types.get("Pet").is_none(),
+        "only what a tool refers to: {types}"
+    );
 }
