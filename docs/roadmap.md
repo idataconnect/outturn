@@ -497,6 +497,19 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
+**Fixed headers on a connection.** Some APIs want a constant on every call
+besides the credential -- an organization or tenant header, an API version.
+A skill's operations leave every header out of their tools
+([openapi-wizard.md](openapi-wizard.md), *Operations as tools*), which is right
+when the specification over-declares one, as an accounting API's
+"required if the token is a JWT" organization header did; but an API that
+really needs one has nowhere to get it. The value is the workspace's -- its own
+organization -- so it belongs on the connection beside the key: a list of
+names and values, not sealed since none is a secret, attached by the gateway
+from the committed egress rule so an agent cannot change them. The connection
+could suggest the headers the bound skill's specification mentions and its
+tools leave out, to be filled in only when a call fails without one.
+
 **Channels: Slack, email and SMS as conversations.** An agent spoken to
 through another medium, its reply sent back the way the message came and a
 thread kept as one conversation. Built on a trigger source for the inbound
