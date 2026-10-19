@@ -426,18 +426,13 @@ interface host {
         method: string,
         /// Absolute, with a path parameter as `{name}` in a segment of its own.
         url: string,
+        /// The fields that go in the JSON body, and the ones that go in the
+        /// query string; a path parameter is named in the url.
         body: list<string>,
         query: list<string>,
-        /// Body or query fields that may be left out. The rest are required,
-        /// and a path parameter always is.
-        optional: list<string>,
-        /// Body or query fields by type, where the type is not a string.
-        integer: list<string>,
-        number: list<string>,
-        boolean: list<string>,
-        /// Body or query fields that are lists of their type: repeated in a
-        /// query, a JSON array in a body.
-        %list: list<string>,
+        /// The arguments as JSON Schema, standing alone, for the tool's
+        /// parameters.
+        schema: string,
     }
 
     /// The operations of the skills this turn was bound to. Read once at the

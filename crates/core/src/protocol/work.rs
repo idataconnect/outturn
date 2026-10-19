@@ -113,17 +113,10 @@ pub struct SkillOperation {
     pub body: Vec<String>,
     #[serde(default)]
     pub query: Vec<String>,
+    /// The arguments as JSON Schema, standing alone: what the tool offers,
+    /// and what a call is checked against before anything is sent.
     #[serde(default)]
-    pub optional: Vec<String>,
-    #[serde(default)]
-    pub integer: Vec<String>,
-    #[serde(default)]
-    pub number: Vec<String>,
-    #[serde(default)]
-    pub boolean: Vec<String>,
-    /// Body or query fields that are lists of their type.
-    #[serde(default)]
-    pub list: Vec<String>,
+    pub schema: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

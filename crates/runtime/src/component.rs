@@ -1574,11 +1574,7 @@ impl outturn::agent::host::Host for AgentHost {
                 url: o.url.clone(),
                 body: o.body.clone(),
                 query: o.query.clone(),
-                optional: o.optional.clone(),
-                integer: o.integer.clone(),
-                number: o.number.clone(),
-                boolean: o.boolean.clone(),
-                list: o.list.clone(),
+                schema: o.schema.clone(),
             })
             .collect()
     }

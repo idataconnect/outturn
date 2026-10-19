@@ -469,11 +469,7 @@ pub fn operations_for_turn(skills: &[ResolvedSkill]) -> Vec<SkillOperation> {
                 url: op.url.clone(),
                 body: op.body.clone(),
                 query: op.query.clone(),
-                optional: op.optional.clone(),
-                integer: op.integer.clone(),
-                number: op.number.clone(),
-                boolean: op.boolean.clone(),
-                list: op.list.clone(),
+                schema: op.arguments_schema().to_string(),
             });
         }
     }

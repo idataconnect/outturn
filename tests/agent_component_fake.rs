@@ -2800,8 +2800,17 @@ fn booking() -> outturn::protocol::work::SkillOperation {
         method: "POST".into(),
         url: "http://inn.example.com/rooms/{room_id}/bookings".into(),
         body: vec!["guest_name".into(), "nights".into(), "notes".into()],
-        optional: vec!["notes".into()],
-        integer: vec!["nights".into()],
+        schema: serde_json::json!({
+            "type": "object",
+            "required": ["room_id", "guest_name", "nights"],
+            "properties": {
+                "room_id": {"type": "string"},
+                "guest_name": {"type": "string"},
+                "nights": {"type": "integer"},
+                "notes": {"type": "string"}
+            }
+        })
+        .to_string(),
         ..Default::default()
     }
 }
@@ -3029,7 +3038,9 @@ async fn a_list_argument_is_repeated_in_the_query() {
         method: "GET".into(),
         url: "http://inn.example.com/rooms".into(),
         query: vec!["tags".into()],
-        list: vec!["tags".into()],
+        schema:
+            r#"{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"}}}}"#
+                .into(),
         ..Default::default()
     }];
     options.egress = vec![outturn::egress::rule::EgressRule {

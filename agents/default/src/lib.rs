@@ -104,37 +104,23 @@ fn operations() -> &'static [SkillOperation] {
 /// The file is named in the description because the summary is one paragraph,
 /// and the judgment calls -- charge only after booking -- are in the rest.
 fn operation_tool(op: &SkillOperation) -> ToolDefinition {
-    let path = op_path_params(op);
-    let mut properties = serde_json::Map::new();
-    let mut required: Vec<String> = Vec::new();
-    for name in path.iter().chain(&op.body).chain(&op.query) {
-        let kind = if op.integer.contains(name) {
-            "integer"
-        } else if op.number.contains(name) {
-            "number"
-        } else if op.boolean.contains(name) {
-            "boolean"
-        } else {
-            "string"
-        };
-        let schema = if op.list.contains(name) {
-            serde_json::json!({ "type": "array", "items": { "type": kind } })
-        } else {
-            serde_json::json!({ "type": kind })
-        };
-        properties.insert(name.clone(), schema);
-        if !op.optional.contains(name) {
-            required.push(name.clone());
-        }
+    // The schema the API resolved and expanded, with the label every tool
+    // carries added beside its own arguments.
+    let mut schema: serde_json::Value = serde_json::from_str(&op.schema)
+        .unwrap_or_else(|_| serde_json::json!({ "type": "object", "properties": {} }));
+    if let Some(properties) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        properties.insert(
+            ACTION.to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": "A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking which rooms are free."
+            }),
+        );
     }
-    properties.insert(
-        ACTION.to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Checking which rooms are free."
-        }),
-    );
-    required.push(ACTION.to_string());
+    match schema.get_mut("required").and_then(|r| r.as_array_mut()) {
+        Some(required) => required.push(serde_json::json!(ACTION)),
+        None => schema["required"] = serde_json::json!([ACTION]),
+    }
     let description = if op.description.is_empty() {
         format!("{} {}. Read {} for how to use it.", op.method, op.url, op.file)
     } else {
@@ -143,12 +129,7 @@ fn operation_tool(op: &SkillOperation) -> ToolDefinition {
     ToolDefinition {
         name: op.name.clone(),
         description,
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        })
-        .to_string(),
+        parameters: schema.to_string(),
     }
 }
 
@@ -208,13 +189,15 @@ fn call_operation(op: &SkillOperation, args: &serde_json::Value) -> String {
                 && !op.query.iter().any(|q| q == k)
         })
         .collect();
-    let missing: Vec<&str> = path
-        .iter()
-        .chain(&op.body)
-        .chain(&op.query)
-        .filter(|n| !op.optional.contains(n))
-        .filter(|n| given.get(n.as_str()).is_none_or(serde_json::Value::is_null))
-        .map(String::as_str)
+    let schema: serde_json::Value = serde_json::from_str(&op.schema).unwrap_or_default();
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|r| r.iter().filter_map(|n| n.as_str()).collect())
+        .unwrap_or_default();
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|n| given.get(*n).is_none_or(serde_json::Value::is_null))
         .collect();
     if !unknown.is_empty() || !missing.is_empty() {
         let mut problems = Vec::new();
