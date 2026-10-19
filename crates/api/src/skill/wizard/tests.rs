@@ -1240,6 +1240,10 @@ fn an_operation_the_frontmatter_cannot_say_keeps_its_call() {
 
     let create = &output.files["create_order.md"];
     assert!(
+        create.contains("Content-Type: application/json"),
+        "a JSON body sent by hand says so: {create}"
+    );
+    assert!(
         crate::skill::parse(create).unwrap().operation.is_none(),
         "{create}"
     );

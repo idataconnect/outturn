@@ -472,6 +472,17 @@ fn write_call(
         .unwrap();
     }
 
+    // The header a model leaves off most often, and the one a server reads a
+    // JSON body by.
+    if op.request_body.as_ref().is_some_and(|b| b.is_json()) {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "Send the body as JSON, with `Content-Type: application/json`."
+        )
+        .unwrap();
+    }
+
     if let Some(header) = auth_header {
         writeln!(out).unwrap();
         writeln!(
