@@ -175,6 +175,74 @@ whether repetition is meaningful:
 - **explicit** — the tool names its own key from its own arguments, e.g. an
   invoice id. Best when the domain has a natural identity.
 
+### A model repeating itself is the same problem
+
+Crash replay is not the only way one write gets sent twice. A model can do it
+in a single turn, as two separate calls. A small model booking a room did
+exactly that: the first `POST /bookings` came back `201`, it sent the identical
+request again, got `409` for the room it had just taken, and told the person
+the room was gone. Nothing crashed and nothing retried; the model just did not
+read its answer.
+
+The ordinal scope cannot see this -- the two calls have different ordinals, so
+they are two calls. The explicit scope sees it without trying, because a key
+derived from what the operation *is* does not care why it was sent again. A
+booking is the room, the guest and the dates; sent a second time it derives
+the same key, finds the first record, and is answered with the first booking.
+That is one mechanism covering both cases, and it is why explicit is the scope
+worth building first for any operation whose domain has an identity: the
+recipient's own key where it takes one, the host's record where it does not.
+
+It is also a protection no larger model makes unnecessary. A model that reads
+every answer still has its job retried after an eviction, and the derived key
+is what makes that retry the same booking.
+
+## Where an operation declares its identity
+
+Today only the charge has a derived key, and only as prose:
+`charge_payment_account.md` tells the model to build
+`charge-<booking_id>-<amount_pence>` and send it. That works when the recipient
+takes a key and the model follows the instruction. It gives the host nothing
+to derive a key from, so where the recipient takes none there is no record to
+keep.
+
+The declaration belongs on the operation, in the skill's specification, where
+the host can read it:
+
+```yaml
+/bookings:
+  post:
+    operationId: create_booking
+    x-outturn-identity: [room_id, guest_name, arrival, departure]
+```
+
+Fields of the request body, by name, whose values together are the write's
+identity. From them the host derives the key, so the model is not asked to:
+
+- **The recipient takes a key** (the operation also names the header or field
+  it goes in): the host sends the derived key, and the recipient dedupes.
+  That is `keyed`.
+- **It takes none**: the host keeps the record under the derived key and
+  answers a repeat from it. That is `cached` -- best-effort, because a write
+  the recipient took and we never saw answered is still `attempted`, but it
+  turns every repeat we *did* see answered into the first answer.
+- **No identity is declared**: writes are recorded under the ordinal scope,
+  which covers crash replay and nothing else.
+
+A write is a `POST`, `PATCH` or `DELETE` unless the operation says otherwise;
+reads are never recorded. The skill author knows the domain, so the identity is
+theirs to declare, and the OpenAPI wizard proposes one from the request schema
+-- the required fields of a create are usually it -- for them to confirm.
+
+A skill-derived key and a host-derived one must not disagree, which settles
+what happens to the charge: once the host derives keys, its skill stops telling
+the model how to build one, and the specification names the fields instead.
+
+Hollowbrook is where this is proved, in both halves. `create_booking` takes a
+key like the charge does, so the recipient's dedupe is shown; and the server
+can be started with booking keys turned off, serving the same operation without
+one, so the tests can show the host covering a recipient that cannot.
+
 ## Why the host owns it
 
 Same argument as egress. If the guest owns idempotency, a workspace's untrusted
@@ -230,6 +298,9 @@ The pieces, roughly in order:
 - A `tool_invocations` table holding the tristate, keyed and scoped as above.
   Partitioned by workspace like everything else that grows per-workspace.
 - Derivation policy in the WIT, so a tool declares its level and scope.
+- `x-outturn-identity` read from a skill's specification, so a `fetch_url`
+  write to a declared operation derives its key on the host -- see *Where an
+  operation declares its identity*. Proposed by the OpenAPI wizard.
 - The replay path in the host's tool dispatch, which is where a retry after a
   crash finds the record the first attempt left.
 - The read-back probe, which is what keeps escalation rare against the
