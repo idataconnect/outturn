@@ -67,6 +67,18 @@ pub struct Parameter {
 pub struct RequestBody {
     pub required: bool,
     pub fields: Vec<BodyField>,
+    /// The media type it is sent as. `application/json` where the
+    /// specification offers it, since that is the one whose fields are read;
+    /// otherwise the first it names -- an upload's `application/octet-stream`,
+    /// a form's `application/x-www-form-urlencoded` -- with no fields, so a body
+    /// that is not JSON is still known to be there.
+    pub media: String,
+}
+
+impl RequestBody {
+    pub fn is_json(&self) -> bool {
+        self.media == "application/json"
+    }
 }
 
 pub struct BodyField {
@@ -435,16 +447,30 @@ fn extract_request_body(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let schema = obj
-        .get("content")
-        .and_then(|c| c.get("application/json"))
-        .and_then(|j| j.get("schema"))?;
+    let content = obj.get("content")?.as_object()?;
+    let Some(schema) = content
+        .get("application/json")
+        .and_then(|j| j.get("schema"))
+    else {
+        // Not JSON, so nothing here reads its fields -- but dropping it would
+        // make an upload look like a request with no body at all.
+        let media = content.keys().next()?.clone();
+        return Some(RequestBody {
+            required,
+            fields: Vec::new(),
+            media,
+        });
+    };
 
     let resolved_schema = resolve_ref(schema, root, seen).unwrap_or(schema);
 
     let fields = extract_object_fields(resolved_schema, root, seen);
 
-    Some(RequestBody { required, fields })
+    Some(RequestBody {
+        required,
+        fields,
+        media: "application/json".into(),
+    })
 }
 
 fn extract_object_fields(

@@ -310,8 +310,11 @@ pub fn operation_block(op: &parse::Operation, base_url: &str) -> Option<String> 
         }
     }
     if let Some(request) = &op.request_body {
-        // A body with no fields this can name is one it cannot build.
-        if request.fields.is_empty() {
+        // A body with no fields this can name is one it cannot build -- and
+        // one that is not JSON, an upload or a form, is one a tool sending
+        // JSON cannot send. Not dropped as an optional field is: an upload
+        // without its file is not the operation at all.
+        if !request.is_json() || request.fields.is_empty() {
             return None;
         }
         for f in &request.fields {
@@ -559,12 +562,21 @@ fn write_arguments(
         writeln!(out).unwrap();
         writeln!(out, "## What to send").unwrap();
         writeln!(out).unwrap();
-        writeln!(
-            out,
-            "JSON body{}.",
-            if body.required { " (required)" } else { "" }
-        )
-        .unwrap();
+        let required = if body.required { " (required)" } else { "" };
+        if body.is_json() {
+            writeln!(out, "JSON body{required}.").unwrap();
+        } else {
+            // Said, so nobody composes JSON for an endpoint that takes a file
+            // or a form -- and fetch_url sends a body as text, which an upload
+            // of binary content is not.
+            writeln!(
+                out,
+                "A `{}` body{required}, not JSON. `fetch_url` sends a body as text, so \
+                 binary content cannot be sent this way.",
+                body.media
+            )
+            .unwrap();
+        }
         writeln!(out).unwrap();
 
         let mut required: Vec<_> = body.fields.iter().filter(|f| f.required).collect();

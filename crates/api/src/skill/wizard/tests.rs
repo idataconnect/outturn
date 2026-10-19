@@ -556,7 +556,11 @@ fn bigcapital_spec() {
     // Its organization header is marked required on nearly every operation,
     // and is only needed with a JWT; an API key needs none. That mark must not
     // keep the operations people use from being tools.
-    for name in ["get_customers.md", "get_sale_invoices.md", "create_customer.md"] {
+    for name in [
+        "get_customers.md",
+        "get_sale_invoices.md",
+        "create_customer.md",
+    ] {
         let parsed = crate::skill::parse(&output.files[name]).unwrap();
         assert!(parsed.operation.is_some(), "{name} should be a tool");
     }
@@ -1346,4 +1350,43 @@ fn a_header_or_an_optional_list_does_not_stop_an_operation_being_a_tool() {
         "the header is described, as one the tool leaves out: {file}"
     );
     assert!(file.contains("tenant-id"), "{file}");
+}
+
+#[test]
+fn a_body_that_is_not_json_is_not_declared_or_forgotten() {
+    // An upload's body is the file. Read as no body at all, the operation
+    // became a tool that posts nothing; it is spelled out instead, saying what
+    // the body is.
+    let spec = serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Test", "version": "1.0"},
+        "paths": {"/pet/{petId}/uploadImage": {"post": {
+            "operationId": "uploadFile",
+            "summary": "Uploads an image",
+            "parameters": [
+                {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}},
+                {"name": "additionalMetadata", "in": "query", "schema": {"type": "string"}}
+            ],
+            "requestBody": {"content": {"application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            }}},
+            "responses": {"200": {"description": "OK"}}
+        }}}
+    }))
+    .unwrap();
+    let output = generate(&WizardInput {
+        spec_json: spec,
+        slug: "pets".into(),
+        base_url: "https://pets.example.com".into(),
+        auth_header: None,
+        annotations: Vec::new(),
+    })
+    .unwrap();
+    let file = &output.files["upload_file.md"];
+    assert!(
+        crate::skill::parse(file).unwrap().operation.is_none(),
+        "{file}"
+    );
+    assert!(file.contains("application/octet-stream"), "{file}");
+    assert!(file.contains("## The call"), "{file}");
 }
