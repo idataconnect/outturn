@@ -103,11 +103,30 @@ pub struct Operation {
     /// `docs/skill-operations.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
+    /// The body or query fields whose values together are what this write
+    /// is: a booking is its room, guest and dates. The host derives an
+    /// idempotency key from them, so the same write sent twice is one write.
+    /// Empty for an operation whose repetition may be meant. See
+    /// `docs/idempotency.md`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity: Vec<String>,
+    /// Where the recipient takes that key, if it does: `header Idempotency-Key`
+    /// or `field idempotency_key`. Absent, the host keeps the record itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<IdempotencyKey>,
     /// What the operation is, for the tool's description: the first paragraph
     /// of the prose below the fence. Taken rather than declared, because the
     /// prose already says it and a second copy is one to fall out of date.
     #[serde(default)]
     pub summary: String,
+}
+
+/// Where a recipient takes an idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdempotencyKey {
+    Header(String),
+    Field(String),
 }
 
 impl Operation {
@@ -457,6 +476,8 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     let mut method = None;
     let mut url = None;
     let mut schema = None;
+    let mut identity: Vec<String> = Vec::new();
+    let mut idempotency_key = None;
     let mut lists: [(&str, Vec<String>); 7] = [
         ("body", Vec::new()),
         ("query", Vec::new()),
@@ -470,6 +491,22 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         match key {
             "method" => method = Some(value.to_ascii_uppercase()),
             "url" => url = Some(value.to_string()),
+            "identity" => identity = parse_list(key, &value)?,
+            "key" => {
+                idempotency_key = Some(match value.split_once(' ') {
+                    Some(("header", name)) if !name.trim().is_empty() => {
+                        IdempotencyKey::Header(name.trim().to_string())
+                    }
+                    Some(("field", name)) if !name.trim().is_empty() => {
+                        IdempotencyKey::Field(name.trim().to_string())
+                    }
+                    _ => {
+                        return Err(FrontmatterError::Invalid(format!(
+                            "key is `header <name>` or `field <name>`, not {value}"
+                        )));
+                    }
+                })
+            }
             "schema" => {
                 let parsed: serde_json::Value = serde_json::from_str(&value)
                     .map_err(|e| FrontmatterError::Invalid(format!("schema is not JSON: {e}")))?;
@@ -606,6 +643,27 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         body = rest;
     }
 
+    // An identity is fields the request carries; a key goes nowhere without
+    // one, and is meaningless on a read.
+    if let Some(stray) = identity
+        .iter()
+        .find(|n| !body.contains(n) && !query.contains(n))
+    {
+        return Err(FrontmatterError::Invalid(format!(
+            "identity names {stray}, which is not in the body or query"
+        )));
+    }
+    if idempotency_key.is_some() && identity.is_empty() {
+        return Err(FrontmatterError::Invalid(
+            "key says where an idempotency key goes; identity says what it is made of".into(),
+        ));
+    }
+    if !identity.is_empty() && matches!(method.as_str(), "GET" | "HEAD") {
+        return Err(FrontmatterError::Invalid(format!(
+            "a {method} is a read, and a read is never recorded"
+        )));
+    }
+
     Ok(Some(Operation {
         method,
         url,
@@ -617,6 +675,8 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
         boolean,
         list,
         schema,
+        identity,
+        key: idempotency_key,
         summary: String::new(),
     }))
 }
@@ -1350,6 +1410,35 @@ mod operations {
         );
         refused(
             "---\noperation:\n  method: GET\n  url: http://h/pets\n  schema: |\n    {\"type\": \"object\", \"properties\": {\"q\": {\"type\": \"string\"}}}\n---\n",
+        );
+    }
+
+    #[test]
+    fn an_identity_and_where_its_key_goes_are_read() {
+        let op = parse("---\noperation:\n  method: POST\n  url: http://h/bookings\n  body: [room_id, guest_name, notes]\n  identity: [room_id, guest_name]\n  key: field idempotency_key\n---\n")
+            .expect("parse")
+            .operation
+            .expect("op");
+        assert_eq!(op.identity, ["room_id", "guest_name"]);
+        assert_eq!(
+            op.key,
+            Some(IdempotencyKey::Field("idempotency_key".into()))
+        );
+    }
+
+    #[test]
+    fn an_identity_is_fields_the_write_sends() {
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/b\n  body: [a]\n  identity: [b]\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/b\n  body: [a]\n  key: header Idempotency-Key\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: GET\n  url: http://h/b\n  query: [a]\n  identity: [a]\n---\n",
+        );
+        refused(
+            "---\noperation:\n  method: POST\n  url: http://h/b\n  body: [a]\n  identity: [a]\n  key: cookie x\n---\n",
         );
     }
 

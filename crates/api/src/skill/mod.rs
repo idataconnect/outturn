@@ -965,6 +965,8 @@ mod tests {
             boolean: vec![],
             list: vec![],
             schema: None,
+            identity: vec![],
+            key: None,
             summary: "Which rooms are free.".into(),
         };
         let file = |path: &str, operation: Option<Operation>| SkillFile {
