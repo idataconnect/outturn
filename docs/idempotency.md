@@ -210,11 +210,16 @@ The declaration belongs on the operation, in the skill's specification, where
 the host can read it:
 
 ```yaml
-/bookings:
-  post:
-    operationId: create_booking
-    x-outturn-identity: [room_id, guest_name, arrival, departure]
+operation:
+  method: POST
+  url: http://outturn-hollowbrook:8084/bookings
+  body: [room_id, guest_name, arrival, departure]
+  identity: [room_id, guest_name, arrival, departure]
 ```
+
+Built, as `identity` in an operation's frontmatter
+([skill-operations.md](skill-operations.md)), with `key: field <name>` or
+`key: header <name>` where the recipient takes one.
 
 Fields of the request body, by name, whose values together are the write's
 identity. From them the host derives the key, so the model is not asked to:
@@ -238,10 +243,25 @@ A skill-derived key and a host-derived one must not disagree, which settles
 what happens to the charge: once the host derives keys, its skill stops telling
 the model how to build one, and the specification names the fields instead.
 
-Hollowbrook is where this is proved, in both halves. `create_booking` takes a
-key like the charge does, so the recipient's dedupe is shown; and the server
-can be started with booking keys turned off, serving the same operation without
-one, so the tests can show the host covering a recipient that cannot.
+Hollowbrook proves both halves. Its charge declares an identity and a key
+field, so the host sends the key and the house dedupes -- and its prose no
+longer tells the model how to build one. Its booking declares an identity and
+no key, since the house takes none, so the host covers it.
+
+### How the host covers it
+
+The runtime host asks the API's record (`/v1/work/invocations`, under the
+turn's lease) before a declared write goes out, keyed by workspace for a day:
+
+- **Never seen**: claimed as `attempted`, and sent.
+- **Seen answered**: the first answer is given again, marked so the model
+  says it was already done, and nothing is sent.
+- **Seen sent, never answered**: refused. Whether it landed is not known.
+
+A recipient's refusal, or the gateway's, changed nothing, so it releases the
+claim and the retry it invites goes out. A connection that broke after sending
+leaves it `attempted`. Settling is best-effort: a completed write left
+unrecorded looks attempted to a repeat, and is refused rather than sent twice.
 
 ## Why the host owns it
 
@@ -290,7 +310,7 @@ gives, so it is not a weaker position than the familiar one.
 
 ## Not yet built
 
-Nothing here exists. Written before the tools that need it, while the design is
+The record and declared identities are built, above. The rest is not. Written before the tools that need it, while the design is
 still free: today there is `fetch` and object storage, so the pressure is low.
 
 The pieces, roughly in order:

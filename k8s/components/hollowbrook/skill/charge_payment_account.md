@@ -8,8 +8,10 @@ approval:
 operation:
   method: POST
   url: http://outturn-hollowbrook:8084/charges
-  body: [payment_account_id, booking_id, amount_pence, idempotency_key]
+  body: [payment_account_id, booking_id, amount_pence]
   integer: [amount_pence]
+  identity: [booking_id, amount_pence]
+  key: field idempotency_key
 ---
 
 # charge_payment_account
@@ -30,16 +32,10 @@ off.
 - `booking_id` — the booking this is payment for, from `create_booking` or
   `list_bookings`.
 - `amount_pence` — pence, so £145 is `14500`.
-- `idempotency_key` — **required, and derived rather than invented.** Build it
-  as `charge-<booking_id>-<amount_pence>`, so charging `bk_8812` for `9000` is
-  always `charge-bk_8812-9000`.
 
-  Derive it that way every time, including when you try again. A key you made up
-  fresh is a key the house has not seen, so it takes the money a second time —
-  and a charge that needs approving is refused, approved and then *retried*, so
-  the second attempt is the ordinary path rather than a rare one. Deriving it
-  from the booking and the amount means your retry is recognized as the same
-  charge, whatever happened in between.
+A charge for the same booking and amount is the same charge, however many
+times it is sent -- including the retry after an approval. The platform tells
+the house so; there is nothing to add for it.
 
 ## What comes back
 
@@ -47,9 +43,8 @@ off.
 
 - `id`, `payment_account_id`, `booking_id`, `amount_pence`, `created_at`
 
-`200` rather than `201` means a charge with that `idempotency_key` was already
-taken and this is that one. Nothing was charged a second time; treat it as
-success.
+`200` rather than `201` means that charge was already taken and this is that
+one. Nothing was charged a second time; treat it as success.
 
 ## Errors
 

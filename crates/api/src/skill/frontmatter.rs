@@ -1123,7 +1123,10 @@ mod against_the_real_files {
         let charge = parse(&charge_source).expect("parses");
         let op = charge.operation.expect("an operation");
         assert_eq!(op.integer, ["amount_pence"]);
-        assert!(op.body.contains(&"idempotency_key".to_string()));
+        // The key is the platform's to derive and send, not the model's.
+        assert!(!op.body.contains(&"idempotency_key".to_string()));
+        assert_eq!(op.identity, ["booking_id", "amount_pence"]);
+        assert_eq!(op.key, Some(IdempotencyKey::Field("idempotency_key".into())));
 
         let index_source = read("index");
         let index = parse(&index_source).expect("parses");

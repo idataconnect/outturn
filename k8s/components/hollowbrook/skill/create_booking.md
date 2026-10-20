@@ -3,6 +3,7 @@ operation:
   method: POST
   url: http://outturn-hollowbrook:8084/bookings
   body: [room_id, guest_name, arrival, departure]
+  identity: [room_id, guest_name, arrival, departure]
 ---
 
 # create_booking
