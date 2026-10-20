@@ -19,6 +19,7 @@ mod files;
 pub mod gated;
 pub mod grant;
 pub mod inhibitor;
+pub mod invocations;
 mod login;
 mod model_changes;
 mod models;

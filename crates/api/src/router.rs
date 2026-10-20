@@ -1808,6 +1808,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // require GatewayInvoke, which is the platform's own tier rather than
         // a workspace's.
         .route("/v1/work/gated", post(super::gated::raise))
+        .route(
+            "/v1/work/invocations/claim",
+            post(super::invocations::claim),
+        )
+        .route(
+            "/v1/work/invocations/settle",
+            post(super::invocations::settle),
+        )
         .route("/v1/work/wait", post(super::wake::wait))
         .route("/v1/work", post(super::work::take))
         .route("/v1/work/{job_id}/events", post(super::work::report))
