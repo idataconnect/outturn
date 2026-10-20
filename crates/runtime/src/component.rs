@@ -45,6 +45,13 @@ pub const MAX_OPEN_WRITERS: usize = 4;
 /// given this, so one call cannot fill its memory.
 pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 
+/// What a guest's `len` is served as: never more than `MAX_READ_CHUNK`.
+/// A short read is what a guest already handles; a four-gigabyte buffer
+/// allocated by the host, outside admission and the guest's own cap, is not.
+pub fn clamp_read(len: u32) -> u32 {
+    len.min(MAX_READ_CHUNK)
+}
+
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
     Message, ObjectInfo, SkillOperation, TimerDue, ToolActivity, ToolCall, ToolDefinition,
@@ -747,7 +754,7 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         let state = self.table.get_mut(&reader).map_err(|e| e.to_string())?;
-        match state.inner.read(len.min(MAX_READ_CHUNK) as usize).await {
+        match state.inner.read(clamp_read(len) as usize).await {
             Ok(bytes) => Ok(bytes),
             Err(e) => Err(self.storage_failed("read", e)),
         }
@@ -1285,6 +1292,7 @@ impl outturn::agent::host::Host for AgentHost {
         offset: u64,
         len: u32,
     ) -> Result<Vec<u8>, String> {
+        let len = clamp_read(len);
         let (storage, resolved) = self.object_at(&path)?;
 
         // A document is handed over as the words in it, not as the bytes a
@@ -1343,6 +1351,7 @@ impl outturn::agent::host::Host for AgentHost {
     }
 
     async fn read_bytes(&mut self, path: String, offset: u64, len: u32) -> Result<Vec<u8>, String> {
+        let len = clamp_read(len);
         // The object as stored: no extraction, no redirect. What read_object
         // does for a document is a convenience for reading; this is for the
         // callers that need the thing itself.
@@ -1393,6 +1402,9 @@ impl outturn::agent::host::Host for AgentHost {
     async fn write_object(&mut self, path: String, data: Vec<u8>) -> Result<u64, String> {
         self.may_write(&path)?;
         let (storage, resolved) = self.object_at(&path)?;
+        // The bytes are already here; held against admission while they are
+        // sent on, as a writer's part is while it is open.
+        let _charge = self.charge(data.len() as u64, "write a file")?;
         let written = storage
             .write(&resolved, &data)
             .await
@@ -1457,6 +1469,12 @@ impl outturn::agent::host::Host for AgentHost {
     ) -> Result<ObjectInfo, String> {
         self.may_write(&destination)?;
         let (storage, resolved) = self.object_at(&destination)?;
+        // The document and the PDF it becomes are both held at once; the
+        // PDF's share is its most, as the renderer's answer is not known yet.
+        let _charge = self.charge(
+            markdown.len() as u64 + crate::render::MAX_PDF_BYTES as u64,
+            "render a PDF",
+        )?;
         let pdf = crate::render::render(&self.http, self.renderer_url.as_deref(), markdown).await?;
         let size = storage
             .write(&resolved, &pdf)
@@ -2954,5 +2972,23 @@ mod stream_tests {
                 "cut at {cut}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod read_clamp {
+    use super::*;
+
+    #[test]
+    fn a_guest_cannot_ask_for_more_than_a_chunk() {
+        assert_eq!(clamp_read(u32::MAX), MAX_READ_CHUNK);
+        assert_eq!(clamp_read(MAX_READ_CHUNK + 1), MAX_READ_CHUNK);
+    }
+
+    #[test]
+    fn a_smaller_read_is_left_alone() {
+        assert_eq!(clamp_read(0), 0);
+        assert_eq!(clamp_read(4096), 4096);
+        assert_eq!(clamp_read(MAX_READ_CHUNK), MAX_READ_CHUNK);
     }
 }

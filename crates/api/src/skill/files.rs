@@ -164,8 +164,13 @@ fn expand_schemas(files: &mut [(SkillFile, Vec<u8>)]) -> Result<(), SkillError> 
         let Some(schema) = op.schema.take() else {
             continue;
         };
-        let expanded = expand(&schema, &types, &mut Vec::new())
-            .map_err(|e| SkillError::Invalid(format!("{}: {e}", file.path)))?;
+        let expanded = expand(
+            &schema,
+            &types,
+            &mut Vec::new(),
+            &mut MAX_SCHEMA_BYTES.clone(),
+        )
+        .map_err(|e| SkillError::Invalid(format!("{}: {e}", file.path)))?;
         let bytes = serde_json::to_vec(&expanded)
             .map(|v| v.len())
             .unwrap_or(usize::MAX);
@@ -186,19 +191,31 @@ pub(crate) fn expand_types(
     schema: &serde_json::Value,
     types: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    expand(schema, types, &mut Vec::new())
+    expand(
+        schema,
+        types,
+        &mut Vec::new(),
+        &mut MAX_SCHEMA_BYTES.clone(),
+    )
 }
 
 /// One value with its type references replaced, `stack` holding the types
 /// being expanded around it.
+///
+/// `budget` is what the expansion may still produce, in bytes, counted as it
+/// goes: a type that refers to another twenty times, six deep, would
+/// otherwise build tens of millions of nodes before the size of the result
+/// was ever looked at.
 fn expand(
     value: &serde_json::Value,
     types: &serde_json::Map<String, serde_json::Value>,
     stack: &mut Vec<String>,
+    budget: &mut usize,
 ) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     match value {
         Value::Object(map) => {
+            charge(budget, 2 + map.keys().map(|k| k.len() + 4).sum::<usize>())?;
             if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
                 let name = reference
                     .strip_prefix("#/types/")
@@ -207,25 +224,40 @@ fn expand(
                     .get(name)
                     .ok_or_else(|| format!("{name} is not in {TYPES_FILE}"))?;
                 if stack.iter().any(|t| t == name) || stack.len() >= TYPE_DEPTH {
+                    charge(budget, 17)?;
                     return Ok(serde_json::json!({ "type": "object" }));
                 }
                 stack.push(name.to_string());
-                let out = expand(found, types, stack);
+                let out = expand(found, types, stack, budget);
                 stack.pop();
                 return out;
             }
             map.iter()
-                .map(|(k, v)| Ok((k.clone(), expand(v, types, stack)?)))
+                .map(|(k, v)| Ok((k.clone(), expand(v, types, stack, budget)?)))
                 .collect::<Result<serde_json::Map<_, _>, String>>()
                 .map(Value::Object)
         }
-        Value::Array(items) => items
-            .iter()
-            .map(|v| expand(v, types, stack))
-            .collect::<Result<Vec<_>, String>>()
-            .map(Value::Array),
-        other => Ok(other.clone()),
+        Value::Array(items) => {
+            charge(budget, 2 + items.len())?;
+            items
+                .iter()
+                .map(|v| expand(v, types, stack, budget))
+                .collect::<Result<Vec<_>, String>>()
+                .map(Value::Array)
+        }
+        other => {
+            charge(budget, other.to_string().len())?;
+            Ok(other.clone())
+        }
     }
+}
+
+/// Takes `n` bytes from what an expansion may still produce.
+fn charge(budget: &mut usize, n: usize) -> Result<(), String> {
+    *budget = budget.checked_sub(n).ok_or_else(|| {
+        format!("its schema expands past {MAX_SCHEMA_BYTES} bytes; a tool's may be at most that")
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -245,7 +277,13 @@ mod expansion {
     #[test]
     fn a_reference_becomes_its_type() {
         let schema = serde_json::json!({"type": "object", "properties": {"category": {"$ref": "#/types/Category"}}});
-        let out = expand(&schema, &types(), &mut Vec::new()).unwrap();
+        let out = expand(
+            &schema,
+            &types(),
+            &mut Vec::new(),
+            &mut MAX_SCHEMA_BYTES.clone(),
+        )
+        .unwrap();
         assert_eq!(
             out["properties"]["category"]["properties"]["name"]["type"],
             "string"
@@ -256,7 +294,13 @@ mod expansion {
     fn a_type_that_contains_itself_stops_at_an_object() {
         let schema =
             serde_json::json!({"type": "object", "properties": {"root": {"$ref": "#/types/Node"}}});
-        let out = expand(&schema, &types(), &mut Vec::new()).unwrap();
+        let out = expand(
+            &schema,
+            &types(),
+            &mut Vec::new(),
+            &mut MAX_SCHEMA_BYTES.clone(),
+        )
+        .unwrap();
         assert_eq!(
             out["properties"]["root"]["properties"]["child"],
             serde_json::json!({"type": "object"})
@@ -264,10 +308,47 @@ mod expansion {
     }
 
     #[test]
+    fn a_fan_out_is_refused_before_it_is_built() {
+        // Twenty references per level, six levels: about 64 million nodes
+        // if let run, from a file well under the upload cap.
+        let refs: serde_json::Map<String, serde_json::Value> = (0..20)
+            .map(|i| (format!("f{i}"), serde_json::json!({"$ref": "#/types/Next"})))
+            .collect();
+        let mut types = serde_json::Map::new();
+        for (name, next) in [("A", "B"), ("B", "C"), ("C", "D"), ("D", "E"), ("E", "F")] {
+            let mut level = refs.clone();
+            level
+                .iter_mut()
+                .for_each(|(_, v)| *v = serde_json::json!({"$ref": format!("#/types/{next}")}));
+            types.insert(name.into(), serde_json::Value::Object(level));
+        }
+        types.insert("F".into(), serde_json::json!({"type": "string"}));
+        let schema = serde_json::json!({"$ref": "#/types/A"});
+        let started = std::time::Instant::now();
+        let err = expand(
+            &schema,
+            &types,
+            &mut Vec::new(),
+            &mut MAX_SCHEMA_BYTES.clone(),
+        )
+        .unwrap_err();
+        assert!(err.contains("expands past"), "{err}");
+        assert!(started.elapsed().as_secs() < 5);
+    }
+
+    #[test]
     fn an_unknown_type_is_refused() {
         let schema =
             serde_json::json!({"type": "object", "properties": {"x": {"$ref": "#/types/Nope"}}});
-        assert!(expand(&schema, &types(), &mut Vec::new()).is_err());
+        assert!(
+            expand(
+                &schema,
+                &types(),
+                &mut Vec::new(),
+                &mut MAX_SCHEMA_BYTES.clone()
+            )
+            .is_err()
+        );
     }
 }
 

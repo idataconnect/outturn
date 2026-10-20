@@ -16,6 +16,11 @@ pub const URL_ENV: &str = "OUTTURN_PDF_RENDERER_URL";
 /// sentence before it is sent anywhere.
 pub const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
 
+/// The most of the renderer's answer that is read. A PDF of a two-megabyte
+/// document is far smaller; past this the renderer is misbehaving, and the
+/// runtime does not buffer what it sends.
+pub const MAX_PDF_BYTES: usize = 32 * 1024 * 1024;
+
 /// How long a render may take, end to end. The renderer gives up at thirty
 /// seconds; a little longer here so its own answer is the one heard.
 const TIMEOUT: Duration = Duration::from_secs(40);
@@ -58,15 +63,71 @@ pub async fn render(
             "the PDF renderer could not be reached; try again shortly".to_string()
         })?;
     let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| format!("the PDF renderer stopped partway: {e}"))?;
+    let body = capped(response, MAX_PDF_BYTES).await?;
     if status.is_success() {
-        return Ok(body.to_vec());
+        return Ok(body);
     }
     // The renderer's refusals are written to be read -- too large, busy, too
     // slow, could not be laid out -- so they are passed on as they are.
     let said = String::from_utf8_lossy(&body);
     Err(said.chars().take(300).collect())
+}
+
+/// The body, read chunk by chunk and abandoned the moment it passes `max`.
+async fn capped(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    let too_large =
+        || format!("the PDF renderer sent more than {max} bytes; a PDF may be at most that");
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("the PDF renderer stopped partway: {e}"))?
+    {
+        if body.len() + chunk.len() > max {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Serves one response with `body` and returns where to reach it.
+    async fn serve(body: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_cap_is_refused() {
+        let url = serve(vec![0; 64]).await;
+        let response = reqwest::get(url).await.unwrap();
+        assert!(capped(response, 32).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_body_within_the_cap_is_returned() {
+        let url = serve(vec![7; 32]).await;
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(capped(response, 32).await.unwrap(), vec![7; 32]);
+    }
 }
