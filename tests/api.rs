@@ -12677,6 +12677,104 @@ async fn a_schedule_firing_taken_twice_starts_one_turn() {
     finish!(h);
 }
 
+/// A trigger's turns are bounded at once as well as per hour: past its
+/// maximum unfinished, a firing is refused and not counted against the hour,
+/// and once one finishes the next goes ahead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trigger_runs_no_more_turns_at_once_than_it_may() {
+    use outturn::api::trigger::{Ceiling, Fired, Firer, Firing, Source, fire};
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("sched-ceiling@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-ceiling"}"#,
+        )
+        .await;
+    let agent_id: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, body) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent_id}","name":"Often","prompt":"Report.","expression":"* * * * *"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let schedule: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    sqlx::query("update triggers set max_concurrent = 2 where id = $1")
+        .bind(schedule)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    let firer = Firer {
+        id: schedule,
+        workspace_id: acme,
+        agent_id,
+        name: "Often".into(),
+        prompt: "Report.".into(),
+        account: None,
+        source: Source::Schedule(schedule),
+    };
+    let firing = |n: u32| Firing {
+        text: None,
+        external_id: Some(format!("2026-10-19T09:0{n}:00+00:00")),
+        timezone: None,
+        metadata: serde_json::json!({}),
+    };
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing(1)).await,
+        Fired::Started(_)
+    ));
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing(2)).await,
+        Fired::Started(_)
+    ));
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing(3)).await,
+        Fired::OverCeiling(Ceiling::Concurrent)
+    ));
+    let counted: i32 = sqlx::query_scalar("select window_count from triggers where id = $1")
+        .bind(schedule)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        counted, 2,
+        "a refused firing is not counted against the hour"
+    );
+
+    // One finishes, and the next goes ahead -- the refused one too, its
+    // dedupe record never having been written.
+    sqlx::query(
+        "update jobs set state = 'succeeded' where id = \
+         (select id from jobs where workspace_id = $1 and kind = 'chat.turn' order by id limit 1)",
+    )
+    .bind(acme)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        fire(&h.db.pool, &firer, firing(3)).await,
+        Fired::Started(_)
+    ));
+    finish!(h);
+}
+
 /// A model change is noted where it happens: three replies answered by the
 /// same fallback carry one note, on the first; a reply back on the first
 /// model carries none; and the fallback answering again is a change again.

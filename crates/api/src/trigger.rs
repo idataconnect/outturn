@@ -95,9 +95,28 @@ pub enum Fired {
     Started(Uuid),
     /// The sender's id for it was seen before; nothing was started.
     Duplicate,
-    /// The trigger's hourly ceiling turned it away; nothing was started.
-    OverCeiling,
+    /// The trigger's ceiling turned it away; nothing was started.
+    OverCeiling(Ceiling),
     Failed(String),
+}
+
+/// Which half of a trigger's ceiling turned a firing away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ceiling {
+    /// Its firings this hour.
+    Hourly,
+    /// Its turns not yet finished.
+    Concurrent,
+}
+
+impl Ceiling {
+    /// Why, in words, for a record somebody reads.
+    pub fn why(self) -> &'static str {
+        match self {
+            Ceiling::Hourly => "the trigger's hourly ceiling was reached",
+            Ceiling::Concurrent => "the trigger already has as many turns running as it may",
+        }
+    }
 }
 
 /// What the body is substituted into.
@@ -127,12 +146,6 @@ pub async fn fire(pool: &sqlx::PgPool, firer: &Firer, firing: Firing) -> Fired {
         }
     }
 
-    match admit(pool, firer.id).await {
-        Ok(true) => {}
-        Ok(false) => return Fired::OverCeiling,
-        Err(e) => return Fired::Failed(e.to_string()),
-    }
-
     let prompt = match &firing.text {
         Some(text) => prompt_for(&firer.prompt, text),
         None => firer.prompt.clone(),
@@ -150,6 +163,16 @@ pub async fn fire(pool: &sqlx::PgPool, firer: &Firer, firing: Firing) -> Fired {
 
     let run = async {
         let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        // Both halves of the ceiling under one lock on the trigger, so two
+        // firings arriving together cannot each count the other as not yet
+        // started -- and a firing the concurrent half refuses is not counted
+        // against the hour.
+        if let Some(ceiling) = over_ceiling(&mut tx, firer.id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(Err(ceiling));
+        }
         if let Some(external) = &firing.external_id {
             let recorded = sqlx::query(
                 "insert into trigger_firings (trigger_id, external_id) values ($1, $2) \
@@ -161,16 +184,17 @@ pub async fn fire(pool: &sqlx::PgPool, firer: &Firer, firing: Firing) -> Fired {
             .await
             .map_err(|e| e.to_string())?;
             if recorded.rows_affected() == 0 {
-                return Ok(None);
+                return Ok(Ok(None));
             }
         }
         let session_id = start_in(&mut tx, started).await?;
         tx.commit().await.map_err(|e| e.to_string())?;
-        Ok::<_, String>(Some(session_id))
+        Ok::<_, String>(Ok(Some(session_id)))
     };
     match run.await {
-        Ok(Some(session_id)) => Fired::Started(session_id),
-        Ok(None) => Fired::Duplicate,
+        Ok(Ok(Some(session_id))) => Fired::Started(session_id),
+        Ok(Ok(None)) => Fired::Duplicate,
+        Ok(Err(ceiling)) => Fired::OverCeiling(ceiling),
         Err(e) => Fired::Failed(e),
     }
 }
@@ -195,7 +219,45 @@ pub fn prompt_for(template: &str, body: &str) -> String {
 /// boundary -- the honest cost of one row and one statement, and twice the
 /// limit is still not a runaway. A refused firing is not counted, or a sender
 /// ignoring refusals would hold the window open for ever.
+/// Which half of the ceiling refuses a firing now, if either does: its turns
+/// not yet finished, then its firings this hour -- the hour counted only for a
+/// firing the first half let through. Locks the trigger for the transaction.
+async fn over_ceiling(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<Option<Ceiling>, sqlx::Error> {
+    let max: Option<i32> =
+        sqlx::query_scalar("select max_concurrent from triggers where id = $1 for update")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+    if let Some(max) = max {
+        // Unfinished as `sessions.rs` reads it: a state added to jobs has to
+        // be added here too (docs/invariants.md).
+        let running: i64 = sqlx::query_scalar(
+            "select count(*) from jobs j \
+               join agent_sessions s on s.id = (j.payload->>'session_id')::uuid \
+              where s.trigger_id = $1 and j.kind = 'chat.turn' \
+                and j.state in ('pending', 'running', 'parked')",
+        )
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if running >= i64::from(max) {
+            return Ok(Some(Ceiling::Concurrent));
+        }
+    }
+    if !admit_in(&mut **tx, id).await? {
+        return Ok(Some(Ceiling::Hourly));
+    }
+    Ok(None)
+}
+
 pub async fn admit(pool: &sqlx::PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    admit_in(pool, id).await
+}
+
+async fn admit_in<'e, E: sqlx::PgExecutor<'e>>(executor: E, id: Uuid) -> Result<bool, sqlx::Error> {
     let admitted = sqlx::query(
         "update triggers set \
              window_start = case when window_start < now() - interval '1 hour' \
@@ -207,7 +269,7 @@ pub async fn admit(pool: &sqlx::PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
                 or window_start < now() - interval '1 hour' or window_count < max_per_hour)",
     )
     .bind(id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(admitted.rows_affected() > 0)
 }

@@ -14,7 +14,8 @@ union the browser switches on, which showed nothing at all. A cancelled turn is
 *accounted for*, so it belongs in every list meaning "this turn finished" — and
 it is terminal and never retried, so it must not appear in any list meaning
 "give this back to the queue". Grep for the state strings, not just the
-constraint.
+constraint -- `trigger::over_ceiling` counts unfinished turns the way
+`sessions.rs` does, and is one more list to keep.
 
 **Streamed deltas concatenate to stored content.** What the browser renders
 during a turn must be exactly what the transcript holds afterwards, or the

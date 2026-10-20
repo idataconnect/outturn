@@ -437,7 +437,7 @@ pub async fn deliver(
             release(&state, claimed.as_deref(), trigger.id, claimant).await;
             refuse(&state, &trigger, Refusal::Duplicate).await
         }
-        crate::trigger::Fired::OverCeiling => {
+        crate::trigger::Fired::OverCeiling(_) => {
             release(&state, claimed.as_deref(), trigger.id, claimant).await;
             refuse(&state, &trigger, Refusal::RateLimited).await
         }

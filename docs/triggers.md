@@ -401,14 +401,14 @@ the hourly ceiling turned away.
 
 ### What is still to settle
 
-**The concurrency half of the ceiling.** The section above specifies "a maximum
-concurrent and a maximum per hour" and only the second exists. With a new
-session per delivery there is no serial key joining them, so a trigger allowing
-sixty an hour against turns that take three minutes runs them genuinely
-concurrently -- which is the first runaway shape this document describes,
-unbounded by the ceiling that was supposed to bound it.
+**The concurrency half of the ceiling.** Built (2026-10-20): `max_concurrent`
+on every trigger, four by default, counting its turns still pending, running
+or parked. Checked with the hourly half under one lock on the trigger, so two
+firings arriving together cannot each miss the other, and a firing it refuses
+is not counted against the hour.
 
-**The ceiling for schedules.** Unbuilt there too. Less urgent, because a
+**The ceiling for schedules.** Both halves now apply to schedules too, through
+the one pipeline. Less urgent, because a
 schedule fires only as often as its own expression says, where a hook fires as
 often as whoever holds the URL chooses.
 

@@ -105,8 +105,8 @@ async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::Date
             tracing::warn!(schedule_id = %schedule.id, %owed, "a schedule's firing had already run");
             record(pool, schedule.id, "ok", None, next, skipped).await;
         }
-        crate::trigger::Fired::OverCeiling => {
-            let why = "the trigger's hourly ceiling was reached";
+        crate::trigger::Fired::OverCeiling(ceiling) => {
+            let why = ceiling.why();
             tracing::warn!(schedule_id = %schedule.id, why, "a schedule could not fire");
             record(pool, schedule.id, "failed", Some(why), next, skipped).await;
         }
