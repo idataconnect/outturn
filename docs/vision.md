@@ -63,6 +63,26 @@ on a turn nobody asked -- an image nobody asks about costs one upload and
 nothing else. An image asked about three ways costs three calls, which is the
 price of three answers that are actually about the three questions.
 
+**A look is accounted for like a round.** It goes through the same path as a
+round of the conversation, so the gateway names who served it and what it
+cost, and the runtime reports that to the ledger under the `vision` traffic
+type -- a usage row says what a picture cost apart from what the conversation
+did. It also takes one of the turn's rounds, against the same
+`max_tool_rounds` limit: a model that could call the conversation's model a
+bounded number of times but look at pictures without limit would have no
+limit at all. Both were missing once. The call went out beside the
+conversation, produced no usage event -- and the ledger is written only from
+those -- and counted nothing, so vision spend vanished from the bill and a
+looping model could make unbounded paid calls inside one turn.
+
+**The image reaches every protocol.** The runtime sends it as a `data:` URL in
+a chat-completions image part, which the OpenAI protocol takes as it is. The
+gateway translates it for the others: Anthropic and Bedrock get a base64
+source with its media type, since the Messages API refuses a data URL as
+something it cannot fetch, and Gemini gets it as inline data, where a
+translation that kept only the text once asked the model about a picture it
+had never been shown.
+
 If the same question is asked twice the second call is wasted. Worth caching
 eventually, keyed on the object and the question; not worth it before anyone
 has seen the numbers.
