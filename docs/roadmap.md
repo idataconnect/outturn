@@ -165,6 +165,11 @@ observed examples.
 
 [idempotency.md](idempotency.md).
 
+**Declared writes are built** (2026-10-20): an operation names its identity,
+the host derives a key from it, a recipient that takes one is sent it, and the
+API's record covers one that does not. What follows is the crash-replay half
+for writes nobody declared, which is still open.
+
 Standalone, and smaller than it was written to be. The design's motivating case
 was the stop button, and stop solved it another way: cancellation is read at a
 round boundary and a round cut partway has its tool calls refused wholesale, so
@@ -372,51 +377,21 @@ The fixture this wants is a mock service the operator has allowed, a skill
 declaring that host, and an agent completing a task against it with
 `fetch_url`. Every part of that exists today.
 
-## A fork, not a prerequisite
-
-### Tool registration
-
-No spec, and no scheduled place in this list, which is deliberate.
-
-The evidence arrived, and it asked for less than registration.
-[skill-operations.md](skill-operations.md) offers a skill's declared operations
-as tools by translating each call, in the guest, into the `fetch_url` request
-its file already describes: no interface change and no new trust. What follows
-is still the question for a tool that is not an operation in a skill.
-
-Tools live inside the guest: `all_tools()` is a literal vector and `run_tool`
-matches on the name, so the set is fixed when the wasm is built. Nothing
-outside can add one. The question is whether that matters, and the answer
-depends on evidence nobody has yet.
-
-What a registered tool would buy is argument shape and argument constraints. A
-model cannot malform a request it did not compose, which is a hedge against
-weaker models rather than an architectural need; and a constraint can pin a
-field the agent must not choose, which matters for a conduit integration --
-a verified sender domain, a bounded recipient list -- and for little else.
-Neither is containment: the egress rule and the credential binding are the
-boundary, and a typed tool is checked by the same code as a `fetch_url` call to
-the same host.
-
-Where it would earn its place is a multi-step operation -- several correlated
-calls threading identifiers through, where a model will sometimes get it wrong
-in ways that are hard to notice. That is a real case and it has not arrived
-yet.
-
-So: build integrations on `fetch_url`, and let a specific integration that
-prose cannot serve be the thing that justifies this. When one does, the
-decision to settle is where a registered tool runs. In the guest, its
-definition must cross the WIT boundary, which has no shape for it today and
-means an interface change. In the host, it is not a tool the component reasons
-about at all, only one the host offers and answers on its behalf, and the
-guest's dispatch stops being the whole story. Both are defensible; they are
-different platforms afterwards.
-
 ## Done, and not from this list
 
 Work that answered something found by using the thing rather than by reading
 the plan. Recorded because the list above says nothing about it, and a reader
 comparing the two would otherwise think it never happened.
+
+**Skill operations as tools** — 2026-10-19/20. A skill's operations are
+offered as tools, their requests built by the guest from what each file
+declares ([skill-operations.md](skill-operations.md)) -- which retired the fork
+"tool registration" used to stand here as, by registering nothing. Arguments
+are JSON Schema, resolved by the OpenAPI wizard from a specification's types
+into a skill's shared `types.json`; a real accounting API went from no tools to
+377 of 385. Found by small models confusing `load_tools`, `read_object` and
+`fetch_url`, and by walking the wizard through two real specifications, which
+also turned up the header, body, content-type and key-test fixes now in.
 
 **Open source readiness** — 2026-09-21. CI running the tier a bare checkout
 can run, `SECURITY.md` with the boundary stated rather than boilerplate,

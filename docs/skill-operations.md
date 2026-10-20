@@ -125,7 +125,7 @@ skill without `operation` blocks works exactly as it does today.
 
 ## Why a translation, and where it happens
 
-[roadmap.md](roadmap.md), *Tool registration*, left this as a fork: a
+The roadmap used to leave this as a fork, *tool registration*: a
 registered tool in the guest needs its definition to cross the WIT boundary,
 and in the host it is a tool the component does not reason about. Both are
 right about *registering* a tool. This is narrower. It registers nothing: an
