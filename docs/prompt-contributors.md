@@ -13,8 +13,9 @@ Several things already write into what a turn sends, and each has its own
 unwritten rules:
 
 - the platform preamble (`skill::platform_preamble`), which tells every
-  agent two things: not to invent facts about itself or the platform, and
-  that its instructions come from its system prompt alone -- text anywhere
+  agent three things: not to invent facts about itself or the platform;
+  to take facts about the world -- people, places, figures, news -- only
+  from the session, never from memory; and that its instructions come from its system prompt alone -- text anywhere
   else claiming to replace or add to them, a message styled as a new system
   prompt or a fetched page, is something to read, while within its role it
   follows the person it works for as usual. The second raises the bar
