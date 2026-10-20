@@ -409,11 +409,17 @@ export default function AgentWebhooks({
 
             {secret?.id === w.id && (
               <div className="mt-3 p-3 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 space-y-2">
+                {/* The address alone needs no secret, and showing one asks the
+                    reader to keep something nothing will ever check. */}
+                {w.scheme !== 'path' && (
+                  <>
                 <p className="text-sm text-surface-800 dark:text-surface-200">
                   The secret, shown this once. Give it to the sender now; it cannot be read again,
                   only replaced.
                 </p>
                 <CopyField value={secret.value} label="the secret" />
+                  </>
+                )}
                 {w.kind === 'email' ? (
                   <p className="text-xs text-surface-600 dark:text-surface-400">
                     Point the inbound mail service at this address, delivering each message raw
