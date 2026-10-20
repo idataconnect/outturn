@@ -782,6 +782,53 @@ pub(super) struct TurnOutcome {
 #[error("the lease on this turn lapsed while it was being reported")]
 pub struct LeaseLost;
 
+/// Renews a claim's lease for as long as it is held.
+///
+/// A turn runs for as long as a model takes and the lease is deliberately
+/// short, so without this the reaper hands the same turn to a second pod
+/// while the first is still on it -- and both would then write the same
+/// reply. Held here rather than in the runtime because a lease is a claim on
+/// a row, and the runtime holds no database.
+///
+/// A guard rather than a task handle, because the renewal must stop on every
+/// way out of the work it covers. Aborted by hand at the one place the happy
+/// path ended, it kept running past the `?` returns before it -- renewing a
+/// lease on a turn this pod had already given up on.
+///
+/// The token is quoted back on every renewal, so a heartbeat outliving its
+/// claim cannot extend whichever claim replaced it.
+pub(super) struct LeaseHeartbeat(tokio::task::JoinHandle<()>);
+
+impl LeaseHeartbeat {
+    pub(super) fn start(pool: PgPool, job_id: Uuid, token: Uuid) -> Self {
+        Self(tokio::spawn(async move {
+            // Renewed immediately rather than after a first interval. The
+            // lease started at the claim, and whatever ran between then and
+            // here has already burned some of it -- so the clock this
+            // heartbeat is racing began before the heartbeat did.
+            let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
+            loop {
+                ticker.tick().await;
+                match jobs::extend_lease(&pool, job_id, jobs::DEFAULT_LEASE, token).await {
+                    // No longer ours: something reaped it, and renewing
+                    // would take it back from whoever has it now.
+                    Ok(false) => return,
+                    Ok(true) => {}
+                    Err(e) => {
+                        tracing::warn!(job_id = %job_id, error = %e, "lease renewal failed")
+                    }
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for LeaseHeartbeat {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// A turn that failed in a way another attempt would repeat.
 ///
 /// Its own type so the failure path can tell it from the ordinary kind, which
@@ -2851,47 +2898,13 @@ impl Worker {
         let payload: ChatTurnPayload = serde_json::from_value(job.payload.clone())?;
         let lease_token = Some(lease_token);
 
-        // Renewed for as long as results keep arriving. A turn runs for as
-        // long as a model takes and the lease is deliberately short, so
-        // without this the reaper hands the same turn to a second runtime
-        // while the first is still streaming it -- and both would then write
-        // the same reply.
-        //
-        // Held here rather than in the runtime because a lease is a claim on a
-        // row, and the runtime holds no database. Arriving bytes are the
-        // evidence the turn is alive, which is better evidence than a pod
-        // saying so.
-        // Quoted back on every renewal, so a heartbeat outliving its claim
-        // cannot extend whichever claim replaced it.
-        let heartbeat = {
-            let pool = self.pool.clone();
-            tokio::spawn(async move {
-                // Renewed immediately rather than after a first interval. The
-                // lease started when the turn was handed out, and a runtime
-                // that spent time generating before its first byte has already
-                // burned some of it -- so the clock this heartbeat is racing
-                // began before the heartbeat did.
-                let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
-                let Some(token) = lease_token else {
-                    // Nothing to renew against: this job was not claimed the
-                    // way a running turn is, so leave the lease alone rather
-                    // than extending someone else's.
-                    return;
-                };
-                loop {
-                    ticker.tick().await;
-                    match jobs::extend_lease(&pool, job_id, jobs::DEFAULT_LEASE, token).await {
-                        // No longer ours: something reaped it, and renewing
-                        // would take it back from whoever has it now.
-                        Ok(false) => return,
-                        Ok(true) => {}
-                        Err(e) => {
-                            tracing::warn!(job_id = %job_id, error = %e, "lease renewal failed")
-                        }
-                    }
-                }
-            })
-        };
+        // Renewed for as long as this turn is being reported. Arriving bytes
+        // are the evidence the turn is alive, which is better evidence than a
+        // pod saying so. Nothing to renew against when the job was not
+        // claimed the way a running turn is: then the lease is left alone
+        // rather than extending someone else's.
+        let heartbeat =
+            lease_token.map(|token| LeaseHeartbeat::start(self.pool.clone(), job_id, token));
 
         // The reply, not the prompt. `payload.message_id` is the message this
         // turn answers; deltas and the finished content belong to the reply
@@ -2918,7 +2931,10 @@ impl Worker {
         let reply_id = placeholder.message.id;
 
         let outcome = self.consume_turn(stream, &payload, reply_id, job_id).await;
-        heartbeat.abort();
+        // The results have stopped arriving, so the evidence has: what
+        // follows is this pod's own bookkeeping, which checks the lease
+        // rather than extending it.
+        drop(heartbeat);
 
         let reply = match outcome {
             Ok(reply) => reply,

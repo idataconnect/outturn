@@ -169,6 +169,16 @@ pub async fn take(
                 ));
             };
 
+            // Renewed from here until the turn is handed out. Preparing it
+            // can summarize the conversation, which is a model call of its
+            // own; a summary slower than the lease let the reaper give the
+            // turn to a second pod, which summarized it again, while this
+            // one went on to hand out an assignment under a dead lease --
+            // the runtime ran the whole turn and was refused at report.
+            // Dropped on every way out of this iteration.
+            let heartbeat =
+                super::worker::LeaseHeartbeat::start(state.pool.clone(), handle.job.id, lease_token);
+
             let Some(worker) = state.worker.get() else {
                 let _ = jobs::release(
                     &state.pool,
@@ -234,6 +244,28 @@ pub async fn take(
                             return Err(e);
                         }
                     };
+                    // The runtime starts with a whole lease, not what the
+                    // heartbeat's last tick left of one: its own renewal
+                    // begins only when it first reports, and a turn spends
+                    // time generating before its first byte. Refused if
+                    // the claim is no longer this pod's -- then the turn
+                    // is out with whoever reaped it, who prepares it again.
+                    drop(heartbeat);
+                    let still_ours = jobs::extend_lease(
+                        &state.pool,
+                        handle.job.id,
+                        jobs::DEFAULT_LEASE,
+                        lease_token,
+                    )
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                    if !still_ours {
+                        tracing::warn!(
+                            job_id = %handle.job.id,
+                            "a turn's lease was lost while it was being prepared"
+                        );
+                        continue;
+                    }
                     tracing::debug!(
                         job_id = %handle.job.id,
                         session_id = %payload.session_id,
