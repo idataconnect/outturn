@@ -466,6 +466,30 @@ mod image_tests {
         );
     }
 
+    /// Gemini is shown the image, not just the question about it. Text-only
+    /// translation sent a model a question about a picture it never got.
+    #[test]
+    fn an_inline_image_reaches_gemini_as_inline_data() {
+        let body =
+            openai_to_gemini(&asked_with("data:image/jpeg;base64,/9j/4AAQ")).expect("translate");
+        let parts = body["contents"][0]["parts"].as_array().expect("parts");
+        assert_eq!(parts[0]["text"], "what is this?");
+        assert_eq!(
+            parts[1]["inlineData"],
+            serde_json::json!({"mimeType": "image/jpeg", "data": "/9j/4AAQ"})
+        );
+    }
+
+    /// A URL goes to Gemini as a file reference rather than being dropped.
+    #[test]
+    fn a_fetchable_image_url_reaches_gemini_as_file_data() {
+        let body = openai_to_gemini(&asked_with("https://example.com/cat.png")).expect("translate");
+        assert_eq!(
+            body["contents"][0]["parts"][1]["fileData"]["fileUri"],
+            "https://example.com/cat.png"
+        );
+    }
+
     /// Only the base64 form of a data URL is one here; anything else is left
     /// for the provider to make sense of.
     #[test]
@@ -1748,6 +1772,18 @@ pub fn openai_to_gemini(req: &ChatCompletionRequest) -> Result<serde_json::Value
     openai_to_gemini_for(req, &req.model)
 }
 
+/// An image URL as Gemini takes it: inline bytes for a `data:` URL, which is
+/// how the runtime sends what an agent asks about, and a file reference for
+/// anything else.
+fn gemini_image(url: &str) -> serde_json::Value {
+    match data_url(url) {
+        Some((media_type, data)) => serde_json::json!({
+            "inlineData": { "mimeType": media_type, "data": data }
+        }),
+        None => serde_json::json!({ "fileData": { "fileUri": url } }),
+    }
+}
+
 /// As above, for a named target model.
 ///
 /// The model decides two things that cannot be got right without knowing it:
@@ -1843,9 +1879,22 @@ pub fn openai_to_gemini_for(
                 }));
             }
             Role::User => {
+                // Each part as it came, rather than the text alone: the parts
+                // form is how an image travels, and a user message reduced to
+                // its text asks the model about a picture it was never shown.
+                let parts: Vec<serde_json::Value> = match &message.content {
+                    MessageContent::Text(t) => vec![serde_json::json!({ "text": t })],
+                    MessageContent::Parts(parts) => parts
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => serde_json::json!({ "text": text }),
+                            ContentPart::ImageUrl { image_url } => gemini_image(&image_url.url),
+                        })
+                        .collect(),
+                };
                 contents.push(serde_json::json!({
                     "role": "user",
-                    "parts": [{ "text": text }],
+                    "parts": parts,
                 }));
             }
             Role::Assistant => {
