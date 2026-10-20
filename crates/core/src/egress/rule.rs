@@ -106,6 +106,9 @@ impl ClientAuth {
 pub enum Refused {
     /// Not http or https.
     Scheme(String),
+    /// The URL carries a username or password, which an HTTP client turns
+    /// into an `Authorization` header the host did not attach.
+    Userinfo,
     /// The URL carries no host, or one that cannot be parsed.
     NoHost,
     /// The workspace has not allowed this host.
@@ -131,6 +134,7 @@ impl std::fmt::Display for Refused {
             // Worded for whoever reads it in a transcript. A model that is told
             // only "refused" tries again the same way.
             Refused::Scheme(s) => write!(f, "{s} is not a scheme this can speak; use https"),
+            Refused::Userinfo => write!(f, "that URL carries a username or password; remove it"),
             Refused::NoHost => write!(f, "that URL names no host"),
             Refused::NotAllowed(h) => write!(
                 f,
@@ -386,6 +390,19 @@ pub fn check_header(name: &str) -> Result<(), Refused> {
     Ok(())
 }
 
+/// Checks the header a rule attaches its credential in.
+///
+/// Not `check_header`: `authorization` is what a credential usually travels
+/// in. But `host` decides which site a request reaches, independently of the
+/// URL that was checked, and a rule must not set it.
+pub fn check_rule_header(name: &str) -> Result<(), Refused> {
+    let lowered = name.trim().to_ascii_lowercase();
+    if lowered == "host" {
+        return Err(Refused::Header(lowered));
+    }
+    Ok(())
+}
+
 /// Checks a URL against a workspace's rules, before anything is resolved.
 ///
 /// Returns the host and the rule that admitted it, so the caller can resolve
@@ -397,6 +414,12 @@ pub fn check_url<'a>(
     match url.scheme() {
         "http" | "https" => {}
         other => return Err(Refused::Scheme(other.to_string())),
+    }
+
+    // reqwest sends `user:pass@` as a Basic `Authorization` header, which is
+    // the header `check_header` keeps a guest from setting.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Refused::Userinfo);
     }
 
     let host = url.host_str().ok_or(Refused::NoHost)?.to_string();
@@ -548,6 +571,28 @@ mod tests {
             client: None,
             credential: None,
         }
+    }
+
+    #[test]
+    fn a_url_with_userinfo_is_refused() {
+        let rules = [rule("api.example.com")];
+        for url in [
+            "https://u:p@api.example.com/",
+            "https://u@api.example.com/",
+            "https://:p@api.example.com/",
+        ] {
+            let url = reqwest::Url::parse(url).unwrap();
+            assert_eq!(check_url(&rules, &url).unwrap_err(), Refused::Userinfo);
+        }
+        let plain = reqwest::Url::parse("https://api.example.com/").unwrap();
+        assert!(check_url(&rules, &plain).is_ok());
+    }
+
+    #[test]
+    fn a_rule_may_not_set_host_but_may_set_authorization() {
+        assert!(check_rule_header("Host").is_err());
+        assert!(check_rule_header("authorization").is_ok());
+        assert!(check_rule_header("x-api-key").is_ok());
     }
 
     #[test]

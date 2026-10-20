@@ -220,10 +220,14 @@ impl ProviderError {
     }
 
     /// Builds the transport case, where there is no status to read.
+    ///
+    /// reqwest ends its errors with ` for url (...)`, and the detail is
+    /// shown to the model and stored in the transcript, so the URL goes
+    /// here the way it does for an agent's own requests.
     pub fn transport(e: impl std::fmt::Display) -> Self {
         Self::Upstream {
             status: None,
-            detail: e.to_string(),
+            detail: crate::egress::transport::strip_url(&e.to_string()),
         }
     }
 }
@@ -380,6 +384,16 @@ mod tests {
             status: Some(500),
             detail: detail.to_string(),
         }
+    }
+
+    #[test]
+    fn a_transport_error_names_no_host() {
+        let e = ProviderError::transport(
+            "error sending request for url (https://llm.internal.example.com/v1/chat?key=sk-secret)",
+        );
+        let shown = e.to_string();
+        assert!(!shown.contains("example.com"), "{shown}");
+        assert!(!shown.contains("sk-secret"), "{shown}");
     }
 
     #[test]

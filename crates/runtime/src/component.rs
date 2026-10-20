@@ -1822,8 +1822,11 @@ async fn stream_completion(
     // pushed, since a provider is free to interleave two calls.
     let mut arrivals: Vec<(Arrival, Option<uuid::Uuid>)> = Vec::new();
 
+    // Chunks are cut wherever the network cut them, which can be inside a
+    // character; see `outturn_core::utf8`.
+    let mut decoder = outturn_core::utf8::Decoder::new();
     while let Some(bytes) = stream.next().await {
-        buffer.push_str(std::str::from_utf8(&bytes?)?);
+        decoder.push(&bytes?, &mut buffer)?;
 
         // A chunk may span reads, so only whole lines are parsed.
         while let Some(index) = buffer.find('\n') {
@@ -2893,5 +2896,63 @@ mod reasoning_tests {
         // open a reasoning part with nothing in it.
         let closing = serde_json::json!({"choices": [{"delta": {"reasoning": ""}}]});
         assert_eq!(thinking_in(&closing), None);
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A gateway that answers with `body` in two writes cut at `cut`, with a
+    /// pause between so the client sees them as separate reads.
+    async fn serve_cut(body: Vec<u8>, cut: usize) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 8192];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            socket.write_all(&body[..cut]).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            socket.write_all(&body[cut..]).await.unwrap();
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_character_split_across_reads_does_not_fail_the_round() {
+        let line = "{\"choices\":[{\"delta\":{\"content\":\"caf\u{e9} \u{1F4DA} done\"}}]}\n";
+        let body = line.as_bytes().to_vec();
+        let emoji = line.find('\u{1F4DA}').unwrap();
+        // Inside the four-byte character, and inside the two-byte one.
+        for cut in [emoji + 2, line.find('\u{e9}').unwrap() + 1] {
+            let url = serve_cut(body.clone(), cut).await;
+            let (completion, _, _) = stream_completion(
+                &reqwest::Client::new(),
+                &url,
+                "token",
+                "test",
+                &uuid::Uuid::now_v7(),
+                serde_json::json!({}),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("cut at {cut}: {e}"));
+            assert!(
+                completion
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::Text(t) if t == "caf\u{e9} \u{1F4DA} done")),
+                "cut at {cut}"
+            );
+        }
     }
 }
