@@ -240,6 +240,11 @@ pub enum ExecuteEvent {
     Usage {
         /// Which call within the turn, from zero.
         round: u32,
+        /// The class of traffic the call went out as: the turn's own for a
+        /// round of the conversation, `vision` for a look at an image.
+        /// Absent from an older runtime, which made only rounds.
+        #[serde(default)]
+        traffic_type: Option<String>,
         endpoint: String,
         model: String,
         /// Whose credential paid, as the gateway said.

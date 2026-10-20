@@ -1194,6 +1194,136 @@ async fn a_tool_result_is_reported_separately_from_what_the_model_sees() {
     assert!(!is_error, "a clock reading is not a failure");
 }
 
+/// A look at an image is a paid model call, and is accounted for as one.
+///
+/// It used to go out beside the conversation: not billed, since the ledger is
+/// written only from usage events and it produced none, and not counted, so a
+/// model looping on a picture could make as many paid vision calls as it
+/// liked inside one turn. Now it reports its cost under its own traffic type,
+/// so the bill says what a picture cost, and it takes a round like any call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_at_an_image_is_billed_and_takes_a_round() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    // Three calls: the conversation asks to look, the look itself, and the
+    // conversation answering with what was seen. The fake serves the second
+    // and third alike, which is all a look needs.
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "describe_image".into(),
+        arguments: r#"{"path":"session/cat.png","question":"what animal?","action":"Looking at the picture"}"#.into(),
+        reply: "A cat.".into(),
+    })
+    .await;
+
+    let calls = Arc::new(Mutex::new(Vec::<(u32, String)>::new()));
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.on_usage = Some({
+        let calls = Arc::clone(&calls);
+        Arc::new(move |c: &outturn::runtime::component::CallUsage| {
+            calls
+                .lock()
+                .expect("lock")
+                .push((c.round, c.traffic_type.clone()))
+        })
+    });
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let key = scope::resolve(&space, "session/cat.png").unwrap();
+    store
+        .write(&key, b"\x89PNG\r\n\x1a\n not really a picture")
+        .await
+        .expect("seed");
+
+    let Finished { cost, .. } = runner()
+        .run(
+            &component(),
+            user("What animal is in cat.png?"),
+            String::new(),
+            options,
+        )
+        .await
+        .expect("run");
+
+    // The look went out as its own class of traffic, so a deployment can
+    // route it, and reached the ledger as what it is.
+    let requests = gateway.requests();
+    assert_eq!(requests.len(), 3, "a look is one call to the gateway");
+    assert_eq!(
+        requests[1]["messages"][0]["content"][1]["type"], "image_url",
+        "the second call is the look, with the image in it"
+    );
+    assert_eq!(
+        *calls.lock().expect("lock"),
+        vec![
+            (0, "assistant".to_string()),
+            (1, "vision".to_string()),
+            (2, "assistant".to_string()),
+        ],
+        "every call reports its cost, and the look says it was one"
+    );
+    // The fake reports 7 completion tokens a call: the look is in the total.
+    assert_eq!(
+        cost.completion_tokens, 21,
+        "what the look cost is part of what the turn cost"
+    );
+}
+
+/// The round limit counts looks, or it bounds nothing: a model that may call
+/// the conversation's model three times but look at pictures without limit
+/// is a model with no limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_look_at_an_image_counts_toward_the_round_limit() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "describe_image".into(),
+        arguments: r#"{"path":"session/cat.png","question":"what animal?","action":"Looking at the picture"}"#.into(),
+        reply: "A cat.".into(),
+    })
+    .await;
+
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    // Enough for the round that asks and the round that answers, and not
+    // for a look between them -- which, if it did not count, would fit.
+    options.max_tool_rounds = 2;
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let key = scope::resolve(&space, "session/cat.png").unwrap();
+    store
+        .write(&key, b"\x89PNG\r\n\x1a\n not really a picture")
+        .await
+        .expect("seed");
+
+    let _ = runner()
+        .run(
+            &component(),
+            user("What animal is in cat.png?"),
+            String::new(),
+            options,
+        )
+        .await;
+
+    // The look took the second round, so the conversation's second round
+    // was refused: two calls reached the gateway, and the look's answer was
+    // the model's second-round refusal rather than a description.
+    let requests = gateway.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "the look took a round, so the turn ran out after it"
+    );
+}
+
 // -- Object storage -----------------------------------------------------------
 
 /// An agent reads and writes only within its own workspace's space.

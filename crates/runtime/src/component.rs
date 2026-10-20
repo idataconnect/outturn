@@ -125,6 +125,10 @@ pub type AbsorbedSink = Arc<dyn Fn(&[uuid::Uuid]) + Send + Sync>;
 #[derive(Debug, Clone)]
 pub struct CallUsage {
     pub round: u32,
+    /// The class of traffic the call went out as. A turn's rounds are its
+    /// own traffic type; a look at an image is `vision`, so the ledger can
+    /// tell what a picture cost from what the conversation did.
+    pub traffic_type: String,
     pub endpoint: String,
     pub model: String,
     pub paid_by: String,
@@ -769,11 +773,15 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
     }
 }
 
-impl outturn::agent::host::Host for AgentHost {
-    async fn chat(&mut self, request: CompletionRequest) -> Result<Completion, String> {
-        // Counted before the call, not after: the limit is on what may be
-        // spent, and a guest that ignores what `limits` told it is refused
-        // here rather than politely asked again.
+impl AgentHost {
+    /// Counts a model call against the turn's limit, before it is made.
+    ///
+    /// Before rather than after: the limit is on what may be spent, and a
+    /// guest that ignores what `limits` told it is refused here rather than
+    /// politely asked again. Every paid call takes a round -- a look at an
+    /// image as much as a round of the conversation -- or a model looping on
+    /// one of them is unbounded on the other.
+    fn take_round(&mut self) -> Result<(), String> {
         self.rounds_used += 1;
         if self.max_tool_rounds > 0 && self.rounds_used > self.max_tool_rounds {
             tracing::warn!(
@@ -786,6 +794,55 @@ impl outturn::agent::host::Host for AgentHost {
                 self.max_tool_rounds
             ));
         }
+        Ok(())
+    }
+
+    /// Bills one call, the moment its cost is known.
+    ///
+    /// Per call rather than summed at the end, so a turn that fails after
+    /// three calls still bills for three. `rounds_used` was counted before
+    /// the call, so the round is one less.
+    fn bill(
+        &mut self,
+        traffic_type: &str,
+        asked_for: &str,
+        served: &Served,
+        usage: Option<&Usage>,
+    ) {
+        let Some(usage) = usage else {
+            return;
+        };
+        if let Some(sink) = &self.on_usage {
+            sink(&CallUsage {
+                round: self.rounds_used.saturating_sub(1),
+                traffic_type: traffic_type.to_string(),
+                endpoint: served.endpoint.clone().unwrap_or_default(),
+                model: served
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| asked_for.to_string()),
+                paid_by: served
+                    .paid_by
+                    .clone()
+                    .unwrap_or_else(|| "operator".to_string()),
+                usage: *usage,
+                provider_usage: served.provider_usage.clone(),
+                service_tier: served.service_tier.clone(),
+            });
+        }
+        // Summed across rounds: a turn's cost is every call it made, not the
+        // last one. A provider that reports nothing simply adds nothing.
+        self.spent.prompt_tokens += usage.prompt_tokens;
+        self.spent.completion_tokens += usage.completion_tokens;
+        self.spent.cache_read_tokens += usage.cache_read_tokens;
+        self.spent.cache_write_tokens += usage.cache_write_tokens;
+        self.spent.reasoning_tokens += usage.reasoning_tokens;
+    }
+}
+
+impl outturn::agent::host::Host for AgentHost {
+    async fn chat(&mut self, request: CompletionRequest) -> Result<Completion, String> {
+        self.take_round()?;
 
         // The credential is attached here rather than being handed to the
         // guest, so a compromised component can spend this session's allowance
@@ -941,22 +998,8 @@ impl outturn::agent::host::Host for AgentHost {
             self.streamed = true;
         }
 
-        // Billed per call, the moment it is known. `rounds_used` was counted
-        // before the call, so the round is one less.
-        if let (Some(sink), Some(usage)) = (&self.on_usage, &completion.usage) {
-            sink(&CallUsage {
-                round: self.rounds_used.saturating_sub(1),
-                endpoint: served.endpoint.clone().unwrap_or_default(),
-                model: served.model.clone().unwrap_or(model.clone()),
-                paid_by: served
-                    .paid_by
-                    .clone()
-                    .unwrap_or_else(|| "operator".to_string()),
-                usage: *usage,
-                provider_usage: served.provider_usage.clone(),
-                service_tier: served.service_tier.clone(),
-            });
-        }
+        let traffic_type = self.traffic_type.clone();
+        self.bill(&traffic_type, &model, &served, completion.usage.as_ref());
         let served_by = served.endpoint;
         if let Some(ContentPart::Call(first)) = completion
             .parts
@@ -986,15 +1029,6 @@ impl outturn::agent::host::Host for AgentHost {
             self.held = served.held.clone();
         }
 
-        // Summed across rounds: a turn's cost is every call it made, not the
-        // last one. A provider that reports nothing simply adds nothing.
-        if let Some(usage) = &completion.usage {
-            self.spent.prompt_tokens += usage.prompt_tokens;
-            self.spent.completion_tokens += usage.completion_tokens;
-            self.spent.cache_read_tokens += usage.cache_read_tokens;
-            self.spent.cache_write_tokens += usage.cache_write_tokens;
-            self.spent.reasoning_tokens += usage.reasoning_tokens;
-        }
         if served_by.is_some() {
             self.served_by = served_by;
         }
@@ -1246,37 +1280,53 @@ impl outturn::agent::host::Host for AgentHost {
         // route is how a deployment says otherwise.
         let body = vision::request(&self.default_model, media_type, &encoded, &question);
 
+        // A paid call like any round of the conversation, and accounted for
+        // the same way: it takes a round, so a model looping on an image is
+        // bounded, and it is billed, so what a picture cost reaches the
+        // ledger. Made through the streaming path so the gateway names who
+        // served it and what it cost, exactly as it does for a round; nothing
+        // is streamed to the reader, since the answer is the guest's to use.
+        self.take_round()?;
         let token = self.current_token().await;
-        let response = self
-            .http
-            .post(format!("{}/v1/chat/completions", self.gateway_url))
-            .bearer_auth(&token)
-            .header("x-outturn-traffic", vision::TRAFFIC_TYPE)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("could not reach a vision model: {e}"))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            // Said plainly rather than dressed up: a deployment with no vision
-            // route configured lands here, and the agent should say so instead
-            // of guessing at the picture.
-            return Err(format!(
-                "a vision model was not available ({status}): {}",
-                detail.chars().take(200).collect::<String>()
-            ));
+        let (completion, arrivals, served) = stream_completion(
+            &self.http,
+            &self.gateway_url,
+            &token,
+            vision::TRAFFIC_TYPE,
+            &self.reply_id,
+            body,
+            None,
+            None,
+            None,
+        )
+        .await
+        // Said plainly rather than dressed up: a deployment with no vision
+        // route configured lands here, and the agent should say so instead of
+        // guessing at the picture. A refusal is the tool's answer too, rather
+        // than the turn's end: the conversation was not refused, one look was.
+        .map_err(|e| format!("a vision model was not available: {e}"))?;
+        self.bill(
+            vision::TRAFFIC_TYPE,
+            &self.default_model.clone(),
+            &served,
+            completion.usage.as_ref(),
+        );
+        // What arrived during the look is kept for the guest as it would be
+        // from a round, and a stop asked for during it is still a stop.
+        self.arrivals.extend(arrivals);
+        self.cancelled |= served.cancelled;
+        if self.held.is_none() {
+            self.held = served.held.clone();
         }
 
-        let completion: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("the answer did not arrive whole: {e}"))?;
-
-        let text = completion["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
+        let text = completion
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<String>()
             .trim()
             .to_string();
 

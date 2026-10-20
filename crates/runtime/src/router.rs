@@ -137,6 +137,7 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
         Arc::new(move |call: &CallUsage| {
             let _ = tx.send(ExecuteEvent::Usage {
                 round: call.round,
+                traffic_type: Some(call.traffic_type.clone()),
                 endpoint: call.endpoint.clone(),
                 model: call.model.clone(),
                 paid_by: call.paid_by.clone(),

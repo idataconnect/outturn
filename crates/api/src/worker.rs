@@ -1296,6 +1296,7 @@ impl Worker {
                     }
                     Ok(ExecuteEvent::Usage {
                         round,
+                        traffic_type: call_traffic,
                         endpoint,
                         model,
                         paid_by,
@@ -1334,9 +1335,15 @@ impl Worker {
                                 reply_id: Some(message_id),
                                 job_id: Some(job_id),
                                 round: round as i32,
-                                traffic_type: match &traffic {
-                                    Some(t) => t.clone(),
-                                    None => {
+                                // As the runtime said where it did: a look
+                                // at an image is `vision` whatever the turn
+                                // is, and the bill should say so. A runtime
+                                // that did not say made a round, which is
+                                // the turn's own class.
+                                traffic_type: match (call_traffic, &traffic) {
+                                    (Some(t), _) => t,
+                                    (None, Some(t)) => t.clone(),
+                                    (None, None) => {
                                         let t = traffic_type_for(
                                             &self
                                                 .policy_of(payload.workspace_id, payload.agent_id)
