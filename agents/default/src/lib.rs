@@ -262,7 +262,7 @@ fn call_operation(op: &SkillOperation, args: &serde_json::Value) -> String {
             Some(serde_json::Value::Object(body).to_string()),
         )
     };
-    fetch(op.method.clone(), url, headers, body)
+    fetch(op.method.clone(), url, headers, body, Some(op.name.clone()))
 }
 
 /// Percent-encodes everything outside the unreserved set, so a value cannot
@@ -1383,7 +1383,7 @@ fn fetch_url(args: &serde_json::Value) -> String {
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
     }
 
-    fetch(method, url.to_string(), headers, body)
+    fetch(method, url.to_string(), headers, body, None)
 }
 
 /// Sends a request through the host and reports what came back, in the one
@@ -1393,6 +1393,7 @@ fn fetch(
     url: String,
     headers: Vec<(String, String)>,
     body: Option<String>,
+    operation: Option<String>,
 ) -> String {
     // Echoed in the result, so the reader can see what was asked for.
     let requested = method.clone();
@@ -1401,6 +1402,7 @@ fn fetch(
         url: url.clone(),
         headers,
         body,
+        operation,
     }) {
         Ok(response) => serde_json::json!({
             "method": requested,
@@ -1416,6 +1418,13 @@ fn fetch(
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case("location"))
                 .map(|(_, value)| value.clone()),
+            // A write already made, answered from the record rather than sent
+            // again: said, so the model does not report it done twice.
+            "replayed": response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-outturn-replayed"))
+                .map(|(_, at)| format!("this was already done at {at}; this is that answer, and nothing was sent again")),
         })
         .to_string(),
         Err(e) => serde_json::json!({ "method": requested, "url": url, "error": e }).to_string(),

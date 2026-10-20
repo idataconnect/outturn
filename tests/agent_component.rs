@@ -139,6 +139,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 egress: Vec::new(),
                 gates: outturn::egress::gate::Gates::none(),
                 on_gated: None,
+                invocations: None,
                 on_wait: None,
                 fuel: 10_000_000_000,
             },

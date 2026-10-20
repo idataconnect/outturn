@@ -470,6 +470,15 @@ pub fn operations_for_turn(skills: &[ResolvedSkill]) -> Vec<SkillOperation> {
                 body: op.body.clone(),
                 query: op.query.clone(),
                 schema: op.arguments_schema().to_string(),
+                identity: op.identity.clone(),
+                key_header: match &op.key {
+                    Some(frontmatter::IdempotencyKey::Header(h)) => Some(h.clone()),
+                    _ => None,
+                },
+                key_field: match &op.key {
+                    Some(frontmatter::IdempotencyKey::Field(f)) => Some(f.clone()),
+                    _ => None,
+                },
             });
         }
     }

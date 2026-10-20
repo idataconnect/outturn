@@ -158,6 +158,26 @@ pub type TokenRefresher = Arc<
         + Sync,
 >;
 
+/// The record of declared writes, as this tier asks it: claim a key before
+/// sending, and settle it with the answer -- or with none, releasing it when
+/// the recipient refused. See `docs/idempotency.md`.
+pub trait InvocationRecord: Send + Sync {
+    fn claim(
+        &self,
+        key: String,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<outturn_core::protocol::work::Claimed, String>>
+                + Send,
+        >,
+    >;
+    fn settle(
+        &self,
+        key: String,
+        response: Option<serde_json::Value>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+}
+
 pub type GatedSink = Arc<
     dyn Fn(GatedRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
         + Send
@@ -261,6 +281,9 @@ pub struct AgentHost {
     /// Told when the gateway refuses for want of an approval. Relays the shape
     /// of the request; decides nothing about it.
     on_gated: Option<GatedSink>,
+    /// Where declared writes are recorded. Absent, nothing is: a write is
+    /// sent as asked, as every write was before.
+    invocations: Option<Arc<dyn InvocationRecord>>,
     on_wait: Option<WaitSink>,
     default_model: String,
     http: reqwest::Client,
@@ -1013,6 +1036,51 @@ impl outturn::agent::host::Host for AgentHost {
                 egress::Refused::Unproven(rule.host.clone()).to_string()
             })?;
 
+        // A declared write: keyed for a recipient that takes a key, or
+        // checked against the record for one that does not.
+        let mut request = request;
+        let identity = request
+            .operation
+            .as_deref()
+            .and_then(|name| self.skill_operations.iter().find(|o| o.name == name))
+            .filter(|op| !op.identity.is_empty())
+            .cloned();
+        let mut claimed: Option<String> = None;
+        if let Some(op) = &identity {
+            let key = idempotency_key(&op.name, &op.identity, &url, request.body.as_deref());
+            if let Some(header) = &op.key_header {
+                request
+                    .headers
+                    .retain(|(n, _)| !n.eq_ignore_ascii_case(header));
+                request.headers.push((header.clone(), key));
+            } else if let Some(field) = &op.key_field {
+                let mut body: serde_json::Value = request
+                    .body
+                    .as_deref()
+                    .and_then(|b| serde_json::from_str(b).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if let Some(object) = body.as_object_mut() {
+                    object.insert(field.clone(), serde_json::json!(key));
+                    request.body = Some(body.to_string());
+                }
+            } else if let Some(record) = &self.invocations {
+                match record.claim(key.clone()).await? {
+                    outturn_core::protocol::work::Claimed::New => claimed = Some(key),
+                    outturn_core::protocol::work::Claimed::Completed { response, at } => {
+                        return Ok(replayed(&response, at));
+                    }
+                    outturn_core::protocol::work::Claimed::Attempted { at } => {
+                        return Err(format!(
+                            "this exact {} was sent at {at} and its answer never came back, so \
+                             whether it happened is not known. Check before sending it again: \
+                             it is not sent twice from here.",
+                            op.name
+                        ));
+                    }
+                }
+            }
+        }
+
         let method = request.method.clone();
         let body = request.body.clone();
         let path = url.path().to_string();
@@ -1032,6 +1100,30 @@ impl outturn::agent::host::Host for AgentHost {
             },
         )
         .await;
+
+        // What became of a claimed write. Answered and taken, it is recorded
+        // to answer a repeat with; refused by the recipient or by the gateway,
+        // nothing happened and the claim is released. A connection that broke
+        // after sending is left `attempted`: it may have landed.
+        if let (Some(key), Some(record)) = (claimed, &self.invocations) {
+            match &outcome {
+                Ok(answer) if (200..300).contains(&answer.status) => {
+                    record
+                        .settle(
+                            key,
+                            Some(serde_json::json!({
+                                "status": answer.status,
+                                "headers": answer.headers,
+                                "body": answer.body,
+                                "truncated": answer.truncated,
+                            })),
+                        )
+                        .await
+                }
+                Err(why) if why.starts_with("the request did not complete") => {}
+                _ => record.settle(key, None).await,
+            }
+        }
 
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -1983,6 +2075,69 @@ struct Served {
     signed: Signed,
 }
 
+/// The key a declared write is made under: its operation and the values of
+/// its identity, in declared order, from the query or the JSON body.
+///
+/// The same booking derives the same key however many times, and whatever
+/// else the call carried -- a note, an action label -- is not part of it.
+fn idempotency_key(
+    operation: &str,
+    identity: &[String],
+    url: &reqwest::Url,
+    body: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let body: serde_json::Value = body
+        .and_then(|b| serde_json::from_str(b).ok())
+        .unwrap_or_default();
+    let values: Vec<serde_json::Value> = identity
+        .iter()
+        .map(|field| match body.get(field) {
+            Some(v) => v.clone(),
+            None => {
+                let mut found: Vec<String> = url
+                    .query_pairs()
+                    .filter(|(k, _)| k == field)
+                    .map(|(_, v)| v.into_owned())
+                    .collect();
+                match found.len() {
+                    0 => serde_json::Value::Null,
+                    1 => serde_json::json!(found.remove(0)),
+                    _ => serde_json::json!(found),
+                }
+            }
+        })
+        .collect();
+    let digest = Sha256::digest(serde_json::json!([operation, values]).to_string());
+    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    format!("outturn-{hex}")
+}
+
+/// A recorded answer, given again, marked as such so the model is not told a
+/// write happened twice.
+fn replayed(response: &serde_json::Value, at: chrono::DateTime<chrono::Utc>) -> HttpResponse {
+    let mut headers: Vec<(String, String)> = response["headers"]
+        .as_array()
+        .map(|h| {
+            h.iter()
+                .filter_map(|pair| {
+                    Some((
+                        pair.get(0)?.as_str()?.to_string(),
+                        pair.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    headers.push(("x-outturn-replayed".to_string(), at.to_rfc3339()));
+    HttpResponse {
+        status: response["status"].as_u64().unwrap_or(200) as u16,
+        headers,
+        body: response["body"].as_str().unwrap_or_default().to_string(),
+        truncated: response["truncated"].as_bool().unwrap_or(false),
+    }
+}
+
 use outturn_core::protocol::work::SignedReply as Signed;
 
 /// Compiled components to keep, keyed by the bytes they came from.
@@ -2181,6 +2336,8 @@ pub struct RunOptions {
     pub on_absorbed: Option<AbsorbedSink>,
     /// Called when the gateway refuses a request for want of an approval.
     pub on_gated: Option<GatedSink>,
+    /// Where declared writes are recorded, so one sent twice is one write.
+    pub invocations: Option<Arc<dyn InvocationRecord>>,
     /// Relays `sleep` and `set-timer` to the API.
     pub on_wait: Option<WaitSink>,
     pub fuel: u64,
@@ -2332,6 +2489,7 @@ impl AgentRunner {
             on_tool: options.on_tool,
             on_tool_result: options.on_tool_result,
             on_gated: options.on_gated,
+            invocations: options.invocations,
             on_wait: options.on_wait,
             on_usage: options.on_usage,
             on_write: options.on_write,

@@ -74,6 +74,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         on_write: None,
         on_absorbed: None,
         on_gated: None,
+        invocations: None,
         on_wait: None,
         storage: None,
         workspace_id: Uuid::now_v7(),
@@ -3106,4 +3107,219 @@ async fn a_repeated_failure_is_pointed_out() {
         "{}",
         results[1]
     );
+}
+
+// -- Declared writes ------------------------------------------------------------
+//
+// See docs/idempotency.md. An operation that declares an identity is made
+// once however many times it is sent: keyed for a recipient that takes a key,
+// answered from the record for one that does not.
+
+/// The record, kept in memory for these tests as the API keeps it.
+#[derive(Default)]
+struct Record(Mutex<std::collections::HashMap<String, outturn::protocol::work::Claimed>>);
+
+impl outturn::runtime::component::InvocationRecord for Record {
+    fn claim(
+        &self,
+        key: String,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<outturn::protocol::work::Claimed, String>>
+                + Send,
+        >,
+    > {
+        use outturn::protocol::work::Claimed;
+        let mut held = self.0.lock().unwrap();
+        let out = match held.get(&key) {
+            Some(existing) => existing.clone(),
+            None => {
+                held.insert(
+                    key,
+                    Claimed::Attempted {
+                        at: chrono::Utc::now(),
+                    },
+                );
+                Claimed::New
+            }
+        };
+        Box::pin(async move { Ok(out) })
+    }
+
+    fn settle(
+        &self,
+        key: String,
+        response: Option<serde_json::Value>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let mut held = self.0.lock().unwrap();
+        match response {
+            Some(response) => {
+                held.insert(
+                    key,
+                    outturn::protocol::work::Claimed::Completed {
+                        response,
+                        at: chrono::Utc::now(),
+                    },
+                );
+            }
+            None => {
+                held.remove(&key);
+            }
+        }
+        Box::pin(async {})
+    }
+}
+
+/// The booking, declaring what makes one booking the same as another.
+fn declared_booking() -> outturn::protocol::work::SkillOperation {
+    outturn::protocol::work::SkillOperation {
+        identity: vec!["guest_name".into(), "nights".into()],
+        ..booking()
+    }
+}
+
+async fn book_repeatedly(
+    op: outturn::protocol::work::SkillOperation,
+    record: Arc<Record>,
+) -> (FakeGateway, Vec<String>) {
+    let gateway = FakeGateway::start(Behavior::AlwaysToolCall {
+        name: "inn_book".into(),
+        arguments: r#"{"room_id":"garden","guest_name":"Jo","nights":2,"action":"Booking"}"#.into(),
+        content: "Booking.".into(),
+    })
+    .await;
+    gateway.answer_egress(201, r#"{"id":"bk_1"}"#);
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push(outcome.details.clone());
+        })
+    };
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+    options.max_tool_rounds = 3;
+    options.eager_tools = vec!["inn_book".into()];
+    options.skill_operations = vec![op];
+    options.invocations = Some(record);
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(&component(), user("Book it."), String::new(), options)
+        .await
+        .expect("run");
+    let results = seen.lock().unwrap().clone();
+    (gateway, results)
+}
+
+/// Sent again, a declared write is answered from the record: one booking
+/// goes out, and the model is told the second was that one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declared_write_sent_twice_goes_out_once() {
+    let (gateway, results) = book_repeatedly(declared_booking(), Arc::new(Record::default())).await;
+    assert_eq!(gateway.fetched().len(), 1, "{:?}", gateway.fetched());
+    assert!(results.len() >= 2, "{results:?}");
+    assert!(results[1].contains("already done"), "{}", results[1]);
+    assert!(
+        results[1].contains("bk_1"),
+        "the first answer: {}",
+        results[1]
+    );
+}
+
+/// An undeclared write is sent every time: its repetition may be meant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_undeclared_write_is_sent_as_often_as_asked() {
+    let (gateway, _) = book_repeatedly(booking(), Arc::new(Record::default())).await;
+    assert!(gateway.fetched().len() >= 2, "{:?}", gateway.fetched());
+}
+
+/// A write sent whose answer never came back is not sent again: whether it
+/// landed is not known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_with_no_answer_is_not_sent_again() {
+    // Every key reads as claimed by a turn that died before it heard back.
+    struct Unanswered;
+    impl outturn::runtime::component::InvocationRecord for Unanswered {
+        fn claim(
+            &self,
+            _key: String,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<outturn::protocol::work::Claimed, String>>
+                    + Send,
+            >,
+        > {
+            Box::pin(async {
+                Ok(outturn::protocol::work::Claimed::Attempted {
+                    at: chrono::Utc::now(),
+                })
+            })
+        }
+        fn settle(
+            &self,
+            _key: String,
+            _response: Option<serde_json::Value>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+    }
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "inn_book".into(),
+        arguments: r#"{"room_id":"garden","guest_name":"Jo","nights":2,"action":"Booking"}"#.into(),
+        reply: "Hm.".into(),
+    })
+    .await;
+    gateway.answer_egress(201, r#"{"id":"bk_1"}"#);
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let on_tool_result = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |outcome: &outturn::runtime::component::ToolOutcome| {
+            seen.lock().unwrap().push(outcome.details.clone());
+        })
+    };
+    let mut options = options(&gateway, None);
+    options.on_tool_result = Some(on_tool_result);
+    options.eager_tools = vec!["inn_book".into()];
+    options.skill_operations = vec![declared_booking()];
+    options.invocations = Some(Arc::new(Unanswered));
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(&component(), user("Book it."), String::new(), options)
+        .await
+        .expect("run");
+    assert!(gateway.fetched().is_empty(), "{:?}", gateway.fetched());
+    let results = seen.lock().unwrap().clone();
+    assert!(results[0].contains("never came back"), "{}", results[0]);
+}
+
+/// A recipient that takes a key is sent one, the same for the same booking,
+/// and dedupes itself: nothing is kept here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recipient_that_takes_a_key_is_sent_the_same_one() {
+    let keyed = outturn::protocol::work::SkillOperation {
+        key_field: Some("idempotency_key".into()),
+        ..declared_booking()
+    };
+    let (gateway, _) = book_repeatedly(keyed, Arc::new(Record::default())).await;
+    let fetched = gateway.fetched();
+    assert!(fetched.len() >= 2, "sent each time; the recipient dedupes");
+    let key = |i: usize| {
+        let body: serde_json::Value =
+            serde_json::from_str(fetched[i]["body"].as_str().unwrap()).unwrap();
+        body["idempotency_key"].as_str().unwrap().to_string()
+    };
+    assert!(key(0).starts_with("outturn-"), "{}", key(0));
+    assert_eq!(key(0), key(1));
 }

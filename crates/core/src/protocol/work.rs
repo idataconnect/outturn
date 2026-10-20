@@ -117,6 +117,33 @@ pub struct SkillOperation {
     /// and what a call is checked against before anything is sent.
     #[serde(default)]
     pub schema: String,
+    /// The body or query fields whose values are what this write is, from
+    /// which the host derives an idempotency key. Empty for an operation that
+    /// may mean to repeat. See `docs/idempotency.md`.
+    #[serde(default)]
+    pub identity: Vec<String>,
+    /// The header the recipient takes that key in, if it does.
+    #[serde(default)]
+    pub key_header: Option<String>,
+    /// Or the JSON body field.
+    #[serde(default)]
+    pub key_field: Option<String>,
+}
+
+/// What the record of declared writes holds for a key, asked before a write
+/// goes out. See `docs/idempotency.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Claimed {
+    /// Never seen, now claimed: send it.
+    New,
+    /// Sent and answered; this is the answer.
+    Completed {
+        response: serde_json::Value,
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// Sent, and the answer never seen. Not sent again.
+    Attempted { at: chrono::DateTime<chrono::Utc> },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

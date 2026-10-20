@@ -252,6 +252,13 @@ impl Puller {
             // Tells the API a request was refused for want of an approval, so
             // it can ask somebody and park the turn. The shape only: what act
             // that was, and whether it really was gated, are the API's to decide.
+            invocations: Some(Arc::new(ApiInvocations {
+                http: self.http.clone(),
+                api_url: self.api_url.clone(),
+                runtime_key: self.runtime_key.clone(),
+                lease,
+                job_id,
+            })),
             on_gated: Some({
                 let api_url = self.api_url.clone();
                 let runtime_key = self.runtime_key.clone();
@@ -596,6 +603,85 @@ async fn report_wait(
         .await
         .map(|a| a.message)
         .map_err(|e| format!("the platform's answer could not be read: {e}"))
+}
+
+/// The record of declared writes, kept by the API and asked with this turn's
+/// lease, as every other report is.
+struct ApiInvocations {
+    http: reqwest::Client,
+    api_url: String,
+    runtime_key: String,
+    lease: Uuid,
+    job_id: Uuid,
+}
+
+impl ApiInvocations {
+    fn post(&self, path: &str, body: serde_json::Value) -> reqwest::RequestBuilder {
+        self.http
+            .post(format!(
+                "{}/v1/work/invocations/{path}",
+                self.api_url.trim_end_matches('/')
+            ))
+            .bearer_auth(&self.runtime_key)
+            .header(
+                outturn_core::protocol::work::LEASE_HEADER,
+                self.lease.to_string(),
+            )
+            .json(&body)
+    }
+}
+
+impl crate::component::InvocationRecord for ApiInvocations {
+    fn claim(
+        &self,
+        key: String,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<outturn_core::protocol::work::Claimed, String>>
+                + Send,
+        >,
+    > {
+        let request = self.post(
+            "claim",
+            serde_json::json!({ "job_id": self.job_id, "key": key }),
+        );
+        Box::pin(async move {
+            // Failing to ask is failing to send: a write whose record cannot
+            // be read could be the second of two.
+            let response = request
+                .send()
+                .await
+                .map_err(|e| format!("could not check whether this was already done: {e}"))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "could not check whether this was already done ({})",
+                    response.status()
+                ));
+            }
+            response
+                .json()
+                .await
+                .map_err(|e| format!("could not check whether this was already done: {e}"))
+        })
+    }
+
+    fn settle(
+        &self,
+        key: String,
+        response: Option<serde_json::Value>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let request = self.post(
+            "settle",
+            serde_json::json!({ "job_id": self.job_id, "key": key, "response": response }),
+        );
+        Box::pin(async move {
+            // Unrecorded, a completed write looks attempted to a repeat, which
+            // is refused rather than sent twice: the safe direction.
+            if let Err(e) = request.send().await {
+                tracing::warn!(error = %e, "could not record what a declared write came to");
+            }
+        })
+    }
 }
 
 async fn report_gated(

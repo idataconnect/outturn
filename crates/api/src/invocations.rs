@@ -29,19 +29,7 @@ pub struct Claim {
     pub key: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum Claimed {
-    /// Never seen, now claimed: send it.
-    New,
-    /// Sent and answered; this is the answer.
-    Completed {
-        response: serde_json::Value,
-        at: chrono::DateTime<chrono::Utc>,
-    },
-    /// Sent, and the answer never seen. Not sent again.
-    Attempted { at: chrono::DateTime<chrono::Utc> },
-}
+pub use outturn_core::protocol::work::Claimed;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct Settle {
