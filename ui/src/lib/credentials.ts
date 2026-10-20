@@ -34,6 +34,10 @@ export type Tested = {
   without_key: number | null
   verdict: 'works' | 'not_needed' | 'refused' | 'unclear'
   fingerprint: string | null
+  /** The start of what the host said, when the key did not plainly work. */
+  said?: string
+  /** A likely cause worth checking. */
+  hint?: string
 }
 
 export const listRules = () => allPages<EgressRule>('/v1/egress-rules')

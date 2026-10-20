@@ -412,6 +412,22 @@ pub struct Tested {
     /// The gateway's fingerprint of the key it sent. The same key always shows
     /// the same one; a different one means the key is not the one it was.
     pub fingerprint: Option<String>,
+    /// The start of what the host said, when the key did not plainly work: a
+    /// status alone leaves somebody guessing at a reason the host gave.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+    /// A likely cause worth checking, where there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// The first line of a body, short enough to show beside a status.
+fn first_line(body: &str) -> Option<String> {
+    let line = body.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(match line.char_indices().nth(200) {
+        Some((cut, _)) => format!("{}...", &line[..cut]),
+        None => line.to_string(),
+    })
 }
 
 fn verdict(with_key: u16, without_key: Option<u16>) -> Verdict {
@@ -430,6 +446,9 @@ struct Fetched {
     status: u16,
     #[serde(default)]
     credential_fingerprint: Option<String>,
+    /// What the host said, for a test that did not plainly work.
+    #[serde(default)]
+    body: String,
 }
 
 /// Makes a GET through the gateway with the credential attached, exactly as a
@@ -481,13 +500,31 @@ pub async fn test(
     bare.credential_env = None;
     bare.header = None;
 
+    let authorization = rule
+        .header
+        .as_deref()
+        .is_some_and(|h| h.eq_ignore_ascii_case("authorization"));
     let keyed = fetch(&state, &claims, &gateway, &url, rule).await?;
     let without_key = fetch(&state, &claims, &gateway, &url, bare)
         .await
         .ok()
         .map(|f| f.status);
+    let verdict = verdict(keyed.status, without_key);
+    // This tier never sees a sealed key, so it cannot tell a key pasted
+    // without its scheme from a wrong one. It can say which to check first:
+    // an Authorization key refused is most often a bare token where the API
+    // wanted `Bearer` before it, which cost one connection a round to find.
+    let hint = (verdict == Verdict::Refused && authorization).then(|| {
+        "If the key was connected without its scheme, replace it with Bearer and a space \
+         before the key."
+            .to_string()
+    });
     Ok(Json(Tested {
-        verdict: verdict(keyed.status, without_key),
+        said: (verdict != Verdict::Works && verdict != Verdict::NotNeeded)
+            .then(|| first_line(&keyed.body))
+            .flatten(),
+        hint,
+        verdict,
         url,
         status: keyed.status,
         without_key,

@@ -116,6 +116,12 @@ export default function SkillConnections({
 /** What a test proved, in words. Only a refusal without the key beside an
  *  answer with it says the key works; a path that answers anybody says nothing. */
 function describeTest(t: Tested): string {
+  const said = t.said ? ` It said: ${t.said}` : ''
+  const hint = t.hint ? ` ${t.hint}` : ''
+  return describeVerdict(t) + said + hint
+}
+
+function describeVerdict(t: Tested): string {
   switch (t.verdict) {
     case 'works':
       return `Refused without the key (${t.without_key}) and answered with it (${t.status}): the key works.`
