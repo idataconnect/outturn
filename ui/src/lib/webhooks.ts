@@ -38,6 +38,9 @@ export type Webhook = {
   /** The path to append to wherever the deployment is reached. The API cannot
    *  know its own public host, so it says only this. */
   endpoint: string
+  /** A secret an edit made -- a hook moved off its address alone -- shown
+   *  this once. */
+  secret?: string
 }
 
 export type WebhookInput = {

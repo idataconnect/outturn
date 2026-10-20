@@ -272,6 +272,18 @@ impl Harness {
             .await
     }
 
+    async fn patch(&self, uri: &str, token: Option<&str>, body: &str) -> (StatusCode, String) {
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(t) = token {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        self.send(req.body(Body::from(body.to_string())).expect("request"))
+            .await
+    }
+
     async fn get(&self, uri: &str, token: Option<&str>) -> (StatusCode, String) {
         let mut req = Request::builder().method("GET").uri(uri);
         if let Some(t) = token {
@@ -12895,6 +12907,80 @@ async fn mail_starts_a_turn_from_an_allowed_sender_once() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "taken, and not acted on");
     assert_eq!(sessions().await, 1, "a sender not allowed starts nothing");
+    finish!(h);
+}
+
+/// A mail hook keeps a secret exactly when its scheme checks one: none for its
+/// address alone, one made -- and shown once -- when it moves to a scheme that
+/// checks one, and none again when it moves back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mail_hook_keeps_a_secret_only_when_its_scheme_checks_one() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("mail-secret@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-mail-secret"}"#,
+        )
+        .await;
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let input = |scheme: &str| {
+        format!(
+            r#"{{"agent_id":"{agent}","kind":"email","scheme":"{scheme}","senders":["*"],"name":"Inbox","prompt":"{{{{body}}}}"}}"#
+        )
+    };
+    let (status, created) = h
+        .post("/v1/webhook-triggers", Some(&token), &input("path"))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let created: Value = serde_json::from_str(&created).unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let stored = || async {
+        sqlx::query_scalar::<_, String>(
+            "select config->>'secret' from triggers where id = $1::uuid",
+        )
+        .bind(&id)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(stored().await, "", "none kept for the address alone");
+
+    let (status, moved) = h
+        .patch(
+            &format!("/v1/webhook-triggers/{id}"),
+            Some(&token),
+            &input("basic"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let shown = serde_json::from_str::<Value>(&moved).unwrap()["secret"]
+        .as_str()
+        .expect("the new secret, shown once")
+        .to_string();
+    assert_eq!(stored().await, shown);
+
+    let (_, back) = h
+        .patch(
+            &format!("/v1/webhook-triggers/{id}"),
+            Some(&token),
+            &input("path"),
+        )
+        .await;
+    assert!(
+        serde_json::from_str::<Value>(&back)
+            .unwrap()
+            .get("secret")
+            .is_none()
+    );
+    assert_eq!(stored().await, "", "cleared when nothing checks it");
     finish!(h);
 }
 

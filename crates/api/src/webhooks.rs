@@ -40,11 +40,19 @@ pub struct WithUrl {
     trigger: Trigger,
     /// What to append to the deployment's own base URL.
     endpoint: String,
+    /// A secret made by this change -- a hook moved from its address alone
+    /// to a scheme that checks one -- shown this once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret: Option<String>,
 }
 
 fn decorate(trigger: Trigger) -> WithUrl {
     let endpoint = format!("/v1/hooks/{}", trigger.path);
-    WithUrl { trigger, endpoint }
+    WithUrl {
+        trigger,
+        endpoint,
+        secret: None,
+    }
 }
 
 /// A path nobody can guess, and a secret nobody can guess.
@@ -137,7 +145,12 @@ pub async fn create_trigger(
     // 16 bytes of path, 32 of secret. The path only has to be unguessable;
     // the secret has to stay unguessable against somebody who wants it.
     let path = unguessable(16);
-    let secret = unguessable(32);
+    // None for mail reached by its address alone, which checks no secret.
+    let secret = if input.scheme == "path" {
+        String::new()
+    } else {
+        unguessable(32)
+    };
 
     let created = postgres::create(
         &state.pool,
@@ -185,7 +198,7 @@ pub async fn update_trigger(
     // Which agent a trigger starts is not editable, for the same reason a
     // schedule's is not: the sessions it has already produced hang off the
     // agent it had.
-    match postgres::get(&state.pool, claims.workspace_id, id)
+    let existing = match postgres::get(&state.pool, claims.workspace_id, id)
         .await
         .map_err(internal)?
     {
@@ -194,8 +207,23 @@ pub async fn update_trigger(
                 "a trigger cannot be moved to another agent".to_string(),
             ));
         }
-        Some(_) => {}
+        Some(t) => t,
         None => return Err((StatusCode::NOT_FOUND, "no such trigger".to_string())),
+    };
+
+    // A hook keeps a secret exactly when its scheme checks one: made when it
+    // moves to such a scheme from its address alone, and cleared when it
+    // moves back. An empty secret under a scheme that checks one would admit
+    // an empty password.
+    let made = match (input.scheme == "path", existing.secret.is_empty()) {
+        (false, true) => Some(unguessable(32)),
+        (true, false) => Some(String::new()),
+        _ => None,
+    };
+    if let Some(secret) = &made {
+        postgres::set_secret(&state.pool, id, secret)
+            .await
+            .map_err(internal)?;
     }
 
     match postgres::update(&state.pool, claims.workspace_id, id, &input)
@@ -204,7 +232,10 @@ pub async fn update_trigger(
     {
         Some(t) => {
             tracing::info!(actor = %claims.subject, trigger_id = %t.id, "webhook trigger updated");
-            Ok(Json(decorate(t)))
+            Ok(Json(WithUrl {
+                secret: made.filter(|s| !s.is_empty()),
+                ..decorate(t)
+            }))
         }
         None => Err((StatusCode::NOT_FOUND, "no such trigger".to_string())),
     }

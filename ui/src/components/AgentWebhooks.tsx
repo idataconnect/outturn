@@ -242,7 +242,8 @@ export default function AgentWebhooks({
     setSaving(true)
     try {
       if (draft.id) {
-        await updateWebhook(draft.id, input(draft))
+        const updated = await updateWebhook(draft.id, input(draft))
+        if (updated.secret) setSecret({ id: updated.id, value: updated.secret })
       } else {
         const created = await createWebhook(input(draft))
         setSecret({ id: created.id, value: created.secret })

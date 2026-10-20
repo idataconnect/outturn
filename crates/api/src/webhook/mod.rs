@@ -215,6 +215,11 @@ pub fn verify(
     authorization: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>, Refusal> {
+    // A scheme that checks a secret never matches an empty one: an empty
+    // token or password would otherwise be the credential.
+    if trigger.scheme != "path" && trigger.secret.is_empty() {
+        return Err(Refusal::MissingCredential);
+    }
     match trigger.scheme.as_str() {
         // An email hook's own, for the inbound services that can do no more:
         // the unguessable path is the credential, and the sender policy
@@ -559,6 +564,21 @@ mod email_schemes {
             .is_err()
         );
         assert!(verify(&hook("basic"), b"", None, None, None, None, Utc::now()).is_err());
+    }
+
+    #[test]
+    fn an_empty_secret_is_never_the_credential() {
+        use base64::Engine;
+        let mut basic = hook("basic");
+        basic.secret = String::new();
+        let empty = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("u:")
+        );
+        assert!(verify(&basic, b"", None, None, None, Some(&empty), Utc::now()).is_err());
+        let mut token = hook("shared_secret");
+        token.secret = String::new();
+        assert!(verify(&token, b"", None, None, Some(""), None, Utc::now()).is_err());
     }
 
     #[test]

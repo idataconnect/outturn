@@ -162,6 +162,16 @@ pub async fn update(
     Ok(found.as_ref().map(row))
 }
 
+/// Replaces a hook's secret, or clears it for a scheme that checks none.
+pub async fn set_secret(pool: &PgPool, id: Uuid, secret: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("update triggers set config = jsonb_set(config, '{secret}', to_jsonb($2::text)) where id = $1")
+        .bind(id)
+        .bind(secret)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
     let done = sqlx::query(
         "delete from triggers where kind in ('webhook', 'email') and workspace_id = $1 and id = $2",
