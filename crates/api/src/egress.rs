@@ -263,11 +263,11 @@ pub async fn create(
     }
 
     if let Some(header) = &input.header {
-        // Checked against the same list the guest is checked against, so a
-        // rule cannot ask for something a request could never carry.
         if header.parse::<reqwest::header::HeaderName>().is_err() {
             return Err(RuleError::Invalid(format!("{header} is not a header name")));
         }
+        outturn_core::egress::rule::check_rule_header(header)
+            .map_err(|e| RuleError::Invalid(e.to_string()))?;
     }
 
     if let Some(variable) = &input.credential_env {
@@ -392,6 +392,8 @@ pub async fn set_credential(
             if header.parse::<reqwest::header::HeaderName>().is_err() {
                 return Err(RuleError::Invalid(format!("{header} is not a header name")));
             }
+            outturn_core::egress::rule::check_rule_header(header)
+                .map_err(|e| RuleError::Invalid(e.to_string()))?;
             let binding = super::credentials::binding_of(pool, workspace_id, credential)
                 .await
                 .map_err(|e| RuleError::Database(e.to_string()))?

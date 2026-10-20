@@ -390,6 +390,19 @@ pub fn check_header(name: &str) -> Result<(), Refused> {
     Ok(())
 }
 
+/// Checks the header a rule attaches its credential in.
+///
+/// Not `check_header`: `authorization` is what a credential usually travels
+/// in. But `host` decides which site a request reaches, independently of the
+/// URL that was checked, and a rule must not set it.
+pub fn check_rule_header(name: &str) -> Result<(), Refused> {
+    let lowered = name.trim().to_ascii_lowercase();
+    if lowered == "host" {
+        return Err(Refused::Header(lowered));
+    }
+    Ok(())
+}
+
 /// Checks a URL against a workspace's rules, before anything is resolved.
 ///
 /// Returns the host and the rule that admitted it, so the caller can resolve
@@ -573,6 +586,13 @@ mod tests {
         }
         let plain = reqwest::Url::parse("https://api.example.com/").unwrap();
         assert!(check_url(&rules, &plain).is_ok());
+    }
+
+    #[test]
+    fn a_rule_may_not_set_host_but_may_set_authorization() {
+        assert!(check_rule_header("Host").is_err());
+        assert!(check_rule_header("authorization").is_ok());
+        assert!(check_rule_header("x-api-key").is_ok());
     }
 
     #[test]
