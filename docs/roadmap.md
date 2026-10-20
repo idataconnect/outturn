@@ -18,11 +18,13 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **One model for every trigger, then email** ([triggers.md](triggers.md),
-   *One model for every trigger* and *Email*): schedules and webhooks as two
-   sources of one pipeline -- dedupe, ceiling, sender policy, session, prompt
-   -- before email arrives as the third. Designed; to agree before building.
-2. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+1. **An approved call made by its approval** (*Undesigned, and wanted*,
+   below): a resuming turn re-sends the whole gated request today. Seen
+   again on 2026-10-20, a card charge resent after approval -- safe only
+   because the charge is keyed. To design before building.
+2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+   common half for every kind, attachments on mail, then IMAP.
+3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 
@@ -187,8 +189,8 @@ do.
 
 ### Triggers
 
-[triggers.md](triggers.md). Schedules and webhooks built; email designed and
-deferred.
+[triggers.md](triggers.md). Schedules, webhooks and email (inbound parse)
+built as kinds of one model; the single form, IMAP and attachments remain.
 
 The only item here that makes agents useful to a workspace not sitting in the
 UI, which is most of them most of the time.

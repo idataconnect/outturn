@@ -2,10 +2,10 @@
 
 Starting a turn when nobody is typing.
 
-Schedules and webhooks are built. Email is designed here and not built, so
-that the first two do not get in its way -- and so is one model for all three
-(*One model for every trigger*), since two were built separately and a third
-should not be.
+Schedules, webhooks and email are built, as three kinds of one model
+(*One model for every trigger*): one pipeline, one ceiling, one list of an
+agent's triggers. Still to come are one form for making every kind, email by
+IMAP, and attachments on mail.
 
 ## Why this matters more than it looks
 
@@ -421,7 +421,8 @@ as `sessions::create_session` does.
 
 ## One model for every trigger
 
-Designed, not built. Schedules and webhooks were built one after the other,
+Built (2026-10-20), but for the single form (*The API and the page*).
+Schedules and webhooks were built one after the other,
 and what they share was pulled out only at the last step: `trigger::start`,
 which makes the session and queues the turn, became shared after a copy of it
 lost three of its steps. Everything before that step is still written twice --
