@@ -60,7 +60,6 @@ pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub fn request(model: &str, media_type: &str, encoded: &str, question: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,
-        "stream": false,
         "messages": [{
             "role": "user",
             "content": [
