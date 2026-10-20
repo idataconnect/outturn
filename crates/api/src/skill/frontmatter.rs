@@ -244,12 +244,12 @@ fn split_at_close_fence(rest: &str) -> Option<(&str, &str)> {
 /// `key: value` lines indented under it. Anything else under the heading is
 /// refused rather than ignored, because a declaration half-read is one
 /// half-applied. Values come back unquoted and never empty.
-fn block<'y>(
-    yaml: &'y str,
-    heading: &str,
-) -> Result<Option<Vec<(&'y str, Cow<'y, str>)>>, FrontmatterError> {
+/// A block's keys and values, in the order written.
+type Entries<'y> = Vec<(&'y str, Cow<'y, str>)>;
+
+fn block<'y>(yaml: &'y str, heading: &str) -> Result<Option<Entries<'y>>, FrontmatterError> {
     let mut inside = false;
-    let mut found: Option<Vec<(&'y str, Cow<'y, str>)>> = None;
+    let mut found: Option<Entries<'y>> = None;
     let mut lines = yaml.lines().peekable();
 
     while let Some(raw) = lines.next() {

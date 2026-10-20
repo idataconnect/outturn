@@ -1193,10 +1193,19 @@ const GEMINI: Vendor = Vendor {
     catalog: "google",
 };
 
+/// A recipe's tier, its name and what it is for, and its links in order: each
+/// a vendor and the family it is asked for.
+type RecipeRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [(&'static Vendor, &'static str)],
+);
+
 /// Pairs of the same tier from two vendors, so a fallback answers about as
 /// well as what it stands in for. Named by family, never by model: which
 /// model a tier is today is the catalog's to say.
-const RECIPES: &[(&str, &str, &str, &[(&Vendor, &str)])] = &[
+const RECIPES: &[RecipeRow] = &[
     (
         "high",
         "High tier",
