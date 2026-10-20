@@ -11,9 +11,12 @@ metadata:
   name: outturn-keda
 type: Opaque
 stringData:
-  # The scaler reads the queue; it never writes to it. Point this at a role
-  # with select on `jobs` and nothing else.
-  connection: postgres://outturn:outturn-dev@postgres:5432/outturn?sslmode=disable
+  # PLACEHOLDER: replace before applying. This directory is for real clusters,
+  # so no working password is committed here. The scaler reads the queue and
+  # never writes to it: create a role with LOGIN and SELECT on `jobs` and
+  # nothing else, and put its credentials and your database's host here. Use
+  # sslmode=require (or verify-full) wherever the database is not in-cluster.
+  connection: postgres://outturn_keda:CHANGE-ME@postgres.example.com:5432/outturn?sslmode=require
 ---
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
