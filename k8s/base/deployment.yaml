@@ -14,6 +14,15 @@ spec:
       labels:
         app: outturn-api
     spec:
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: outturn-api
@@ -31,6 +40,11 @@ spec:
               port: 8080
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -53,6 +67,15 @@ spec:
       labels:
         app: outturn-gateway
     spec:
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
           image: outturn-gateway
@@ -70,6 +93,11 @@ spec:
               port: 8081
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -94,6 +122,15 @@ spec:
       labels:
         app: outturn-runtime
     spec:
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       # Long enough for a turn already streaming to finish and be reported.
       # On SIGTERM the runtime stops asking for work and waits for the turns
       # it holds; if this runs out first the lease recovers them, at the cost
@@ -117,6 +154,11 @@ spec:
               port: 8082
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -124,3 +166,12 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+          volumeMounts:
+            # The root is read-only; this is where anything that wants a
+            # scratch file in the process (a temp file, a library's cache)
+            # lands, and it is gone with the pod.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

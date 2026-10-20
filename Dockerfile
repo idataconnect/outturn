@@ -50,12 +50,14 @@ FROM gcr.io/distroless/cc-debian13 AS api
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
+USER 65534:65534
 ENTRYPOINT ["api"]
 
 FROM gcr.io/distroless/cc-debian13 AS gateway
 COPY --from=builder /usr/local/bin/gateway /usr/local/bin/gateway
 ENV LISTEN_ADDR=0.0.0.0:8081
 EXPOSE 8081
+USER 65534:65534
 ENTRYPOINT ["gateway"]
 
 FROM gcr.io/distroless/cc-debian13 AS runtime
@@ -63,12 +65,14 @@ COPY --from=builder /usr/local/bin/runtime /usr/local/bin/runtime
 COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8082
 EXPOSE 8082
+USER 65534:65534
 ENTRYPOINT ["runtime"]
 
 # A model that never was. Runs at zero replicas until a load test wants it.
 FROM gcr.io/distroless/cc-debian13 AS mockllm
 COPY --from=builder /usr/local/bin/mockllm /usr/local/bin/mockllm
 EXPOSE 8083
+USER 65534:65534
 ENTRYPOINT ["mockllm"]
 
 # A guesthouse that never was. Sends webhooks, answers a REST API, and serves
@@ -77,6 +81,7 @@ ENTRYPOINT ["mockllm"]
 FROM gcr.io/distroless/cc-debian13 AS hollowbrook
 COPY --from=builder /usr/local/bin/hollowbrook /usr/local/bin/hollowbrook
 EXPOSE 8084
+USER 65534:65534
 ENTRYPOINT ["hollowbrook"]
 
 # The PDF renderer, deployed only where an operator wants PDFs
