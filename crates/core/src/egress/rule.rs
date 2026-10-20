@@ -106,6 +106,9 @@ impl ClientAuth {
 pub enum Refused {
     /// Not http or https.
     Scheme(String),
+    /// The URL carries a username or password, which an HTTP client turns
+    /// into an `Authorization` header the host did not attach.
+    Userinfo,
     /// The URL carries no host, or one that cannot be parsed.
     NoHost,
     /// The workspace has not allowed this host.
@@ -131,6 +134,7 @@ impl std::fmt::Display for Refused {
             // Worded for whoever reads it in a transcript. A model that is told
             // only "refused" tries again the same way.
             Refused::Scheme(s) => write!(f, "{s} is not a scheme this can speak; use https"),
+            Refused::Userinfo => write!(f, "that URL carries a username or password; remove it"),
             Refused::NoHost => write!(f, "that URL names no host"),
             Refused::NotAllowed(h) => write!(
                 f,
@@ -399,6 +403,12 @@ pub fn check_url<'a>(
         other => return Err(Refused::Scheme(other.to_string())),
     }
 
+    // reqwest sends `user:pass@` as a Basic `Authorization` header, which is
+    // the header `check_header` keeps a guest from setting.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Refused::Userinfo);
+    }
+
     let host = url.host_str().ok_or(Refused::NoHost)?.to_string();
 
     // A literal address in the URL never matches a name rule, so this is
@@ -548,6 +558,21 @@ mod tests {
             client: None,
             credential: None,
         }
+    }
+
+    #[test]
+    fn a_url_with_userinfo_is_refused() {
+        let rules = [rule("api.example.com")];
+        for url in [
+            "https://u:p@api.example.com/",
+            "https://u@api.example.com/",
+            "https://:p@api.example.com/",
+        ] {
+            let url = reqwest::Url::parse(url).unwrap();
+            assert_eq!(check_url(&rules, &url).unwrap_err(), Refused::Userinfo);
+        }
+        let plain = reqwest::Url::parse("https://api.example.com/").unwrap();
+        assert!(check_url(&rules, &plain).is_ok());
     }
 
     #[test]
