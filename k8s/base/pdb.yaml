@@ -1,0 +1,38 @@
+# A voluntary disruption -- a node drain, a cluster upgrade -- takes pods one
+# at a time rather than all together.
+#
+# The API and the gateway are each the only door to something, so one stays up.
+# With a single replica that blocks a drain until a second pod exists: `kubectl
+# drain` waits, and says why. Run two of either where nodes get drained.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: outturn-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: outturn-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: outturn-gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: outturn-gateway
+---
+# The runtime holds turns mid-generation, and each evicted pod waits out its
+# termination grace for them. Evicting one at a time means a drain loses at most
+# one pod's worth of attention at once, however many there are.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: outturn-runtime
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: outturn-runtime
