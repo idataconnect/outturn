@@ -14,6 +14,11 @@ spec:
       labels:
         app: outturn-api
     spec:
+      # The queue worker and the long-poll hold connections open: a runtime
+      # asking for work waits up to 25s (WORK_POLL_TIMEOUT), and graceful
+      # shutdown waits for every such request to answer. Well past that, so a
+      # rollout never cuts a poll or a stream mid-answer.
+      terminationGracePeriodSeconds: 60
       # Nothing here talks to the Kubernetes API, so nothing should be handed
       # a token that could.
       automountServiceAccountToken: false
@@ -67,6 +72,11 @@ spec:
       labels:
         app: outturn-gateway
     spec:
+      # A model's stream may sit silent for the idle read timeout (five
+      # minutes) before the gateway gives up on it, and shutdown waits for
+      # streams in flight. Matches the runtime, which must not be left
+      # waiting on a gateway that has gone before it.
+      terminationGracePeriodSeconds: 360
       # Nothing here talks to the Kubernetes API, so nothing should be handed
       # a token that could.
       automountServiceAccountToken: false
