@@ -183,7 +183,7 @@ impl EgressTransport for Direct {
 /// A URL an agent built can carry a credential in its query string, and these
 /// strings reach a model and a transcript that is read back on every later
 /// turn.
-fn strip_url(message: &str) -> String {
+pub(crate) fn strip_url(message: &str) -> String {
     message
         .split_whitespace()
         .map(|word| if word.contains("://") { "<url>" } else { word })
