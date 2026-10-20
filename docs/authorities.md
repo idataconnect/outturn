@@ -60,7 +60,17 @@ that could grant itself `workspaces:create` could make workspaces.
 
 A role editor may bundle only authorities they hold themselves. Otherwise
 `roles:manage` is a ladder: define a role with everything, grant it to
-yourself, climb.
+yourself, climb. Granting is bounded the same way: `roles:assign` hands out
+only roles whose authorities the granter already holds, and only to accounts
+already holding a role in the workspace. A system administrator is exempt from
+both, since bringing somebody into a workspace is their job.
+
+**The user routes stop at the workspace.** Reading, renaming, deleting an
+account or changing how it signs in reaches only accounts holding a role in the
+caller's workspace, or the caller's own; a system administrator reaches all.
+An account outside that is 404, not 403, so an id is not an oracle for who
+exists where. Resolving by id alone let one workspace's administrator attach a
+password to any account on the platform and sign in as them.
 
 A role somebody holds cannot be deleted. Take it away from them first.
 

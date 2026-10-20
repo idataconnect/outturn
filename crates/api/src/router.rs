@@ -687,6 +687,25 @@ struct UpdateUser {
     display_name: String,
 }
 
+/// The account a user route acts on, if the caller may reach it.
+///
+/// A route that resolved its target by id alone let anyone holding
+/// `users:update` in one workspace rename, delete or attach a sign-in to any
+/// account on the platform, a system administrator's included. So a target is
+/// the caller themself, an account holding a role in the caller's workspace,
+/// or, for a system administrator, anyone. Outside that it is 404 rather than
+/// 403, so a guessed id learns nothing.
+async fn target_user(
+    state: &ApiState,
+    claims: &SessionClaims,
+    id: Uuid,
+) -> Result<User, ApiError> {
+    if claims.subject == id || claims.is_system_admin() {
+        return Ok(state.users.get(id).await?);
+    }
+    Ok(state.users.get_in_workspace(id, claims.workspace_id).await?)
+}
+
 async fn update_user(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -697,6 +716,7 @@ async fn update_user(
     if claims.subject != id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, id).await?;
     let user = state.users.rename(id, &input.display_name).await?;
     tracing::info!(actor = %claims.subject, user_id = %id, "user renamed");
     Ok(Json(user))
@@ -722,8 +742,9 @@ async fn create_user(
 ) -> Result<(StatusCode, Json<User>), ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersCreate).await?;
     let CreateUserRequest { user: input, role } = input;
-    if role.is_some() {
+    if let Some(role) = &role {
         require(&state, &claims, Authority::RolesAssign).await?;
+        require_role_within_reach(&state, &claims, claims.workspace_id, role).await?;
     }
     let user = state.users.create(input).await?;
     if let Some(role) = role {
@@ -742,7 +763,7 @@ async fn get_user(
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserDetail>, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersRead).await?;
-    let user = state.users.get(id).await?;
+    let user = target_user(&state, &claims, id).await?;
     let mut memberships = state.users.memberships(id).await?;
     if !claims.is_system_admin() {
         memberships.retain(|m| m.workspace_id == claims.workspace_id);
@@ -759,6 +780,7 @@ async fn delete_user(
     if claims.subject == id {
         return Err((StatusCode::BAD_REQUEST, "cannot delete yourself".into()));
     }
+    target_user(&state, &claims, id).await?;
     state.users.delete(id).await?;
     tracing::info!(actor = %claims.subject, user_id = %id, "user deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -782,6 +804,7 @@ async fn add_identity(
     if claims.subject != user_id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, user_id).await?;
 
     let identity = state
         .users
@@ -800,6 +823,7 @@ async fn remove_identity(
     if claims.subject != user_id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, user_id).await?;
 
     state.users.remove_identity(user_id, identity_id).await?;
     tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");
@@ -907,6 +931,13 @@ async fn grant_workspace_role(
             "cannot grant outside your workspace".into(),
         ));
     }
+    require_role_within_reach(&state, &claims, workspace_id, &input.role).await?;
+    // Only somebody already here may be given more here. A grant to an
+    // arbitrary id pulled any account on the platform into this workspace,
+    // and from there every user route could reach it.
+    if !claims.is_system_admin() {
+        state.users.get_in_workspace(user_id, workspace_id).await?;
+    }
     state
         .users
         .grant_workspace_role(user_id, workspace_id, &input.role)
@@ -1010,6 +1041,42 @@ async fn get_role(
         ));
     }
     Ok(Json(state.roles.get(claims.workspace_id, id).await?))
+}
+
+/// A role may be handed out only by somebody who holds everything it bundles.
+///
+/// `roles:assign` alone was the same ladder `within_reach` closes for the
+/// editor: hand yourself, or a friend, the workspace's admin role and climb.
+/// Resolved against `workspace_id` rather than the token's, since a system
+/// administrator may grant in a workspace they are not scoped to. A name the
+/// workspace has no role for resolves to nothing here and is refused by the
+/// store, which names the real reason.
+async fn require_role_within_reach(
+    state: &ApiState,
+    claims: &SessionClaims,
+    workspace_id: Uuid,
+    role: &str,
+) -> Result<(), ApiError> {
+    let bundled = state
+        .roles
+        .authorities_for(workspace_id, &[role.to_string()])
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(workspace_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    if let Some(a) = bundled.iter().find(|a| !granted.contains(a)) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("you cannot grant {role} because it carries {a}, which you do not hold"),
+        ));
+    }
+    Ok(())
 }
 
 /// A role may bundle only what its editor already holds.
