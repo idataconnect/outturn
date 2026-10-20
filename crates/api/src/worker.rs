@@ -2619,7 +2619,15 @@ impl Worker {
             )
             .ok()?;
 
-        let response = reqwest::Client::new()
+        // With a deadline. This runs while a turn is being prepared, under a
+        // lease the heartbeat keeps renewing for as long as the call takes --
+        // so a gateway that accepted the request and never answered would
+        // hold the turn, and the runtime's poll for it, for ever. The idle
+        // deadline is the one the gateway's own calls use: a summary is one
+        // read, so silence that long is silence for the whole of it.
+        let response = outturn_core::http_client::streaming_client(
+            outturn_core::http_client::IDLE_TIMEOUT,
+        )
             .post(format!("{gateway_url}/v1/chat/completions"))
             .bearer_auth(token)
             .header(
