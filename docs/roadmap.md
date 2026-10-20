@@ -497,6 +497,13 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
+**An approved call made by its approval, not resent by the agent.** When a
+gated call is approved, the resuming turn is told to make the call again, and
+the agent re-sends the whole request -- arguments it has to reproduce exactly,
+since a grant is keyed on them. It could instead name the approval, and the
+host replay the request it already holds: nothing for the model to get wrong,
+and a request that provably matches what was approved.
+
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
 A skill's operations leave every header out of their tools
