@@ -1,3 +1,10 @@
+# The namespace's boundary, and then the runtime's.
+#
+# Nothing is reachable until a policy below says so: the first object denies
+# every connection to and from every pod, and each one after it opens exactly
+# one path. Policies add, so a component that deploys something new brings its
+# own allows rather than editing these.
+#
 # The runtime's boundary, said by the network rather than by the runtime.
 #
 # The runtime tier executes workspace code, and every outbound request an agent
@@ -14,6 +21,16 @@
 # applies cleanly and does nothing -- so local development is unaffected, and a
 # deployment relying on it should check that its CNI enforces rather than
 # assume the manifest is enough.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -61,3 +78,251 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+---
+# The API: Postgres for state, object storage for files, and the gateway for
+# the catalog and the test call. Reached by the runtimes that take work from it,
+# by whatever fronts it (see the ingress namespace below), and by the setup Jobs
+# components run against it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-api
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+        # Setup Jobs and the mock guesthouse's webhooks.
+        - podSelector:
+            matchLabels:
+              outturn-client: api
+        # A proxy in front of the API. Name the namespace it runs in: a
+        # deployment with an ingress controller changes this selector to that
+        # namespace's name. Local development reaches the API by port-forward,
+        # which arrives from the node and needs no rule.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# The gateway: the egress tier. It holds the credentials and makes every
+# outbound request an agent asks for, so it may reach the internet -- and that
+# is the whole of what it may reach. The private ranges and the cloud metadata
+# address are carved out of "anywhere": a request an agent steered at them is
+# the one thing the egress rules exist to stop, and the network refusing it too
+# means a bug in the rules is not the only line. Replace the three private
+# ranges with the cluster's own pod and service CIDRs if it uses others, and
+# open a model or API inside the network by adding a rule beside this one --
+# see OUTTURN_INTERNAL_HOSTS in docs/egress.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+---
+# Postgres hears from the two tiers that keep state in it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Object storage hears from the API, which writes transcripts and files, and
+# from the runtime, which keeps a session's scratch files there.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# The mock provider and the mock guesthouse are reached by the gateway, as a
+# model and as an API an agent's request is made against. At zero replicas
+# these select nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-mocks
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [outturn-mockllm, outturn-hollowbrook]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+---
+# Anything that calls the API from inside the cluster -- the guesthouse's
+# webhooks, the Jobs that install a component's skill -- says so with the label
+# `outturn-client: api`, and may reach it and resolve its name, nothing more.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-api-clients
+spec:
+  podSelector:
+    matchLabels:
+      outturn-client: api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# A setup Job installs its tools when it runs, and so reaches the internet to
+# do it. Labeled `outturn-setup: "true"`; it never holds a credential beyond
+# the dev admin's, and is gone when it finishes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-setup-jobs
+spec:
+  podSelector:
+    matchLabels:
+      outturn-setup: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16

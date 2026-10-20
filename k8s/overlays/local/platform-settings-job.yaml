@@ -46,6 +46,7 @@ spec:
     metadata:
       labels:
         app: platform-settings
+        outturn-client: api
     spec:
       restartPolicy: OnFailure
       containers:

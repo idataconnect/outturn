@@ -33,6 +33,7 @@ spec:
     metadata:
       labels:
         app: outturn-hollowbrook
+        outturn-client: api
     spec:
       containers:
         - name: hollowbrook
