@@ -76,6 +76,13 @@ pub trait UserStore: Send + Sync {
         limit: i64,
     ) -> Result<Vec<User>, UserError>;
     async fn get(&self, id: Uuid) -> Result<User, UserError>;
+    /// `get`, for an account holding a role in `workspace_id`. An account that
+    /// exists but belongs elsewhere is `NotFound`, the same as one that does
+    /// not exist: the workspace is the isolation boundary, and a route that
+    /// resolved by id alone let one workspace's administrator reach every
+    /// account on the platform. Answering 403 for those would make the ids
+    /// an oracle for who is where.
+    async fn get_in_workspace(&self, id: Uuid, workspace_id: Uuid) -> Result<User, UserError>;
     async fn rename(&self, id: Uuid, display_name: &str) -> Result<User, UserError>;
     async fn create(&self, input: CreateUser) -> Result<User, UserError>;
     async fn delete(&self, id: Uuid) -> Result<(), UserError>;

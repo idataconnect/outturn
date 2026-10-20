@@ -687,6 +687,25 @@ struct UpdateUser {
     display_name: String,
 }
 
+/// The account a user route acts on, if the caller may reach it.
+///
+/// A route that resolved its target by id alone let anyone holding
+/// `users:update` in one workspace rename, delete or attach a sign-in to any
+/// account on the platform, a system administrator's included. So a target is
+/// the caller themself, an account holding a role in the caller's workspace,
+/// or, for a system administrator, anyone. Outside that it is 404 rather than
+/// 403, so a guessed id learns nothing.
+async fn target_user(
+    state: &ApiState,
+    claims: &SessionClaims,
+    id: Uuid,
+) -> Result<User, ApiError> {
+    if claims.subject == id || claims.is_system_admin() {
+        return Ok(state.users.get(id).await?);
+    }
+    Ok(state.users.get_in_workspace(id, claims.workspace_id).await?)
+}
+
 async fn update_user(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -697,6 +716,7 @@ async fn update_user(
     if claims.subject != id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, id).await?;
     let user = state.users.rename(id, &input.display_name).await?;
     tracing::info!(actor = %claims.subject, user_id = %id, "user renamed");
     Ok(Json(user))
@@ -742,7 +762,7 @@ async fn get_user(
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserDetail>, ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersRead).await?;
-    let user = state.users.get(id).await?;
+    let user = target_user(&state, &claims, id).await?;
     let mut memberships = state.users.memberships(id).await?;
     if !claims.is_system_admin() {
         memberships.retain(|m| m.workspace_id == claims.workspace_id);
@@ -759,6 +779,7 @@ async fn delete_user(
     if claims.subject == id {
         return Err((StatusCode::BAD_REQUEST, "cannot delete yourself".into()));
     }
+    target_user(&state, &claims, id).await?;
     state.users.delete(id).await?;
     tracing::info!(actor = %claims.subject, user_id = %id, "user deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -782,6 +803,7 @@ async fn add_identity(
     if claims.subject != user_id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, user_id).await?;
 
     let identity = state
         .users
@@ -800,6 +822,7 @@ async fn remove_identity(
     if claims.subject != user_id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
+    target_user(&state, &claims, user_id).await?;
 
     state.users.remove_identity(user_id, identity_id).await?;
     tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");

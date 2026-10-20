@@ -214,6 +214,22 @@ impl UserStore for PostgresUserStore {
         })
     }
 
+    async fn get_in_workspace(&self, id: Uuid, workspace_id: Uuid) -> Result<User, UserError> {
+        let member: bool = sqlx::query_scalar(
+            "select exists(select 1 from user_workspace_roles \
+                            where user_id = $1 and workspace_id = $2)",
+        )
+        .bind(id)
+        .bind(workspace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        if !member {
+            return Err(UserError::NotFound);
+        }
+        self.get(id).await
+    }
+
     async fn create(&self, input: CreateUser) -> Result<User, UserError> {
         validate(&input)?;
         let hash =
