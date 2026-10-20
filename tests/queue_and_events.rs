@@ -4984,3 +4984,126 @@ async fn a_fallback_to_the_same_model_elsewhere_is_not_a_change() {
 
     finish!(db);
 }
+
+// -- Wakeups ------------------------------------------------------------------
+
+/// A timer fired once, whatever happens to the process firing it.
+///
+/// The firing used to commit the note and the turn, then close the job in a
+/// second statement. A crash between the two left a job still running on a
+/// lease nobody renewed; the reaper gave it back and the next tick fired it
+/// again, with a second note and a second turn. Now the closing is in the
+/// firing's own transaction: a crash loses both or neither, and the re-fire
+/// after a reap is the only firing there is.
+#[tokio::test]
+async fn a_timer_reaped_mid_fire_wakes_the_agent_once() {
+    use outturn::api::wake::{self, Due, Kind};
+
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, _store) = streamed_session(pool, workspace).await;
+    let agent_id: Uuid = sqlx::query_scalar("select agent_id from agent_sessions where id = $1")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .expect("agent");
+
+    let now = chrono::Utc::now();
+    let due = Due {
+        workspace_id: workspace,
+        session_id,
+        agent_id,
+        kind: Kind::Timer,
+        reason: "Check the booking was confirmed".into(),
+        set_at: now,
+        due_at: now,
+        timezone: None,
+        item_id: None,
+        inhibitor_id: None,
+    };
+    jobs::enqueue(
+        pool,
+        workspace,
+        wake::WAKE,
+        serde_json::to_value(&due).expect("payload"),
+        None,
+        None,
+        jobs::PRIORITY_BACKGROUND,
+    )
+    .await
+    .expect("enqueue");
+
+    let claimed = jobs::claim(pool, &[wake::WAKE], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim");
+    let job = claimed[0].job.clone();
+
+    // The firing gets as far as writing everything, and the process dies
+    // before the commit: the transaction is dropped where a crash would drop it.
+    {
+        let mut tx = pool.begin().await.expect("begin");
+        wake::fire_timer_on(&mut tx, &due, &job)
+            .await
+            .expect("fire");
+        drop(tx);
+    }
+
+    // Nothing of it is visible, and the lease lapses with nobody renewing it.
+    let notes_after_crash: i64 = sqlx::query_scalar(
+        "select count(*) from agent_messages where session_id = $1 and metadata ? 'wake'",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        notes_after_crash, 0,
+        "a crashed firing left its note behind"
+    );
+
+    sqlx::query("update jobs set leased_until = now() - interval '1 second' where id = $1")
+        .bind(job.id)
+        .execute(pool)
+        .await
+        .expect("lapse");
+    let (reaped, _) = jobs::reap_abandoned(pool).await.expect("reap");
+    assert_eq!(reaped, 1);
+
+    let again = jobs::claim(pool, &[wake::WAKE], 1, jobs::DEFAULT_LEASE)
+        .await
+        .expect("claim again");
+    assert_eq!(again.len(), 1, "the reaped wakeup must be runnable again");
+    let actions = outturn::api::actions::PostgresActionStore::new(pool.clone());
+    wake::fire(pool, &actions, &again[0].job)
+        .await
+        .expect("fire again");
+
+    // And the first firing's lease, had it survived to try, is no longer good.
+    let stale = wake::fire(pool, &actions, &job).await;
+    assert!(stale.is_err(), "a firing on a lapsed lease must not land");
+
+    let notes: i64 = sqlx::query_scalar(
+        "select count(*) from agent_messages where session_id = $1 and metadata ? 'wake'",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .expect("count");
+    assert_eq!(notes, 1, "a timer woke the agent more than once");
+    let turns: i64 = sqlx::query_scalar(
+        "select count(*) from jobs where kind = 'chat.turn' and payload->>'session_id' = $1",
+    )
+    .bind(session_id.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("count");
+    assert_eq!(turns, 1, "a timer started more than one turn");
+    let state: String = sqlx::query_scalar("select state from jobs where id = $1")
+        .bind(job.id)
+        .fetch_one(pool)
+        .await
+        .expect("state");
+    assert_eq!(state, "succeeded", "the wakeup is closed with its firing");
+
+    finish!(db);
+}
