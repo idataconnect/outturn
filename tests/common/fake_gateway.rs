@@ -37,6 +37,12 @@ pub enum Behavior {
     Reply(String),
     /// Stream this text, then decline to go on, saying why.
     Refuse { text: String, why: String },
+    /// Stream this text and end it with the given usage object, as the
+    /// gateway would have translated it from some provider.
+    ReplyCosting {
+        text: String,
+        usage: serde_json::Value,
+    },
     /// Stream some text, then drop the connection mid-generation.
     TruncateAfter { text: String, chunks: usize },
     /// Fail the request outright.
@@ -444,6 +450,18 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behavior::ReplyCosting { text, usage } => {
+            let mut lines: Vec<String> = chunk_text(&text)
+                .iter()
+                .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                .collect();
+            let mut last: serde_json::Value =
+                serde_json::from_str(&chunk_json("", Some("stop"))).expect("chunk");
+            last["usage"] = usage;
+            lines.push(format!("{last}\n"));
+            ndjson(lines)
+        }
+
         Behavior::Refuse { text, why } => {
             let mut lines: Vec<String> = chunk_text(&text)
                 .iter()
@@ -479,6 +497,7 @@ async fn completions(
 
     let text = match behavior {
         Behavior::Reply(text) => text,
+        Behavior::ReplyCosting { text, .. } => text,
         Behavior::Refuse { text, .. } => text,
         Behavior::ToolThenReply { reply, .. } => reply,
         Behavior::LoadThenToolThenReply { reply, .. } => reply,
