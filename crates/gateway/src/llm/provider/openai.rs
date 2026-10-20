@@ -9,7 +9,7 @@
 use futures::stream::{BoxStream, Stream, StreamExt, TryStreamExt};
 
 use super::{LlmProvider, Provider, ProviderError};
-use outturn_core::llm::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk};
+use outturn_core::llm::{ChatCompletionRequest, ChatCompletionResponse, StreamChunk, Usage};
 
 pub struct OpenAiProvider {
     base_url: String,
@@ -66,10 +66,12 @@ impl LlmProvider for OpenAiProvider {
             return Err(Self::fail(response).await);
         }
 
-        response
+        let mut response: ChatCompletionResponse = response
             .json()
             .await
-            .map_err(|e| ProviderError::transport(&e))
+            .map_err(|e| ProviderError::transport(&e))?;
+        response.usage = response.usage.map(unfold_cache);
+        Ok(response)
     }
 
     async fn chat_completion_stream(
@@ -123,7 +125,10 @@ where
     super::sse_payloads(stream).filter_map(|payload| {
         let decoded = match payload {
             Ok(value) => match serde_json::from_value::<StreamChunk>(value) {
-                Ok(chunk) => Some(Ok(chunk)),
+                Ok(mut chunk) => {
+                    chunk.usage = chunk.usage.map(unfold_cache);
+                    Some(Ok(chunk))
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "malformed stream chunk");
                     None
@@ -133,4 +138,58 @@ where
         };
         std::future::ready(decoded)
     })
+}
+
+/// This protocol's usage, in the canonical meaning.
+///
+/// The shape is already the canonical one, which is exactly why the meaning
+/// used to slip past: the protocol counts cached tokens *inside*
+/// `prompt_tokens`, and a reader that took the number as it came billed every
+/// cached token twice -- once at the cached rate and once at full. Taken out
+/// here, where this protocol is spoken, so the runtime is handed the same
+/// meaning from every route and has no subtraction of its own to get wrong.
+/// The provider's own object rides through untouched in `extra`, as it does
+/// for the protocols that are translated.
+fn unfold_cache(mut usage: Usage) -> Usage {
+    let cached = usage
+        .prompt_tokens_details
+        .as_ref()
+        .map_or(0, |d| d.cached_tokens);
+    usage.prompt_tokens = usage.prompt_tokens.saturating_sub(cached);
+    usage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same facts every protocol's test states: 80 fresh, 20 read from
+    /// cache, 5 written. This protocol says 100 and lets the detail explain.
+    #[test]
+    fn cached_tokens_come_out_of_the_prompt_count() {
+        let usage: Usage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 7,
+            "total_tokens": 107,
+            "prompt_tokens_details": { "cached_tokens": 20, "cache_creation_tokens": 5 },
+        }))
+        .expect("usage");
+        let usage = unfold_cache(usage);
+        assert_eq!(usage.prompt_tokens, 80, "full-rate input only");
+        let details = usage.prompt_tokens_details.expect("detail");
+        assert_eq!(details.cached_tokens, 20);
+        assert_eq!(details.cache_creation_tokens, 5);
+        assert_eq!(usage.total_tokens, 107);
+    }
+
+    /// An endpoint that reports no breakdown reports no cache, and nothing
+    /// changes.
+    #[test]
+    fn a_prompt_count_without_a_breakdown_is_taken_whole() {
+        let usage: Usage = serde_json::from_value(serde_json::json!({
+            "prompt_tokens": 100, "completion_tokens": 7, "total_tokens": 107,
+        }))
+        .expect("usage");
+        assert_eq!(unfold_cache(usage).prompt_tokens, 100);
+    }
 }

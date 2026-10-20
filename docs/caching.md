@@ -7,6 +7,12 @@ Designed, unbuilt. What exists is measurement: the usage ledger records
 `cache_read_tokens` and `cache_write_tokens` for every model call, from what
 each provider reports. Nothing asks any provider to cache anything.
 
+Those two columns sit beside `prompt_tokens`, never inside it: the prompt
+count is the full-rate input alone, whatever a provider folds together in its
+own report, and the gateway is where each provider's convention is settled
+into that one meaning. [usage.md](usage.md) has the definition and the
+under-billing that came of having it in two places.
+
 ## What each provider does
 
 Checked against memory rather than current documentation, so verify before

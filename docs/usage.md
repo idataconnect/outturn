@@ -29,6 +29,33 @@ Tokens, never prices. Rate cards change and disputes happen, and a ledger that
 stored a computed cost would have to be corrected where one that stores tokens
 is re-priced by whoever is billing.
 
+## What the token columns mean
+
+One definition, written once on the `Usage` type in `crates/core/src/llm.rs`,
+and every route arrives at it:
+
+- `prompt_tokens` is the input billed at full rate: what the model evaluated
+  afresh. It never includes a cached token.
+- `cache_read_tokens` and `cache_write_tokens` are the input served from a
+  cache and the input written into one, beside the prompt count rather than
+  inside it.
+- `completion_tokens` is everything the model produced, thinking included;
+  `reasoning_tokens` is the thinking part of that, reported apart.
+
+The providers do not agree on this. The OpenAI protocol and Gemini count
+cached tokens *inside* the prompt total and leave the breakdown to explain;
+Anthropic reports reads and writes apart from the input count. The gateway
+settles that where it speaks each protocol -- the OpenAI provider takes the
+cache out of the prompt count, the Anthropic and Gemini translations produce
+the canonical numbers directly -- and the runtime takes what the gateway
+sends without arithmetic of its own. For a while it did not: the runtime
+applied the OpenAI convention to every route, subtracting the cache from a
+count the gateway had already subtracted it from, so an Anthropic call with
+80 fresh and 20 cached tokens was recorded as 60 and a Gemini call with 800 of
+1,000 cached was recorded as 0. Two places each knowing a convention is how a
+number ends up meaning different things on different routes; the convention
+lives in one.
+
 The five normalized columns are what every provider agrees on and every rate
 card needs. They are not a superset and never will be: cache writes priced by
 TTL, service tiers, long-context thresholds, server-side tools billed per call,

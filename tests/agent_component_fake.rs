@@ -1128,12 +1128,13 @@ async fn a_turn_reports_what_it_spent() {
         .await
         .expect("run");
 
-    // Two rounds at 11 prompt tokens each, of which 4 were cached: 7 billed
-    // at full rate per round. Folding the cache back in would overstate the
-    // bill, which is the mistake the split exists to prevent.
+    // Two rounds at 7 full-rate prompt tokens each, with 4 read from cache
+    // and 2 written beside them. The gateway already separated them, so the
+    // host takes the numbers as they are: subtracting the cache again is the
+    // mistake that under-billed every cached conversation.
     assert_eq!(
         cost.prompt_tokens, 14,
-        "cached tokens are not billed as fresh input"
+        "the prompt count is taken as the gateway defined it"
     );
     assert_eq!(cost.cache_read_tokens, 8);
     assert_eq!(cost.cache_write_tokens, 4);

@@ -217,13 +217,14 @@ fn chunk_json(text: &str, finish: Option<&str>) -> String {
     // Providers report usage on the final chunk, so the fake does too --
     // otherwise nothing here would exercise the accounting.
     if finish.is_some() {
-        // With the breakdown, so the split is exercised rather than assumed:
-        // this protocol folds cached tokens into the prompt total, and the
-        // reader is expected to take them back out.
+        // In the gateway's meaning, which is what this stands in for: the
+        // prompt count is the full-rate input alone, with the cache beside
+        // it. A reader that subtracts the cache again, as it would from the
+        // raw OpenAI protocol, comes up short here.
         chunk["usage"] = serde_json::json!({
-            "prompt_tokens": 11,
+            "prompt_tokens": 7,
             "completion_tokens": 7,
-            "total_tokens": 18,
+            "total_tokens": 20,
             "prompt_tokens_details": { "cached_tokens": 4, "cache_creation_tokens": 2 },
             "completion_tokens_details": { "reasoning_tokens": 3 },
         });

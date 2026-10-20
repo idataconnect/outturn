@@ -1991,18 +1991,20 @@ async fn stream_completion(
                 // Kept whole. The fields read below are the ones every bill
                 // needs; the rest are the ones a later bill might.
                 served.provider_usage = Some(u.clone());
-                let cached = u["prompt_tokens_details"]["cached_tokens"]
-                    .as_u64()
-                    .unwrap_or(0) as u32;
-                let prompt = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
                 usage = Some(Usage {
-                    // This protocol counts cached tokens inside the prompt
-                    // total, so they are taken back out: "prompt tokens" here
-                    // means the ones billed at full rate, whatever a given
-                    // provider chooses to fold together.
-                    prompt_tokens: prompt.saturating_sub(cached),
+                    // Taken as the gateway sent it. The gateway defines what
+                    // "prompt tokens" means -- the input billed at full rate,
+                    // with cached tokens beside it rather than inside -- and
+                    // settles every protocol's convention into that one
+                    // meaning before it reaches here. Subtracting the cache
+                    // again on this side, as this once did on the OpenAI
+                    // protocol's account, billed a cached Anthropic or Gemini
+                    // conversation at a fraction of its cost.
+                    prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                     completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                    cache_read_tokens: cached,
+                    cache_read_tokens: u["prompt_tokens_details"]["cached_tokens"]
+                        .as_u64()
+                        .unwrap_or(0) as u32,
                     cache_write_tokens: u["prompt_tokens_details"]["cache_creation_tokens"]
                         .as_u64()
                         .unwrap_or(0) as u32,
