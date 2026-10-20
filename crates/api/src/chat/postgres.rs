@@ -974,17 +974,22 @@ impl ChatStore for PostgresChatStore {
         // quiet: the reply was empty, the job had succeeded, and every later
         // message was refused.
         //
-        // Every state that means "this turn was accounted for" belongs in the
-        // list below, not only the ones that mean it went well. A turn stopped
-        // before its first token leaves exactly the shape this looks for -- an
-        // empty reply, no running job -- and reading that as abandonment
-        // wedges the session in the same way, by a different route.
+        // This used to name the job states that count as "accounted for", and
+        // every state did in the end: a turn stopped before its first token,
+        // one parked for hours on an approval, and one that failed for good
+        // each leave an empty reply under a job that is not running, and each
+        // time one was missing from the list the session wedged by a new
+        // route. The last was `failed`: a turn that could not be prepared --
+        // no model configured, say -- failed its job and left its placeholder,
+        // and every later message was refused. The placeholder is discarded
+        // on that path now, and a failed turn a person retries takes its empty
+        // attempt back rather than claiming a second one, so a failed job
+        // accounts for its reply as well as a finished one does.
         //
-        // `parked` is in it for that reason: a turn waiting on a person has an
-        // empty reply and is not running, and it is the one state here that is
-        // *expected* to sit that way for hours. Left out, the first message
-        // somebody sends while an approval is pending is refused, and the
-        // conversation they were trying to unblock is the one that wedges.
+        // So no state list: what is abandoned is an empty reply that no turn
+        // was ever queued to fill. Any job answering the prompt, in whatever
+        // state, is something that will fill the reply, did, or cleaned it up
+        // -- and a turn's job row is never deleted.
         //
         // `j.kind` is named although only turns carry a `message_id`: it is
         // what lets the planner use `jobs_chat_turn_message_idx`, whose
@@ -994,7 +999,6 @@ impl ChatStore for PostgresChatStore {
              left join jobs j \
                     on (j.payload->>'message_id')::uuid = m.replies_to \
                    and j.kind = 'chat.turn' \
-                   and j.state in ('pending', 'running', 'succeeded', 'cancelled', 'parked') \
              where m.session_id = $1 and m.role = 'assistant' \
                and not said_something(m.content, m.metadata) \
                and j.id is null \
