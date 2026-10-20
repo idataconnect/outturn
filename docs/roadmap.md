@@ -18,15 +18,209 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **An approved call made by its approval** (*Undesigned, and wanted*,
+1. **What the review of 2026-10-20 left** (*From the review*, below): ten
+   fixes are on branches already; the retention sweeps and indexes go next,
+   then the rest in the order given there.
+2. **An approved call made by its approval** (*Undesigned, and wanted*,
    below): a resuming turn re-sends the whole gated request today. Seen
    again on 2026-10-20, a card charge resent after approval -- safe only
    because the charge is keyed. To design before building.
-2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
+
+## From the review
+
+A read of the whole tree on 2026-10-20, by area, with every finding checked
+against the code before it was kept. The ten that could lose data, money or
+a tenant's isolation went straight to branches: user routes scoped to the
+caller's workspace, logout revoking the refresh family, the lease kept alive
+through preparation, a job-state enum and the placeholder discarded on a
+final prepare failure, one definition of prompt tokens, vision billed and
+translated, schema expansion and host reads bounded, streams decoded across
+chunk boundaries and provider URLs kept out of transcripts, pods hardened,
+and timer firings made once-only with session delete taking its work along.
+
+What follows is the remainder: each is the exact change, with where, so it
+can be picked up without rereading the review. Ordered by what it protects.
+
+### Retention: tables that only grow
+
+- `tool_invocations` has `tool_invocations_expiry_idx` (migration 0049) and
+  nothing that deletes by `expires_at`; the only delete is per key
+  (`crates/api/src/invocations.rs`). Add a sweep to `spawn_reaper` in
+  `crates/api/src/worker.rs` beside the delta sweep.
+- `trigger_firings` (0047) has no expiry column. Add one in a new migration,
+  default thirty days from firing, and sweep it.
+- The event sweep deletes only `chat.delta`, and only once a finished message
+  exists (`worker.rs`, the sweep near the reaper). `chat.reasoning`,
+  `chat.tool`, `chat.tool_result`, `chat.writing` and `chat.steer` are never
+  pruned, and the deltas of a discarded placeholder are orphaned forever.
+  Sweep every streamed kind once its turn is finished, keyed on the turn
+  rather than on a message existing.
+- `catalog_snapshots` keeps every weekly fetch in full; only `models.snapshot_id`
+  references one. Keep the referenced ones and the last few.
+- Resolved `action_items` and `session_prompts` of deleted sessions: decide a
+  horizon and sweep, or say in [storage.md](storage.md) that they are kept.
+
+### Indexes and constraints
+
+- Unindexed `set null` foreign keys to `users` make an account deletion scan
+  `agent_messages`, the busiest table: `agent_messages.user_id`,
+  `agent_sessions.user_id`, `action_items.resolved_by`,
+  `triggers.owner_id` and `created_by`, `skills.created_by`,
+  `skill_versions.created_by`. One migration of partial indexes where not
+  null; the same class as `absorbed_by` in 0024.
+- `agent_sessions.trigger_id` is filtered on every firing under `for update`
+  on the trigger row (`crates/api/src/trigger.rs`, `over_ceiling`) with no
+  index. Partial index where not null.
+- Wake lookups (`crates/api/src/wake.rs`, three sites) filter
+  `payload->>'session_id'` as text with `kind = 'wake'`; both expression
+  indexes cast to uuid and are partial on `chat.turn`, so these scan every
+  pending job. Either cast in the query to match an index, or add one for the
+  wake kind.
+- `egress_rules.credential_id` and `provider_accounts.credential_id` are
+  `on delete restrict` with no index. Cheap to add.
+- Enumerations documented but not checked: `usage_ledger.credential_owner`
+  and `.fallback`, `events.kind`, `jobs.kind`. A CHECK each, or a note in
+  [invariants.md](invariants.md) saying why not.
+- No `(workspace_id, name)` uniqueness on `models`, `provider_accounts` or
+  `chains`, though the UI lists and picks by name. `credentials.workspace_id`
+  went nullable in 0042 with no partial unique on `name` for the platform
+  ones.
+- Future index migrations on `events` or `agent_messages` should carry
+  `-- no-transaction` and `create index concurrently`; 0024, 0026 and 0031
+  took SHARE locks under every streaming turn.
+
+### Prompt and sandbox boundaries
+
+- The summarizer promotes tool output to the user role
+  (`crates/api/src/chat/summarize.rs`, the message building): results become
+  "[result of a tool call]" user messages, and the summary is then stored as
+  assistant text the rest of the session trusts. Wrap results in the same
+  untrusted delimiters the platform preamble uses for turns
+  (`crates/api/src/skill/mod.rs`, the preamble) and tell the summarizer so.
+- Cancellation is not enforced by the host: `chat` in
+  `crates/runtime/src/component.rs` never checks `cancelled`; only the
+  default guest's loop does. Refuse a `chat` call once the turn is cancelled,
+  so a component that ignores the flag still stops.
+- Only `chat` rounds are capped. `fetch`, `list_objects` and `describe_image`
+  have no per-turn count, and no workspace has a storage quota, so one turn can
+  fill the bucket. A per-turn count on each, and a quota on `write_object`
+  and `open_writer` read from workspace settings.
+- Session files expire by object age, not session activity
+  (`crates/core/src/storage/s3.rs`, the lifecycle rule). A session older than
+  the TTL loses its uploads mid-conversation, and `sleep` permits exactly that
+  span. Expire on last activity, and sweep `extracted/sessions/` on the same
+  clock so a file the listing no longer shows is not still readable.
+- With `key_field` set and a non-object body, the idempotency key is silently
+  not inserted and no claim is made (`component.rs`, the key insertion).
+  Refuse the call instead.
+
+### The gateway
+
+- Non-stream failover re-sends a request the provider already accepted
+  (`crates/gateway/src/router.rs`, the route loop): a read timeout or cut body
+  moves to the next route, billing the prompt twice with the first attempt
+  recorded nowhere. Record the attempt, and fail over only on errors that
+  mean the request was not taken.
+- Unbounded buffers in the tier holding every key: `sse_payloads` on a line
+  with no newline, whole error bodies in `from_response`
+  (`crates/gateway/src/llm/provider/mod.rs`), and the Bedrock frame buffered
+  to its declared total before the checksum is checked. Cap each.
+- The private-address denylist (`crates/core/src/egress/rule.rs`) misses
+  NAT64, 6to4, IPv4-compatible, Teredo and site-local ranges, and 198.18/15
+  and 192.0.0.0/24. Replace it with "global unicast only"; a denylist keeps
+  missing ranges.
+- Fail-open controls: the breaker, cancel and the spend-cap hold all proceed
+  when Postgres is unreachable (`router.rs`, `crates/core/src/breaker.rs`).
+  Argued in comments; say it in the operator docs, since the kill switch is
+  one of them.
+- One shared runtime key for every pod. Sound as designed, but a leak takes
+  every workspace's turns from outside the cluster. Per-pod keys issued at
+  registration, or mTLS, when there is a second cluster to care about.
+- Small: `Direct` builds a client per request (`egress/transport.rs`);
+  `normalize_host` strips the last hextet of an IPv6 literal as a port, so
+  such a rule cannot be written; `is_model_gone` rests a model for a day on
+  any 404 mentioning "model" and "not found"; the Gemini translation ignores
+  `reasoning_effort`.
+
+### Shape of the code
+
+- `crates/api/src/worker.rs` is projection, compaction and its HTTP, six
+  unrelated sweeps and the turn lifecycle in one file, with `announce`
+  duplicating `tell` and an action store built ad hoc where the others are
+  injected. Split into `projection.rs`, `compaction.rs`, `sweeps.rs` and
+  `turn.rs`.
+- `crates/runtime/src/component.rs`: `AgentHost` has some fifty fields and one
+  `Host` impl spans storage, model streaming, egress, timers and the clock.
+  `stream_completion` is an SSE parser that belongs in `core` beside the
+  gateway's protocol code. Split by capability with a thin dispatcher; the
+  missing admission charges were invisible because of the accretion.
+- `crates/gateway/src/llm/translate.rs`: each vendor's stream and non-stream
+  paths are separate reimplementations. The usage branch collapses the usage
+  and stop-reason pairs; the rest of each pair should follow.
+- Errors are `(StatusCode, String)` (`crates/api/src/router.rs`): no code a
+  client can match on, so the UI matches prose. A `{code, message}` body is
+  cheap now and a migration later.
+- `tool_name_of` in the default agent duplicates `operation_tool_name` in
+  `crates/api/src/skill/mod.rs`; one should be generated from the other or
+  shared through the WIT.
+- `puller.rs` maps `max_tool_rounds <= 0` to unbounded and an empty
+  `write_scopes` to `["session"]`: a setting that meant "none" becomes
+  "everything". Make zero and empty mean what they say.
+
+### The browser
+
+- A history load that fails for any reason but 401 shows an empty thread and
+  never starts polling (`ui/src/lib/useChatRuntime.ts`, `loadHistory`'s
+  error branch). Show the error and retry.
+- The transcript read is paged and reports `has_more`, but the client type
+  omits it and nothing sends `before` (`ui/src/lib/chat.ts`, `History`).
+  Older messages in a long session are simply absent. Add the page link.
+- The inbox's abort check tests for `DOMException` but `api()` wraps every
+  rejection in `NetworkError` (`ui/src/components/InboxProvider.tsx`,
+  `ui/src/lib/api.ts`), so answering an approval waits the five-second
+  backoff instead of refreshing. Check the wrapped cause.
+- `chat.reasoning` events append without dedupe by event id, so a replayed
+  batch doubles thinking text; the `writingCards`, `callTools` and
+  `thinkingSince` refs are not cleared on session switch. Dedupe by id and
+  clear everything `deltaProgress` is cleared with.
+- Small: `pollEvents` interpolates the session id unencoded; buttons on the
+  login page lack `type="button"`; the phone nav and sessions drawers have no
+  focus trap and no Escape.
+
+### Build, CI and tests
+
+- The agent component is a committed binary nobody rebuilds in CI
+  (`assets/agent_default.wasm`, `Dockerfile`). Rebuild it in CI and fail if
+  it differs from the commit, or build it in the image.
+- No `cargo audit` or `cargo deny` step; two generations of the RustCrypto
+  crates are linked at once. Add the step and align the pins.
+- `ci.yml` has no top-level `permissions:` block; `docs.yml` does.
+- Images for production should be pinned by digest; everything first-party
+  and third-party floats today, which is fine locally and nowhere else.
+- `tests/api.rs` is thirteen thousand lines in one module. Split by resource,
+  keeping `tests/common`.
+- Tests that do not exist and should: a lease expiring during preparation; a
+  crash between a turn's commit and its completion; a stale lease presented
+  to `/work/gated` and `/work/wait`; the browser reconnecting after a fetch
+  error, replaying a batch, switching sessions mid-stream and failing to load
+  history.
+
+### Nits with a line each
+
+`extract_bearer` is case-sensitive on the scheme. `RuntimeKey::accepts`
+short-circuits on length. The dev seed logs the admin password at warn
+(`crates/api/src/seed.rs`); log the email. An invalid session cookie makes
+every request 401 even with a valid bearer (`router.rs`, `authenticate`).
+`clean_operation_name` in the wizard passes `/` and `..` from a remote
+`operationId` into a path that `check_path` then refuses, so the failure
+reads as a confusing publish error rather than a clear one. No
+`Sec-Fetch-Site` or Origin check backs `SameSite=Lax`; cheap insurance for
+the day a form-encoded route appears.
 
 ## Tier 1 — independent
 
