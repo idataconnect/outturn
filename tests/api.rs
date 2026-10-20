@@ -1136,11 +1136,14 @@ async fn logout_revokes_the_refresh_token_server_side() {
 
     let first = login_raw(&h, "logout@example.com", acme).await;
     let refresh = cookie_named(&first, "outturn_refresh").expect("refresh cookie");
+    let access = cookie_named(&first, "outturn_session").expect("access cookie");
 
+    // A browser sends the refresh cookie only to the refresh route, so logout
+    // arrives with the access cookie alone.
     let req = Request::builder()
         .method("POST")
         .uri("/v1/logout")
-        .header("cookie", format!("outturn_refresh={refresh}"))
+        .header("cookie", format!("outturn_session={access}"))
         .body(Body::empty())
         .expect("request");
     let response = h.app.clone().oneshot(req).await.expect("response");
@@ -1149,6 +1152,49 @@ async fn logout_revokes_the_refresh_token_server_side() {
     // Clearing the cookie is not enough: the token itself must be dead.
     let after = refresh_with(&h, &refresh).await;
     assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+    finish!(h);
+}
+
+#[tokio::test]
+async fn workspace_switch_revokes_the_old_refresh_token() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
+    seed_user(&h, "switch@example.com", acme, "viewer").await;
+    let users = h.users.list(None, 100).await.expect("list");
+    let user = users
+        .iter()
+        .find(|u| {
+            u.identities
+                .iter()
+                .any(|i| i.subject == "switch@example.com")
+        })
+        .expect("user");
+    h.users
+        .grant_workspace_role(user.id, globex, "viewer")
+        .await
+        .expect("grant");
+
+    let first = login_raw(&h, "switch@example.com", acme).await;
+    let old_refresh = cookie_named(&first, "outturn_refresh").expect("refresh cookie");
+    let access = cookie_named(&first, "outturn_session").expect("access cookie");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/session/workspace")
+        .header("cookie", format!("outturn_session={access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"{{"workspace_id":"{globex}"}}"#)))
+        .expect("request");
+    let switched = h.app.clone().oneshot(req).await.expect("response");
+    assert_eq!(switched.status(), StatusCode::OK);
+    let new_refresh = cookie_named(&switched, "outturn_refresh").expect("new refresh");
+
+    let stale = refresh_with(&h, &old_refresh).await;
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+    let fresh = refresh_with(&h, &new_refresh).await;
+    assert_eq!(fresh.status(), StatusCode::OK);
 
     finish!(h);
 }

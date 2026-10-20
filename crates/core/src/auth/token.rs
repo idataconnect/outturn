@@ -105,6 +105,11 @@ pub struct SessionClaims {
     /// gates this turn" is `Gates::none()`, which has a root of its own and is
     /// signed.
     pub gate_commitment: Option<commit::Hash>,
+    /// The refresh-token family this browser session belongs to, so ending the
+    /// session can revoke it without the refresh cookie -- which the browser
+    /// sends only to the refresh route, never to logout or a workspace switch.
+    /// `None` on every token that is not a browser session's.
+    pub family_id: Option<Uuid>,
 }
 
 impl SessionClaims {
@@ -146,6 +151,8 @@ const WORKSPACE: &str = "wid";
 const SCOPE: &str = "scp";
 const EGRESS: &str = "egr";
 const GATES: &str = "gat";
+/// The refresh-token family a browser session token belongs to.
+const FAMILY: &str = "fam";
 /// Footer claim naming which public key signed the token, so verifiers can
 /// hold more than one during a rotation.
 const KEY_ID: &str = "kid";
@@ -216,14 +223,16 @@ impl TokenMinter {
         user_id: Uuid,
         workspace_id: Uuid,
         roles: &[String],
+        family_id: Uuid,
     ) -> Result<String, AuthError> {
-        self.mint_with_lifetime(
+        self.mint_claims(
             AUDIENCE_API,
             user_id,
             workspace_id,
             roles,
             None,
             None,
+            Some(family_id),
             Duration::from_secs(SESSION_TOKEN_LIFETIME_SECS),
         )
     }
@@ -290,6 +299,30 @@ impl TokenMinter {
         gate_commitment: Option<commit::Hash>,
         lifetime: Duration,
     ) -> Result<String, AuthError> {
+        self.mint_claims(
+            audience,
+            subject,
+            workspace_id,
+            roles,
+            egress_commitment,
+            gate_commitment,
+            None,
+            lifetime,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mint_claims(
+        &self,
+        audience: &str,
+        subject: Uuid,
+        workspace_id: Uuid,
+        roles: &[String],
+        egress_commitment: Option<commit::Hash>,
+        gate_commitment: Option<commit::Hash>,
+        family_id: Option<Uuid>,
+        lifetime: Duration,
+    ) -> Result<String, AuthError> {
         use chrono::SecondsFormat;
 
         let internal = |e: PasetoError| AuthError::Internal(e.to_string());
@@ -329,6 +362,12 @@ impl TokenMinter {
             let gat_json =
                 serde_json::to_value(committed).map_err(|e| AuthError::Internal(e.to_string()))?;
             claims.add_additional(GATES, gat_json).map_err(internal)?;
+        }
+
+        if let Some(family_id) = family_id {
+            claims
+                .add_additional(FAMILY, family_id.to_string())
+                .map_err(internal)?;
         }
 
         // `kid` is a registered footer claim, so it goes in through the
@@ -476,12 +515,23 @@ impl TokenValidator {
             }
         };
 
+        let family_id = match parsed.get(FAMILY) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .ok_or(AuthError::Invalid)?,
+            ),
+        };
+
         Ok(SessionClaims {
             subject,
             workspace_id,
             roles,
             egress_commitment,
             gate_commitment,
+            family_id,
         })
     }
 }
@@ -537,6 +587,7 @@ impl RuntimeKey {
             roles: vec![Role::Runtime.to_string()],
             egress_commitment: None,
             gate_commitment: None,
+            family_id: None,
         }
     }
 }
@@ -617,7 +668,12 @@ mod tests {
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
 
         let session = minter
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["operator".to_string()])
+            .mint_session(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &["operator".to_string()],
+                Uuid::now_v7(),
+            )
             .expect("mint");
         assert!(api.validate(&session).is_ok());
         assert!(
@@ -696,10 +752,20 @@ mod tests {
             TokenValidator::with_keys(&[old_public, new_public], AUDIENCE_API).expect("validator");
 
         let signed_new = new
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
+            .mint_session(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &["viewer".to_string()],
+                Uuid::now_v7(),
+            )
             .expect("mint");
         let signed_old = old
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
+            .mint_session(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &["viewer".to_string()],
+                Uuid::now_v7(),
+            )
             .expect("mint");
 
         assert!(only_old.validate(&signed_new).is_err());
@@ -836,7 +902,12 @@ mod tests {
         let api = TokenValidator::new(&public, AUDIENCE_API).expect("validator");
 
         let token = minter
-            .mint_session(Uuid::now_v7(), Uuid::now_v7(), &["viewer".to_string()])
+            .mint_session(
+                Uuid::now_v7(),
+                Uuid::now_v7(),
+                &["viewer".to_string()],
+                Uuid::now_v7(),
+            )
             .expect("mint");
         let claims = api.validate(&token).expect("valid");
 

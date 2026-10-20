@@ -101,11 +101,19 @@ pub async fn login(
         return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
 
-    let token = mint(state.as_ref(), user.id, workspace_id, &roles)?;
+    // Issued first: the access token names the family, so that ending the
+    // session does not depend on the refresh cookie reaching the route.
     let refresh = state
         .sessions
         .issue(user.id, workspace_id, user_agent(&headers))
         .await?;
+    let token = mint(
+        state.as_ref(),
+        user.id,
+        workspace_id,
+        &roles,
+        refresh.session.family_id,
+    )?;
 
     Ok(authenticated_response(
         &token,
@@ -182,6 +190,7 @@ pub async fn refresh(
         rotated.session.user_id,
         rotated.session.workspace_id,
         &roles,
+        rotated.session.family_id,
     )?;
     let workspaces = state.users.memberships(rotated.session.user_id).await?;
 
@@ -203,9 +212,17 @@ pub async fn logout(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    // Clearing the cookie alone would leave the refresh token usable.
-    if let Some(token) = auth::refresh_from_cookies(&headers) {
-        state.sessions.revoke(token).await?;
+    // Clearing the cookie alone would leave the refresh token usable. The
+    // refresh cookie is scoped to the refresh route and never arrives here, so
+    // the family comes from the access token. One that has lapsed names
+    // nothing; the client refreshes and retries before it gets this far.
+    if let Ok(claims) = super::router::authenticate(&state, &headers)
+        && let Some(family_id) = claims.family_id
+    {
+        state
+            .sessions
+            .revoke_family(claims.subject, family_id)
+            .await?;
     }
 
     let mut headers = axum::http::HeaderMap::new();
@@ -246,17 +263,23 @@ pub async fn select_workspace(
         return Err((StatusCode::FORBIDDEN, "no roles in that workspace".into()));
     }
 
-    let token = mint(state.as_ref(), user.id, request.workspace_id, &roles)?;
-
     // The refresh token carries the workspace, so switching starts a new family
-    // and retires the old session.
-    if let Some(old) = auth::refresh_from_cookies(&headers) {
-        state.sessions.revoke(old).await?;
-    }
+    // and retires the old session -- once the new one exists, so a failure
+    // part-way leaves the caller signed in rather than out.
     let refresh = state
         .sessions
         .issue(user.id, request.workspace_id, user_agent(&headers))
         .await?;
+    if let Some(old) = claims.family_id {
+        state.sessions.revoke_family(user.id, old).await?;
+    }
+    let token = mint(
+        state.as_ref(),
+        user.id,
+        request.workspace_id,
+        &roles,
+        refresh.session.family_id,
+    )?;
 
     Ok(authenticated_response(
         &token,
@@ -276,9 +299,10 @@ fn mint(
     user_id: Uuid,
     workspace_id: Uuid,
     roles: &[String],
+    family_id: Uuid,
 ) -> Result<String, ApiError> {
     state
         .minter
-        .mint_session(user_id, workspace_id, roles)
+        .mint_session(user_id, workspace_id, roles, family_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

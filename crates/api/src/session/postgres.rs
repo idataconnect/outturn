@@ -176,6 +176,19 @@ impl SessionStore for PostgresSessionStore {
         Ok(())
     }
 
+    async fn revoke_family(&self, user_id: Uuid, family_id: Uuid) -> Result<(), SessionError> {
+        sqlx::query(
+            "update refresh_tokens set revoked_at = now() \
+             where user_id = $1 and family_id = $2 and revoked_at is null",
+        )
+        .bind(user_id)
+        .bind(family_id)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
     async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64, SessionError> {
         let result = sqlx::query(
             "update refresh_tokens set revoked_at = now() \
