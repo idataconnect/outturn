@@ -3009,9 +3009,23 @@ impl Worker {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
 
+        // Whether somebody asked for a stop, read before the final write and
+        // acted on with it below.
+        let stopped = matches!(jobs::cancel_requested(&self.pool, job_id).await, Ok(true));
+
+        // The reply's final write, `chat.done` and the job's closing, in one
+        // transaction. Apart, a crash after the write and before the closing
+        // left a finished reply under a job still running; the reaper gave
+        // the turn back, `attempt_for` saw a finished attempt that said
+        // something, and the retry wrote a second reply beside the first --
+        // two answers to one prompt, on screen. Together, the closing is in
+        // the commit that makes the reply final, so a retry finds either a
+        // closed job or an attempt still empty, and never the middle.
+        let mut tx = self.pool.begin().await?;
         let finished = self
             .chat
-            .set_message_content(
+            .set_message_content_on(
+                &mut tx,
                 reply_id,
                 &reply.content,
                 // What served, or nothing: a runtime that did not say leaves
@@ -3025,16 +3039,8 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
 
-        // Not fatal: without them the next turn starts without this reply's
-        // reasoning, which is how every turn started before they were kept.
-        if let Err(e) =
-            keep_signatures(&self.pool, payload.session_id, finished.id, &reply.signed).await
-        {
-            tracing::warn!(error = %e, "could not keep what the reply was signed with");
-        }
-
-        events::append(
-            &self.pool,
+        events::append_on(
+            &mut tx,
             payload.workspace_id,
             Some(payload.session_id),
             "chat.done",
@@ -3064,49 +3070,68 @@ impl Worker {
         // After a cancel, because somebody pressing stop outranks a turn waiting
         // to carry on: the approval stays pending and answering it resumes
         // nothing, which is what stopping means.
-        match jobs::cancel_requested(&self.pool, job_id).await {
-            Ok(true) => jobs::mark_cancelled(&self.pool, job_id, lease_token).await?,
-            _ if reply.awaiting_approval => {
-                match jobs::park(&self.pool, job_id, lease_token).await? {
-                    jobs::Parked::Parked => {
-                        tracing::info!(
-                            job_id = %job_id,
-                            session_id = %payload.session_id,
-                            "a turn is waiting on an approval and was kept"
-                        );
-                        // And the reader is told, which nothing else does from
-                        // here: `announce_hold` fires when a turn is *refused* at
-                        // preparation, and this one was already streaming when
-                        // the hold arrived. Without this the conversation shows a
-                        // red tool error and a working composer, which reads as
-                        // finished rather than paused -- and the approval the
-                        // event carries is what puts Approve in front of the
-                        // person who is already looking.
-                        // Said as a reader would say it. "Waiting on an
-                        // approval" and "the hold is lifted" are words from
-                        // inside this platform; whoever is watching is a person
-                        // who asked for something and is being told why it
-                        // stopped.
-                        self.announce_hold(
-                            &payload,
-                            "Paused: this needs somebody to approve it",
-                            true,
-                        )
-                        .await;
-                    }
-                    // The lease lapsed and another pod holds this turn. Its
-                    // result stands; parking on top of it would take a turn
-                    // somebody else is running away from them.
-                    jobs::Parked::NotHeld => tracing::warn!(
+        //
+        // Each closing is matched against the lease. A closing that matches
+        // nothing means the lease lapsed and the turn is running elsewhere:
+        // the transaction is dropped with the reply in it, so the other pod's
+        // result stands alone rather than beside this one.
+        let mut parked = false;
+        if stopped {
+            match jobs::mark_cancelled_on(&mut *tx, job_id, lease_token).await {
+                Ok(()) => {}
+                Err(jobs::JobError::NotFound) => return Err(LeaseLost.into()),
+                Err(other) => return Err(other.into()),
+            }
+        } else if reply.awaiting_approval {
+            match jobs::park_on(&mut *tx, job_id, lease_token).await? {
+                jobs::Parked::Parked => parked = true,
+                // The lease lapsed and another pod holds this turn. Its
+                // result stands; parking on top of it would take a turn
+                // somebody else is running away from them.
+                jobs::Parked::NotHeld => {
+                    tracing::warn!(
                         job_id = %job_id,
                         "a turn waiting on an approval no longer holds its lease"
-                    ),
+                    );
+                    return Err(LeaseLost.into());
                 }
             }
-            // A failure to ask is not a reason to leave the job running: the
-            // work is done either way, and the worse of the two records is the
-            // one that says nothing finished.
-            _ => jobs::complete(&self.pool, job_id, lease_token).await?,
+        } else {
+            match jobs::complete_on(&mut *tx, job_id, lease_token).await {
+                Ok(()) => {}
+                Err(jobs::JobError::NotFound) => return Err(LeaseLost.into()),
+                Err(other) => return Err(other.into()),
+            }
+        }
+        tx.commit().await?;
+
+        // Not fatal: without them the next turn starts without this reply's
+        // reasoning, which is how every turn started before they were kept.
+        if let Err(e) =
+            keep_signatures(&self.pool, payload.session_id, finished.id, &reply.signed).await
+        {
+            tracing::warn!(error = %e, "could not keep what the reply was signed with");
+        }
+
+        if parked {
+            tracing::info!(
+                job_id = %job_id,
+                session_id = %payload.session_id,
+                "a turn is waiting on an approval and was kept"
+            );
+            // And the reader is told, which nothing else does from here:
+            // `announce_hold` fires when a turn is *refused* at preparation,
+            // and this one was already streaming when the hold arrived.
+            // Without this the conversation shows a red tool error and a
+            // working composer, which reads as finished rather than paused --
+            // and the approval the event carries is what puts Approve in
+            // front of the person who is already looking. Said as a reader
+            // would say it: "waiting on an approval" and "the hold is lifted"
+            // are words from inside this platform; whoever is watching is a
+            // person who asked for something and is being told why it
+            // stopped.
+            self.announce_hold(&payload, "Paused: this needs somebody to approve it", true)
+                .await;
         }
 
         // A conversation that has had a turn and still has no name gets one

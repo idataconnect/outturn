@@ -620,6 +620,23 @@ impl ChatStore for PostgresChatStore {
         usage: Usage,
         metadata: serde_json::Value,
     ) -> Result<Message, ChatError> {
+        let mut conn = self.pool.acquire().await.map_err(internal)?;
+        self.set_message_content_on(
+            &mut conn, message_id, content, model, provider, usage, metadata,
+        )
+        .await
+    }
+
+    async fn set_message_content_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        message_id: Uuid,
+        content: &str,
+        model: Option<&str>,
+        provider: Option<&str>,
+        usage: Usage,
+        metadata: serde_json::Value,
+    ) -> Result<Message, ChatError> {
         let row = sqlx::query(
             "update agent_messages \
              set content = $2, model = coalesce($3, model), metadata = $4, \
@@ -644,7 +661,7 @@ impl ChatStore for PostgresChatStore {
         .bind(usage.cache_read_tokens)
         .bind(usage.cache_write_tokens)
         .bind(usage.reasoning_tokens)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(internal)?
         .ok_or(ChatError::NotFound)?;

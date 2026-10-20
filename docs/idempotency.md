@@ -292,6 +292,18 @@ executing any of them (`agents/default/src/lib.rs`).
 So a deliberate stop cannot strand a tool call, and this machinery is not what
 makes stop safe. Avoiding the window entirely beat recording it.
 
+## Timers fire once
+
+A wakeup is a job, and a job is at-least-once: a lease nobody renews is reaped
+and the work handed out again. For a sleep that is harmless, because ending
+one is a conditional update on its queue item and the second firing finds it
+settled. A timer has no item, so its firing writes the note, enqueues the turn
+and closes the job in one transaction (`wake::fire_timer_on`); a crash loses
+all three or none, and the re-fire after a reap is the only firing there is.
+The worker finishing a turn closes the job the same way, in the commit that
+makes the reply final, so a reap between the two cannot have the retry find a
+finished attempt and answer the prompt a second time.
+
 ## What is still open
 
 Everything that ends a turn *without* reaching a round boundary. A pod
