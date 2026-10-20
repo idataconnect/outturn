@@ -65,6 +65,34 @@ history -- so the seed refuses to run without it. Never set `OUTTURN_DEV_SEED`
 outside local development; `scripts/deploy-prod.sh` refuses a manifest that
 does.
 
+## What the manifests now require of a cluster
+
+The pods run as user 65534 on a read-only root, with no capabilities and no
+service account token; the runtime has an `emptyDir` at `/tmp`. Images you
+build yourself must name that user (the Dockerfile does) or `runAsNonRoot`
+refuses them.
+
+The base ships a namespace default-deny and an allow for each path the tiers
+use. It needs a CNI that enforces NetworkPolicy; kind's default does not, so
+locally the policies apply and do nothing. On a cluster that enforces them:
+
+- Set the `ingress-nginx` namespace selector on `outturn-api` to wherever your
+  ingress controller runs.
+- The gateway may reach the internet except 10/8, 172.16/12, 192.168/16 and
+  169.254/16. Replace those with your cluster's pod and service CIDRs if they
+  differ, and add a rule beside it for any in-network model or API you list in
+  `OUTTURN_INTERNAL_HOSTS`. The local overlay does this for ollama.
+- Anything that calls the API in-cluster needs the label `outturn-client: api`.
+
+PodDisruptionBudgets keep one API and one gateway pod up, so a drain waits on
+a single-replica deployment until a second exists; run two of each where nodes
+get drained. The runtime has a `startupProbe` on `/readyz`, five minutes to
+compile the component. The API's termination grace is 60s, the gateway's and
+runtime's 360s.
+
+`k8s/autoscaling` carries a placeholder Postgres URL in the `outturn-keda`
+Secret. Set it to a role with `SELECT` on `jobs` only before applying.
+
 ## Models
 
 Local development runs against ollama through the OpenAI protocol, with no
