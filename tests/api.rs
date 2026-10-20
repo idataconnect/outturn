@@ -12775,6 +12775,57 @@ async fn a_trigger_runs_no_more_turns_at_once_than_it_may() {
     finish!(h);
 }
 
+/// An agent's triggers in one list, every kind, with what each kind has of
+/// its own -- and never a webhook's secret, which is said once, when it is made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_triggers_are_one_list() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("triggers-list@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-triggers"}"#,
+        )
+        .await;
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = h
+        .post(
+            "/v1/schedules",
+            Some(&token),
+            &format!(r#"{{"agent_id":"{agent}","name":"Morning","prompt":"Report.","expression":"0 9 * * *"}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, secret) = make_trigger(
+        &h,
+        &token,
+        &agent,
+        &format!(
+            r#"{{"agent_id":"{agent}","name":"Bookings","prompt":"{{{{body}}}}","scheme":"hmac"}}"#
+        ),
+    )
+    .await;
+
+    let (status, listed) = h
+        .get(&format!("/v1/agents/{agent}/triggers"), Some(&token))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let rows = items(&listed);
+    let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["webhook", "schedule"], "by name: Bookings, Morning");
+    assert_eq!(rows[1]["config"]["expression"], "0 9 * * *");
+    assert_eq!(rows[0]["max_concurrent"], 4, "the default ceiling");
+    assert!(!listed.contains(&secret), "a secret is never listed");
+    finish!(h);
+}
+
 /// A model change is noted where it happens: three replies answered by the
 /// same fallback carry one note, on the first; a reply back on the first
 /// model carries none; and the fallback answering again is a change again.

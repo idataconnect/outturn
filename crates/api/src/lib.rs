@@ -38,6 +38,7 @@ mod skill_sources;
 mod skills;
 pub mod tracking;
 pub mod trigger;
+pub mod triggers;
 pub mod usage;
 pub mod user;
 pub mod wake;

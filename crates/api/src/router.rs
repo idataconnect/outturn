@@ -1735,6 +1735,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .delete(super::agents::delete_agent),
         )
         .route(
+            "/v1/agents/{id}/triggers",
+            get(super::triggers::list_for_agent),
+        )
+        .route(
             "/v1/schedules",
             get(super::schedules::list_schedules).post(super::schedules::create_schedule),
         )
