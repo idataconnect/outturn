@@ -152,6 +152,18 @@ spec:
           image: outturn-runtime
           ports:
             - containerPort: 8082
+          # Compiling the guest component at boot is slow on a cold pod, and
+          # the pod answers "not ready" until it is done. Until this passes
+          # the other probes are held off, so neither a liveness restart nor
+          # a short readiness window can interrupt the compile. Five minutes
+          # is far more than it takes and no longer than a hung start should
+          # be left alone.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
