@@ -17,6 +17,7 @@ const KIND: Record<Annotation['kind'], string> = {
   prefer: 'Prefer instead',
   hidden: 'Hidden',
   approval: 'Needs approval',
+  identity: 'Same fields, same write',
 }
 
 const APPROVAL_TEMPLATE = 'approval:\n  requires: \n  matches: POST /\n  binds: []'
