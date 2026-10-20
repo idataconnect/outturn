@@ -4,12 +4,22 @@ import { allPages, api } from './api'
  * A public endpoint that starts a turn when something outside the platform
  * POSTs to it. See docs/triggers.md, "Webhooks".
  */
-export type Scheme = 'hmac' | 'shared_secret'
+/** A webhook's are `hmac` and `shared_secret`; mail's are what an inbound
+ *  service can send: `path` alone, `shared_secret`, or `basic`. */
+export type Scheme = 'hmac' | 'shared_secret' | 'path' | 'basic'
+
+/** A hook is a webhook, or an inbox: mail an inbound service delivers. */
+export type HookKind = 'webhook' | 'email'
 
 export type Webhook = {
   id: string
   agent_id: string
   name: string
+  kind: HookKind
+  /** For mail: who may start a turn -- an address, `@domain`, or `*`. */
+  senders: string[]
+  /** For mail: whether the receiving server must have passed SPF or DKIM. */
+  authenticated: boolean
   scheme: Scheme
   /** The message each delivery becomes, with `{{body}}` where the request's
    *  body goes. */
@@ -34,6 +44,9 @@ export type WebhookInput = {
   agent_id: string
   name: string
   prompt: string
+  kind: HookKind
+  senders: string[]
+  authenticated: boolean
   scheme: Scheme
   account: string | null
   max_per_hour: number

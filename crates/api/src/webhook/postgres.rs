@@ -12,7 +12,9 @@ use super::{Trigger, TriggerInput};
 /// The columns a webhook `Trigger` is read from, by the names it gives them.
 macro_rules! columns {
     () => {
-        "id, workspace_id, agent_id, name, config->>'path' as path, \
+        "id, workspace_id, agent_id, kind, name, config->>'path' as path, \
+         coalesce(config->'senders', '[]'::jsonb) as senders, \
+         coalesce((config->>'authenticated')::bool, true) as authenticated, \
          config->>'scheme' as scheme, config->>'secret' as secret, prompt, enabled, \
          account, owner_id, coalesce(max_per_hour, 60) as max_per_hour, last_at, \
          last_status, last_error, refused, created_at"
@@ -24,6 +26,9 @@ fn row(r: &PgRow) -> Trigger {
         id: r.get("id"),
         workspace_id: r.get("workspace_id"),
         agent_id: r.get("agent_id"),
+        kind: r.get("kind"),
+        senders: serde_json::from_value(r.get("senders")).unwrap_or_default(),
+        authenticated: r.get("authenticated"),
         name: r.get("name"),
         path: r.get("path"),
         scheme: r.get("scheme"),
@@ -52,7 +57,7 @@ pub async fn list(
         "select ",
         columns!(),
         " from triggers \
-          where kind = 'webhook' and workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
+          where kind in ('webhook', 'email') and workspace_id = $1 and ($2::uuid is null or agent_id = $2) \
             and ($3::uuid is null or id > $3) \
           order by id limit $4"
     ))
@@ -73,7 +78,7 @@ pub async fn get(
     let found = sqlx::query(concat!(
         "select ",
         columns!(),
-        " from triggers where kind = 'webhook' and workspace_id = $1 and id = $2"
+        " from triggers where kind in ('webhook', 'email') and workspace_id = $1 and id = $2"
     ))
     .bind(workspace_id)
     .bind(id)
@@ -94,8 +99,9 @@ pub async fn create(
         "insert into triggers \
              (id, workspace_id, agent_id, kind, name, config, prompt, \
               enabled, account, owner_id, max_per_hour, created_by) \
-         values ($1, $2, $3, 'webhook', $4, \
-                 jsonb_build_object('path', $5::text, 'scheme', $6::text, 'secret', $7::text), \
+         values ($1, $2, $3, $13, $4, \
+                 jsonb_build_object('path', $5::text, 'scheme', $6::text, 'secret', $7::text, \
+                                    'senders', $14::jsonb, 'authenticated', $15::bool), \
                  $8, $9, $10, $11, $12, $11) \
          returning ",
         columns!()
@@ -112,6 +118,9 @@ pub async fn create(
     .bind(input.account.as_deref())
     .bind(owner_id)
     .bind(input.max_per_hour)
+    .bind(&input.kind)
+    .bind(serde_json::json!(input.senders))
+    .bind(input.authenticated)
     .fetch_one(pool)
     .await?;
     Ok(row(&r))
@@ -130,9 +139,11 @@ pub async fn update(
 ) -> Result<Option<Trigger>, sqlx::Error> {
     let found = sqlx::query(concat!(
         "update triggers set \
-             name = $3, prompt = $4, config = config || jsonb_build_object('scheme', $5::text), \
+             name = $3, prompt = $4, \
+             config = config || jsonb_build_object('scheme', $5::text, \
+                 'senders', $9::jsonb, 'authenticated', $10::bool), \
              enabled = $6, account = $7, max_per_hour = $8, updated_at = now() \
-         where kind = 'webhook' and workspace_id = $1 and id = $2 \
+         where kind in ('webhook', 'email') and workspace_id = $1 and id = $2 \
          returning ",
         columns!()
     ))
@@ -144,6 +155,8 @@ pub async fn update(
     .bind(input.enabled)
     .bind(input.account.as_deref())
     .bind(input.max_per_hour)
+    .bind(serde_json::json!(input.senders))
+    .bind(input.authenticated)
     .fetch_optional(pool)
     .await?;
     Ok(found.as_ref().map(row))
@@ -151,7 +164,7 @@ pub async fn update(
 
 pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
     let done = sqlx::query(
-        "delete from triggers where kind = 'webhook' and workspace_id = $1 and id = $2",
+        "delete from triggers where kind in ('webhook', 'email') and workspace_id = $1 and id = $2",
     )
     .bind(workspace_id)
     .bind(id)
@@ -169,7 +182,7 @@ pub async fn by_path(pool: &PgPool, path: &str) -> Result<Option<Trigger>, sqlx:
     let found = sqlx::query(concat!(
         "select ",
         columns!(),
-        " from triggers where kind = 'webhook' and config->>'path' = $1"
+        " from triggers where kind in ('webhook', 'email') and config->>'path' = $1"
     ))
     .bind(path)
     .fetch_optional(pool)

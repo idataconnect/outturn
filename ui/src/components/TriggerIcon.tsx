@@ -1,4 +1,4 @@
-import { Clock, Webhook } from 'lucide-react'
+import { Clock, Mail, Webhook } from 'lucide-react'
 
 import type { TriggerKind } from '../lib/chat'
 
@@ -10,6 +10,6 @@ export default function TriggerIcon({
   kind: TriggerKind
   className?: string
 }) {
-  const Icon = kind === 'schedule' ? Clock : Webhook
+  const Icon = kind === 'schedule' ? Clock : kind === 'email' ? Mail : Webhook
   return <Icon className={className} aria-hidden />
 }

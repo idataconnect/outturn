@@ -6,7 +6,7 @@ import AgentWebhooks from './AgentWebhooks'
 import TriggerIcon from './TriggerIcon'
 import { useSession } from '../lib/session'
 
-type Kind = 'schedule' | 'webhook'
+type Kind = 'schedule' | 'webhook' | 'email'
 
 /**
  * Everything that starts this agent's turns without a person: one section,
@@ -34,8 +34,8 @@ export default function AgentTriggers({ agentId }: { agentId: string }) {
             Triggers
           </h2>
           <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
-            Turns this agent starts on its own: on a schedule, or when another system calls
-            its webhook. Nobody is waiting for the reply, so these run behind anything a person
+            Turns this agent starts on its own: on a schedule, when another system calls its
+            webhook, or when mail arrives. Nobody is waiting for the reply, so these run behind anything a person
             is watching.
           </p>
         </div>
@@ -55,6 +55,7 @@ export default function AgentTriggers({ agentId }: { agentId: string }) {
                   [
                     ['schedule', 'Schedule', 'At set times'],
                     ['webhook', 'Webhook', 'When another system calls it'],
+                    ['email', 'Email', 'When mail arrives'],
                   ] as const
                 ).map(([kind, label, hint]) => (
                   <button
@@ -82,7 +83,11 @@ export default function AgentTriggers({ agentId }: { agentId: string }) {
       />
       <AgentWebhooks
         agentId={agentId}
-        embedded={{ creating: creating === 'webhook', onDone: done }}
+        embedded={{
+          creating: creating === 'webhook' || creating === 'email',
+          kind: creating === 'email' ? 'email' : 'webhook',
+          onDone: done,
+        }}
       />
     </section>
   )

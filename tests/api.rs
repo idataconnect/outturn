@@ -12826,6 +12826,78 @@ async fn an_agents_triggers_are_one_list() {
     finish!(h);
 }
 
+/// Mail delivered to an email trigger starts a turn from an allowed,
+/// authenticated sender -- once, however often the service delivers it -- and
+/// starts nothing for anybody else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mail_starts_a_turn_from_an_allowed_sender_once() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let token = h
+        .login_as("mail@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&token),
+            r#"{"name":"Desk","slug":"desk-mail"}"#,
+        )
+        .await;
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, created) = h
+        .post(
+            "/v1/webhook-triggers",
+            Some(&token),
+            &format!(
+                r#"{{"agent_id":"{agent}","kind":"email","scheme":"path","senders":["@example.com"],"name":"Inbox","prompt":"Mail arrived:\n{{{{body}}}}"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let path = serde_json::from_str::<Value>(&created).unwrap()["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mail = |from: &str, id: &str| {
+        format!(
+            "Authentication-Results: mx.example.net; dkim=pass\r\nFrom: {from}\r\n\
+             Subject: Garden room\r\nMessage-ID: <{id}>\r\n\r\nIs it free on the 24th?\r\n"
+        )
+    };
+    let sessions = || async {
+        sqlx::query_scalar::<_, i64>(
+            "select count(*) from agent_sessions where workspace_id = $1 and started_by = 'email'",
+        )
+        .bind(acme)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap()
+    };
+
+    let status = deliver(&h, &path, &mail("jo@example.com", "m1@example.com"), &[]).await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(sessions().await, 1);
+
+    let status = deliver(&h, &path, &mail("jo@example.com", "m1@example.com"), &[]).await;
+    assert_eq!(status, StatusCode::OK, "delivered twice, acknowledged");
+    assert_eq!(sessions().await, 1, "and run once");
+
+    let status = deliver(
+        &h,
+        &path,
+        &mail("eve@elsewhere.com", "m2@elsewhere.com"),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "taken, and not acted on");
+    assert_eq!(sessions().await, 1, "a sender not allowed starts nothing");
+    finish!(h);
+}
+
 /// A model change is noted where it happens: three replies answered by the
 /// same fallback carry one note, on the first; a reply back on the first
 /// model carries none; and the fallback answering again is a change again.

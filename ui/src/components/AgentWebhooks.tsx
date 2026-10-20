@@ -14,6 +14,7 @@ import {
   rotateWebhookSecret,
   updateWebhook,
   webhookUrl,
+  type HookKind,
   type Scheme,
   type Webhook,
   type WebhookInput,
@@ -39,10 +40,37 @@ const SCHEMES: { value: Scheme; label: string; detail: string }[] = [
   },
 ]
 
+/** What an inbound mail service can send, since it cannot sign a request. */
+const MAIL_SCHEMES: { value: Scheme; label: string; detail: string }[] = [
+  {
+    value: 'path',
+    label: 'The address alone',
+    detail:
+      'For services that can only post to a URL. The address is long and unguessable, and the senders below decide what reaches the agent.',
+  },
+  {
+    value: 'shared_secret',
+    label: 'Secret in a header',
+    detail: 'For services that can add a header to what they post.',
+  },
+  {
+    value: 'basic',
+    label: 'User and password in the URL',
+    detail:
+      'For services that take https://user:password@... -- any user name, the secret as the password.',
+  },
+]
+
+const schemesFor = (kind: HookKind) => (kind === 'email' ? MAIL_SCHEMES : SCHEMES)
+
 const ago = (iso: string) => elapsedPhrase(new Date(iso).getTime()).toLowerCase()
 
 type Draft = {
   id: string | null
+  kind: HookKind
+  /** For mail, as typed: addresses, @domains or *, separated by commas. */
+  senders: string
+  authenticated: boolean
   name: string
   prompt: string
   scheme: Scheme
@@ -51,12 +79,18 @@ type Draft = {
   enabled: boolean
 }
 
-function blank(): Draft {
+function blank(kind: HookKind = 'webhook'): Draft {
+  const mail = kind === 'email'
   return {
     id: null,
+    kind,
+    senders: '',
+    authenticated: true,
     name: '',
-    prompt: `A notification arrived. Read it and act on it:\n\n${BODY}`,
-    scheme: 'hmac',
+    prompt: mail
+      ? `Mail arrived. Read it and act on it:\n\n${BODY}`
+      : `A notification arrived. Read it and act on it:\n\n${BODY}`,
+    scheme: mail ? 'path' : 'hmac',
     account: '',
     maxPerHour: 60,
     enabled: true,
@@ -66,6 +100,9 @@ function blank(): Draft {
 function fromWebhook(w: Webhook): Draft {
   return {
     id: w.id,
+    kind: w.kind,
+    senders: w.senders.join(', '),
+    authenticated: w.authenticated,
     name: w.name,
     prompt: w.prompt,
     scheme: w.scheme,
@@ -127,7 +164,7 @@ function SenderGuide({ scheme }: { scheme: Scheme }) {
 /** Shown inside the agent's one Triggers section, which owns the heading and
  *  the choice of kind: `creating` opens this kind's form, and `onDone` says
  *  it closed. */
-export type Embedded = { creating: boolean; onDone: () => void }
+export type Embedded = { creating: boolean; onDone: () => void; kind?: HookKind }
 
 export default function AgentWebhooks({
   agentId,
@@ -147,7 +184,7 @@ export default function AgentWebhooks({
   useEffect(() => {
     if (!embedded?.creating) return
     if (!draft && !opened) {
-      setDraft(blank())
+      setDraft(blank(embedded.kind))
       setOpened(true)
     } else if (!draft && opened) {
       setOpened(false)
@@ -185,6 +222,12 @@ export default function AgentWebhooks({
   function input(d: Draft): WebhookInput {
     return {
       agent_id: agentId,
+      kind: d.kind,
+      senders: d.senders
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      authenticated: d.authenticated,
       name: d.name,
       prompt: d.prompt,
       scheme: d.scheme,
@@ -308,7 +351,7 @@ export default function AgentWebhooks({
                 className="text-left min-w-0 flex-1 disabled:cursor-default"
               >
                 <div className="flex items-center gap-2">
-                  <TriggerIcon kind="webhook" className="w-3.5 h-3.5 text-surface-500" />
+                  <TriggerIcon kind={w.kind} className="w-3.5 h-3.5 text-surface-500" />
                   <span className="font-medium text-surface-900 dark:text-surface-100">
                     {w.name}
                   </span>
@@ -319,7 +362,7 @@ export default function AgentWebhooks({
                   )}
                 </div>
                 <p className="text-sm text-surface-600 dark:text-surface-400">
-                  {SCHEMES.find((s) => s.value === w.scheme)?.label} · up to {w.max_per_hour} an
+                  {schemesFor(w.kind).find((s) => s.value === w.scheme)?.label} · up to {w.max_per_hour} an
                   hour
                 </p>
               </button>
@@ -371,7 +414,14 @@ export default function AgentWebhooks({
                   only replaced.
                 </p>
                 <CopyField value={secret.value} label="the secret" />
-                <SenderGuide scheme={w.scheme} />
+                {w.kind === 'email' ? (
+                  <p className="text-xs text-surface-600 dark:text-surface-400">
+                    Point the inbound mail service at this address, delivering each message raw
+                    (MIME).
+                  </p>
+                ) : (
+                  <SenderGuide scheme={w.scheme} />
+                )}
                 <button
                   type="button"
                   onClick={() => setSecret(null)}
@@ -453,7 +503,7 @@ export default function AgentWebhooks({
           <div>
             <span className={label}>How the sender proves itself</span>
             <div className="space-y-2">
-              {SCHEMES.map((s) => (
+              {schemesFor(draft.kind).map((s) => (
                 <label key={s.value} className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="radio"
@@ -472,6 +522,41 @@ export default function AgentWebhooks({
               ))}
             </div>
           </div>
+
+          {draft.kind === 'email' && (
+            <div className="space-y-2">
+              <label className={label} htmlFor="hook-senders">
+                Who may start a turn
+              </label>
+              <input
+                id="hook-senders"
+                value={draft.senders}
+                onChange={(e) => setDraft({ ...draft, senders: e.target.value })}
+                placeholder="jo@example.com, @example.com"
+                className={field}
+              />
+              <p className="text-xs text-surface-500">
+                Addresses or <code className="font-mono">@domains</code>, separated by commas;{' '}
+                <code className="font-mono">*</code> is anyone. Mail from anybody else is taken and
+                not acted on.
+              </p>
+              <label className="flex items-start gap-2 text-sm text-surface-800 dark:text-surface-200">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={draft.authenticated}
+                  onChange={(e) => setDraft({ ...draft, authenticated: e.target.checked })}
+                />
+                <span>
+                  Only mail the receiving server authenticated
+                  <span className="block text-xs text-surface-500">
+                    Its SPF or DKIM check passed. Without this, anybody can claim to be an allowed
+                    sender.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>

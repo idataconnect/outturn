@@ -1,3 +1,4 @@
+import type { TriggerKind } from './chat'
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router'
 
@@ -28,6 +29,7 @@ export function useAnchor(ready: boolean): string | null {
   return target
 }
 
-/** Where a schedule or webhook is managed: its agent's page, at its own row. */
-export const triggerHref = (agentId: string, kind: 'schedule' | 'webhook', id: string | null) =>
-  `/agents/${agentId}/edit${id ? `#${kind}-${id}` : ''}`
+/** Where a trigger is managed: its agent's page, at its own row. Mail is
+ *  listed among the hooks, whose rows it shares. */
+export const triggerHref = (agentId: string, kind: TriggerKind, id: string | null) =>
+  `/agents/${agentId}/edit${id ? `#${kind === 'email' ? 'webhook' : kind}-${id}` : ''}`

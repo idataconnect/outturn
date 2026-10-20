@@ -96,7 +96,8 @@ export function ordered(triggers: Trigger[]): Trigger[] {
  * named for what it was rather than left blank.
  */
 export function startedByPhrase(started: Pick<StartedBy, 'kind' | 'name'>): string {
-  const kind = started.kind === 'schedule' ? 'schedule' : 'webhook'
+  const kind =
+    started.kind === 'schedule' ? 'schedule' : started.kind === 'email' ? 'email trigger' : 'webhook'
   return started.name ? `the ${started.name} ${kind}` : `a ${kind} since deleted`
 }
 
@@ -109,6 +110,9 @@ export function startedByPhrase(started: Pick<StartedBy, 'kind' | 'name'>): stri
 export function triggerOf(metadata: Record<string, unknown>): Pick<StartedBy, 'kind' | 'name'> | null {
   if (metadata.schedule_id) {
     return { kind: 'schedule', name: (metadata.schedule_name as string | undefined) ?? null }
+  }
+  if (metadata.email_trigger_id) {
+    return { kind: 'email', name: (metadata.email_trigger_name as string | undefined) ?? null }
   }
   if (metadata.webhook_trigger_id) {
     return { kind: 'webhook', name: (metadata.webhook_trigger_name as string | undefined) ?? null }

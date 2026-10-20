@@ -8,6 +8,7 @@
 //! the module: this is the only endpoint here reachable by somebody who was
 //! never given a credential by this platform.
 
+pub mod email;
 pub mod postgres;
 
 use chrono::{DateTime, Utc};
@@ -46,6 +47,16 @@ pub struct Trigger {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub agent_id: Uuid,
+    /// `webhook`, or `email`: mail an inbound service delivers to the same
+    /// kind of path, parsed and held to a sender policy. See
+    /// docs/triggers.md, "Email".
+    pub kind: String,
+    /// For email, who may start a turn: an address, `@domain`, or `*` for any
+    /// sender the receiving server authenticated.
+    pub senders: Vec<String>,
+    /// For email, whether the receiving server must have passed the sender's
+    /// SPF or DKIM. On unless turned off on purpose.
+    pub authenticated: bool,
     pub name: String,
     pub path: String,
     pub scheme: String,
@@ -72,12 +83,22 @@ pub struct TriggerInput {
     pub prompt: String,
     #[serde(default = "hmac_scheme")]
     pub scheme: String,
+    #[serde(default = "webhook_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub senders: Vec<String>,
+    #[serde(default = "yes")]
+    pub authenticated: bool,
     #[serde(default)]
     pub account: Option<String>,
     #[serde(default = "default_ceiling")]
     pub max_per_hour: i32,
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+fn webhook_kind() -> String {
+    "webhook".to_string()
 }
 
 fn hmac_scheme() -> String {
@@ -171,15 +192,46 @@ impl Refusal {
 /// which is exactly the gap a replay walks through. `None` for
 /// `shared_secret`, which binds no time and so offers no anchor; the caller
 /// decides what to do with that.
+/// The password of an `Authorization: Basic` header.
+fn basic_password(header: &str) -> Option<String> {
+    use base64::Engine;
+    let encoded = header
+        .strip_prefix("Basic ")
+        .or_else(|| header.strip_prefix("basic "))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    text.split_once(':')
+        .map(|(_, password)| password.to_string())
+}
+
 pub fn verify(
     trigger: &Trigger,
     body: &[u8],
     signature: Option<&str>,
     timestamp: Option<&str>,
     token: Option<&str>,
+    authorization: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>, Refusal> {
     match trigger.scheme.as_str() {
+        // An email hook's own, for the inbound services that can do no more:
+        // the unguessable path is the credential, and the sender policy
+        // guards what comes through it.
+        "path" if trigger.kind == "email" => Ok(None),
+        // Basic authentication, as a service puts it in the URL it is given:
+        // any user name, the secret as the password.
+        "basic" if trigger.kind == "email" => {
+            let Some(password) = authorization.and_then(basic_password) else {
+                return Err(Refusal::MissingCredential);
+            };
+            if constant_time_eq(password.as_bytes(), trigger.secret.as_bytes()) {
+                Ok(None)
+            } else {
+                Err(Refusal::BadSignature)
+            }
+        }
         "shared_secret" => {
             let Some(token) = token else {
                 return Err(Refusal::MissingCredential);
@@ -303,6 +355,9 @@ mod tests {
             id: Uuid::nil(),
             workspace_id: Uuid::nil(),
             agent_id: Uuid::nil(),
+            kind: "webhook".into(),
+            senders: Vec::new(),
+            authenticated: true,
             name: "t".into(),
             path: "p".into(),
             scheme: scheme.into(),
@@ -337,7 +392,7 @@ mod tests {
         let now = Utc::now();
         let body = br#"{"event":"booking.created"}"#;
         let (sig, ts) = signed_now("shh", body, now);
-        assert!(verify(&t, body, Some(&sig), Some(&ts), None, now).is_ok());
+        assert!(verify(&t, body, Some(&sig), Some(&ts), None, None, now).is_ok());
     }
 
     #[test]
@@ -349,7 +404,7 @@ mod tests {
         let (sig, ts) = signed_now("shh", br#"{"amount":10}"#, now);
         let tampered = br#"{"amount":99999}"#;
         assert_eq!(
-            verify(&t, tampered, Some(&sig), Some(&ts), None, now),
+            verify(&t, tampered, Some(&sig), Some(&ts), None, None, now),
             Err(Refusal::BadSignature)
         );
     }
@@ -361,7 +416,7 @@ mod tests {
         let body = b"{}";
         let (sig, ts) = signed_now("shh", body, signed_at);
         assert_eq!(
-            verify(&t, body, Some(&sig), Some(&ts), None, Utc::now()),
+            verify(&t, body, Some(&sig), Some(&ts), None, None, Utc::now()),
             Err(Refusal::StaleTimestamp)
         );
     }
@@ -370,12 +425,12 @@ mod tests {
     fn a_delivery_with_no_credential_is_refused_rather_than_let_through() {
         let t = trigger("hmac", "shh");
         assert_eq!(
-            verify(&t, b"{}", None, None, None, Utc::now()),
+            verify(&t, b"{}", None, None, None, None, Utc::now()),
             Err(Refusal::MissingCredential)
         );
         let s = trigger("shared_secret", "shh");
         assert_eq!(
-            verify(&s, b"{}", None, None, None, Utc::now()),
+            verify(&s, b"{}", None, None, None, None, Utc::now()),
             Err(Refusal::MissingCredential)
         );
     }
@@ -392,14 +447,14 @@ mod tests {
 
         let shared = trigger("shared_secret", "shh");
         assert_eq!(
-            verify(&shared, body, Some(&sig), Some(&ts), None, now),
+            verify(&shared, body, Some(&sig), Some(&ts), None, None, now),
             Err(Refusal::MissingCredential),
             "a shared-secret trigger read a signature as a credential"
         );
 
         let signing = trigger("hmac", "shh");
         assert_eq!(
-            verify(&signing, body, None, None, Some("shh"), now),
+            verify(&signing, body, None, None, Some("shh"), None, now),
             Err(Refusal::MissingCredential),
             "a signing trigger accepted a bare token"
         );
@@ -408,9 +463,9 @@ mod tests {
     #[test]
     fn a_shared_secret_delivery_is_accepted_on_the_token_alone() {
         let t = trigger("shared_secret", "shh");
-        assert!(verify(&t, b"{}", None, None, Some("shh"), Utc::now()).is_ok());
+        assert!(verify(&t, b"{}", None, None, Some("shh"), None, Utc::now()).is_ok());
         assert_eq!(
-            verify(&t, b"{}", None, None, Some("wrong"), Utc::now()),
+            verify(&t, b"{}", None, None, Some("wrong"), None, Utc::now()),
             Err(Refusal::BadSignature)
         );
     }
@@ -446,5 +501,72 @@ mod tests {
             !json.contains("very-secret"),
             "the secret reached a browser: {json}"
         );
+    }
+}
+
+#[cfg(test)]
+mod email_schemes {
+    use super::*;
+
+    fn hook(scheme: &str) -> Trigger {
+        Trigger {
+            id: Uuid::nil(),
+            workspace_id: Uuid::nil(),
+            agent_id: Uuid::nil(),
+            kind: "email".into(),
+            senders: vec!["*".into()],
+            authenticated: true,
+            name: "mail".into(),
+            path: "p".into(),
+            scheme: scheme.into(),
+            secret: "shh".into(),
+            prompt: "{{body}}".into(),
+            enabled: true,
+            account: None,
+            owner_id: None,
+            max_per_hour: 60,
+            last_at: None,
+            last_status: None,
+            last_error: None,
+            refused: 0,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn mail_takes_what_an_inbound_service_can_send() {
+        use base64::Engine;
+        let basic = |pair: &str| {
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(pair)
+            )
+        };
+        assert!(verify(&hook("path"), b"", None, None, None, None, Utc::now()).is_ok());
+        let ok = basic("anyone:shh");
+        assert!(verify(&hook("basic"), b"", None, None, None, Some(&ok), Utc::now()).is_ok());
+        let wrong = basic("anyone:nope");
+        assert!(
+            verify(
+                &hook("basic"),
+                b"",
+                None,
+                None,
+                None,
+                Some(&wrong),
+                Utc::now()
+            )
+            .is_err()
+        );
+        assert!(verify(&hook("basic"), b"", None, None, None, None, Utc::now()).is_err());
+    }
+
+    #[test]
+    fn a_webhook_cannot_be_reached_by_its_path_alone() {
+        // The weak schemes are mail's, where a sender policy stands behind
+        // them; a webhook stays signed or tokened.
+        let mut webhook = hook("path");
+        webhook.kind = "webhook".into();
+        assert!(verify(&webhook, b"", None, None, None, None, Utc::now()).is_err());
     }
 }

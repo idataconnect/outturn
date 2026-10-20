@@ -25,7 +25,7 @@ export type AgentSession = {
 }
 
 /** What can start a conversation besides a person. */
-export type TriggerKind = 'schedule' | 'webhook'
+export type TriggerKind = 'schedule' | 'webhook' | 'email'
 
 export type StartedBy = {
   kind: TriggerKind

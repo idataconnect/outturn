@@ -266,11 +266,38 @@ fn validate(input: &TriggerInput) -> Result<(), String> {
     if input.prompt.trim().is_empty() {
         return Err("a trigger needs something to say".to_string());
     }
-    if !matches!(input.scheme.as_str(), "hmac" | "shared_secret") {
-        return Err(format!(
-            "'{}' is not a scheme; use hmac or shared_secret",
-            input.scheme
-        ));
+    match input.kind.as_str() {
+        "webhook" => {
+            if !matches!(input.scheme.as_str(), "hmac" | "shared_secret") {
+                return Err(format!(
+                    "'{}' is not a scheme; use hmac or shared_secret",
+                    input.scheme
+                ));
+            }
+        }
+        // Inbound mail services cannot sign a request this platform's way, so
+        // an email hook takes what they can send: nothing beyond the path, a
+        // token header, or basic authentication in the URL they are given.
+        "email" => {
+            if !matches!(input.scheme.as_str(), "path" | "shared_secret" | "basic") {
+                return Err(format!(
+                    "'{}' is not a scheme for mail; use path, shared_secret or basic",
+                    input.scheme
+                ));
+            }
+            // Empty would admit nobody, which is a trigger that silently does
+            // nothing. `*` is how "any authenticated sender" is said.
+            if input.senders.iter().all(|s| s.trim().is_empty()) {
+                return Err(
+                    "mail needs at least one allowed sender: an address, @domain, or *".into(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "'{other}' is not a kind of hook; use webhook or email"
+            ));
+        }
     }
     if input.max_per_hour <= 0 {
         return Err("the hourly ceiling must be at least one".to_string());
@@ -335,6 +362,7 @@ pub async fn deliver(
         header(webhook::SIGNATURE_HEADER),
         header(webhook::TIMESTAMP_HEADER),
         header(webhook::TOKEN_HEADER),
+        header("authorization"),
         Utc::now(),
     ) {
         Ok(until) => until,
@@ -380,11 +408,35 @@ pub async fn deliver(
         }
     }
 
+    // Mail is taken apart and held to the trigger's sender policy before it
+    // can be anything. Refused mail is answered 202: the service delivered it
+    // properly, and a 4xx would only have it delivered again.
+    let email = if trigger.kind == "email" {
+        let admitted = webhook::email::parse(&body).and_then(|email| {
+            webhook::email::admit(&email, &trigger.senders, trigger.authenticated).map(|()| email)
+        });
+        match admitted {
+            Ok(email) => Some(email),
+            Err(refused) => {
+                let why = refused.why();
+                tracing::info!(trigger_id = %trigger.id, why, "mail started no turn");
+                let _ = postgres::record_refusal(&state.pool, trigger.id, &why, false).await;
+                release(&state, claimed.as_deref(), trigger.id, claimant).await;
+                return StatusCode::ACCEPTED.into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     // Lossy on purpose: a body that is not UTF-8 still becomes a prompt, badly
     // rather than not at all. Refusing here would mean a sender's encoding
     // choice silently stopping their integration, and the agent reading
     // mangled text can at least say so.
-    let text = String::from_utf8_lossy(&body).into_owned();
+    let text = match &email {
+        Some(email) => webhook::email::prompt_text(email),
+        None => String::from_utf8_lossy(&body).into_owned(),
+    };
 
     // The shared steps: seen before, the ceiling, the prompt, the turn.
     let fired = crate::trigger::fire(
@@ -396,21 +448,37 @@ pub async fn deliver(
             name: trigger.name.clone(),
             prompt: trigger.prompt.clone(),
             account: trigger.account.clone(),
-            source: crate::trigger::Source::Webhook(trigger.id),
+            source: if email.is_some() {
+                crate::trigger::Source::Email(trigger.id)
+            } else {
+                crate::trigger::Source::Webhook(trigger.id)
+            },
         },
         crate::trigger::Firing {
             text: Some(text),
-            external_id: header(webhook::DELIVERY_HEADER)
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string),
+            // Mail is known by its Message-ID, so the same message delivered
+            // twice -- a service retrying -- runs once.
+            external_id: match &email {
+                Some(email) => Some(email.id.clone()),
+                None => header(webhook::DELIVERY_HEADER)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string),
+            },
             // No zone: nobody sent this from anywhere, so the agent's clock
             // reads UTC rather than pretending to know better.
             timezone: None,
-            metadata: serde_json::json!({
-                "webhook_trigger_id": trigger.id,
-                "webhook_trigger_name": trigger.name,
-            }),
+            metadata: if email.is_some() {
+                serde_json::json!({
+                    "email_trigger_id": trigger.id,
+                    "email_trigger_name": trigger.name,
+                })
+            } else {
+                serde_json::json!({
+                    "webhook_trigger_id": trigger.id,
+                    "webhook_trigger_name": trigger.name,
+                })
+            },
         },
     )
     .await;
@@ -435,6 +503,11 @@ pub async fn deliver(
             // the credential, so telling it the event landed is telling it
             // something it may act on.
             release(&state, claimed.as_deref(), trigger.id, claimant).await;
+            // A mail service that delivered a message twice is acknowledged:
+            // a refusal would only have it retried, or bounced to the sender.
+            if trigger.kind == "email" {
+                return StatusCode::OK.into_response();
+            }
             refuse(&state, &trigger, Refusal::Duplicate).await
         }
         crate::trigger::Fired::OverCeiling(_) => {

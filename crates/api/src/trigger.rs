@@ -21,12 +21,13 @@ use outturn_core::jobs;
 pub enum Source {
     Schedule(Uuid),
     Webhook(Uuid),
+    Email(Uuid),
 }
 
 impl Source {
     fn id(&self) -> Uuid {
         match self {
-            Source::Schedule(id) | Source::Webhook(id) => *id,
+            Source::Schedule(id) | Source::Webhook(id) | Source::Email(id) => *id,
         }
     }
 }
@@ -288,6 +289,7 @@ async fn start_in(
     let started_by = match started.source {
         Source::Schedule(_) => "schedule",
         Source::Webhook(_) => "webhook",
+        Source::Email(_) => "email",
     };
     sqlx::query(
         "insert into agent_sessions \

@@ -528,7 +528,7 @@ on the roadmap.
 
 ## Email
 
-Designed, unbuilt, and the first source the model above is for. Four ways in,
+Inbound parse is built; IMAP is designed and unbuilt. Four ways in,
 and they trade differently:
 
 | | For | Against |
@@ -539,7 +539,28 @@ and they trade differently:
 | **A mail server of our own** -- "forward to agent@" | The simplest thing to tell somebody. | Running inbound mail: spam, abuse, deliverability. Not worth it. |
 
 **First, inbound parse**: it is a webhook source with a parser, so nearly all
-of it is built once the model above is. **Then IMAP**, for whoever needs an
+of it is built once the model above is. **Built** (2026-10-20), as a third kind, `email`,
+sharing the hooks' paths, ceiling, dedupe and pipeline:
+
+- **The message arrives raw**, RFC 822 as the service delivers it, and is taken
+  apart here -- one format every inbound service and mail-routing worker can
+  send, so no code per provider. The agent is given its sender, subject and
+  text (HTML made plain where there is no text part), in place of `{{body}}`.
+  Attachments are not given yet.
+- **How the service proves itself** is whatever it can send, since none signs a
+  request this platform's way: the long unguessable path alone, a token
+  header, or basic authentication in the URL it is given.
+- **The sender policy**: an allowlist of addresses, `@domains`, or `*`, and --
+  unless turned off on purpose -- the receiving server's SPF or DKIM pass, read
+  from the topmost `Authentication-Results` only, since any further down came
+  with the message. Mail failing either is answered 202 and acted on not at
+  all: a refusal would only have the service deliver it again.
+- **Dedupe on `Message-ID`**, with a hash of date, sender and subject standing
+  in where it is missing; a message delivered twice is acknowledged 200 and run
+  once.
+
+Made through `/v1/webhook-triggers` with `"kind": "email"`, and on the agent's
+page as *New trigger* → *Email*. **Then IMAP**, for whoever needs an
 existing shared mailbox watched, with what it needs worked out already:
 
 - **The cursor is IMAP's own**: the folder's `UIDVALIDITY` and the highest UID
