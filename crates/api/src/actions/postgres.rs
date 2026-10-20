@@ -125,6 +125,46 @@ async fn announce(
     Ok(())
 }
 
+/// Cancels whatever is still waiting on somebody about one conversation, for
+/// the conversation's deletion.
+///
+/// Cancelled rather than deleted, as every settled item is: the queue that
+/// emptied can still say why. On the caller's connection so it commits with
+/// the delete, and announced per item to the targets it was in front of, so
+/// an open queue drops it without a refetch of everything.
+pub(crate) async fn cancel_for_session(
+    conn: &mut sqlx::PgConnection,
+    workspace_id: Uuid,
+    session_id: Uuid,
+) -> Result<(), ActionError> {
+    let items: Vec<Uuid> = sqlx::query_scalar(
+        "update action_items set state = 'cancelled', \
+                resolved_note = 'the conversation was deleted', resolved_at = now() \
+          where workspace_id = $1 and state = 'pending' \
+            and payload ->> 'session_id' = $2 \
+      returning id",
+    )
+    .bind(workspace_id)
+    .bind(session_id.to_string())
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(internal)?;
+
+    for item in items {
+        let targets = targets_of(conn, workspace_id, item).await?;
+        announce(
+            conn,
+            workspace_id,
+            &Delivery::Targeted {
+                item_ids: vec![item],
+                targets,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl ActionStore for PostgresActionStore {
     async fn raise(&self, workspace_id: Uuid, item: NewItem) -> Result<Uuid, ActionError> {

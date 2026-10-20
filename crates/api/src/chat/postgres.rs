@@ -540,16 +540,36 @@ impl ChatStore for PostgresChatStore {
     }
 
     async fn delete_session(&self, workspace_id: Uuid, session_id: Uuid) -> Result<(), ChatError> {
+        // The row's cascades take the messages, the events, the holds and the
+        // grants (migration 0054). Two things carry the session id where a
+        // foreign key cannot reach it and are seen to here, in the same
+        // transaction: the jobs queued or parked for it, which would otherwise
+        // run against a conversation that is gone -- a wakeup due next week,
+        // a turn parked on an approval -- and the queue items waiting on
+        // somebody about it. A turn running right now is asked to stop, as
+        // the stop button asks, and ends at its next round boundary.
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+
+        outturn_core::jobs::cancel_for_session_on(&mut *tx, workspace_id, session_id)
+            .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
+        super::super::actions::postgres::cancel_for_session(&mut tx, workspace_id, session_id)
+            .await
+            .map_err(|e| ChatError::Internal(e.to_string()))?;
+
         let result = sqlx::query("delete from agent_sessions where workspace_id = $1 and id = $2")
             .bind(workspace_id)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(internal)?;
-
         if result.rows_affected() == 0 {
+            // Rolled back with the transaction: nothing of a session that was
+            // not there is touched.
             return Err(ChatError::NotFound);
         }
+
+        tx.commit().await.map_err(internal)?;
         Ok(())
     }
 
@@ -620,6 +640,23 @@ impl ChatStore for PostgresChatStore {
         usage: Usage,
         metadata: serde_json::Value,
     ) -> Result<Message, ChatError> {
+        let mut conn = self.pool.acquire().await.map_err(internal)?;
+        self.set_message_content_on(
+            &mut conn, message_id, content, model, provider, usage, metadata,
+        )
+        .await
+    }
+
+    async fn set_message_content_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        message_id: Uuid,
+        content: &str,
+        model: Option<&str>,
+        provider: Option<&str>,
+        usage: Usage,
+        metadata: serde_json::Value,
+    ) -> Result<Message, ChatError> {
         let row = sqlx::query(
             "update agent_messages \
              set content = $2, model = coalesce($3, model), metadata = $4, \
@@ -644,7 +681,7 @@ impl ChatStore for PostgresChatStore {
         .bind(usage.cache_read_tokens)
         .bind(usage.cache_write_tokens)
         .bind(usage.reasoning_tokens)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(internal)?
         .ok_or(ChatError::NotFound)?;

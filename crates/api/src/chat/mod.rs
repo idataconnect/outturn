@@ -369,6 +369,23 @@ pub trait ChatStore: Send + Sync {
         metadata: serde_json::Value,
     ) -> Result<Message, ChatError>;
 
+    /// `set_message_content` on a connection the caller holds.
+    ///
+    /// For the worker finishing a turn, whose final write and whose closing of
+    /// the job have to commit together: written apart, a crash between them
+    /// left a finished reply under a job still running, and the retry saw a
+    /// finished attempt and wrote a second reply beside it.
+    async fn set_message_content_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        message_id: Uuid,
+        content: &str,
+        model: Option<&str>,
+        provider: Option<&str>,
+        usage: Usage,
+        metadata: serde_json::Value,
+    ) -> Result<Message, ChatError>;
+
     /// Removes a message. Used to clear a placeholder whose turn failed, which
     /// would otherwise sit empty in the transcript forever.
     async fn delete_message(&self, message_id: Uuid) -> Result<(), ChatError>;

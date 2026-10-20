@@ -982,15 +982,16 @@ pub fn spawn(
                     };
                     for handle in claimed {
                         let job = handle.job;
-                        let done = match fire(&pool, actions.as_ref(), &job).await {
-                            Ok(()) => jobs::complete(&pool, job.id, job.lease_token).await,
-                            Err(e) => {
-                                tracing::warn!(job_id = %job.id, error = %e, "a wakeup failed");
+                        // `fire` closes the job itself, in the commit that
+                        // makes what it wrote visible. Only a failure is
+                        // recorded from here.
+                        if let Err(e) = fire(&pool, actions.as_ref(), &job).await {
+                            tracing::warn!(job_id = %job.id, error = %e, "a wakeup failed");
+                            if let Err(e) =
                                 jobs::fail(&pool, job.id, &e, Duration::from_secs(10), job.lease_token).await
+                            {
+                                tracing::warn!(job_id = %job.id, error = %e, "could not close a wakeup");
                             }
-                        };
-                        if let Err(e) = done {
-                            tracing::warn!(job_id = %job.id, error = %e, "could not close a wakeup");
                         }
                     }
                 }
@@ -999,7 +1000,15 @@ pub fn spawn(
     });
 }
 
-/// One wakeup, due now.
+/// One wakeup, due now. Fires it and closes the job.
+///
+/// The job is closed here rather than by the caller because for a timer the
+/// closing has to be in the same transaction as the firing. A timer that
+/// wrote its note and its turn and then crashed before a separate `complete`
+/// was reaped and fired again: a second note with a fresh id, a second turn,
+/// the agent woken twice for one timer. A sleep never had the problem, since
+/// `settle` is a conditional update and the second firing finds the item
+/// already settled -- so there the two statements can stay apart.
 pub async fn fire(
     pool: &sqlx::PgPool,
     actions: &dyn super::actions::ActionStore,
@@ -1012,26 +1021,50 @@ pub async fn fire(
             if !woke {
                 tracing::debug!(session_id = %due.session_id, "a sleep had already been ended");
             }
-            Ok(())
+            jobs::complete(pool, job.id, job.lease_token)
+                .await
+                .map_err(|e| e.to_string())
         }
         Kind::Timer => {
-            // A conversation deleted while the timer waited is nothing to wake.
-            let exists: bool =
-                sqlx::query_scalar("select exists (select 1 from agent_sessions where id = $1)")
-                    .bind(due.session_id)
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            if !exists {
-                return Ok(());
-            }
             let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-            write_tx(&mut tx, Note::of(&due, None))
-                .await
-                .map_err(|e| e.to_string())?;
+            fire_timer_on(&mut tx, &due, job).await?;
             tx.commit().await.map_err(|e| e.to_string())
         }
     }
+}
+
+/// A timer's firing: the note, the turn it starts and the job's completion,
+/// on the caller's transaction so they commit together or not at all.
+///
+/// The completion is matched against the lease the job was claimed with. A
+/// firing whose lease lapsed -- reaped and handed to another tick of the loop
+/// -- finds the job no longer its own, and the error rolls back the note it
+/// wrote, so the other firing's note is the only one.
+///
+/// Public so a test can stand where a crash would: run this, drop the
+/// transaction uncommitted, and fire again.
+pub async fn fire_timer_on(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    due: &Due,
+    job: &jobs::Job,
+) -> Result<(), String> {
+    // A conversation deleted while the timer waited is nothing to wake. The
+    // job is still closed, so the timer is not re-fired against the absence
+    // once a second.
+    let exists: bool =
+        sqlx::query_scalar("select exists (select 1 from agent_sessions where id = $1)")
+            .bind(due.session_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    if exists {
+        write_tx(tx, Note::of(due, None))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    jobs::complete_on(&mut **tx, job.id, job.lease_token)
+        .await
+        .map_err(|e| format!("closing the wakeup: {e}"))
 }
 
 #[cfg(test)]

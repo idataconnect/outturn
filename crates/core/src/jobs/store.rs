@@ -239,6 +239,21 @@ pub async fn claim(
 /// finish the job out from under the pod now running it. Passing None skips
 /// the check, for callers closing a job they know nobody else can hold.
 pub async fn complete(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
+    complete_on(pool, id, token).await
+}
+
+/// `complete` on an executor the caller holds.
+///
+/// For the caller whose result and whose completion must commit together. A
+/// wakeup wrote its note and its turn, then completed in a second statement;
+/// a crash between the two had the lease reaped and the wakeup fired again,
+/// with a second note and a second turn. On one transaction the job is closed
+/// in the same commit that makes its result visible, so a re-fire finds the
+/// job already closed or finds nothing written -- never half of each.
+pub async fn complete_on<'e, E>(executor: E, id: Uuid, token: Option<Uuid>) -> Result<(), JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let sql = format!(
         "update jobs set state = {succeeded}, leased_until = null, lease_token = null, \
              updated_at = now() \
@@ -249,7 +264,7 @@ pub async fn complete(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<()
     let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .bind(token)
-        .execute(pool)
+        .execute(executor)
         .await
         .map_err(internal)?;
 
@@ -554,6 +569,44 @@ pub async fn request_cancel(pool: &PgPool, id: Uuid) -> Result<Cancelled, JobErr
     })
 }
 
+/// Stops everything queued for one conversation, for the conversation's
+/// deletion.
+///
+/// The shape `request_cancel` has, over every job whose payload names the
+/// session: what is pending or parked is cancelled outright, and what is
+/// running is asked to stop, which it does at its next round boundary. A job
+/// cannot carry a foreign key to its session, since the id is inside the
+/// payload, so this is what stands in for the cascade -- on the caller's
+/// executor, so it commits with the delete it stands in for.
+///
+/// Returns how many jobs it touched.
+pub async fn cancel_for_session_on<'e, E>(
+    executor: E,
+    workspace_id: Uuid,
+    session_id: Uuid,
+) -> Result<u64, JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let result = sqlx::query(
+        "update jobs \
+            set cancel_requested_at = coalesce(cancel_requested_at, now()), \
+                state = case when state in ('pending', 'parked') then 'cancelled' \
+                             else state end, \
+                leased_until = case when state in ('pending', 'parked') then null \
+                                    else leased_until end, \
+                updated_at = now() \
+          where workspace_id = $1 and state in ('pending', 'running', 'parked') \
+            and payload->>'session_id' = $2",
+    )
+    .bind(workspace_id)
+    .bind(session_id.to_string())
+    .execute(executor)
+    .await
+    .map_err(internal)?;
+    Ok(result.rows_affected())
+}
+
 /// Whether somebody has asked for this job to stop.
 ///
 /// Asked at a round boundary by whoever is running the turn. Cheap on purpose:
@@ -575,6 +628,18 @@ pub async fn cancel_requested(pool: &PgPool, id: Uuid) -> Result<bool, JobError>
 /// remain, and retrying a turn somebody stopped would be precisely the
 /// opposite of what they asked for.
 pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
+    mark_cancelled_on(pool, id, token).await
+}
+
+/// `mark_cancelled` on an executor the caller holds, as `complete_on` is.
+pub async fn mark_cancelled_on<'e, E>(
+    executor: E,
+    id: Uuid,
+    token: Option<Uuid>,
+) -> Result<(), JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let sql = format!(
         "update jobs set state = {cancelled}, leased_until = null, lease_token = null, \
              updated_at = now() \
@@ -585,7 +650,7 @@ pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Res
     let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .bind(token)
-        .execute(pool)
+        .execute(executor)
         .await
         .map_err(internal)?;
 
@@ -699,6 +764,14 @@ pub async fn release(
 /// `token` as for `complete`: only the holder of the current lease may park the
 /// job, or a pod whose lease lapsed would park work another pod is running.
 pub async fn park(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<Parked, JobError> {
+    park_on(pool, id, token).await
+}
+
+/// `park` on an executor the caller holds, as `complete_on` is.
+pub async fn park_on<'e, E>(executor: E, id: Uuid, token: Option<Uuid>) -> Result<Parked, JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
     let sql = format!(
         "update jobs set \
              state = {parked}, \
@@ -714,7 +787,7 @@ pub async fn park(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<Parked
     let state: Option<JobState> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .bind(token)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .map_err(internal)?;
 

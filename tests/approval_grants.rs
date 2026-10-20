@@ -35,10 +35,50 @@ async fn setup() -> (common::TestDb, Uuid) {
     (db, workspace_id)
 }
 
-fn grant_for(workspace_id: Uuid, job_id: Uuid, extent: Extent, keyed_on: &str) -> NewGrant {
+/// A conversation for a grant to be granted within. A grant's session is a
+/// foreign key (migration 0054), so a made-up id is refused.
+async fn a_session(pool: &sqlx::PgPool, workspace_id: Uuid) -> Uuid {
+    let agent = Uuid::now_v7();
+    sqlx::query(
+        "insert into agents (id, workspace_id, name, slug, system_prompt, enabled) \
+         values ($1, $2, 'T', 'agent-' || replace($1::text, '-', ''), '', true)",
+    )
+    .bind(agent)
+    .bind(workspace_id)
+    .execute(pool)
+    .await
+    .expect("agent");
+    let user = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, 'Ada')")
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("user");
+    let session = Uuid::now_v7();
+    sqlx::query(
+        "insert into agent_sessions (id, workspace_id, agent_id, user_id, title) \
+         values ($1, $2, $3, $4, '')",
+    )
+    .bind(session)
+    .bind(workspace_id)
+    .bind(agent)
+    .bind(user)
+    .execute(pool)
+    .await
+    .expect("session");
+    session
+}
+
+fn grant_for(
+    workspace_id: Uuid,
+    session_id: Uuid,
+    job_id: Uuid,
+    extent: Extent,
+    keyed_on: &str,
+) -> NewGrant {
     NewGrant {
         workspace_id,
-        session_id: Uuid::now_v7(),
+        session_id,
         job_id,
         requires: "charge".into(),
         extent,
@@ -55,11 +95,12 @@ fn grant_for(workspace_id: Uuid, job_id: Uuid, extent: Extent, keyed_on: &str) -
 #[tokio::test]
 async fn a_resumed_turn_reads_back_what_it_holds() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
     let job = Uuid::now_v7();
 
     grant::write(
         &db.pool,
-        grant_for(ws, job, Extent::Call, "the-approved-charge"),
+        grant_for(ws, session, job, Extent::Call, "the-approved-charge"),
     )
     .await
     .expect("write");
@@ -84,10 +125,11 @@ async fn a_resumed_turn_reads_back_what_it_holds() {
 #[tokio::test]
 async fn a_grant_does_not_reach_another_turn() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
 
     grant::write(
         &db.pool,
-        grant_for(ws, Uuid::now_v7(), Extent::Call, "a-charge"),
+        grant_for(ws, session, Uuid::now_v7(), Extent::Call, "a-charge"),
     )
     .await
     .expect("write");
@@ -108,6 +150,7 @@ async fn a_grant_does_not_reach_another_turn() {
 #[tokio::test]
 async fn a_grant_does_not_reach_another_workspace() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
     let job = Uuid::now_v7();
     let other = Uuid::now_v7();
     sqlx::query("insert into workspaces (id, name, slug) values ($1, $2, $3)")
@@ -118,9 +161,12 @@ async fn a_grant_does_not_reach_another_workspace() {
         .await
         .expect("workspace");
 
-    grant::write(&db.pool, grant_for(ws, job, Extent::Call, "a-charge"))
-        .await
-        .expect("write");
+    grant::write(
+        &db.pool,
+        grant_for(ws, session, job, Extent::Call, "a-charge"),
+    )
+    .await
+    .expect("write");
 
     let theirs = grant::live_for(&db.pool, other, job)
         .await
@@ -138,12 +184,16 @@ async fn a_grant_does_not_reach_another_workspace() {
 #[tokio::test]
 async fn grants_come_back_in_a_stable_order() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
     let job = Uuid::now_v7();
 
     for keyed_on in ["first", "second", "third"] {
-        grant::write(&db.pool, grant_for(ws, job, Extent::Call, keyed_on))
-            .await
-            .expect("write");
+        grant::write(
+            &db.pool,
+            grant_for(ws, session, job, Extent::Call, keyed_on),
+        )
+        .await
+        .expect("write");
     }
 
     let held = grant::live_for(&db.pool, ws, job).await.expect("live_for");
@@ -162,11 +212,15 @@ async fn grants_come_back_in_a_stable_order() {
 #[tokio::test]
 async fn a_unit_grant_keeps_its_extent() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
     let job = Uuid::now_v7();
 
-    grant::write(&db.pool, grant_for(ws, job, Extent::Unit, "bk_8812"))
-        .await
-        .expect("write");
+    grant::write(
+        &db.pool,
+        grant_for(ws, session, job, Extent::Unit, "bk_8812"),
+    )
+    .await
+    .expect("write");
 
     let held = grant::live_for(&db.pool, ws, job).await.expect("live_for");
     assert_eq!(held.len(), 1);
@@ -191,11 +245,15 @@ async fn a_unit_grant_keeps_its_extent() {
 #[tokio::test]
 async fn a_grant_with_an_unknown_extent_is_left_out() {
     let (db, ws) = setup().await;
+    let session = a_session(&db.pool, ws).await;
     let job = Uuid::now_v7();
 
-    grant::write(&db.pool, grant_for(ws, job, Extent::Call, "a-charge"))
-        .await
-        .expect("write");
+    grant::write(
+        &db.pool,
+        grant_for(ws, session, job, Extent::Call, "a-charge"),
+    )
+    .await
+    .expect("write");
 
     sqlx::query("alter table approval_grants drop constraint approval_grants_extent_check")
         .execute(&db.pool)
@@ -209,7 +267,7 @@ async fn a_grant_with_an_unknown_extent_is_left_out() {
     )
     .bind(ws)
     .bind(Uuid::now_v7())
-    .bind(Uuid::now_v7())
+    .bind(session)
     .bind(job)
     .execute(&db.pool)
     .await

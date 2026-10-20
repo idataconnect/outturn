@@ -22,7 +22,7 @@
 //! by default is one where nobody ever finds out which path was lying.
 
 mod bus;
-mod postgres;
+pub(crate) mod postgres;
 #[cfg(test)]
 mod tests;
 
