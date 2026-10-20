@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAnchor } from '../lib/useAnchor'
+import TriggerIcon from './TriggerIcon'
 import { AlertTriangle, Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
@@ -123,12 +124,36 @@ function SenderGuide({ scheme }: { scheme: Scheme }) {
  * Beside the schedules, because both answer what an agent does when nobody is
  * talking to it, and a hook means nothing without the agent it starts.
  */
-export default function AgentWebhooks({ agentId }: { agentId: string }) {
+/** Shown inside the agent's one Triggers section, which owns the heading and
+ *  the choice of kind: `creating` opens this kind's form, and `onDone` says
+ *  it closed. */
+export type Embedded = { creating: boolean; onDone: () => void }
+
+export default function AgentWebhooks({
+  agentId,
+  embedded,
+}: {
+  agentId: string
+  embedded?: Embedded
+}) {
   const state = useSession()
   const [rows, setRows] = useState<Webhook[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
+  // Opened by the section above when it asks for this kind, and handed back
+  // when the form closes.
+  const [opened, setOpened] = useState(false)
+  useEffect(() => {
+    if (!embedded?.creating) return
+    if (!draft && !opened) {
+      setDraft(blank())
+      setOpened(true)
+    } else if (!draft && opened) {
+      setOpened(false)
+      embedded.onDone()
+    }
+  }, [embedded, draft, opened])
   const [saving, setSaving] = useState(false)
   // The secret, for the one moment it can be read: after creating or
   // rotating. The API never returns it again.
@@ -229,7 +254,9 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
   const missingBody = draft !== null && !draft.prompt.includes(BODY)
 
   return (
-    <section className="mt-8 space-y-4">
+    <section className={embedded ? 'space-y-4' : 'mt-8 space-y-4'}>
+      {!embedded && (
+        <>
       <div className="flex items-baseline justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">
@@ -250,6 +277,8 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
           </button>
         )}
       </div>
+        </>
+      )}
 
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">
@@ -257,7 +286,7 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
         </p>
       )}
 
-      {rows.length === 0 && !draft && (
+      {!embedded && rows.length === 0 && !draft && (
         <p className="text-sm text-surface-500">
           None yet. A webhook might start a turn when a booking system reports a new reservation,
           or when a form is submitted.
@@ -279,6 +308,7 @@ export default function AgentWebhooks({ agentId }: { agentId: string }) {
                 className="text-left min-w-0 flex-1 disabled:cursor-default"
               >
                 <div className="flex items-center gap-2">
+                  <TriggerIcon kind="webhook" className="w-3.5 h-3.5 text-surface-500" />
                   <span className="font-medium text-surface-900 dark:text-surface-100">
                     {w.name}
                   </span>

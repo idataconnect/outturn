@@ -11,8 +11,7 @@ import {
   type VersionChoice,
 } from '../lib/agentTemplates'
 import AgentSkills from '../components/AgentSkills'
-import AgentSchedules from '../components/AgentSchedules'
-import AgentWebhooks from '../components/AgentWebhooks'
+import AgentTriggers from '../components/AgentTriggers'
 
 export type Agent = {
   id: string
@@ -400,9 +399,7 @@ export default function AgentEditor() {
 
       {!creating && !loading && id && <AgentSkills agentId={id} />}
 
-      {!creating && !loading && id && <AgentSchedules agentId={id} />}
-
-      {!creating && !loading && id && <AgentWebhooks agentId={id} />}
+      {!creating && !loading && id && <AgentTriggers agentId={id} />}
 
       {!creating && !loading && (
         <section className="mt-8 space-y-4">

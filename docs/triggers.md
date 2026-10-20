@@ -497,7 +497,10 @@ not change.
 
 `/v1/agents/{id}/triggers`, one list for an agent with each row's kind, and a
 form whose common half is the same for every kind and whose other half is the
-kind's own. The old routes stay as aliases for a release. On the agent's page,
+kind's own. Built (2026-10-20): the list, and one *Triggers* section on the
+agent's page whose *New trigger* asks the kind first. Making and editing still
+go through each kind's routes and form; one form with a common half is the
+part not yet done. The old routes stay as aliases for a release. On the agent's page,
 one *Triggers* section where there are now two, each row with its kind's icon,
 as now; adding one asks which kind first.
 
