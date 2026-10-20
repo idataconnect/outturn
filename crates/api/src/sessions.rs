@@ -630,18 +630,18 @@ pub async fn agent_activity(
     // The state list and the kind are `jobs_live_turn_workspace_idx`'s
     // predicate word for word, which is the only way the planner will use it;
     // a state added there has to be added here, and in `live_turn` (0025).
-    let rows = sqlx::query(
+    let sql = format!(
         "with live as ( \
              select s.agent_id, s.id as session_id, s.last_active_at, j.state \
                from jobs j \
                join agent_sessions s on s.id = (j.payload->>'session_id')::uuid \
               where j.workspace_id = $1 \
-                and j.kind = 'chat.turn' and j.state in ('pending', 'running', 'parked') \
+                and j.kind = 'chat.turn' and j.state in {live} \
          ) \
          select a.id as agent_id, \
-                (select count(*) from live where live.agent_id = a.id and state = 'running') as running, \
-                (select count(*) from live where live.agent_id = a.id and state = 'pending') as queued, \
-                (select count(*) from live where live.agent_id = a.id and state = 'parked') as waiting, \
+                (select count(*) from live where live.agent_id = a.id and state = {running}) as running, \
+                (select count(*) from live where live.agent_id = a.id and state = {pending}) as queued, \
+                (select count(*) from live where live.agent_id = a.id and state = {parked}) as waiting, \
                 (select s.last_active_at from agent_sessions s where s.agent_id = a.id \
                   order by s.last_active_at desc limit 1) as last_active_at, \
                 (select session_id from live where live.agent_id = a.id \
@@ -649,12 +649,17 @@ pub async fn agent_activity(
            from agents a \
           where a.workspace_id = $1 and a.enabled \
             and ($2::uuid[] is null or a.id = any($2))",
-    )
-    .bind(claims.workspace_id)
-    .bind(agent_ids)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(internal)?;
+        live = jobs::sql_in(&jobs::JobState::LIVE),
+        pending = jobs::JobState::Pending.quoted(),
+        running = jobs::JobState::Running.quoted(),
+        parked = jobs::JobState::Parked.quoted()
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(claims.workspace_id)
+        .bind(agent_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(internal)?;
 
     use sqlx::Row;
     Ok(Json(

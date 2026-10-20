@@ -235,15 +235,17 @@ async fn over_ceiling(
     if let Some(max) = max {
         // Unfinished as `sessions.rs` reads it: a state added to jobs has to
         // be added here too (docs/invariants.md).
-        let running: i64 = sqlx::query_scalar(
+        let sql = format!(
             "select count(*) from jobs j \
                join agent_sessions s on s.id = (j.payload->>'session_id')::uuid \
               where s.trigger_id = $1 and j.kind = 'chat.turn' \
-                and j.state in ('pending', 'running', 'parked')",
-        )
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await?;
+                and j.state in {live}",
+            live = jobs::sql_in(&jobs::JobState::LIVE)
+        );
+        let running: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
         if running >= i64::from(max) {
             return Ok(Some(Ceiling::Concurrent));
         }

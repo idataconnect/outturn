@@ -763,16 +763,18 @@ async fn pending_timers(
     pool: &sqlx::PgPool,
     session_id: Uuid,
 ) -> Result<Vec<(Uuid, Due)>, sqlx::Error> {
-    let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+    let sql = format!(
         "select id, payload from jobs \
-         where kind = $1 and state = 'pending' \
+         where kind = $1 and state = {pending} \
            and payload->>'session_id' = $2 and payload->>'kind' = 'timer' \
          order by run_after, id",
-    )
-    .bind(WAKE)
-    .bind(session_id.to_string())
-    .fetch_all(pool)
-    .await?;
+        pending = jobs::JobState::Pending.quoted()
+    );
+    let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(WAKE)
+        .bind(session_id.to_string())
+        .fetch_all(pool)
+        .await?;
     Ok(rows
         .into_iter()
         .filter_map(|(id, payload)| Some((id, serde_json::from_value(payload).ok()?)))
@@ -830,18 +832,20 @@ async fn cancel(
         .ok_or_else(not_found)?;
     // Only a pending one: a timer already firing is past cancelling, and its
     // note is on its way.
-    let removed: Option<serde_json::Value> = sqlx::query_scalar(
+    let sql = format!(
         "delete from jobs \
-         where id = $1 and kind = $2 and state = 'pending' \
+         where id = $1 and kind = $2 and state = {pending} \
            and payload->>'session_id' = $3 and payload->>'kind' = 'timer' \
          returning payload",
-    )
-    .bind(id)
-    .bind(WAKE)
-    .bind(turn.session_id.to_string())
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        pending = jobs::JobState::Pending.quoted()
+    );
+    let removed: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(WAKE)
+        .bind(turn.session_id.to_string())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let due: Due = removed
         .and_then(|p| serde_json::from_value(p).ok())
         .ok_or_else(not_found)?;
@@ -887,18 +891,20 @@ pub async fn wake_now(
     .await?;
 
     let internal = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
-    let pending = sqlx::query(
+    let sql = format!(
         "select j.id, j.payload from jobs j \
-         where j.kind = $1 and j.state = 'pending' and j.workspace_id = $2 \
+         where j.kind = $1 and j.state = {pending} and j.workspace_id = $2 \
            and j.payload->>'session_id' = $3 and j.payload->>'kind' = 'sleep' \
          order by j.id desc limit 1",
-    )
-    .bind(WAKE)
-    .bind(claims.workspace_id)
-    .bind(session_id.to_string())
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| internal(e.to_string()))?;
+        pending = jobs::JobState::Pending.quoted()
+    );
+    let pending = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(WAKE)
+        .bind(claims.workspace_id)
+        .bind(session_id.to_string())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| internal(e.to_string()))?;
     let Some(pending) = pending else {
         return Ok(Json(Woken { woke: false }));
     };

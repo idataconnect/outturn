@@ -13,9 +13,22 @@ permanently the moment a turn was stopped before its first token, and the
 union the browser switches on, which showed nothing at all. A cancelled turn is
 *accounted for*, so it belongs in every list meaning "this turn finished" — and
 it is terminal and never retried, so it must not appear in any list meaning
-"give this back to the queue". Grep for the state strings, not just the
-constraint -- `trigger::over_ceiling` counts unfinished turns the way
-`sessions.rs` does, and is one more list to keep.
+"give this back to the queue". The same guard wedged a session again when a
+turn *failed* to prepare: `failed` was not in its list either, and the empty
+placeholder the failure left behind was read as abandonment. The guard no
+longer has a list -- a reply with any turn queued for it, in any state, is
+accounted for -- and a final failure discards its placeholder.
+
+The Rust side is now one enum, `jobs::JobState` in `crates/core/src/jobs/mod.rs`:
+queries name a state through `quoted()` and a set through `sql_in`, and
+`JobState::LIVE` is the unfinished set that sessions, triggers and stops
+share. A unit test holds its rendering to the index predicates in migrations
+0023 and 0025 byte for byte, and the queue suite reads the CHECK constraint
+from `pg_constraint` and compares it to `JobState::ALL`. What still has to
+match by hand, because an applied migration cannot change: the CHECK
+constraint, the partial indexes and the `live_turn` view in the migrations,
+which a new state would need a new migration for; and the browser's unions in
+`ui/src/lib/chat.ts`, which carry a comment pointing here.
 
 **Streamed deltas concatenate to stored content.** What the browser renders
 during a turn must be exactly what the transcript holds afterwards, or the

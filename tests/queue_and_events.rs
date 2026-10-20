@@ -4984,3 +4984,33 @@ async fn a_fallback_to_the_same_model_elsewhere_is_not_a_change() {
 
     finish!(db);
 }
+
+/// The CHECK constraint on `jobs.state` and `JobState` name the same states.
+///
+/// A state added on one side only is the bug the enum exists to prevent: the
+/// constraint refuses a state the code writes, or the code's lists silently
+/// leave out one the database admits. The constraint lives in an applied
+/// migration, so the enum follows it with a new migration rather than an edit.
+#[tokio::test]
+async fn the_state_constraint_and_the_enum_agree() {
+    let (db, _) = setup_or_skip!();
+    let definition: String = sqlx::query_scalar(
+        "select pg_get_constraintdef(c.oid) from pg_constraint c \
+           join pg_class t on t.oid = c.conrelid \
+           join pg_namespace n on n.oid = t.relnamespace \
+          where t.relname = 'jobs' and c.conname = 'jobs_state_check' \
+            and n.nspname = current_schema()",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the jobs state constraint");
+
+    // The literals the constraint quotes, however Postgres chose to render
+    // the expression around them.
+    let mut allowed: Vec<&str> = definition.split('\'').skip(1).step_by(2).collect();
+    allowed.sort_unstable();
+    let mut known: Vec<&str> = jobs::JobState::ALL.iter().map(|s| s.as_str()).collect();
+    known.sort_unstable();
+    assert_eq!(allowed, known, "constraint: {definition}");
+    finish!(db);
+}

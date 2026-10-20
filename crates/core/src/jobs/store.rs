@@ -5,6 +5,12 @@ use sqlx::postgres::PgPool;
 use sqlx::{Executor, Postgres, Row};
 use uuid::Uuid;
 
+// The queries below are built from `JobState` literals and nothing a caller
+// sent, which is what `AssertSqlSafe` asks to be told: a state is written
+// into the text rather than bound so the planner can match the partial
+// indexes' predicates, which it does against literals only.
+use super::JobState;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
     pub id: Uuid,
@@ -147,15 +153,15 @@ pub async fn claim(
     // until its turn ends. This check is against a possibly stale snapshot,
     // which is why the guard stays; it only has to be right often enough that
     // the limit is not spent on work that cannot start.
-    let picked: Vec<Uuid> = sqlx::query_scalar(
+    let sql = format!(
         "with candidate as ( \
              select id, serial_key from jobs \
-             where state = 'pending' \
+             where state = {pending} \
                and run_after <= now() \
                and (cardinality($1::text[]) = 0 or kind = any($1)) \
                and (serial_key is null or not exists ( \
                    select 1 from jobs running \
-                   where running.state = 'running' \
+                   where running.state = {running} \
                      and running.serial_key = jobs.serial_key)) \
              order by priority, run_after, id \
              for update skip locked \
@@ -169,12 +175,15 @@ pub async fn claim(
          select id from ranked \
          where serial_key is null \
             or (rank = 1 and pg_try_advisory_xact_lock(hashtext(serial_key)))",
-    )
-    .bind(kinds)
-    .bind(limit)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(internal)?;
+        pending = JobState::Pending.quoted(),
+        running = JobState::Running.quoted()
+    );
+    let picked: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(kinds)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal)?;
 
     if picked.is_empty() {
         // Nothing to do, but the transaction still has to end -- and rolling
@@ -183,9 +192,9 @@ pub async fn claim(
         return Ok(Vec::new());
     }
 
-    let rows = sqlx::query(
+    let sql = format!(
         "update jobs set \
-             state = 'running', \
+             state = {running}, \
              attempts = attempts + 1, \
              leased_until = now() + make_interval(secs => $2), \
              lease_token = gen_random_uuid(), \
@@ -195,17 +204,19 @@ pub async fn claim(
                  jobs.serial_key is null \
                  or not exists ( \
                      select 1 from jobs running \
-                     where running.state = 'running' \
+                     where running.state = {running} \
                        and running.serial_key = jobs.serial_key \
                  ) \
                ) \
          returning id, workspace_id, kind, payload, attempts, max_attempts, lease_token",
-    )
-    .bind(&picked)
-    .bind(lease.as_secs_f64())
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(internal)?;
+        running = JobState::Running.quoted()
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(&picked)
+        .bind(lease.as_secs_f64())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal)?;
 
     tx.commit().await.map_err(internal)?;
 
@@ -222,15 +233,18 @@ pub async fn claim(
 /// finish the job out from under the pod now running it. Passing None skips
 /// the check, for callers closing a job they know nobody else can hold.
 pub async fn complete(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
-    let result = sqlx::query(
-        "update jobs set state = 'succeeded', leased_until = null, updated_at = now() \
-         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
-    )
-    .bind(id)
-    .bind(token)
-    .execute(pool)
-    .await
-    .map_err(internal)?;
+    let sql = format!(
+        "update jobs set state = {succeeded}, leased_until = null, updated_at = now() \
+         where id = $1 and state = {running} and ($2::uuid is null or lease_token = $2)",
+        running = JobState::Running.quoted(),
+        succeeded = JobState::Succeeded.quoted()
+    );
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(token)
+        .execute(pool)
+        .await
+        .map_err(internal)?;
 
     if result.rows_affected() == 0 {
         return Err(JobError::NotFound);
@@ -276,32 +290,31 @@ async fn record_failure(
     token: Option<Uuid>,
     for_good: bool,
 ) -> Result<(), JobError> {
-    let result = sqlx::query(
-        // A turn somebody asked to stop is never handed back to the queue,
-        // whatever went wrong with it. Retrying is the ordinary answer to a
-        // failure and the precise opposite of what was asked for here -- and
-        // a cut stream makes failure the *likely* outcome, so without this a
-        // stop puts the turn straight back on the queue to be stopped again,
-        // burning its attempts and its allowance on work nobody wants.
+    let sql = format!(
         "update jobs set \
              state = case \
-                 when cancel_requested_at is not null then 'cancelled' \
-                 when $5 or attempts >= max_attempts then 'failed' \
-                 else 'pending' end, \
+                 when cancel_requested_at is not null then {cancelled} \
+                 when $5 or attempts >= max_attempts then {failed} \
+                 else {pending} end, \
              last_error = $2, \
              leased_until = null, \
              run_after = now() + make_interval(secs => $3), \
              updated_at = now() \
-         where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4)",
-    )
-    .bind(id)
-    .bind(error)
-    .bind(backoff.as_secs_f64())
-    .bind(token)
-    .bind(for_good)
-    .execute(pool)
-    .await
-    .map_err(internal)?;
+         where id = $1 and state = {running} and ($4::uuid is null or lease_token = $4)",
+        pending = JobState::Pending.quoted(),
+        running = JobState::Running.quoted(),
+        failed = JobState::Failed.quoted(),
+        cancelled = JobState::Cancelled.quoted()
+    );
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(error)
+        .bind(backoff.as_secs_f64())
+        .bind(token)
+        .bind(for_good)
+        .execute(pool)
+        .await
+        .map_err(internal)?;
 
     if result.rows_affected() == 0 {
         return Err(JobError::NotFound);
@@ -335,12 +348,12 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Job, JobError> {
 /// the state is what stops a job id alone from being enough to write into a
 /// transcript.
 pub async fn is_running(pool: &PgPool, id: Uuid) -> Result<bool, JobError> {
-    let state: Option<String> = sqlx::query_scalar("select state from jobs where id = $1")
+    let state: Option<JobState> = sqlx::query_scalar("select state from jobs where id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await
         .map_err(internal)?;
-    Ok(state.as_deref() == Some("running"))
+    Ok(state == Some(JobState::Running))
 }
 
 /// The turn a session currently has in flight, if any.
@@ -363,30 +376,24 @@ pub async fn live_turn_for_session(
     workspace_id: Uuid,
     session_id: Uuid,
 ) -> Result<Option<Uuid>, JobError> {
-    sqlx::query_scalar(
-        // Running first, and only then the oldest queued one.
-        //
-        // A session can hold both: a follow-up sent while a turn streams is
-        // queued behind it, and job ids being time-ordered means the queued
-        // one is the *newer*. Taking the newest would therefore stop the turn
-        // nobody is watching while the one on screen kept generating -- and
-        // would throw away the follow-up's turn as a bonus.
-        //
-        // What somebody pressing stop means is the turn they can see, which is
-        // the one that is running.
+    let sql = format!(
         "select id from jobs \
           where kind = 'chat.turn' \
             and workspace_id = $1 \
             and (payload->>'session_id')::uuid = $2 \
-            and state in ('pending', 'running', 'parked') \
-          order by case state when 'running' then 0 when 'pending' then 1 else 2 end, id \
+            and state in {live} \
+          order by case state when {running} then 0 when {pending} then 1 else 2 end, id \
           limit 1",
-    )
-    .bind(workspace_id)
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)
+        live = super::sql_in(&JobState::LIVE),
+        running = JobState::Running.quoted(),
+        pending = JobState::Pending.quoted()
+    );
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(workspace_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)
 }
 
 /// What asking for a failed turn to run again achieved.
@@ -441,9 +448,9 @@ pub async fn turn_for_message(
 /// Only `failed`. A running turn must not be duplicated onto another runtime,
 /// and a turn that succeeded has a reply somebody may be reading.
 pub async fn requeue_failed(pool: &PgPool, id: Uuid) -> Result<Requeued, JobError> {
-    let updated: Option<String> = sqlx::query_scalar(
+    let sql = format!(
         "update jobs \
-            set state = 'pending', \
+            set state = {pending}, \
                 attempts = 0, \
                 last_error = null, \
                 lease_token = null, \
@@ -451,13 +458,16 @@ pub async fn requeue_failed(pool: &PgPool, id: Uuid) -> Result<Requeued, JobErro
                 cancel_requested_at = null, \
                 run_after = now(), \
                 updated_at = now() \
-          where id = $1 and state = 'failed' \
+          where id = $1 and state = {failed} \
           returning state",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+        pending = JobState::Pending.quoted(),
+        failed = JobState::Failed.quoted()
+    );
+    let updated: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
 
     if updated.is_some() {
         return Ok(Requeued::Queued);
@@ -506,25 +516,30 @@ pub enum Cancelled {
 /// runtime that takes the turn over afterwards learns about the cancel the
 /// same way the first one would have.
 pub async fn request_cancel(pool: &PgPool, id: Uuid) -> Result<Cancelled, JobError> {
-    let state: Option<String> = sqlx::query_scalar(
+    let sql = format!(
         "update jobs \
             set cancel_requested_at = coalesce(cancel_requested_at, now()), \
-                state = case when state in ('pending', 'parked') then 'cancelled' \
+                state = case when state in ({pending}, {parked}) then {cancelled} \
                              else state end, \
-                leased_until = case when state in ('pending', 'parked') then null \
+                leased_until = case when state in ({pending}, {parked}) then null \
                                     else leased_until end, \
                 updated_at = now() \
-          where id = $1 and state in ('pending', 'running', 'parked') \
+          where id = $1 and state in {live} \
       returning state",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+        live = super::sql_in(&JobState::LIVE),
+        pending = JobState::Pending.quoted(),
+        cancelled = JobState::Cancelled.quoted(),
+        parked = JobState::Parked.quoted()
+    );
+    let state: Option<JobState> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
 
-    Ok(match state.as_deref() {
-        Some("cancelled") => Cancelled::BeforeItRan,
-        Some("running") => Cancelled::WhileRunning,
+    Ok(match state {
+        Some(JobState::Cancelled) => Cancelled::BeforeItRan,
+        Some(JobState::Running) => Cancelled::WhileRunning,
         // Nothing matched the update, so it had already finished -- or never
         // existed, which from here is the same absence of work to stop.
         _ => Cancelled::AlreadyOver,
@@ -552,15 +567,18 @@ pub async fn cancel_requested(pool: &PgPool, id: Uuid) -> Result<bool, JobError>
 /// remain, and retrying a turn somebody stopped would be precisely the
 /// opposite of what they asked for.
 pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
-    let result = sqlx::query(
-        "update jobs set state = 'cancelled', leased_until = null, updated_at = now() \
-         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
-    )
-    .bind(id)
-    .bind(token)
-    .execute(pool)
-    .await
-    .map_err(internal)?;
+    let sql = format!(
+        "update jobs set state = {cancelled}, leased_until = null, updated_at = now() \
+         where id = $1 and state = {running} and ($2::uuid is null or lease_token = $2)",
+        running = JobState::Running.quoted(),
+        cancelled = JobState::Cancelled.quoted()
+    );
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(token)
+        .execute(pool)
+        .await
+        .map_err(internal)?;
 
     if result.rows_affected() == 0 {
         return Err(JobError::NotFound);
@@ -575,13 +593,16 @@ pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Res
 /// another pod, and the first pod's report would otherwise be written over
 /// the second's.
 pub async fn holds_lease(pool: &PgPool, id: Uuid, token: Uuid) -> Result<bool, JobError> {
-    let held: Option<bool> =
-        sqlx::query_scalar("select lease_token = $2 from jobs where id = $1 and state = 'running'")
-            .bind(id)
-            .bind(token)
-            .fetch_optional(pool)
-            .await
-            .map_err(internal)?;
+    let sql = format!(
+        "select lease_token = $2 from jobs where id = $1 and state = {running}",
+        running = JobState::Running.quoted()
+    );
+    let held: Option<bool> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(token)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
     Ok(held == Some(true))
 }
 
@@ -618,9 +639,9 @@ pub async fn release(
     max_releases: i32,
     token: Option<Uuid>,
 ) -> Result<Released, JobError> {
-    let state: Option<String> = sqlx::query_scalar(
+    let sql = format!(
         "update jobs set \
-             state = case when releases + 1 >= $3 then 'failed' else 'pending' end, \
+             state = case when releases + 1 >= $3 then {failed} else {pending} end, \
              releases = releases + 1, \
              attempts = greatest(attempts - 1, 0), \
              last_error = case when releases + 1 >= $3 \
@@ -628,19 +649,23 @@ pub async fn release(
              leased_until = null, \
              run_after = now() + make_interval(secs => $2), \
              updated_at = now() \
-         where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4) \
+         where id = $1 and state = {running} and ($4::uuid is null or lease_token = $4) \
          returning state",
-    )
-    .bind(id)
-    .bind(delay.as_secs_f64())
-    .bind(max_releases)
-    .bind(token)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+        pending = JobState::Pending.quoted(),
+        running = JobState::Running.quoted(),
+        failed = JobState::Failed.quoted()
+    );
+    let state: Option<JobState> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(delay.as_secs_f64())
+        .bind(max_releases)
+        .bind(token)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
 
-    match state.as_deref() {
-        Some("failed") => Ok(Released::GaveUp),
+    match state {
+        Some(JobState::Failed) => Ok(Released::GaveUp),
         Some(_) => Ok(Released::Queued),
         None => Err(JobError::NotFound),
     }
@@ -664,23 +689,26 @@ pub async fn release(
 /// `token` as for `complete`: only the holder of the current lease may park the
 /// job, or a pod whose lease lapsed would park work another pod is running.
 pub async fn park(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<Parked, JobError> {
-    let state: Option<String> = sqlx::query_scalar(
+    let sql = format!(
         "update jobs set \
-             state = 'parked', \
+             state = {parked}, \
              attempts = greatest(attempts - 1, 0), \
              leased_until = null, \
              lease_token = null, \
              updated_at = now() \
-         where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2) \
+         where id = $1 and state = {running} and ($2::uuid is null or lease_token = $2) \
          returning state",
-    )
-    .bind(id)
-    .bind(token)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
+        running = JobState::Running.quoted(),
+        parked = JobState::Parked.quoted()
+    );
+    let state: Option<JobState> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(token)
+        .fetch_optional(pool)
+        .await
+        .map_err(internal)?;
 
-    match state.as_deref() {
+    match state {
         Some(_) => Ok(Parked::Parked),
         // Not running, or somebody else's lease. Either way this caller is not
         // the one that may park it, and saying so beats reporting success.
@@ -736,24 +764,27 @@ where
     // Null-guarded rather than four statements: the columns are in the payload
     // rather than indexed separately, so none of these is a different plan --
     // unlike the events read, where the partial index made it one.
-    let resumed = sqlx::query(
+    let sql = format!(
         "update jobs set \
-             state = 'pending', \
+             state = {pending}, \
              run_after = now(), \
              last_error = null, \
              updated_at = now() \
-         where state = 'parked' \
+         where state = {parked} \
            and workspace_id = $1 \
            and ($2::uuid is null or (payload->>'agent_id')::uuid = $2) \
            and ($3::uuid is null or (payload->>'session_id')::uuid = $3)",
-    )
-    .bind(workspace_id)
-    .bind(agent_id)
-    .bind(session_id)
-    .execute(executor)
-    .await
-    .map_err(internal)?
-    .rows_affected();
+        pending = JobState::Pending.quoted(),
+        parked = JobState::Parked.quoted()
+    );
+    let resumed = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(workspace_id)
+        .bind(agent_id)
+        .bind(session_id)
+        .execute(executor)
+        .await
+        .map_err(internal)?
+        .rows_affected();
 
     Ok(resumed)
 }
@@ -804,29 +835,30 @@ where
 /// rather than retried -- those have nobody left to tell the user, so the
 /// caller has to.
 pub async fn reap_abandoned(pool: &PgPool) -> Result<(u64, Vec<Job>), JobError> {
-    let rows = sqlx::query(
-        // As in `fail`: a turn somebody asked to stop is not given back to the
-        // queue. Losing the pod running a cancelled turn is the one case where
-        // the stop would otherwise be undone by machinery that never heard
-        // about it.
+    let sql = format!(
         "update jobs set \
              state = case \
-                 when cancel_requested_at is not null then 'cancelled' \
-                 when attempts >= max_attempts then 'failed' \
-                 else 'pending' end, \
+                 when cancel_requested_at is not null then {cancelled} \
+                 when attempts >= max_attempts then {failed} \
+                 else {pending} end, \
              last_error = coalesce(last_error, 'lease expired'), \
              leased_until = null, \
              updated_at = now() \
-         where state = 'running' and leased_until < now() \
+         where state = {running} and leased_until < now() \
          returning id, workspace_id, kind, payload, attempts, max_attempts, state",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(internal)?;
+        pending = JobState::Pending.quoted(),
+        running = JobState::Running.quoted(),
+        failed = JobState::Failed.quoted(),
+        cancelled = JobState::Cancelled.quoted()
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .fetch_all(pool)
+        .await
+        .map_err(internal)?;
 
     let gave_up = rows
         .iter()
-        .filter(|r| r.get::<String, _>("state") == "failed")
+        .filter(|r| r.get::<JobState, _>("state") == JobState::Failed)
         .map(read_job)
         .collect();
     Ok((rows.len() as u64, gave_up))
@@ -851,17 +883,19 @@ pub async fn extend_lease(
     // the previous holder it still owns the job, and both go on to stream the
     // same turn into the same reply. Timing cannot separate them either, since
     // the new holder's lease is fresh.
-    let result = sqlx::query(
+    let sql = format!(
         "update jobs set leased_until = now() + make_interval(secs => $2), \
              updated_at = now() \
-         where id = $1 and state = 'running' and lease_token = $3",
-    )
-    .bind(id)
-    .bind(lease.as_secs_f64())
-    .bind(token)
-    .execute(pool)
-    .await
-    .map_err(internal)?;
+         where id = $1 and state = {running} and lease_token = $3",
+        running = JobState::Running.quoted()
+    );
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(id)
+        .bind(lease.as_secs_f64())
+        .bind(token)
+        .execute(pool)
+        .await
+        .map_err(internal)?;
 
     Ok(result.rows_affected() == 1)
 }
