@@ -19,7 +19,6 @@ use axum::http::StatusCode;
 use sqlx::Row;
 use uuid::Uuid;
 
-use outturn_core::auth::Authority;
 
 use super::router::{ApiError, ApiState};
 
@@ -48,19 +47,7 @@ async fn workspace_of(
     headers: &axum::http::HeaderMap,
     job_id: Uuid,
 ) -> Result<Uuid, ApiError> {
-    super::router::authorize(state, headers, Authority::WorkTake).await?;
-    let job = outturn_core::jobs::get(&state.pool, job_id)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, "no such turn".to_string()))?;
-    let lease = super::work::lease_from(headers)?;
-    if job.lease_token != Some(lease) {
-        return Err((
-            StatusCode::CONFLICT,
-            "that turn is not leased to this runtime".to_string(),
-        ));
-    }
-    let payload: super::worker::ChatTurnPayload = serde_json::from_value(job.payload.clone())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}")))?;
+    let (_, payload) = super::work::leased_turn(state, headers, job_id).await?;
     Ok(payload.workspace_id)
 }
 

@@ -543,19 +543,7 @@ pub async fn wait(
     headers: axum::http::HeaderMap,
     Json(input): Json<Wait>,
 ) -> Result<Json<Arranged>, ApiError> {
-    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
-    let job = jobs::get(&state.pool, input.job_id)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, "no such turn".to_string()))?;
-    let lease = super::work::lease_from(&headers)?;
-    if job.lease_token != Some(lease) {
-        return Err((
-            StatusCode::CONFLICT,
-            "that turn is not leased to this runtime".to_string(),
-        ));
-    }
-    let turn: super::worker::ChatTurnPayload = serde_json::from_value(job.payload.clone())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}")))?;
+    let (_, turn) = super::work::leased_turn(&state, &headers, input.job_id).await?;
     if turn.session_id != input.session_id {
         return Err((
             StatusCode::FORBIDDEN,

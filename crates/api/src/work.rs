@@ -91,6 +91,42 @@ pub(super) fn lease_from(headers: &axum::http::HeaderMap) -> Result<Uuid, ApiErr
         ))
 }
 
+/// The turn a runtime is speaking about, checked to be the one it holds.
+///
+/// Every endpoint a running turn reports through takes the same three
+/// things: the runtime tier's authority, the lease header, and a job id in
+/// the request. This is the one place they are put together, so the question
+/// "is this runtime the current holder of this job" has one answer.
+///
+/// The state is checked along with the token. A job that was reaped, failed
+/// or finished no longer carries a token, but a reader that compared tokens
+/// alone was taking a row's word for it -- and before the token was cleared
+/// on those transitions, a holder whose lease lapsed could go on raising
+/// approvals and arranging sleeps for a session another pod now ran.
+pub(super) async fn leased_turn(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    job_id: Uuid,
+) -> Result<(jobs::Job, super::worker::ChatTurnPayload), ApiError> {
+    super::router::authorize(state, headers, Authority::WorkTake).await?;
+    let lease = lease_from(headers)?;
+    let job = jobs::get(&state.pool, job_id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "no such turn".to_string()))?;
+    let held = jobs::holds_lease(&state.pool, job_id, lease)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !held {
+        return Err((
+            StatusCode::CONFLICT,
+            "that turn is not leased to this runtime".to_string(),
+        ));
+    }
+    let payload = serde_json::from_value(job.payload.clone())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}")))?;
+    Ok((job, payload))
+}
+
 /// Hands out one turn, or nothing.
 ///
 /// Claims inside the request rather than before it, so a turn is only ever
@@ -329,17 +365,7 @@ pub async fn refresh_token(
 ) -> Result<Json<Refreshed>, ApiError> {
     // The runtime tier and the lease, as every other report requires: the
     // shared key says only "a runtime", the lease says which turn is its.
-    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
-    let job = jobs::get(&state.pool, job_id)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, "no such turn".to_string()))?;
-    let lease = lease_from(&headers)?;
-    if job.lease_token != Some(lease) {
-        return Err((
-            StatusCode::CONFLICT,
-            "that turn is not leased to this runtime".to_string(),
-        ));
-    }
+    let (job, _) = leased_turn(&state, &headers, job_id).await?;
 
     let claims = state
         .auth
