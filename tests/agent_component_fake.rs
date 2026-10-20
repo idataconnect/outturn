@@ -1128,12 +1128,13 @@ async fn a_turn_reports_what_it_spent() {
         .await
         .expect("run");
 
-    // Two rounds at 11 prompt tokens each, of which 4 were cached: 7 billed
-    // at full rate per round. Folding the cache back in would overstate the
-    // bill, which is the mistake the split exists to prevent.
+    // Two rounds at 7 full-rate prompt tokens each, with 4 read from cache
+    // and 2 written beside them. The gateway already separated them, so the
+    // host takes the numbers as they are: subtracting the cache again is the
+    // mistake that under-billed every cached conversation.
     assert_eq!(
         cost.prompt_tokens, 14,
-        "cached tokens are not billed as fresh input"
+        "the prompt count is taken as the gateway defined it"
     );
     assert_eq!(cost.cache_read_tokens, 8);
     assert_eq!(cost.cache_write_tokens, 4);
@@ -1144,6 +1145,113 @@ async fn a_turn_reports_what_it_spent() {
     // Thinking is billed as output and reported apart, so it is inside the
     // completion total as well as recorded on its own.
     assert_eq!(cost.reasoning_tokens, 6);
+}
+
+/// The numbers the gateway sends for a cached Anthropic call are taken as
+/// they are. The gateway has already put Anthropic's counts into the one
+/// meaning -- 80 evaluated at full rate, 20 read from cache, 5 written, with
+/// the provider's own object riding beside them -- and the host that
+/// subtracted the cache from the prompt count a second time, on the OpenAI
+/// protocol's account, recorded this call as 60.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cached_anthropic_call_is_billed_for_what_it_evaluated() {
+    let gateway = FakeGateway::start(Behavior::ReplyCosting {
+        text: "Hello.".into(),
+        usage: serde_json::json!({
+            "prompt_tokens": 80,
+            "completion_tokens": 7,
+            "total_tokens": 112,
+            "prompt_tokens_details": { "cached_tokens": 20, "cache_creation_tokens": 5 },
+            "anthropic": {
+                "input_tokens": 80, "output_tokens": 7,
+                "cache_read_input_tokens": 20, "cache_creation_input_tokens": 5,
+            },
+        }),
+    })
+    .await;
+
+    let calls = Arc::new(Mutex::new(
+        Vec::<outturn::runtime::component::CallUsage>::new(),
+    ));
+    let mut opts = options(&gateway, None);
+    opts.on_usage = Some({
+        let calls = Arc::clone(&calls);
+        Arc::new(move |c: &outturn::runtime::component::CallUsage| {
+            calls.lock().expect("lock").push(c.clone())
+        })
+    });
+
+    let Finished { cost, .. } = runner()
+        .run(&component(), user("hi"), String::new(), opts)
+        .await
+        .expect("run");
+
+    assert_eq!(cost.prompt_tokens, 80, "the full-rate input, not 80 - 20");
+    assert_eq!(cost.cache_read_tokens, 20);
+    assert_eq!(cost.cache_write_tokens, 5);
+    assert_eq!(cost.completion_tokens, 7);
+
+    let calls = calls.lock().expect("lock");
+    let call = calls.first().expect("one call's cost was reported");
+    assert_eq!(call.usage.prompt_tokens, 80);
+    assert!(
+        !call.partial && !call.estimated,
+        "a finished, measured call"
+    );
+    assert_eq!(
+        call.provider_usage.as_ref().expect("the provider's object")["anthropic"]["cache_read_input_tokens"],
+        20,
+        "what rides to the ledger is the gateway's object, whole"
+    );
+}
+
+/// A stream cut before the provider said what it cost still costs something.
+///
+/// On the OpenAI protocol usage arrives only on the last chunk, which a cut
+/// stream never delivers, so a stop pressed mid-answer used to bill nothing
+/// -- and a row that bills nothing reads afterwards as a free turn. The host
+/// estimates instead, from what it sent and what arrived, and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_stream_without_a_cost_is_estimated_and_marked_so() {
+    let gateway = FakeGateway::start(Behavior::TruncateAfter {
+        text: "one two three four five".into(),
+        chunks: 2,
+    })
+    .await;
+
+    let calls = Arc::new(Mutex::new(
+        Vec::<outturn::runtime::component::CallUsage>::new(),
+    ));
+    let mut opts = options(&gateway, None);
+    opts.on_usage = Some({
+        let calls = Arc::clone(&calls);
+        Arc::new(move |c: &outturn::runtime::component::CallUsage| {
+            calls.lock().expect("lock").push(c.clone())
+        })
+    });
+
+    runner()
+        .run(&component(), user("hello"), String::new(), opts)
+        .await
+        .expect("run");
+
+    let calls = calls.lock().expect("lock");
+    let call = calls.first().expect("the cut call still reports a cost");
+    assert!(
+        call.estimated,
+        "nothing was reported, so the numbers are a guess"
+    );
+    assert!(call.partial, "and they are for a cut answer");
+    assert!(
+        call.provider_usage.is_none(),
+        "no provider figure is claimed"
+    );
+    // "one two " is eight characters: two tokens at four a token.
+    assert_eq!(call.usage.completion_tokens, 2);
+    assert!(
+        call.usage.prompt_tokens > 0,
+        "the prompt was sent and evaluated"
+    );
 }
 
 /// A tool's full result reaches the reader, and a cut-down one reaches the model.

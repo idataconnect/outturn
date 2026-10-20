@@ -359,40 +359,16 @@ pub fn anthropic_to_openai(
         signed_by: None,
     };
 
-    let finish_reason = match resp["stop_reason"].as_str() {
-        Some("end_turn") => Some("stop".to_string()),
-        Some("tool_use") => Some("tool_calls".to_string()),
-        Some("max_tokens") => Some("length".to_string()),
-        other => other.map(String::from),
-    };
+    // The same mapping the stream applies, so a refusal reads as one on
+    // either path. This path used to pass `refusal` and anything newer
+    // through in Anthropic's own words, and dropped the explanation.
+    let stop = stop_of(resp["stop_reason"].as_str(), &resp["stop_details"]);
 
-    // Anthropic reports cache reads and cache writes separately from input,
-    // and charges all three differently -- a write costs more than a fresh
-    // token, a read costs a fraction. `input_tokens` already excludes both,
-    // unlike the OpenAI protocol where cached tokens are folded into the
-    // prompt total, so nothing is subtracted here.
+    // The same conversion the stream applies, from the same counts.
     let usage = resp.get("usage").map(|u| {
-        let input = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-        let output = u["output_tokens"].as_u64().unwrap_or(0) as u32;
-        let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
-        let cache_write = u["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32;
-        Usage {
-            prompt_tokens: input,
-            completion_tokens: output,
-            total_tokens: input + output + cache_read + cache_write,
-            prompt_tokens_details: Some(PromptTokensDetails {
-                cached_tokens: cache_read,
-                cache_creation_tokens: cache_write,
-                extra: Default::default(),
-            }),
-            // Carried in the shape the OpenAI protocol uses, since that is the
-            // canonical form everything downstream reads.
-            completion_tokens_details: None,
-            // And the original beside it, because the translation above is
-            // lossy by design: Anthropic prices cache writes by TTL and the
-            // canonical form has one number for them.
-            extra: [("anthropic".to_string(), u.clone())].into_iter().collect(),
-        }
+        let mut counts = PartialUsage::default();
+        counts.absorb(u, false);
+        counts.to_usage()
     });
 
     Ok(ChatCompletionResponse {
@@ -403,7 +379,7 @@ pub fn anthropic_to_openai(
         choices: vec![Choice {
             index: 0,
             message,
-            finish_reason,
+            finish_reason: Some(stop.finish_reason),
             parts,
         }],
         usage,
@@ -954,11 +930,15 @@ impl PartialUsage {
         self.input_tokens.is_some() || self.output_tokens.is_some()
     }
 
-    /// The canonical form, for a chunk.
+    /// The canonical form, which the whole-response path builds too: the
+    /// one conversion of Anthropic's counts, so the two paths cannot drift.
     ///
-    /// Anthropic reports cache reads and writes *beside* the input count
-    /// rather than inside it, the opposite of the OpenAI protocol, so nothing
-    /// is subtracted here and the total adds all four.
+    /// Anthropic reports cache reads and cache writes *beside* the input
+    /// count rather than inside it, and charges all three differently -- a
+    /// write costs more than a fresh token, a read costs a fraction. Its
+    /// `input_tokens` is therefore already the full-rate count the canonical
+    /// `prompt_tokens` means (see the definition on `Usage`), so nothing is
+    /// subtracted here and the total adds all four.
     pub fn to_usage(&self) -> Usage {
         let input = self.input_tokens.unwrap_or(0);
         let output = self.output_tokens.unwrap_or(0);
@@ -973,7 +953,12 @@ impl PartialUsage {
                 cache_creation_tokens: cache_write,
                 extra: Default::default(),
             }),
+            // Carried in the shape the OpenAI protocol uses, since that is the
+            // canonical form everything downstream reads.
             completion_tokens_details: None,
+            // And the original beside it, because the translation above is
+            // lossy by design: Anthropic prices cache writes by TTL and the
+            // canonical form has one number for them.
             extra: [(
                 "anthropic".to_string(),
                 serde_json::Value::Object(self.raw.clone()),
@@ -1176,22 +1161,22 @@ impl AnthropicStream {
                 // `delta`. The split is Anthropic's, and a reader that looks
                 // for either in the other's place finds nothing.
                 self.usage.absorb(&event["usage"], false);
-                let stop_reason = event["delta"]["stop_reason"].as_str();
-                let reason = stop_reason.map(finish_reason_of).unwrap_or("stop");
-                self.finish_reason = Some(reason.to_string());
-                let refused = stop_reason == Some("refusal");
-                let details = &event["delta"]["stop_details"];
-                let refusal = refused.then(|| refusal_of(details));
-                let refusal_category = refused
-                    .then(|| details["category"].as_str().map(str::to_string))
-                    .flatten();
+                let stop = stop_of(
+                    event["delta"]["stop_reason"].as_str(),
+                    &event["delta"]["stop_details"],
+                );
+                self.finish_reason = Some(stop.finish_reason.clone());
+                let (refusal, refusal_category) = match stop.refusal {
+                    Some((reason, category)) => (Some(reason), category),
+                    None => (None, None),
+                };
                 Some(self.chunk(
                     Delta {
                         refusal,
                         refusal_category,
                         ..Delta::default()
                     },
-                    Some(reason.to_string()),
+                    Some(stop.finish_reason),
                 ))
             }
 
@@ -1243,10 +1228,36 @@ impl AnthropicStream {
     }
 }
 
-/// Anthropic's stop reasons, in the OpenAI protocol's vocabulary.
+/// How a reply ended, read once for both paths.
+struct Stop {
+    /// In the OpenAI protocol's vocabulary.
+    finish_reason: String,
+    /// What a person is told and which category the provider filed it under,
+    /// where the provider declined.
+    refusal: Option<(String, Option<String>)>,
+}
+
+/// Anthropic's stop reason and details, in the OpenAI protocol's terms.
 ///
-/// An unknown reason becomes "stop" rather than an error: a provider adding
-/// one should not fail a turn that otherwise succeeded.
+/// The whole response carries them at its top level and the stream carries
+/// them under `message_delta`'s `delta`; the mapping from there is the same,
+/// and was once written twice, disagreeing on what a refusal became.
+fn stop_of(stop_reason: Option<&str>, details: &serde_json::Value) -> Stop {
+    let refused = stop_reason == Some("refusal");
+    Stop {
+        finish_reason: stop_reason
+            .map(finish_reason_of)
+            .unwrap_or("stop")
+            .to_string(),
+        refusal: refused.then(|| {
+            (
+                refusal_of(details),
+                details["category"].as_str().map(str::to_string),
+            )
+        }),
+    }
+}
+
 /// What a person is told when the provider declined: the explanation's first
 /// sentence, which says what was objected to. The rest is addressed to
 /// whoever integrated the API, so it is logged rather than shown, with the
@@ -1264,12 +1275,67 @@ fn refusal_of(details: &serde_json::Value) -> String {
     }
 }
 
+/// Anthropic's stop reasons, in the OpenAI protocol's vocabulary.
+///
+/// An unknown reason becomes "stop" rather than an error: a provider adding
+/// one should not fail a turn that otherwise succeeded.
 fn finish_reason_of(anthropic: &str) -> &'static str {
     match anthropic {
         "tool_use" => "tool_calls",
         "max_tokens" => "length",
         "refusal" => "content_filter",
         _ => "stop",
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    /// The same facts every protocol's test states: 80 fresh, 20 read from
+    /// cache, 5 written. Anthropic says 80 and lists the rest beside it, and
+    /// the canonical numbers are the same ones the stream produces.
+    #[test]
+    fn a_whole_response_counts_its_cache_the_way_the_stream_does() {
+        let resp = anthropic_to_openai(&serde_json::json!({
+            "id": "m", "model": "claude",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 80, "output_tokens": 7,
+                "cache_read_input_tokens": 20, "cache_creation_input_tokens": 5,
+            },
+        }))
+        .expect("translate");
+        let usage = resp.usage.expect("usage");
+        assert_eq!(usage.prompt_tokens, 80, "full-rate input only");
+        let details = usage.prompt_tokens_details.expect("cache detail");
+        assert_eq!(details.cached_tokens, 20);
+        assert_eq!(details.cache_creation_tokens, 5);
+        assert_eq!(usage.total_tokens, 112);
+        assert_eq!(
+            usage.extra["anthropic"]["cache_read_input_tokens"], 20,
+            "the provider's own object rides through"
+        );
+    }
+
+    /// A refusal is a content filter on this path as on the stream, and an
+    /// unknown reason is an ordinary stop; neither used to be.
+    #[test]
+    fn stop_reasons_match_the_streams() {
+        let finish = |reason: &str| {
+            anthropic_to_openai(&serde_json::json!({
+                "content": [], "stop_reason": reason,
+                "stop_details": {"explanation": "No. Really not.", "category": "x"},
+            }))
+            .expect("translate")
+            .choices[0]
+                .finish_reason
+                .clone()
+        };
+        assert_eq!(finish("refusal").as_deref(), Some("content_filter"));
+        assert_eq!(finish("tool_use").as_deref(), Some("tool_calls"));
+        assert_eq!(finish("something_new").as_deref(), Some("stop"));
     }
 }
 
@@ -1486,6 +1552,9 @@ mod stream_tests {
     /// Cache tokens sit beside the input count rather than inside it, so the
     /// prompt is the sum. Subtracting -- which is right for Gemini and for
     /// the OpenAI protocol -- would undercount every cached conversation.
+    ///
+    /// The same facts every protocol's test states: 80 fresh, 20 read from
+    /// cache, 5 written.
     #[test]
     fn cache_tokens_are_added_to_the_input_count_not_taken_out_of_it() {
         let mut s = AnthropicStream::new();
@@ -2236,7 +2305,6 @@ pub fn gemini_to_openai(
 ) -> Result<ChatCompletionResponse, TranslateError> {
     let candidate = &resp["candidates"][0];
 
-    let mut text = String::new();
     let mut parts: Vec<Part> = Vec::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
@@ -2246,10 +2314,6 @@ pub fn gemini_to_openai(
         .flatten()
     {
         if let Some(t) = part["text"].as_str() {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(t);
             parts.push(Part::Text {
                 text: t.to_string(),
             });
@@ -2281,6 +2345,11 @@ pub fn gemini_to_openai(
     let finish_reason = candidate["finishReason"]
         .as_str()
         .map(|r| gemini_finish_reason(r, !tool_calls.is_empty()));
+
+    // Joined as the stream joins them, with nothing between: several text
+    // parts are one reply arriving in pieces, and this path once put a line
+    // break between them that the streamed copy never had.
+    let (text, _) = Part::flatten(&parts);
 
     Ok(ChatCompletionResponse {
         id: "gemini".to_string(),
@@ -2465,6 +2534,26 @@ mod gemini_tests {
     /// tokens are real and are *not* inside `candidatesTokenCount` (16 + 50 +
     /// 28 = 94, the total Google reports), and a service tier arrives in the
     /// usage object rather than beside the model.
+    /// Several text parts are one reply in pieces, joined on both paths
+    /// with nothing between them.
+    #[test]
+    fn text_parts_are_joined_the_way_the_stream_joins_them() {
+        let parts = serde_json::json!({"parts": [{"text": "one "}, {"text": "two"}]});
+        let resp = gemini_to_openai(&serde_json::json!({
+            "candidates": [{"content": parts, "finishReason": "STOP"}],
+        }))
+        .expect("translate");
+        let MessageContent::Text(whole) = &resp.choices[0].message.content else {
+            panic!("text");
+        };
+        let mut stream = GeminiStream::new("m".into());
+        let chunk = stream
+            .event(&serde_json::json!({"candidates": [{"content": parts}]}))
+            .expect("chunk");
+        assert_eq!(whole, "one two");
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("one two"));
+    }
+
     #[test]
     fn a_real_gemini_usage_object_adds_up() {
         let real = serde_json::json!({

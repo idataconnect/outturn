@@ -148,6 +148,8 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
                 reasoning_tokens: call.usage.reasoning_tokens,
                 provider_usage: call.provider_usage.clone(),
                 service_tier: call.service_tier.clone(),
+                partial: call.partial,
+                estimated: call.estimated,
             });
         })
     };

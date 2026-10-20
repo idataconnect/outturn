@@ -37,6 +37,12 @@ pub enum Behavior {
     Reply(String),
     /// Stream this text, then decline to go on, saying why.
     Refuse { text: String, why: String },
+    /// Stream this text and end it with the given usage object, as the
+    /// gateway would have translated it from some provider.
+    ReplyCosting {
+        text: String,
+        usage: serde_json::Value,
+    },
     /// Stream some text, then drop the connection mid-generation.
     TruncateAfter { text: String, chunks: usize },
     /// Fail the request outright.
@@ -217,13 +223,14 @@ fn chunk_json(text: &str, finish: Option<&str>) -> String {
     // Providers report usage on the final chunk, so the fake does too --
     // otherwise nothing here would exercise the accounting.
     if finish.is_some() {
-        // With the breakdown, so the split is exercised rather than assumed:
-        // this protocol folds cached tokens into the prompt total, and the
-        // reader is expected to take them back out.
+        // In the gateway's meaning, which is what this stands in for: the
+        // prompt count is the full-rate input alone, with the cache beside
+        // it. A reader that subtracts the cache again, as it would from the
+        // raw OpenAI protocol, comes up short here.
         chunk["usage"] = serde_json::json!({
-            "prompt_tokens": 11,
+            "prompt_tokens": 7,
             "completion_tokens": 7,
-            "total_tokens": 18,
+            "total_tokens": 20,
             "prompt_tokens_details": { "cached_tokens": 4, "cache_creation_tokens": 2 },
             "completion_tokens_details": { "reasoning_tokens": 3 },
         });
@@ -443,6 +450,18 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behavior::ReplyCosting { text, usage } => {
+            let mut lines: Vec<String> = chunk_text(&text)
+                .iter()
+                .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                .collect();
+            let mut last: serde_json::Value =
+                serde_json::from_str(&chunk_json("", Some("stop"))).expect("chunk");
+            last["usage"] = usage;
+            lines.push(format!("{last}\n"));
+            ndjson(lines)
+        }
+
         Behavior::Refuse { text, why } => {
             let mut lines: Vec<String> = chunk_text(&text)
                 .iter()
@@ -478,6 +497,7 @@ async fn completions(
 
     let text = match behavior {
         Behavior::Reply(text) => text,
+        Behavior::ReplyCosting { text, .. } => text,
         Behavior::Refuse { text, .. } => text,
         Behavior::ToolThenReply { reply, .. } => reply,
         Behavior::LoadThenToolThenReply { reply, .. } => reply,

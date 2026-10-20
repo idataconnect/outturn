@@ -259,6 +259,17 @@ pub enum ExecuteEvent {
         provider_usage: Option<serde_json::Value>,
         #[serde(default)]
         service_tier: Option<String>,
+        /// The call was cut short -- a stop, a hold, a dropped upstream --
+        /// so whatever was reported is for a partial answer. False from an
+        /// older runtime, which could not tell.
+        #[serde(default)]
+        partial: bool,
+        /// The counts are the runtime's arithmetic, not a provider's figure:
+        /// the stream was cut before the provider said what it cost, on a
+        /// protocol that says so only at the end. Marked so a bill never
+        /// takes an estimate for a measurement.
+        #[serde(default)]
+        estimated: bool,
     },
     /// Generation finished; the reply is complete, and this is what it cost.
     Done {

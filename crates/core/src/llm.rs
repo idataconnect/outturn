@@ -195,10 +195,28 @@ impl Part {
     }
 }
 
+/// What one model call cost, in the canonical shape every tier reads.
+///
+/// The shape is the OpenAI protocol's; the meaning is this crate's, and it is
+/// defined here and nowhere else. `prompt_tokens` is the input billed at full
+/// rate: what the model evaluated afresh, with cache reads and cache writes
+/// *out* of it and reported beside it in `prompt_tokens_details`. The
+/// providers disagree on this -- the OpenAI protocol and Gemini fold cached
+/// tokens into the prompt total, Anthropic reports them apart -- and the
+/// gateway settles the disagreement when it translates, for every protocol
+/// including the one whose shape this already is. Nothing past the gateway
+/// adds or subtracts anything. Two tiers each applying a protocol's own
+/// convention is how a cached conversation came to be billed at a fraction of
+/// its cost: subtracted once where Anthropic had already excluded it, and once
+/// more where the runtime assumed OpenAI's folding.
+///
+/// `total_tokens` is every token the call touched, cached or not.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
+    /// Input evaluated at full rate. Never includes a cached token.
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Prompt, completion, cache reads and cache writes together.
     pub total_tokens: u32,
     /// Carried through rather than dropped: the breakdown is where the price
     /// differences live, and a field this type does not know about is a field
@@ -218,6 +236,8 @@ pub struct Usage {
 /// How much of the prompt was served from cache, which is billed lower.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptTokensDetails {
+    /// Input read from a cache. Beside `prompt_tokens`, never inside it: see
+    /// the definition on [`Usage`].
     #[serde(default)]
     pub cached_tokens: u32,
     /// Input written into a cache. Not part of the OpenAI protocol, which
