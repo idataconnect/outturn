@@ -232,6 +232,26 @@ The lease token travels with the assignment and comes back in `x-outturn-lease`
 on every report and hand-back, and completing, failing and releasing all check
 it -- so a pod whose lease lapsed cannot write over the pod that now holds it.
 
+Renewal has to cover the whole of the claim, not just the part a runtime
+reports. The API prepares a turn after claiming it and before handing it out,
+and preparing can summarize the conversation, which is a model call that takes
+as long as a model takes. With the heartbeat starting only at the first report,
+a summary slower than the lease let the reaper hand the turn to a second pod,
+which summarized it again, while the first went on to hand out an assignment
+under a dead lease -- so the runtime ran the whole turn and was refused when it
+reported. The heartbeat now starts the moment a claim succeeds and stops on
+every way out, and the summary call has a deadline, since a gateway that never
+answered would otherwise hold the turn, and the poll waiting for it, for ever.
+
+And a token that stopped meaning anything has to stop working everywhere. A
+job keeps its token only while `running`; reaping, failing, releasing,
+parking and finishing all clear it. The endpoints a running turn reports
+through -- approvals raised, sleeps arranged, invocation keys claimed, tokens
+refreshed -- ask one helper whether the caller holds the current lease, and
+that helper checks the state along with the token. Comparing tokens alone was
+how a pod that had been reaped could still raise approvals and park a session
+another pod was running.
+
 **A claim must skip keys that are already running before it applies its
 limit.** Runtimes ask for one turn at a time. If the candidate query took the
 top pending row and only then asked whether its session was busy, a session

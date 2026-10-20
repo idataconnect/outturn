@@ -46,6 +46,10 @@ pub enum Behavior {
     MalformedReply,
     /// Hold the request open without responding, to exercise timeouts.
     Hang,
+    /// Say that a request arrived, hold it until the test says so, then
+    /// answer with this text. For a test that has to do something *while*
+    /// the model is being waited on, and must not guess at when that is.
+    HoldThenReply(String),
     /// Ask for a tool, and report a message the user sent mid-turn, then
     /// answer. Stands in for the gateway noticing pending input.
     ToolThenSteer {
@@ -119,6 +123,9 @@ struct GatewayInner {
     egress: Mutex<Option<(u16, String)>>,
     /// Requests the agent asked the gateway to make.
     fetched: Mutex<Vec<serde_json::Value>>,
+    /// Signaled when a held request arrives, and what lets it go.
+    arrived: tokio::sync::Notify,
+    released: tokio::sync::Notify,
 }
 
 impl FakeGateway {
@@ -130,6 +137,8 @@ impl FakeGateway {
             seen: Mutex::new(Vec::new()),
             egress: Mutex::new(None),
             fetched: Mutex::new(Vec::new()),
+            arrived: tokio::sync::Notify::new(),
+            released: tokio::sync::Notify::new(),
         });
 
         let app = Router::new()
@@ -157,6 +166,17 @@ impl FakeGateway {
     /// Changes what the next request receives.
     pub fn set(&self, behavior: Behavior) {
         *self.state.behavior.lock().unwrap() = behavior;
+    }
+
+    /// Resolves once a held request has arrived. A permit is kept, so this
+    /// returns at once when it arrived before anyone was waiting.
+    pub async fn held_request_arrived(&self) {
+        self.state.arrived.notified().await;
+    }
+
+    /// Lets a held request be answered.
+    pub fn release_held(&self) {
+        self.state.released.notify_one();
     }
 
     /// Requests received so far.
@@ -433,6 +453,16 @@ async fn completions_stream(
             std::future::pending::<()>().await;
             unreachable!()
         }
+        Behavior::HoldThenReply(text) => {
+            state.arrived.notify_one();
+            state.released.notified().await;
+            let mut lines: Vec<String> = chunk_text(&text)
+                .iter()
+                .map(|piece| format!("{}\n", chunk_json(piece, None)))
+                .collect();
+            lines.push(format!("{}\n", chunk_json("", Some("stop"))));
+            ndjson(lines)
+        }
 
         Behavior::Reply(text) => {
             let mut lines: Vec<String> = chunk_text(&text)
@@ -491,6 +521,11 @@ async fn completions(
         Behavior::Hang => {
             std::future::pending::<()>().await;
             unreachable!()
+        }
+        Behavior::HoldThenReply(text) => {
+            state.arrived.notify_one();
+            state.released.notified().await;
+            text
         }
     };
 

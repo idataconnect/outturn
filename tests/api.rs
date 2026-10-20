@@ -86,6 +86,16 @@ async fn harness() -> Harness {
 /// all is the proof, and one showing a poll answers on timeout gives it a
 /// short one instead of sitting through the real 25 seconds.
 async fn harness_parking_for(park: std::time::Duration) -> Harness {
+    harness_with(park, None).await
+}
+
+/// A harness whose worker has a gateway to summarize through, for a test
+/// about what preparing a turn does while it waits on a model.
+async fn harness_with_gateway(gateway_url: &str) -> Harness {
+    harness_with(outturn::api::LONG_POLL, Some(gateway_url.to_string())).await
+}
+
+async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) -> Harness {
     // A private schema per test, so tests do not see each other's rows and can
     // run in parallel.
     let db = common::TestDb::new().await;
@@ -189,10 +199,13 @@ async fn harness_parking_for(park: std::time::Duration) -> Harness {
         inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
-        // No gateway, so no summarizing: the trim underneath carries the
-        // whole of what these tests exercise.
-        minter: None,
-        gateway_url: None,
+        // Without a gateway there is no summarizing, and the trim underneath
+        // carries the whole of what most tests exercise. The few about what
+        // happens while a summary is written point this at a fake one.
+        minter: gateway_url
+            .as_ref()
+            .map(|_| Arc::new(TokenMinter::new(&seed).expect("minter"))),
+        gateway_url,
     }));
 
     Harness {
@@ -9064,6 +9077,144 @@ async fn ask_to_wait(h: &Harness, lease: Uuid, body: Value) -> (StatusCode, Stri
     h.send(req).await
 }
 
+/// A lease that was reaped is refused on every channel a running turn
+/// reports through, not just at report.
+///
+/// Reaping returned the job to the queue and left its token in the row, and
+/// the endpoints for approvals, sleeps, invocation keys and token refresh
+/// compared tokens without asking whether the job was still running -- so a
+/// pod whose turn had been taken away could go on parking the session and
+/// filling its approvers' queue, and once a second pod claimed the turn,
+/// two pods spoke for it.
+#[tokio::test]
+async fn a_reaped_turn_s_lease_is_refused_on_every_side_channel() {
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (agent, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    // Claimed with a lease already over, the way a pod that stopped renewing
+    // looks to the reaper -- no waiting for one to lapse.
+    outturn::jobs::enqueue(
+        &h.db.pool,
+        workspace,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": workspace, "session_id": session,
+            "agent_id": agent, "message_id": Uuid::now_v7(),
+        }),
+        None,
+        Some(&session.to_string()),
+        outturn::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    let claimed = outturn::jobs::claim(
+        &h.db.pool,
+        &["chat.turn"],
+        1,
+        std::time::Duration::ZERO,
+    )
+    .await
+    .expect("claim");
+    let job = claimed[0].job.id;
+    let stale = claimed[0].job.lease_token.expect("lease");
+    let (reaped, _) = outturn::jobs::reap_abandoned(&h.db.pool).await.unwrap();
+    assert_eq!(reaped, 1);
+
+    let side_channels = |lease: Uuid| {
+        let h = &h;
+        async move {
+            let send = |uri: String, body: Value| async move {
+                let req = Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+                    .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request");
+                h.send(req).await
+            };
+            vec![
+                (
+                    "gated",
+                    send(
+                        "/v1/work/gated".into(),
+                        serde_json::json!({
+                            "session_id": session, "job_id": job, "method": "POST",
+                            "host": "api.example.com", "path": "/charges", "body": "{}",
+                        }),
+                    )
+                    .await,
+                ),
+                (
+                    "wait",
+                    send(
+                        "/v1/work/wait".into(),
+                        serde_json::json!({
+                            "job_id": job, "session_id": session, "kind": "sleep",
+                            "seconds": 600, "reason": "Waiting",
+                        }),
+                    )
+                    .await,
+                ),
+                (
+                    "invocations",
+                    send(
+                        "/v1/work/invocations/claim".into(),
+                        serde_json::json!({ "job_id": job, "key": "k" }),
+                    )
+                    .await,
+                ),
+                (
+                    "token",
+                    send(
+                        format!("/v1/work/{job}/token"),
+                        serde_json::json!({ "gateway_token": "stale" }),
+                    )
+                    .await,
+                ),
+            ]
+        }
+    };
+
+    // Reaped and back in the queue: nobody holds it, least of all the pod
+    // that let it lapse.
+    for (name, (status, body)) in side_channels(stale).await {
+        assert_eq!(status, StatusCode::CONFLICT, "{name} took a reaped lease: {body}");
+    }
+
+    // Claimed again by another pod: the old token is still refused, and the
+    // new holder is the one the conversation now listens to.
+    let again = outturn::jobs::claim(
+        &h.db.pool,
+        &["chat.turn"],
+        1,
+        std::time::Duration::from_secs(45),
+    )
+    .await
+    .expect("claim");
+    assert_eq!(again[0].job.id, job);
+    let current = again[0].job.lease_token.expect("lease");
+    assert_ne!(current, stale);
+    for (name, (status, body)) in side_channels(stale).await {
+        assert_eq!(status, StatusCode::CONFLICT, "{name} took a replaced lease: {body}");
+    }
+    let (status, body) = ask_to_wait(
+        &h,
+        current,
+        serde_json::json!({
+            "job_id": job, "session_id": session, "kind": "sleep",
+            "seconds": 600, "reason": "Waiting for the deposit to clear",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// Puts a conversation to sleep for ten minutes, the turn that asked finished.
 async fn asleep(h: &Harness, workspace: Uuid, agent: Uuid, session: Uuid) {
     let (job, lease) = a_running_turn(h, workspace, agent, session).await;
@@ -10825,6 +10976,163 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
     let (third, _) = turn(running).await;
     assert!(third.contains("Say two."), "{third}");
     assert!(third.contains("other-model"), "{third}");
+}
+
+/// A turn's lease is renewed while its summary is being written.
+///
+/// Preparing a turn can summarize the conversation, which is a model call
+/// that takes as long as the model takes, and the lease is deliberately
+/// shorter than a model is allowed to be. With renewal starting only at the
+/// runtime's first report, a summary slower than the lease let the reaper
+/// hand the turn to a second pod -- which summarized it again -- while this
+/// one handed out an assignment under a dead lease, and the runtime ran the
+/// whole turn to be refused at report.
+///
+/// The gateway says when the summary request reaches it, so the lease is
+/// made to look lapsed at a moment the turn is known to be mid-summary rather
+/// than at a guess. Renewal is then waited for, not timed.
+#[tokio::test]
+async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
+    use common::fake_gateway::{Behavior, FakeGateway};
+
+    let gateway = FakeGateway::start(Behavior::HoldThenReply("Earlier: hellos.".into())).await;
+    let h = harness_with_gateway(&gateway.url).await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let runtime = h.runtime_token(acme);
+    let json = |body: &str| serde_json::from_str::<Value>(body).unwrap();
+
+    let (_, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"},"system_prompt":"Be brief."}"#,
+        )
+        .await;
+    let agent = json(&body)["id"].as_str().unwrap().to_string();
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent}","title":""}}"#),
+        )
+        .await;
+    let session = json(&body)["id"].as_str().unwrap().to_string();
+
+    let say = |content: &'static str| {
+        let h = &h;
+        let admin = admin.clone();
+        let session = session.clone();
+        async move {
+            let (status, body) = h
+                .post(
+                    &format!("/v1/agent-sessions/{session}/messages"),
+                    Some(&admin),
+                    &serde_json::json!({ "content": content }).to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        }
+    };
+    // Enough turns that a summary has something to replace: the boundary
+    // keeps a tail of recent messages and summarizes only what is before it.
+    for _ in 0..outturn::api::chat::summarize::TAIL_MESSAGES {
+        say("Hello again. Here is another line of conversation, long enough that \
+             a few turns of it outgrow the smallest budget a model may be given.")
+        .await;
+        let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+        assert_eq!(status, StatusCode::OK, "no work: {body}");
+        let assignment = json(&body);
+        let job = assignment["job_id"].as_str().unwrap();
+        let lease = assignment["lease_token"].as_str().unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/work/{job}/events"))
+            .header("authorization", format!("Bearer {runtime}"))
+            .header(outturn::api::work::LEASE_HEADER, lease)
+            .body(Body::from(
+                "{\"kind\":\"done\",\"content\":\"ok\",\"prompt_tokens\":1,\"completion_tokens\":1}\n",
+            ))
+            .unwrap();
+        assert_eq!(h.send(req).await.0, StatusCode::NO_CONTENT);
+    }
+    assert!(
+        gateway.requests().is_empty(),
+        "nothing should have been summarized under the default budget"
+    );
+
+    // The smallest budget allowed, which the conversation above is well
+    // over, so the next turn compacts.
+    let (status, body) = send_as(
+        &h,
+        "PUT",
+        "/v1/settings/context_budget?model=01a00000-0000-7000-8000-000000000002",
+        &admin,
+        r#"{"value": 1000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    say("one more").await;
+
+    // Taking the turn stalls inside the summary, which the gateway holds.
+    let take = h.post("/v1/work", Some(&runtime), "{}");
+    tokio::pin!(take);
+    tokio::select! {
+        _ = &mut take => panic!("the turn was handed out before its summary was written"),
+        _ = gateway.held_request_arrived() => {}
+    }
+
+    // Mid-summary, the lease is made to look as though it has run out. The
+    // heartbeat renews from a spawned task, so it goes on without the poll
+    // above being driven; renewal is waited for rather than timed, and
+    // never comes if there is no heartbeat.
+    let (job, leased_until): (Uuid, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("select id, leased_until from jobs where kind = 'chat.turn' and state = 'running'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("the turn being prepared");
+    sqlx::query("update jobs set leased_until = now() - interval '1 second' where id = $1")
+        .bind(job)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let renewed = async {
+        loop {
+            let now_until: chrono::DateTime<chrono::Utc> =
+                sqlx::query_scalar("select leased_until from jobs where id = $1")
+                    .bind(job)
+                    .fetch_one(&h.db.pool)
+                    .await
+                    .unwrap();
+            if now_until >= leased_until {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    // A bound no working heartbeat reaches, so a missing one fails rather
+    // than hangs.
+    tokio::time::timeout(outturn::jobs::LEASE_HEARTBEAT * 10, renewed)
+        .await
+        .expect("the lease was not renewed while the summary was being written");
+
+    // Renewed, so the reaper leaves it alone and the summary is written once.
+    let (reaped, _) = outturn::jobs::reap_abandoned(&h.db.pool).await.unwrap();
+    assert_eq!(reaped, 0, "a turn being prepared was reaped out from under its pod");
+
+    gateway.release_held();
+    let (status, body) = take.await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assignment = json(&body);
+    assert_eq!(assignment["job_id"].as_str().unwrap(), job.to_string());
+    let lease: Uuid = assignment["lease_token"].as_str().unwrap().parse().unwrap();
+    assert!(
+        outturn::jobs::holds_lease(&h.db.pool, job, lease).await.unwrap(),
+        "the assignment was handed out under a lease that is not current"
+    );
+    assert_eq!(gateway.requests().len(), 1, "the conversation was summarized more than once");
 }
 
 /// Searching the list narrows it by title, ignoring case and matching part of
