@@ -1,6 +1,37 @@
 use super::types::*;
 use outturn_core::facts::ModelFacts;
 
+/// An image URL as the Messages API takes it.
+///
+/// The chat-completions protocol carries an inline image as a `data:` URL,
+/// which is how the runtime sends what an agent asks about; see
+/// `outturn_core::vision`. Anthropic has no URL type for those -- a data URL
+/// sent as a `url` source is refused as not fetchable -- so it is unpacked
+/// into the base64 source it already is. Anything else is a URL the provider
+/// fetches itself.
+fn anthropic_image(url: &str) -> serde_json::Value {
+    match data_url(url) {
+        Some((media_type, data)) => serde_json::json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data}
+        }),
+        None => serde_json::json!({
+            "type": "image",
+            "source": {"type": "url", "url": url}
+        }),
+    }
+}
+
+/// The media type and base64 payload of a `data:` URL, where that is what
+/// `url` is. Only the base64 form is recognized: it is the one both this
+/// protocol's image part and every image a model is shown use.
+fn data_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (header, data) = rest.split_once(',')?;
+    let media_type = header.strip_suffix(";base64")?;
+    Some((media_type, data))
+}
+
 /// Convert OpenAI-format request to Anthropic Messages API format.
 pub fn openai_to_anthropic(
     req: &ChatCompletionRequest,
@@ -42,10 +73,7 @@ pub fn openai_to_anthropic(
                                     serde_json::json!({"type": "text", "text": text})
                                 }
                                 ContentPart::ImageUrl { image_url } => {
-                                    serde_json::json!({
-                                        "type": "image",
-                                        "source": {"type": "url", "url": image_url.url}
-                                    })
+                                    anthropic_image(&image_url.url)
                                 }
                             })
                             .collect();
@@ -388,6 +416,66 @@ pub struct TranslateError(pub String);
 impl std::fmt::Display for TranslateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    fn asked_with(url: &str) -> ChatCompletionRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]}],
+        }))
+        .expect("request")
+    }
+
+    /// The runtime sends an image inline as a data URL. The Messages API has
+    /// no URL source for those -- it refuses one as not fetchable -- so it
+    /// goes as the base64 source it already is, with the media type the data
+    /// URL names.
+    #[test]
+    fn an_inline_image_reaches_anthropic_as_base64() {
+        let body = openai_to_anthropic(&asked_with("data:image/png;base64,iVBORw0KGgo="))
+            .expect("translate");
+        let image = &body["messages"][0]["content"][1];
+        assert_eq!(image["type"], "image");
+        assert_eq!(
+            image["source"],
+            serde_json::json!({
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo=",
+            })
+        );
+        assert_eq!(body["messages"][0]["content"][0]["text"], "what is this?");
+    }
+
+    /// A URL the provider can fetch still goes as one.
+    #[test]
+    fn a_fetchable_image_url_reaches_anthropic_as_a_url() {
+        let body =
+            openai_to_anthropic(&asked_with("https://example.com/cat.png")).expect("translate");
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"],
+            serde_json::json!({"type": "url", "url": "https://example.com/cat.png"})
+        );
+    }
+
+    /// Only the base64 form of a data URL is one here; anything else is left
+    /// for the provider to make sense of.
+    #[test]
+    fn a_data_url_is_split_into_type_and_payload() {
+        assert_eq!(
+            data_url("data:image/webp;base64,UklGR"),
+            Some(("image/webp", "UklGR"))
+        );
+        assert_eq!(data_url("data:text/plain,hello"), None);
+        assert_eq!(data_url("https://example.com/a.png"), None);
     }
 }
 
