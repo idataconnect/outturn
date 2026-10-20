@@ -15,6 +15,12 @@ pub struct Job {
     pub max_attempts: i32,
     /// Identifies this claim. A heartbeat quotes it back, so a renewal from a
     /// claim that was reaped cannot extend whichever claim replaced it.
+    ///
+    /// Set by a claim and cleared by every transition out of `running`:
+    /// completing, failing, releasing, parking, cancelling and reaping. A
+    /// token left behind on a job that is no longer running is one a holder
+    /// that lost the lease can still present, and an endpoint comparing
+    /// tokens alone would take its word.
     pub lease_token: Option<Uuid>,
 }
 
@@ -223,7 +229,8 @@ pub async fn claim(
 /// the check, for callers closing a job they know nobody else can hold.
 pub async fn complete(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
     let result = sqlx::query(
-        "update jobs set state = 'succeeded', leased_until = null, updated_at = now() \
+        "update jobs set state = 'succeeded', leased_until = null, lease_token = null, \
+             updated_at = now() \
          where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
     )
     .bind(id)
@@ -290,6 +297,7 @@ async fn record_failure(
                  else 'pending' end, \
              last_error = $2, \
              leased_until = null, \
+             lease_token = null, \
              run_after = now() + make_interval(secs => $3), \
              updated_at = now() \
          where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4)",
@@ -553,7 +561,8 @@ pub async fn cancel_requested(pool: &PgPool, id: Uuid) -> Result<bool, JobError>
 /// opposite of what they asked for.
 pub async fn mark_cancelled(pool: &PgPool, id: Uuid, token: Option<Uuid>) -> Result<(), JobError> {
     let result = sqlx::query(
-        "update jobs set state = 'cancelled', leased_until = null, updated_at = now() \
+        "update jobs set state = 'cancelled', leased_until = null, lease_token = null, \
+             updated_at = now() \
          where id = $1 and state = 'running' and ($2::uuid is null or lease_token = $2)",
     )
     .bind(id)
@@ -626,6 +635,7 @@ pub async fn release(
              last_error = case when releases + 1 >= $3 \
                                then 'no runtime had room' else last_error end, \
              leased_until = null, \
+             lease_token = null, \
              run_after = now() + make_interval(secs => $2), \
              updated_at = now() \
          where id = $1 and state = 'running' and ($4::uuid is null or lease_token = $4) \
@@ -816,6 +826,7 @@ pub async fn reap_abandoned(pool: &PgPool) -> Result<(u64, Vec<Job>), JobError> 
                  else 'pending' end, \
              last_error = coalesce(last_error, 'lease expired'), \
              leased_until = null, \
+             lease_token = null, \
              updated_at = now() \
          where state = 'running' and leased_until < now() \
          returning id, workspace_id, kind, payload, attempts, max_attempts, state",

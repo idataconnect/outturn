@@ -85,28 +85,13 @@ pub async fn raise(
     // talking and no workspace role may reach it. A workspace Admin raising an
     // approval does it through `/v1/approvals`, which is authorized differently
     // and says who asked.
-    super::router::authorize(&state, &headers, Authority::WorkTake).await?;
-
-    let job = outturn_core::jobs::get(&state.pool, input.job_id)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, "no such turn".to_string()))?;
-
-    // The lease, as `work::report` and `work::abandon` require it. Without it
-    // `WorkTake` alone is enough to raise an approval against *any* job, so a
-    // runtime holding one turn could park other tenants' conversations and fill
-    // their approvers' queues -- docs/invariants.md calls the lease "the only thing
-    // joining a claim to the runtime running it", and this endpoint was taking
-    // the runtime's word for which turn it was speaking about.
-    let lease = super::work::lease_from(&headers)?;
-    if job.lease_token != Some(lease) {
-        return Err((
-            StatusCode::CONFLICT,
-            "that turn is not leased to this runtime".to_string(),
-        ));
-    }
-
-    let payload: super::worker::ChatTurnPayload = serde_json::from_value(job.payload.clone())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("payload: {e}")))?;
+    // And the lease, as `work::report` and `work::abandon` require it. Without
+    // it `WorkTake` alone is enough to raise an approval against *any* job, so
+    // a runtime holding one turn could park other tenants' conversations and
+    // fill their approvers' queues -- docs/invariants.md calls the lease "the
+    // only thing joining a claim to the runtime running it", and this endpoint
+    // was taking the runtime's word for which turn it was speaking about.
+    let (_, payload) = super::work::leased_turn(&state, &headers, input.job_id).await?;
 
     // The session the runtime named has to be the one the job is actually for.
     // Otherwise a runtime holding one turn's token could raise an approval
