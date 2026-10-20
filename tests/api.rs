@@ -571,6 +571,229 @@ async fn a_workspace_admin_sees_only_their_own_workspaces_users() {
     finish!(h);
 }
 
+/// The user routes stop at the workspace boundary.
+///
+/// They used to resolve their target by id alone, so anyone holding
+/// `users:update` in one workspace could attach a password to any account on
+/// the platform and sign in as them. The boundary answers 404, not 403, so a
+/// guessed id learns nothing about who is where.
+#[tokio::test]
+async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
+    let acme_admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    h.login_as("admin@globex.example", None, Some((globex, "admin")))
+        .await;
+    let victim = h
+        .users
+        .get_in_workspace(
+            h.users
+                .list_for_workspace(globex, None, 10)
+                .await
+                .expect("list")[0]
+                .id,
+            globex,
+        )
+        .await
+        .expect("the globex admin");
+
+    let (status, body) = h
+        .post(
+            &format!("/v1/users/{}/identities", victim.id),
+            Some(&acme_admin),
+            r#"{"email":"takeover@acme.example","password":"correct-horse"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "identity added across workspaces: {body}");
+    let (status, body) = h
+        .post(
+            "/v1/login",
+            None,
+            &format!(
+                r#"{{"email":"takeover@acme.example","password":"correct-horse","workspace_id":"{globex}"}}"#
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the takeover address signs in: {body}");
+
+    let (status, body) = h
+        .get(&format!("/v1/users/{}", victim.id), Some(&acme_admin))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "read across workspaces: {body}");
+
+    let (status, body) = h
+        .patch(
+            &format!("/v1/users/{}", victim.id),
+            Some(&acme_admin),
+            r#"{"display_name":"Renamed"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "renamed across workspaces: {body}");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/v1/users/{}/identities/{}",
+            victim.id, victim.identities[0].id
+        ))
+        .header("authorization", format!("Bearer {acme_admin}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "identity removed across workspaces: {body}");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/users/{}", victim.id))
+        .header("authorization", format!("Bearer {acme_admin}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "deleted across workspaces: {body}");
+    assert_eq!(
+        h.users.get(victim.id).await.expect("still there").display_name,
+        "Test User"
+    );
+
+    // A system administrator is scoped to one workspace but administers all.
+    let root = h
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h
+        .get(&format!("/v1/users/{}", victim.id), Some(&root))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let (status, body) = h
+        .patch(
+            &format!("/v1/users/{}", victim.id),
+            Some(&root),
+            r#"{"display_name":"Renamed"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    finish!(h);
+}
+
+/// Granting a role is bounded the way editing one is: by what the granter holds.
+///
+/// `roles:assign` alone was a ladder -- hand yourself the admin role and climb --
+/// and a grant to any id pulled an account from another workspace into this one.
+#[tokio::test]
+async fn a_role_grant_stays_within_the_granters_reach_and_workspace() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let globex = h.make_workspace("Globex", "globex").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, body) = h
+        .post(
+            "/v1/roles",
+            Some(&admin),
+            r#"{"name":"assigner","authorities":["roles:assign","users:read","agents:read"]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let assigner = h
+        .login_as("assigner@acme.example", None, Some((acme, "assigner")))
+        .await;
+    let viewer = h
+        .users
+        .create(CreateUser {
+            email: "viewer@acme.example".into(),
+            display_name: "Viewer".into(),
+            password: "correct-horse".into(),
+        })
+        .await
+        .expect("create");
+    h.users
+        .grant_workspace_role(viewer.id, acme, "viewer")
+        .await
+        .expect("grant");
+
+    // Above reach: the admin role carries what the assigner does not hold.
+    let (status, body) = h
+        .post(
+            &format!("/v1/users/{}/workspaces/{acme}/roles", viewer.id),
+            Some(&assigner),
+            r#"{"role":"admin"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a grant climbed: {body}");
+    // Within it: a role bundling no more than the granter holds.
+    let (status, body) = h
+        .post(
+            &format!("/v1/users/{}/workspaces/{acme}/roles", viewer.id),
+            Some(&assigner),
+            r#"{"role":"assigner"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    // The same bound on the role a new account is created with.
+    let (status, body) = h
+        .post(
+            "/v1/users",
+            Some(&admin),
+            r#"{"email":"new@acme.example","display_name":"New","password":"correct-horse","role":"admin"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "an admin creates admins: {body}");
+
+    // Somebody from another workspace cannot be granted in here.
+    h.login_as("stranger@globex.example", None, Some((globex, "viewer")))
+        .await;
+    let stranger = h
+        .users
+        .list_for_workspace(globex, None, 10)
+        .await
+        .expect("list")[0]
+        .id;
+    let (status, body) = h
+        .post(
+            &format!("/v1/users/{stranger}/workspaces/{acme}/roles"),
+            Some(&admin),
+            r#"{"role":"viewer"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a stranger was granted: {body}");
+    assert!(
+        h.users
+            .memberships(stranger)
+            .await
+            .expect("memberships")
+            .iter()
+            .all(|m| m.workspace_id != acme),
+        "the stranger was pulled into the workspace"
+    );
+
+    // A system administrator may bring somebody in, and grants in any workspace.
+    let root = h
+        .login_as(
+            "root@example.com",
+            Some(Role::SystemAdmin),
+            Some((acme, "admin")),
+        )
+        .await;
+    let (status, body) = h
+        .post(
+            &format!("/v1/users/{stranger}/workspaces/{acme}/roles"),
+            Some(&root),
+            r#"{"role":"admin"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    finish!(h);
+}
+
 #[tokio::test]
 async fn viewer_cannot_manage_users() {
     let h = harness_or_skip!();
