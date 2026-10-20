@@ -19,7 +19,6 @@ use axum::http::StatusCode;
 use sqlx::Row;
 use uuid::Uuid;
 
-
 use super::router::{ApiError, ApiState};
 
 #[derive(Debug, serde::Deserialize)]

@@ -176,8 +176,11 @@ pub async fn take(
             // one went on to hand out an assignment under a dead lease --
             // the runtime ran the whole turn and was refused at report.
             // Dropped on every way out of this iteration.
-            let heartbeat =
-                super::worker::LeaseHeartbeat::start(state.pool.clone(), handle.job.id, lease_token);
+            let heartbeat = super::worker::LeaseHeartbeat::start(
+                state.pool.clone(),
+                handle.job.id,
+                lease_token,
+            );
 
             let Some(worker) = state.worker.get() else {
                 let _ = jobs::release(

@@ -9111,14 +9111,9 @@ async fn a_reaped_turn_s_lease_is_refused_on_every_side_channel() {
     )
     .await
     .expect("enqueue");
-    let claimed = outturn::jobs::claim(
-        &h.db.pool,
-        &["chat.turn"],
-        1,
-        std::time::Duration::ZERO,
-    )
-    .await
-    .expect("claim");
+    let claimed = outturn::jobs::claim(&h.db.pool, &["chat.turn"], 1, std::time::Duration::ZERO)
+        .await
+        .expect("claim");
     let job = claimed[0].job.id;
     let stale = claimed[0].job.lease_token.expect("lease");
     let (reaped, _) = outturn::jobs::reap_abandoned(&h.db.pool).await.unwrap();
@@ -9184,7 +9179,11 @@ async fn a_reaped_turn_s_lease_is_refused_on_every_side_channel() {
     // Reaped and back in the queue: nobody holds it, least of all the pod
     // that let it lapse.
     for (name, (status, body)) in side_channels(stale).await {
-        assert_eq!(status, StatusCode::CONFLICT, "{name} took a reaped lease: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "{name} took a reaped lease: {body}"
+        );
     }
 
     // Claimed again by another pod: the old token is still refused, and the
@@ -9201,7 +9200,11 @@ async fn a_reaped_turn_s_lease_is_refused_on_every_side_channel() {
     let current = again[0].job.lease_token.expect("lease");
     assert_ne!(current, stale);
     for (name, (status, body)) in side_channels(stale).await {
-        assert_eq!(status, StatusCode::CONFLICT, "{name} took a replaced lease: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "{name} took a replaced lease: {body}"
+        );
     }
     let (status, body) = ask_to_wait(
         &h,
@@ -11039,8 +11042,10 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
     // Enough turns that a summary has something to replace: the boundary
     // keeps a tail of recent messages and summarizes only what is before it.
     for _ in 0..outturn::api::chat::summarize::TAIL_MESSAGES {
-        say("Hello again. Here is another line of conversation, long enough that \
-             a few turns of it outgrow the smallest budget a model may be given.")
+        say(
+            "Hello again. Here is another line of conversation, long enough that \
+             a few turns of it outgrow the smallest budget a model may be given.",
+        )
         .await;
         let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
         assert_eq!(status, StatusCode::OK, "no work: {body}");
@@ -11088,11 +11093,12 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
     // heartbeat renews from a spawned task, so it goes on without the poll
     // above being driven; renewal is waited for rather than timed, and
     // never comes if there is no heartbeat.
-    let (job, leased_until): (Uuid, chrono::DateTime<chrono::Utc>) =
-        sqlx::query_as("select id, leased_until from jobs where kind = 'chat.turn' and state = 'running'")
-            .fetch_one(&h.db.pool)
-            .await
-            .expect("the turn being prepared");
+    let (job, leased_until): (Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "select id, leased_until from jobs where kind = 'chat.turn' and state = 'running'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the turn being prepared");
     sqlx::query("update jobs set leased_until = now() - interval '1 second' where id = $1")
         .bind(job)
         .execute(&h.db.pool)
@@ -11120,7 +11126,10 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
 
     // Renewed, so the reaper leaves it alone and the summary is written once.
     let (reaped, _) = outturn::jobs::reap_abandoned(&h.db.pool).await.unwrap();
-    assert_eq!(reaped, 0, "a turn being prepared was reaped out from under its pod");
+    assert_eq!(
+        reaped, 0,
+        "a turn being prepared was reaped out from under its pod"
+    );
 
     gateway.release_held();
     let (status, body) = take.await;
@@ -11129,10 +11138,16 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
     assert_eq!(assignment["job_id"].as_str().unwrap(), job.to_string());
     let lease: Uuid = assignment["lease_token"].as_str().unwrap().parse().unwrap();
     assert!(
-        outturn::jobs::holds_lease(&h.db.pool, job, lease).await.unwrap(),
+        outturn::jobs::holds_lease(&h.db.pool, job, lease)
+            .await
+            .unwrap(),
         "the assignment was handed out under a lease that is not current"
     );
-    assert_eq!(gateway.requests().len(), 1, "the conversation was summarized more than once");
+    assert_eq!(
+        gateway.requests().len(),
+        1,
+        "the conversation was summarized more than once"
+    );
 }
 
 /// Searching the list narrows it by title, ignoring case and matching part of

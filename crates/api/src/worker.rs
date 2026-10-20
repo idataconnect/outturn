@@ -2625,19 +2625,18 @@ impl Worker {
         // hold the turn, and the runtime's poll for it, for ever. The idle
         // deadline is the one the gateway's own calls use: a summary is one
         // read, so silence that long is silence for the whole of it.
-        let response = outturn_core::http_client::streaming_client(
-            outturn_core::http_client::IDLE_TIMEOUT,
-        )
-            .post(format!("{gateway_url}/v1/chat/completions"))
-            .bearer_auth(token)
-            .header(
-                outturn_core::protocol::TRAFFIC_HEADER,
-                summarize::TRAFFIC_TYPE,
-            )
-            .json(&body)
-            .send()
-            .await
-            .ok()?;
+        let response =
+            outturn_core::http_client::streaming_client(outturn_core::http_client::IDLE_TIMEOUT)
+                .post(format!("{gateway_url}/v1/chat/completions"))
+                .bearer_auth(token)
+                .header(
+                    outturn_core::protocol::TRAFFIC_HEADER,
+                    summarize::TRAFFIC_TYPE,
+                )
+                .json(&body)
+                .send()
+                .await
+                .ok()?;
 
         if !response.status().is_success() {
             tracing::warn!(
