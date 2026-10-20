@@ -742,8 +742,9 @@ async fn create_user(
 ) -> Result<(StatusCode, Json<User>), ApiError> {
     let claims = authorize(&state, &headers, Authority::UsersCreate).await?;
     let CreateUserRequest { user: input, role } = input;
-    if role.is_some() {
+    if let Some(role) = &role {
         require(&state, &claims, Authority::RolesAssign).await?;
+        require_role_within_reach(&state, &claims, claims.workspace_id, role).await?;
     }
     let user = state.users.create(input).await?;
     if let Some(role) = role {
@@ -930,6 +931,13 @@ async fn grant_workspace_role(
             "cannot grant outside your workspace".into(),
         ));
     }
+    require_role_within_reach(&state, &claims, workspace_id, &input.role).await?;
+    // Only somebody already here may be given more here. A grant to an
+    // arbitrary id pulled any account on the platform into this workspace,
+    // and from there every user route could reach it.
+    if !claims.is_system_admin() {
+        state.users.get_in_workspace(user_id, workspace_id).await?;
+    }
     state
         .users
         .grant_workspace_role(user_id, workspace_id, &input.role)
@@ -1033,6 +1041,42 @@ async fn get_role(
         ));
     }
     Ok(Json(state.roles.get(claims.workspace_id, id).await?))
+}
+
+/// A role may be handed out only by somebody who holds everything it bundles.
+///
+/// `roles:assign` alone was the same ladder `within_reach` closes for the
+/// editor: hand yourself, or a friend, the workspace's admin role and climb.
+/// Resolved against `workspace_id` rather than the token's, since a system
+/// administrator may grant in a workspace they are not scoped to. A name the
+/// workspace has no role for resolves to nothing here and is refused by the
+/// store, which names the real reason.
+async fn require_role_within_reach(
+    state: &ApiState,
+    claims: &SessionClaims,
+    workspace_id: Uuid,
+    role: &str,
+) -> Result<(), ApiError> {
+    let bundled = state
+        .roles
+        .authorities_for(workspace_id, &[role.to_string()])
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut granted = auth::platform_authorities(&claims.roles);
+    granted.extend(
+        state
+            .roles
+            .authorities_for(workspace_id, &claims.roles)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    );
+    if let Some(a) = bundled.iter().find(|a| !granted.contains(a)) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("you cannot grant {role} because it carries {a}, which you do not hold"),
+        ));
+    }
+    Ok(())
 }
 
 /// A role may bundle only what its editor already holds.
