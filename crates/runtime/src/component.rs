@@ -125,6 +125,12 @@ pub struct CallUsage {
     /// The provider's usage object as it came off the wire, for the ledger.
     pub provider_usage: Option<serde_json::Value>,
     pub service_tier: Option<String>,
+    /// The call ended before the model finished, so the numbers are for a
+    /// partial answer.
+    pub partial: bool,
+    /// The numbers are this host's estimate, because the stream was cut
+    /// before the provider reported anything.
+    pub estimated: bool,
 }
 
 /// Reports each model call's cost as it completes.
@@ -948,6 +954,8 @@ impl outturn::agent::host::Host for AgentHost {
                 usage: *usage,
                 provider_usage: served.provider_usage.clone(),
                 service_tier: served.service_tier.clone(),
+                partial: served.partial,
+                estimated: served.usage_estimated,
             });
         }
         let served_by = served.endpoint;
@@ -1798,8 +1806,14 @@ async fn stream_completion(
         model: None,
         provider_usage: None,
         service_tier: None,
+        partial: false,
+        usage_estimated: false,
         signed: Signed::default(),
     };
+    // What the model was sent and what came back, in characters, in case
+    // the provider never says what they cost.
+    let sent_chars = body.to_string().chars().count();
+    let mut received_chars = 0usize;
     // Signatures on calls, by the call's index, until the calls have ids.
     let mut call_signatures: std::collections::BTreeMap<u32, String> =
         std::collections::BTreeMap::new();
@@ -1863,14 +1877,16 @@ async fn stream_completion(
             //
             // `reasoning_content` is the same field under the name some
             // OpenAI-compatible endpoints use for it.
-            if let Some(thought) = thinking_in(&chunk)
-                && let Some(sink) = reasoning
-            {
-                sink(thought);
+            if let Some(thought) = thinking_in(&chunk) {
+                received_chars += thought.chars().count();
+                if let Some(sink) = reasoning {
+                    sink(thought);
+                }
             }
             if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str()
                 && !text.is_empty()
             {
+                received_chars += text.chars().count();
                 match parts.last_mut() {
                     Some(ContentPart::Text(t)) => t.push_str(text),
                     _ => parts.push(ContentPart::Text(text.to_string())),
@@ -1959,6 +1975,7 @@ async fn stream_completion(
                         }
                     }
                     if let Some(args) = call["function"]["arguments"].as_str() {
+                        received_chars += args.chars().count();
                         entry.arguments.push_str(args);
                         if let Some(sink) = writing
                             && !entry.name.is_empty()
@@ -2014,6 +2031,27 @@ async fn stream_completion(
                 });
             }
         }
+    }
+
+    // A stream that ended without saying why was cut: by a stop, by a hold,
+    // or by an upstream that hung up. Whatever it reported is for a partial
+    // answer, and on the OpenAI protocol it reported nothing, because that
+    // protocol says what a call cost only on its last chunk -- the one a cut
+    // never delivers. The tokens were still generated and will still be
+    // billed by the provider, so rather than record nothing, which reads
+    // later as a free turn, the host estimates from what it sent and what
+    // arrived and says that it did. Anthropic and Gemini report as they go,
+    // so a cut stream on those routes keeps the real partial numbers.
+    served.partial = finish_reason.is_none() && refused.is_none();
+    if served.partial && usage.is_none() && received_chars > 0 {
+        usage = Some(Usage {
+            prompt_tokens: estimated_tokens(sent_chars),
+            completion_tokens: estimated_tokens(received_chars),
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+        });
+        served.usage_estimated = true;
     }
 
     // Ends the round as a failure rather than a short reply: what streamed
@@ -2072,9 +2110,22 @@ struct Served {
     paid_by: Option<String>,
     provider_usage: Option<serde_json::Value>,
     service_tier: Option<String>,
+    /// The stream ended before the model said it had finished.
+    partial: bool,
+    /// The usage is this host's guess, not the provider's report.
+    usage_estimated: bool,
     /// What the reply carries that only the model that wrote it can read:
     /// its signed thinking blocks, and the signatures on its calls.
     signed: Signed,
+}
+
+/// A rough token count from a character count, for a call whose provider
+/// never said. Four characters a token is the usual rule of thumb for
+/// English prose and JSON alike; it is wrong for any particular text and
+/// about right over a month of them, which is what a bill is. Rounded up, so
+/// a single character is not a free one.
+fn estimated_tokens(chars: usize) -> u32 {
+    chars.div_ceil(4) as u32
 }
 
 /// The key a declared write is made under: its operation and the values of

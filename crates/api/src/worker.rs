@@ -16,18 +16,29 @@ use super::chat::{ChatStore, Usage};
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";
 
-/// Where a call's token counts came from, judged by what the provider sent.
+/// Where a call's token counts came from, judged by what the provider sent
+/// and what the runtime said about the call.
 ///
 /// A provider that returned a usage object is the authority on what its own
-/// call cost. One that returned nothing leaves zeros behind, and those zeros
-/// must not be recorded as though somebody had measured them: a turn that cost
+/// call cost -- for the whole answer, or for the part of it a cut stream
+/// delivered. Numbers the runtime worked out itself, because the stream was
+/// cut before the provider said anything, are an estimate and are recorded
+/// as one. A call with neither leaves zeros behind, and those zeros must not
+/// be recorded as though somebody had measured them: a turn that cost
 /// nothing and a turn nobody counted look identical afterwards, and only this
-/// tells them apart. Nothing can recover it later, so it is decided here, once,
-/// on the only evidence there is.
-fn source_of(provider_usage: &Option<serde_json::Value>) -> super::usage::UsageSource {
+/// tells them apart. Nothing can recover it later, so it is decided here,
+/// once, on the only evidence there is.
+fn source_of(
+    provider_usage: &Option<serde_json::Value>,
+    partial: bool,
+    estimated: bool,
+) -> super::usage::UsageSource {
+    use super::usage::UsageSource;
     match provider_usage {
-        Some(usage) if !usage.is_null() => super::usage::UsageSource::Reported,
-        _ => super::usage::UsageSource::Unknown,
+        _ if estimated => UsageSource::Estimated,
+        Some(usage) if !usage.is_null() && partial => UsageSource::ReportedPartial,
+        Some(usage) if !usage.is_null() => UsageSource::Reported,
+        _ => UsageSource::Unknown,
     }
 }
 
@@ -1306,6 +1317,8 @@ impl Worker {
                         reasoning_tokens,
                         provider_usage,
                         service_tier,
+                        partial,
+                        estimated,
                     }) => {
                         // Written the moment the call is known to have cost
                         // something, not when the turn ends: a turn that fails
@@ -1356,7 +1369,7 @@ impl Worker {
                                 cache_read_tokens: cache_read_tokens as i32,
                                 cache_write_tokens: cache_write_tokens as i32,
                                 reasoning_tokens: reasoning_tokens as i32,
-                                usage_source: source_of(&provider_usage),
+                                usage_source: source_of(&provider_usage, partial, estimated),
                                 provider_usage,
                                 service_tier,
                             })
@@ -2746,10 +2759,19 @@ impl Worker {
                 fallback: "none".to_string(),
                 prompt_tokens: counted.map(|u| u.prompt_tokens as i32).unwrap_or(0),
                 completion_tokens: counted.map(|u| u.completion_tokens as i32).unwrap_or(0),
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                reasoning_tokens: 0,
-                usage_source: source_of(&provider_usage),
+                // In the gateway's one meaning, so the cache a summary's
+                // prompt hit is on its row like any other call's.
+                cache_read_tokens: counted
+                    .and_then(|u| u.prompt_tokens_details.as_ref())
+                    .map_or(0, |d| d.cached_tokens as i32),
+                cache_write_tokens: counted
+                    .and_then(|u| u.prompt_tokens_details.as_ref())
+                    .map_or(0, |d| d.cache_creation_tokens as i32),
+                reasoning_tokens: counted
+                    .and_then(|u| u.completion_tokens_details.as_ref())
+                    .map_or(0, |d| d.reasoning_tokens as i32),
+                // Whole, not streamed: nothing cuts it and nothing estimates.
+                usage_source: source_of(&provider_usage, false, false),
                 provider_usage,
                 service_tier: None,
             })
@@ -4291,7 +4313,18 @@ mod usage_source_tests {
     #[test]
     fn a_reported_usage_object_is_recorded_as_reported() {
         let usage = Some(serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20 }));
-        assert_eq!(source_of(&usage), UsageSource::Reported);
+        assert_eq!(source_of(&usage, false, false), UsageSource::Reported);
+    }
+
+    /// A provider that reports as it goes leaves real numbers behind when the
+    /// stream is cut, for the part that was delivered; one that reports only
+    /// at the end leaves nothing, and the runtime's arithmetic stands in.
+    /// Neither is a measurement of the whole call, and each says which it is.
+    #[test]
+    fn a_cut_call_is_recorded_as_partial_or_as_an_estimate() {
+        let usage = Some(serde_json::json!({ "prompt_tokens": 100, "completion_tokens": 20 }));
+        assert_eq!(source_of(&usage, true, false), UsageSource::ReportedPartial);
+        assert_eq!(source_of(&None, true, true), UsageSource::Estimated);
     }
 
     /// A provider that said nothing leaves zeros, and zeros that claim to have
@@ -4302,13 +4335,13 @@ mod usage_source_tests {
     fn a_round_the_provider_never_costed_is_not_recorded_as_measured() {
         for absent in [None, Some(serde_json::Value::Null)] {
             assert_eq!(
-                source_of(&absent),
+                source_of(&absent, false, false),
                 UsageSource::Unknown,
                 "zeros with no provider figure behind them must say so, or a \
                  bill cannot be argued from this ledger"
             );
             assert_ne!(
-                source_of(&absent),
+                source_of(&absent, true, false),
                 UsageSource::Reported,
                 "recording an unmeasured round as reported is the silent error"
             );

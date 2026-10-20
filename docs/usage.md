@@ -115,6 +115,20 @@ The API writes a ledger row as each arrives, before the turn ends. A failed
 ledger write is logged at error, because a wrong bill is an operator's problem
 and a quiet one is worse than a loud one.
 
+`usage_source` says how much to trust the row. `reported` is the provider's
+own figure for a call that ran to its end. A call cut short -- a stop button,
+a hold, an upstream that hung up -- is `reported_partial` where the provider
+reports as it goes, which Anthropic and Gemini do, so the numbers are real
+but for part of an answer. The OpenAI protocol says what a call cost only on
+its last chunk, which a cut stream never delivers: the gateway asks for usage
+on every stream (`stream_options.include_usage`), and it still cannot arrive
+before the end. Such a call used to write no row at all, and a stop pressed
+mid-answer billed nothing. Now the runtime estimates, at four characters a
+token, from what it sent and what came back, and the row is `estimated`:
+tokens the provider will bill for, counted by us rather than by them, and
+never mistaken for a measurement. `unknown` is a call that finished and
+reported nothing, whose zeros mean "not measured" rather than "free".
+
 ## The summary
 
 `GET /v1/usage/summary`, needing `usage:read`. What the dashboard reads.
