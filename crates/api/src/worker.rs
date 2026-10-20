@@ -982,7 +982,7 @@ impl Worker {
     /// and a reader with no error event waits on an indicator that resolves on
     /// no timescale at all. Both halves matter, which is why they are one
     /// function rather than two blocks that drifted apart.
-    async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
+    pub(super) async fn abandon_payload(&self, payload: &ChatTurnPayload, reason: &str) {
         self.abandon_payload_with(payload, reason, None).await
     }
 

@@ -296,19 +296,20 @@ pub async fn take(
                     .await;
                     // Nothing was announced for this turn, so the browser
                     // would otherwise wait on a reply that is never coming.
-                    // The last attempt is when it becomes final.
+                    // The last attempt is when it becomes final, and the
+                    // turn is abandoned the way the worker abandons one: the
+                    // placeholder it claimed is discarded along with the
+                    // telling. Emitting the error alone left an empty
+                    // assistant row under a `failed` job, which the
+                    // abandoned-reply guard reads as a turn that died
+                    // uncleaned -- and refused every later message in the
+                    // session. "No model configured" did that every time.
+                    //
+                    // Before the last attempt the placeholder stays: the
+                    // retry takes an empty, unfinished attempt back rather
+                    // than claiming a second one (`attempt_for`).
                     if handle.job.attempts >= handle.job.max_attempts {
-                        let _ = outturn_core::events::append(
-                            &state.pool,
-                            payload.workspace_id,
-                            Some(payload.session_id),
-                            "chat.error",
-                            serde_json::json!({
-                                "message": e.to_string(),
-                                "message_id": payload.message_id,
-                            }),
-                        )
-                        .await;
+                        worker.abandon_payload(&payload, &e.to_string()).await;
                     }
                     continue;
                 }

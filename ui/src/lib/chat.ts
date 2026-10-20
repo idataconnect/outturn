@@ -17,7 +17,9 @@ export type AgentSession = {
   title: string
   /** When a message was last stored in it; the list is ordered by this. */
   last_active_at?: string
-  /** The live turn's job state, absent when nothing is in flight. */
+  /** The live turn's job state, absent when nothing is in flight. The
+   *  server's `jobs::JobState::LIVE` (crates/core/src/jobs/mod.rs), kept in
+   *  step by hand. */
   turn?: 'pending' | 'running' | 'parked' | null
   /** The schedule or webhook that opened it; null when a person did. Its id
    *  and name are null once the trigger is deleted, and the kind is kept. */
@@ -170,7 +172,11 @@ export type Message = {
   /** On a user message, the reply that took it mid-turn. */
   absorbed_by?: string | null
   /** On a user message, where the job answering it is. Only the transcript
-   *  read fills this; afterwards the events say. */
+   *  read fills this; afterwards the events say.
+   *
+   *  The server's `jobs::JobState` (crates/core/src/jobs/mod.rs), kept in
+   *  step by hand: a state added there has to be added here, and wherever
+   *  this union is switched on. */
   job_state?:
     | 'pending'
     | 'running'

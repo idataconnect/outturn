@@ -9250,6 +9250,117 @@ async fn a_leased_turn(h: &Harness) -> (String, String, Uuid, String) {
     )
 }
 
+/// A turn that cannot be prepared -- here, a deployment with no model -- is
+/// reported to the conversation and does not wedge it: once a model is
+/// configured the next prompt is answered.
+///
+/// The failure used to leave the placeholder reply behind, empty, under a
+/// job whose state the abandoned-reply guard did not list -- and every
+/// later message in the session was refused as abandoned.
+#[tokio::test]
+async fn a_turn_that_failed_to_prepare_does_not_wedge_the_session() {
+    let h = harness_or_skip!();
+    // The harness seeds a chain for every test; this one is about having none.
+    sqlx::query("delete from chain_assignments")
+        .execute(&h.db.pool)
+        .await
+        .expect("no model configured");
+
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent_id: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let session_id = h.session_with_a_message(&admin, agent_id, "hello").await;
+    // Its first attempt is its last, so the failure is final at once.
+    sqlx::query("update jobs set max_attempts = 1 where kind = 'chat.turn'")
+        .execute(&h.db.pool)
+        .await
+        .expect("one attempt");
+
+    // The runtime's poll fails the turn where it would have prepared it, and
+    // finds nothing else to do.
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body, "null", "a turn with no model was handed out: {body}");
+    let error: Value = sqlx::query_scalar(
+        "select payload from events where session_id = $1 and kind = 'chat.error'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the failure was announced");
+    assert!(
+        error["message"].as_str().unwrap().contains("no model"),
+        "{error}"
+    );
+
+    // The operator gives it a model: the seeded chain, assigned again.
+    sqlx::query(
+        "insert into chain_assignments (id, workspace_id, traffic_type, chain_id) \
+         values ($1, null, 'assistant', '01a00000-0000-7000-8000-000000000003')",
+    )
+    .bind(Uuid::now_v7())
+    .execute(&h.db.pool)
+    .await
+    .expect("a model configured");
+    let (status, body) = h
+        .post(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+            r#"{"content":"hello again"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the session wedged: {body}");
+
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"]
+        .as_str()
+        .expect("the second prompt's turn");
+    let lease = assignment["lease_token"].as_str().expect("lease");
+    let stream = r#"{"kind":"done","content":"Hi","prompt_tokens":10,"completion_tokens":1}"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let (_, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/messages"),
+            Some(&admin),
+        )
+        .await;
+    let history: Value = serde_json::from_str(&body).expect("history");
+    let replies: Vec<&str> = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .map(|m| m["content"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        replies,
+        vec!["Hi"],
+        "the failed turn's empty placeholder should be gone: {body}"
+    );
+    finish!(h);
+}
+
 /// Reports a turn over a stream that stays open while the lease is taken away,
 /// then sends `last` (or nothing) and closes -- the shape of a real turn whose
 /// pod stalled long enough to be reaped.
