@@ -73,6 +73,7 @@ impl AnnotationRow {
             "prefer" => AnnotationKind::Prefer(self.value.clone()),
             "hidden" => AnnotationKind::Hidden,
             "approval" => AnnotationKind::Approval(self.value.clone()),
+            "identity" => AnnotationKind::Identity(identity_fields(&self.value)),
             _ => return None,
         };
         Some(Annotation { target, kind })
@@ -111,9 +112,24 @@ impl AnnotationRow {
                     Err(e) => Err(format!("that approval rule is not one: {e}")),
                 }
             }
-            other => Err(format!("no kind {other}: note, prefer, hidden or approval")),
+            "identity" if identity_fields(&self.value).is_empty() => {
+                Err("an identity names the fields that make one write the same as another".into())
+            }
+            "identity" => Ok(()),
+            other => Err(format!(
+                "no kind {other}: note, prefer, hidden, approval or identity"
+            )),
         }
     }
+}
+
+/// An identity annotation's fields, written as a comma-separated list.
+fn identity_fields(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect()
 }
 
 async fn live_annotations(

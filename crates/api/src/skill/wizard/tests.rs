@@ -1467,3 +1467,44 @@ fn a_nested_body_is_a_tool_with_its_types_shared() {
         "only what a tool refers to: {types}"
     );
 }
+
+#[test]
+fn an_identity_is_suggested_for_a_write_and_applied_only_when_confirmed() {
+    // Guessed from a create's required fields, and offered: applied unasked,
+    // a wrong guess would merge writes somebody meant to be two.
+    let outline = outline(&small_spec()).unwrap();
+    let create = outline
+        .operations
+        .iter()
+        .find(|o| o.name == "create_item")
+        .unwrap();
+    assert_eq!(create.suggested_identity, ["name"]);
+    let list = outline
+        .operations
+        .iter()
+        .find(|o| o.name == "list_items")
+        .unwrap();
+    assert!(list.suggested_identity.is_empty(), "a read has none");
+
+    let unconfirmed = generate(&small_input(Vec::new())).unwrap();
+    let op = crate::skill::parse(&unconfirmed.files["create_item.md"])
+        .unwrap()
+        .operation
+        .unwrap();
+    assert!(op.identity.is_empty(), "not applied unasked");
+
+    let confirmed = generate(&small_input(vec![Annotation {
+        target: Target::Operation("create_item".into()),
+        kind: AnnotationKind::Identity(vec!["name".into(), "gone".into()]),
+    }]))
+    .unwrap();
+    let op = crate::skill::parse(&confirmed.files["create_item.md"])
+        .unwrap()
+        .operation
+        .unwrap();
+    assert_eq!(
+        op.identity,
+        ["name"],
+        "a field the specification lacks is left out"
+    );
+}

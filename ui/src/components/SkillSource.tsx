@@ -219,6 +219,13 @@ export default function SkillSource({
                   const k = e.target.value as Annotation['kind']
                   setKind(k)
                   if (k === 'approval' && !value) setValue(APPROVAL_TEMPLATE)
+                  // The wizard's guess, to confirm or correct: when it is wrong
+                  // it is wrong silently, merging writes meant to be two.
+                  if (k === 'identity' && !value) {
+                    const suggested = outline?.operations.find((o) => o.name === target)
+                      ?.suggested_identity
+                    if (suggested?.length) setValue(suggested.join(', '))
+                  }
                 }}
                 className="rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1"
               >
@@ -226,6 +233,7 @@ export default function SkillSource({
                 <option value="prefer">Prefer another operation</option>
                 <option value="hidden">Hide it</option>
                 <option value="approval">Needs approval</option>
+                <option value="identity">Same fields, same write</option>
               </select>
             )}
           </div>
@@ -250,9 +258,11 @@ export default function SkillSource({
               onChange={(e) => setValue(e.target.value)}
               rows={kind === 'approval' ? 5 : 2}
               placeholder={
-                level === 'skill'
-                  ? 'Said on every turn: keep it to what the agent needs before it knows where to look.'
-                  : 'Read when the agent opens this.'
+                kind === 'identity'
+                  ? 'The fields that make two of these writes one, such as room_id, guest_name, arrival'
+                  : level === 'skill'
+                    ? 'Said on every turn: keep it to what the agent needs before it knows where to look.'
+                    : 'Read when the agent opens this.'
               }
               className="w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
             />

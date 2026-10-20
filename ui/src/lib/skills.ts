@@ -544,7 +544,7 @@ export type Annotation = {
   id: string
   level: 'skill' | 'category' | 'operation'
   target: string | null
-  kind: 'note' | 'prefer' | 'hidden' | 'approval'
+  kind: 'note' | 'prefer' | 'hidden' | 'approval' | 'identity'
   value: string
   created_at: string
 }
@@ -556,7 +556,15 @@ export type SkillSource = {
   annotations: Annotation[]
   outline: {
     categories: string[]
-    operations: { name: string; category: string; method: string; path: string }[]
+    operations: {
+      name: string
+      category: string
+      method: string
+      path: string
+      /** A guess at what makes one of this write the same as another: a
+       *  create's required fields. Offered, never applied unasked. */
+      suggested_identity?: string[]
+    }[]
   } | null
 }
 

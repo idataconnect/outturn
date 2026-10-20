@@ -67,6 +67,11 @@ pub enum AnnotationKind {
     /// `---` fences -- parsed by the same reader as a hand-written file, at
     /// publish. Operation level.
     Approval(String),
+    /// The fields whose values are what one of the operation's writes is, so
+    /// the host makes it once however often it is sent. The operator's to
+    /// confirm, since the wizard can only guess; see `suggested_identity`.
+    /// Operation level.
+    Identity(Vec<String>),
 }
 
 pub use outturn_core::protocol::MAX_SPEC_BYTES;
@@ -184,6 +189,35 @@ pub struct OutlineOperation {
     pub category: String,
     pub method: String,
     pub path: String,
+    /// What would make one of this write the same as another, as a guess to
+    /// offer: a create's required fields. Empty for a read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suggested_identity: Vec<String>,
+}
+
+/// A guess at a write's identity: the required fields of its JSON body.
+///
+/// Usually right for a create -- a booking is its room, guest and dates -- and
+/// only ever offered, because when it is wrong it is wrong silently: two
+/// invoices for one customer and amount would become one.
+fn suggested_identity(op: &parse::Operation) -> Vec<String> {
+    if !matches!(
+        op.method.to_ascii_uppercase().as_str(),
+        "POST" | "PUT" | "PATCH"
+    ) {
+        return Vec::new();
+    }
+    op.request_body
+        .as_ref()
+        .filter(|b| b.is_json())
+        .map(|b| {
+            b.fields
+                .iter()
+                .filter(|f| f.required)
+                .map(|f| f.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn outline(spec_json: &[u8]) -> Result<Outline, ParseError> {
@@ -206,6 +240,7 @@ pub fn outline(spec_json: &[u8]) -> Result<Outline, ParseError> {
                 category,
                 method: op.method.clone(),
                 path: op.path.clone(),
+                suggested_identity: suggested_identity(op),
             }
         })
         .collect();

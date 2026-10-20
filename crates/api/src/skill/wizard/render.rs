@@ -12,6 +12,7 @@ pub struct Notes<'a> {
     prefer: BTreeMap<&'a str, &'a str>,
     hidden: std::collections::HashSet<&'a str>,
     approval: BTreeMap<&'a str, &'a str>,
+    identity: BTreeMap<&'a str, &'a [String]>,
 }
 
 impl<'a> Notes<'a> {
@@ -37,6 +38,9 @@ impl<'a> Notes<'a> {
                 }
                 (Target::Operation(op), AnnotationKind::Approval(yaml)) => {
                     notes.approval.insert(op, yaml);
+                }
+                (Target::Operation(op), AnnotationKind::Identity(fields)) => {
+                    notes.identity.insert(op, fields);
                 }
                 // Prefer, hidden and approval are about one operation; anywhere
                 // else they mean nothing, and the API refuses to store them.
@@ -248,6 +252,7 @@ pub fn operation_block(
     base_url: &str,
     root: &serde_json::Value,
     types: &mut super::schema::Types,
+    identity: Option<&[String]>,
 ) -> Option<(String, serde_json::Value)> {
     let (schema, query) = super::schema::arguments(op, root, types)?;
     // Sized as it will be sent: expanded, standing alone.
@@ -265,6 +270,24 @@ pub fn operation_block(
     writeln!(out, "  url: {}{}", base_url.trim_end_matches('/'), op.path).unwrap();
     if !query.is_empty() {
         writeln!(out, "  query: [{}]", query.join(", ")).unwrap();
+    }
+    // The operator's identity, kept to the fields this write sends in its body
+    // or query -- a field the specification no longer has would otherwise
+    // make a file that publishing refuses, and cost the operation its tool.
+    let path: Vec<String> = op
+        .parameters
+        .iter()
+        .filter(|p| p.location == "path")
+        .map(|p| p.name.clone())
+        .collect();
+    let sent: Vec<&String> = identity
+        .unwrap_or_default()
+        .iter()
+        .filter(|f| schema["properties"].get(f.as_str()).is_some() && !path.contains(f))
+        .collect();
+    if !sent.is_empty() && !matches!(op.method.to_ascii_uppercase().as_str(), "GET" | "HEAD") {
+        let names: Vec<&str> = sent.iter().map(|f| f.as_str()).collect();
+        writeln!(out, "  identity: [{}]", names.join(", ")).unwrap();
     }
     writeln!(out, "  schema: |").unwrap();
     let pretty = serde_json::to_string_pretty(&schema).ok()?;
@@ -289,7 +312,8 @@ pub fn detail(
     root: &serde_json::Value,
     types: &mut super::schema::Types,
 ) -> (String, Option<serde_json::Value>) {
-    if let Some((block, schema)) = operation_block(op, base_url, root, types) {
+    let identity = notes.identity.get(op.name.as_str()).copied();
+    if let Some((block, schema)) = operation_block(op, base_url, root, types, identity) {
         let file = detail_with(op, base_url, auth_header, notes, Some(&block));
         if crate::skill::frontmatter::parse(&file).is_ok() {
             return (file, Some(schema));

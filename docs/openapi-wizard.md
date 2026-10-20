@@ -467,6 +467,14 @@ Each one changes exactly one thing in the output, and says which:
   convention stated once ("money is in pence"), which is what made the
   hand-written Hollowbrook skill work.
 
+- **`identity`** -- the fields whose values make one of an operation's writes
+  the same as another, so the platform makes it once however often it is sent
+  ([idempotency.md](idempotency.md)). The page offers the wizard's guess -- a
+  create's required fields -- to confirm or correct, and never applies one
+  unasked: a wrong identity is wrong silently, merging two invoices for one
+  customer and amount into one. A field the specification no longer has is
+  left out when the skill is made.
+
 ### Regenerating
 
 A new revision, or a changed annotation, proposes a new version. It does not
