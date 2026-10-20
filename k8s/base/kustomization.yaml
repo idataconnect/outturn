@@ -9,3 +9,4 @@ resources:
   - mockllm.yaml
   - hollowbrook.yaml
   - networkpolicy.yaml
+  - pdb.yaml

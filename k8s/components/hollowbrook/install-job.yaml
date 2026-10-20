@@ -31,6 +31,8 @@ spec:
     metadata:
       labels:
         app: install-hollowbrook
+        outturn-client: api
+        outturn-setup: "true"
     spec:
       restartPolicy: OnFailure
       containers:

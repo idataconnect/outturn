@@ -64,3 +64,42 @@ spec:
             runAsUser: 35002
             capabilities:
               drop: ["ALL"]
+---
+# Tika hears from the API, which sends it documents, and the API may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tika-access
+spec:
+  podSelector:
+    matchLabels:
+      app: tika
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 9998
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tika-access-client
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: tika
+      ports:
+        - protocol: TCP
+          port: 9998

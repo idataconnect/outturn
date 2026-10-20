@@ -1,0 +1,25 @@
+# Local ollama runs on the Docker bridge, outside the cluster, and the gateway
+# policy carves private ranges out of "anywhere". This opens the one address and
+# port the platform-settings Job's chain points at, for the gateway and for
+# MiniStack's Bedrock proxy. On a Mac (../local-mac) ollama is reached as
+# host.docker.internal, whose address depends on the VM; widen the ipBlock to
+# suit if the policy is enforced there at all -- kind's default CNI does not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-local-ollama
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [outturn-gateway, ministack]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 172.18.0.1/32
+      ports:
+        - protocol: TCP
+          port: 11434

@@ -73,3 +73,42 @@ spec:
               port: 4566
             initialDelaySeconds: 2
             periodSeconds: 5
+---
+# MiniStack stands in for Bedrock and is reached by the gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ministack-access
+spec:
+  podSelector:
+    matchLabels:
+      app: ministack
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 4566
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ministack-access-client
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ministack
+      ports:
+        - protocol: TCP
+          port: 4566

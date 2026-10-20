@@ -14,6 +14,20 @@ spec:
       labels:
         app: outturn-api
     spec:
+      # The queue worker and the long-poll hold connections open: a runtime
+      # asking for work waits up to 25s (WORK_POLL_TIMEOUT), and graceful
+      # shutdown waits for every such request to answer. Well past that, so a
+      # rollout never cuts a poll or a stream mid-answer.
+      terminationGracePeriodSeconds: 60
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: outturn-api
@@ -31,6 +45,11 @@ spec:
               port: 8080
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -53,6 +72,20 @@ spec:
       labels:
         app: outturn-gateway
     spec:
+      # A model's stream may sit silent for the idle read timeout (five
+      # minutes) before the gateway gives up on it, and shutdown waits for
+      # streams in flight. Matches the runtime, which must not be left
+      # waiting on a gateway that has gone before it.
+      terminationGracePeriodSeconds: 360
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gateway
           image: outturn-gateway
@@ -70,6 +103,11 @@ spec:
               port: 8081
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -94,6 +132,15 @@ spec:
       labels:
         app: outturn-runtime
     spec:
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       # Long enough for a turn already streaming to finish and be reported.
       # On SIGTERM the runtime stops asking for work and waits for the turns
       # it holds; if this runs out first the lease recovers them, at the cost
@@ -105,6 +152,18 @@ spec:
           image: outturn-runtime
           ports:
             - containerPort: 8082
+          # Compiling the guest component at boot is slow on a cold pod, and
+          # the pod answers "not ready" until it is done. Until this passes
+          # the other probes are held off, so neither a liveness restart nor
+          # a short readiness window can interrupt the compile. Five minutes
+          # is far more than it takes and no longer than a hung start should
+          # be left alone.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /healthz
@@ -117,6 +176,11 @@ spec:
               port: 8082
             initialDelaySeconds: 2
             periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 100m
@@ -124,3 +188,12 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+          volumeMounts:
+            # The root is read-only; this is where anything that wants a
+            # scratch file in the process (a temp file, a library's cache)
+            # lands, and it is gone with the pod.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
