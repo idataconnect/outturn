@@ -62,6 +62,11 @@ pub trait SessionStore: Send + Sync {
     /// Ends one session (sign out).
     async fn revoke(&self, token: &str) -> Result<(), SessionError>;
 
+    /// Ends a session by its family, for a caller that knows the family from a
+    /// verified access token rather than holding the refresh token itself.
+    /// Scoped to the user so a family id alone revokes nothing.
+    async fn revoke_family(&self, user_id: Uuid, family_id: Uuid) -> Result<(), SessionError>;
+
     /// Ends every session for a user, e.g. after a password change.
     async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64, SessionError>;
 
