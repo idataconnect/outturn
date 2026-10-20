@@ -13149,3 +13149,145 @@ async fn an_account_moves_only_where_its_key_still_opens() {
     .await;
     assert_eq!(status, StatusCode::OK, "the same host refused");
 }
+
+/// Deleting a conversation takes everything it owns with it.
+///
+/// The row's delete relied on cascades, and three tables carrying a session
+/// id had none: its events, its holds and its grants stayed behind. Jobs
+/// carry the id inside their payload, where no cascade reaches, so a wakeup
+/// due next week fired against a conversation that was gone and a turn parked
+/// on an approval was still waiting to run. Now the holds, the grants and the
+/// events cascade (migration 0054), the jobs are cancelled in the delete's
+/// own transaction, and the queue item asking about the sleep is settled.
+#[tokio::test]
+async fn deleting_a_session_leaves_none_of_its_work_behind() {
+    let h = harness().await;
+    let workspace = h.make_workspace("Hollowbrook", "hollowbrook").await;
+    let admin = h
+        .login_as("desk@test.invalid", None, Some((workspace, "admin")))
+        .await;
+    let (agent, session) = a_held_conversation(&h, workspace, &admin).await;
+
+    // Asleep: a session hold, a queue item for its owner and a wakeup due later.
+    asleep(&h, workspace, agent, session).await;
+
+    // A turn parked on the hold, as one arriving while it slept would be.
+    let parked = outturn::jobs::enqueue(
+        &h.db.pool,
+        workspace,
+        "chat.turn",
+        serde_json::json!({
+            "workspace_id": workspace, "session_id": session,
+            "agent_id": agent, "message_id": Uuid::now_v7(),
+        }),
+        None,
+        Some(&session.to_string()),
+        outturn::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .expect("enqueue");
+    sqlx::query("update jobs set state = 'parked' where id = $1")
+        .bind(parked)
+        .execute(&h.db.pool)
+        .await
+        .expect("park");
+
+    // And a grant somebody gave within it.
+    sqlx::query(
+        "insert into approval_grants \
+         (workspace_id, id, session_id, job_id, requires, extent, keyed_on) \
+         values ($1, $2, $3, $4, 'charge', 'call', 'whatever')",
+    )
+    .bind(workspace)
+    .bind(Uuid::now_v7())
+    .bind(session)
+    .bind(parked)
+    .execute(&h.db.pool)
+    .await
+    .expect("grant");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/agent-sessions/{session}"))
+        .header("cookie", format!("outturn_session={admin}"))
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let count = |sql: &'static str| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(session)
+                .fetch_one(&pool)
+                .await
+                .expect(sql)
+        }
+    };
+    assert_eq!(
+        count("select count(*) from inhibitors where session_id = $1").await,
+        0,
+        "the session's hold outlived it"
+    );
+    assert_eq!(
+        count("select count(*) from approval_grants where session_id = $1").await,
+        0,
+        "a grant outlived its session"
+    );
+    assert_eq!(
+        count("select count(*) from events where session_id = $1").await,
+        0,
+        "the session's events outlived it"
+    );
+    assert_eq!(
+        count("select count(*) from agent_messages where session_id = $1").await,
+        0
+    );
+    let live: i64 = sqlx::query_scalar(
+        "select count(*) from jobs where payload->>'session_id' = $1 \
+         and state in ('pending', 'parked', 'running')",
+    )
+    .bind(session.to_string())
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("jobs");
+    assert_eq!(live, 0, "work for a deleted session is still queued");
+    let open: i64 = sqlx::query_scalar(
+        "select count(*) from action_items where payload->>'session_id' = $1 \
+         and state = 'pending'",
+    )
+    .bind(session.to_string())
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("items");
+    assert_eq!(
+        open, 0,
+        "somebody is still being asked about a deleted session"
+    );
+
+    // Nothing brings it back: the reaper finds no lease to reap, and neither
+    // the wakeup, once due, nor the parked turn is handed out again.
+    outturn::jobs::reap_abandoned(&h.db.pool)
+        .await
+        .expect("reap");
+    sqlx::query("update jobs set run_after = now() where kind = 'chat.wake'")
+        .execute(&h.db.pool)
+        .await
+        .expect("due");
+    let claimed = outturn::jobs::claim(
+        &h.db.pool,
+        &[outturn::api::wake::WAKE, "chat.turn"],
+        10,
+        std::time::Duration::from_secs(45),
+    )
+    .await
+    .expect("claim");
+    assert!(
+        claimed.is_empty(),
+        "a deleted session's work was handed out: {:?}",
+        claimed.iter().map(|c| &c.job.kind).collect::<Vec<_>>()
+    );
+
+    h.db.cleanup().await;
+}

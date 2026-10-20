@@ -53,6 +53,34 @@ async fn make_user(pool: &PgPool) -> Uuid {
     id
 }
 
+/// A conversation for a hold to be taken on. A session hold's session is a
+/// foreign key (migration 0054), so a made-up id is refused.
+async fn make_session(pool: &PgPool, workspace_id: Uuid, user_id: Uuid) -> Uuid {
+    let agent = Uuid::now_v7();
+    sqlx::query(
+        "insert into agents (id, workspace_id, name, slug, system_prompt, enabled) \
+         values ($1, $2, 'T', 'agent-' || replace($1::text, '-', ''), '', true)",
+    )
+    .bind(agent)
+    .bind(workspace_id)
+    .execute(pool)
+    .await
+    .expect("agent");
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "insert into agent_sessions (id, workspace_id, agent_id, user_id, title) \
+         values ($1, $2, $3, $4, '')",
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .bind(agent)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .expect("session");
+    id
+}
+
 async fn make_role(pool: &PgPool, workspace_id: Uuid, name: &str) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query("insert into roles (workspace_id, id, name) values ($1, $2, $3)")
@@ -1362,7 +1390,7 @@ async fn losing_the_role_hides_what_became_of_an_item() {
 async fn settling_lifts_the_hold_and_resumes_in_one_go() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
-    let session = Uuid::now_v7();
+    let session = make_session(&db.pool, ws, user).await;
 
     // A hold on the conversation, as an approval takes.
     let hold = Uuid::now_v7();
@@ -1458,7 +1486,7 @@ async fn losing_the_race_lifts_nothing() {
     // on the strength of an answer that lost.
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
-    let session = Uuid::now_v7();
+    let session = make_session(&db.pool, ws, user).await;
 
     let hold = Uuid::now_v7();
     sqlx::query(
@@ -1596,7 +1624,7 @@ async fn a_settlement_with_no_note_keeps_none() {
 async fn declining_lets_the_conversation_carry_on() {
     let (db, ws, store) = setup().await;
     let user = make_user(&db.pool).await;
-    let session = Uuid::now_v7();
+    let session = make_session(&db.pool, ws, user).await;
 
     let hold = Uuid::now_v7();
     sqlx::query(

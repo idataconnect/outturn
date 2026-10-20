@@ -206,8 +206,8 @@ async fn session_scoped_poll_ignores_other_sessions() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     let bus = EventBus::spawn(pool.clone());
-    let mine = Uuid::now_v7();
-    let theirs = Uuid::now_v7();
+    let (mine, _, _) = session_with_agent(pool, workspace).await;
+    let (theirs, _, _) = session_with_agent(pool, workspace).await;
 
     events::append(
         pool,

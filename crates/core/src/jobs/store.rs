@@ -546,6 +546,44 @@ pub async fn request_cancel(pool: &PgPool, id: Uuid) -> Result<Cancelled, JobErr
     })
 }
 
+/// Stops everything queued for one conversation, for the conversation's
+/// deletion.
+///
+/// The shape `request_cancel` has, over every job whose payload names the
+/// session: what is pending or parked is cancelled outright, and what is
+/// running is asked to stop, which it does at its next round boundary. A job
+/// cannot carry a foreign key to its session, since the id is inside the
+/// payload, so this is what stands in for the cascade -- on the caller's
+/// executor, so it commits with the delete it stands in for.
+///
+/// Returns how many jobs it touched.
+pub async fn cancel_for_session_on<'e, E>(
+    executor: E,
+    workspace_id: Uuid,
+    session_id: Uuid,
+) -> Result<u64, JobError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let result = sqlx::query(
+        "update jobs \
+            set cancel_requested_at = coalesce(cancel_requested_at, now()), \
+                state = case when state in ('pending', 'parked') then 'cancelled' \
+                             else state end, \
+                leased_until = case when state in ('pending', 'parked') then null \
+                                    else leased_until end, \
+                updated_at = now() \
+          where workspace_id = $1 and state in ('pending', 'running', 'parked') \
+            and payload->>'session_id' = $2",
+    )
+    .bind(workspace_id)
+    .bind(session_id.to_string())
+    .execute(executor)
+    .await
+    .map_err(internal)?;
+    Ok(result.rows_affected())
+}
+
 /// Whether somebody has asked for this job to stop.
 ///
 /// Asked at a round boundary by whoever is running the turn. Cheap on purpose:

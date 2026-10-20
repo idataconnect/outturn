@@ -1,7 +1,8 @@
 mod store;
 
 pub use store::{
-    Cancelled, Job, JobError, JobHandle, Parked, Released, Requeued, cancel_requested, claim, complete, complete_on, enqueue, extend_lease, fail, fail_for_good,
+    Cancelled, Job, JobError, JobHandle, Parked, Released, Requeued, cancel_for_session_on,
+    cancel_requested, claim, complete, complete_on, enqueue, extend_lease, fail, fail_for_good,
     get, holds_lease, is_running, live_turn_for_session, mark_cancelled, mark_cancelled_on, park,
     park_on, reap_abandoned, release, request_cancel, requeue_failed, resume_for_scope,
     resume_parked, turn_for_message,
