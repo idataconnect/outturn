@@ -1200,6 +1200,45 @@ async fn workspace_switch_revokes_the_old_refresh_token() {
 }
 
 #[tokio::test]
+async fn removing_an_identity_ends_every_session() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    seed_user(&h, "ident@example.com", acme, "viewer").await;
+    let users = h.users.list(None, 100).await.expect("list");
+    let user = users
+        .iter()
+        .find(|u| {
+            u.identities
+                .iter()
+                .any(|i| i.subject == "ident@example.com")
+        })
+        .expect("user");
+    let spare = h
+        .users
+        .add_password_identity(user.id, "ident-spare@example.com", "correct-horse")
+        .await
+        .expect("add");
+
+    let first = login_raw(&h, "ident@example.com", acme).await;
+    let refresh = cookie_named(&first, "outturn_refresh").expect("refresh cookie");
+    let access = cookie_named(&first, "outturn_session").expect("access cookie");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/users/{}/identities/{}", user.id, spare.id))
+        .header("cookie", format!("outturn_session={access}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = h.app.clone().oneshot(req).await.expect("response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let after = refresh_with(&h, &refresh).await;
+    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+    finish!(h);
+}
+
+#[tokio::test]
 async fn refresh_picks_up_revoked_roles() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;

@@ -802,6 +802,9 @@ async fn remove_identity(
     }
 
     state.users.remove_identity(user_id, identity_id).await?;
+    // A removed sign-in method may be the one somebody else was using, so
+    // every session the account holds ends with it.
+    state.sessions.revoke_all_for_user(user_id).await?;
     tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");
     Ok(StatusCode::NO_CONTENT)
 }
