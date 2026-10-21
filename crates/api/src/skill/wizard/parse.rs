@@ -244,6 +244,20 @@ pub fn parse(bytes: &[u8]) -> Result<Api, ParseError> {
 }
 
 fn clean_operation_name(operation_id: &str, method: &str, path: &str) -> String {
+    // An operationId comes from a remote document and ends up as a file name,
+    // so `/`, `.` and anything else a path check would refuse become
+    // separators here rather than a publish error later.
+    let operation_id: String = operation_id
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '_' | '-' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let operation_id = operation_id.trim_matches('_');
     if !operation_id.is_empty() {
         // "SaleInvoiceController_getInvoice" -> "get_invoice"
         let name = if let Some((_controller, action)) = operation_id.split_once('_') {
@@ -251,12 +265,14 @@ fn clean_operation_name(operation_id: &str, method: &str, path: &str) -> String 
         } else {
             operation_id.to_string()
         };
+        let name = name.trim_matches('_').to_string();
         to_snake_case(&name)
     } else {
         let clean_path = path
             .trim_matches('/')
             .replace('/', "_")
-            .replace(['{', '}'], "");
+            .replace(['{', '}'], "")
+            .replace('.', "_");
         format!("{}_{}", method, to_snake_case(&clean_path))
     }
 }
@@ -616,6 +632,18 @@ mod tests {
             clean_operation_name("ItemsController_createItem", "post", "/items"),
             "create_item"
         );
+    }
+
+    #[test]
+    fn clean_operation_name_cannot_carry_a_path() {
+        for id in ["../../etc/passwd", "a/b", "..", "x.y"] {
+            let name = clean_operation_name(id, "get", "/items");
+            assert!(
+                !name.contains(['/', '.']) && !name.is_empty(),
+                "{id:?} cleaned to {name:?}"
+            );
+        }
+        assert_eq!(clean_operation_name("..", "get", "/items"), "get_items");
     }
 
     #[test]
