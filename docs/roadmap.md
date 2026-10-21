@@ -199,7 +199,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   it differs from the commit, or build it in the image.
 - No `cargo audit` or `cargo deny` step; two generations of the RustCrypto
   crates are linked at once. Add the step and align the pins.
-- `ci.yml` has no top-level `permissions:` block; `docs.yml` does.
 - Images for production should be pinned by digest; everything first-party
   and third-party floats today, which is fine locally and nowhere else.
 - `tests/api.rs` is thirteen thousand lines in one module. Split by resource,
@@ -209,18 +208,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   to `/work/gated` and `/work/wait`; the browser reconnecting after a fetch
   error, replaying a batch, switching sessions mid-stream and failing to load
   history.
-
-### Nits with a line each
-
-`extract_bearer` is case-sensitive on the scheme. `RuntimeKey::accepts`
-short-circuits on length. The dev seed logs the admin password at warn
-(`crates/api/src/seed.rs`); log the email. An invalid session cookie makes
-every request 401 even with a valid bearer (`router.rs`, `authenticate`).
-`clean_operation_name` in the wizard passes `/` and `..` from a remote
-`operationId` into a path that `check_path` then refuses, so the failure
-reads as a confusing publish error rather than a clear one. No
-`Sec-Fetch-Site` or Origin check backs `SameSite=Lax`; cheap insurance for
-the day a form-encoded route appears.
 
 ## Tier 1 — independent
 
