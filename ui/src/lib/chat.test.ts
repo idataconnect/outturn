@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { mergeRecent, type AgentSession } from './chat'
+import { mergeRecent, pollEvents, type AgentSession } from './chat'
 
 const session = (id: string, at: string, turn: AgentSession['turn'] = null): AgentSession => ({
   id,
@@ -29,5 +29,23 @@ describe('mergeRecent', () => {
     const fresh = [session('a', '2026-10-03T00:00:00Z', 'pending'), session('b', '2026-10-02T00:00:00Z')]
 
     expect(mergeRecent(held, fresh).map((s) => s.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('pollEvents', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('encodes the session and the cursor into the query', async () => {
+    const fetched = vi.fn(
+      async () =>
+        new Response('{"events":[],"cursor":""}', {
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    vi.stubGlobal('fetch', fetched)
+    await pollEvents('a&b=c', 'x y')
+    expect(fetched.mock.calls[0]).toContain('/v1/events?session_id=a%26b%3Dc&after=x%20y')
   })
 })
