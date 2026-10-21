@@ -115,9 +115,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   the TTL loses its uploads mid-conversation, and `sleep` permits exactly that
   span. Expire on last activity, and sweep `extracted/sessions/` on the same
   clock so a file the listing no longer shows is not still readable.
-- With `key_field` set and a non-object body, the idempotency key is silently
-  not inserted and no claim is made (`component.rs`, the key insertion).
-  Refuse the call instead.
 
 ### The gateway
 
@@ -141,11 +138,7 @@ can be picked up without rereading the review. Ordered by what it protects.
 - One shared runtime key for every pod. Sound as designed, but a leak takes
   every workspace's turns from outside the cluster. Per-pod keys issued at
   registration, or mTLS, when there is a second cluster to care about.
-- Small: `Direct` builds a client per request (`egress/transport.rs`);
-  `normalize_host` strips the last hextet of an IPv6 literal as a port, so
-  such a rule cannot be written; `is_model_gone` rests a model for a day on
-  any 404 mentioning "model" and "not found"; the Gemini translation ignores
-  `reasoning_effort`.
+- Small: the Gemini translation ignores `reasoning_effort`.
 
 ### Shape of the code
 
