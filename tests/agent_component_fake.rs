@@ -3595,6 +3595,25 @@ async fn a_write_stays_attempted_when_the_gateway_says_it_did_not_complete() {
     assert!(held.is_none(), "released: {held:?}");
 }
 
+/// A recipient's 4xx releases the claim, since nothing happened; a 5xx leaves
+/// it `attempted`, since a 502 or 504 often follows a write that landed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_refusal_releases_a_claimed_write() {
+    let held = one_booking(|g| g.answer_egress(409, r#"{"error":"room taken"}"#)).await;
+    assert!(held.is_none(), "released: {held:?}");
+
+    for status in [502, 503, 504] {
+        let held = one_booking(|g| g.answer_egress(status, "upstream timed out")).await;
+        assert!(
+            matches!(
+                held,
+                Some(outturn::protocol::work::Claimed::Attempted { .. })
+            ),
+            "{status}: {held:?}"
+        );
+    }
+}
+
 /// A recipient that takes a key is sent one, the same for the same booking,
 /// and dedupes itself: nothing is kept here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
