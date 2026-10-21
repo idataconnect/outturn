@@ -160,6 +160,39 @@ dev_write_overlay() {
     echo "                  - name: CONTEXT_WINDOW"
     echo "                    value: \"$dev_context_window\""
 
+    # The network policy has to agree with that list, or the gateway is told
+    # it may reach the model and the cluster drops the packets: default-deny
+    # carves private ranges out of the gateway's egress, and
+    # ../local/ollama-policy.yaml opens only the Docker bridge. A model on
+    # another machine on the LAN is a private address too. A policy takes
+    # addresses, not names, so the name is resolved here, once per render.
+    local model_name=${model_host%:*} model_port=${model_host##*:} model_ip
+    if [[ "$base" == local-mac ]]; then
+      model_ip="" # host.docker.internal is the VM's to resolve; see ollama-policy.yaml
+    elif [[ "$model_name" =~ ^[0-9.]+$ ]]; then
+      model_ip=$model_name
+    else
+      model_ip=$(getent ahostsv4 "$model_name" 2>/dev/null | awk 'NR==1 {print $1}')
+    fi
+    if [[ -n "$model_ip" ]]; then
+      echo "  # The model's address, resolved from $model_name when this was written."
+      echo "  - target:"
+      echo "      kind: NetworkPolicy"
+      echo "      name: outturn-local-ollama"
+      echo "    patch: |"
+      echo "      - op: replace"
+      echo "        path: /spec/egress/0"
+      echo "        value:"
+      echo "          to:"
+      echo "            - ipBlock:"
+      echo "                cidr: $model_ip/32"
+      echo "          ports:"
+      echo "            - protocol: TCP"
+      echo "              port: $model_port"
+    elif [[ "$base" != local-mac ]]; then
+      echo "warning: could not resolve $model_name; the gateway's network policy will not let it through" >&2
+    fi
+
     if [[ -n "$hosts" ]]; then
       # Both tiers, because both halves of the decision read it: the gateway
       # to decide whether a connection may go out, and the API to decide
