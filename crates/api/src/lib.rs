@@ -24,6 +24,7 @@ mod login;
 mod model_changes;
 mod models;
 pub mod naming;
+pub mod origin;
 pub mod role;
 mod router;
 pub mod schedule;

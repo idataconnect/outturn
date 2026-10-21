@@ -25,9 +25,12 @@ use outturn_core::storage::{S3Storage, StorageBackend};
 /// Credentialed requests cannot use a wildcard origin, so allowed origins are
 /// listed explicitly. OUTTURN_CORS_ORIGINS is a comma-separated list; the
 /// default covers the Vite dev server.
+fn cors_origins() -> String {
+    std::env::var("OUTTURN_CORS_ORIGINS").unwrap_or_else(|_| "http://localhost:3000".into())
+}
+
 fn cors() -> CorsLayer {
-    let origins =
-        std::env::var("OUTTURN_CORS_ORIGINS").unwrap_or_else(|_| "http://localhost:3000".into());
+    let origins = cors_origins();
 
     let parsed: Vec<_> = origins
         .split(',')
@@ -255,6 +258,11 @@ async fn main() {
     let app = Router::new()
         .merge(lifecycle::routes(health.clone()))
         .merge(api::routes(state))
+        // Inside the CORS layer, so a refusal still carries its headers.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(outturn_api::origin::AllowedOrigins::parse(&cors_origins())),
+            outturn_api::origin::guard,
+        ))
         .layer(cors());
 
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
