@@ -517,11 +517,17 @@ fn grant_covers(
 
 /// Whether a refused call is the one a held request holds.
 ///
-/// By the call's arguments where they are a fetch's, digested exactly as the
-/// item was -- the same reading `grant_covers` makes. A declared operation's
-/// arguments are its own fields, so for one of those it is by what its result
-/// echoes: every fetch the guest makes reports the method and URL it sent, and
-/// the held request is that method and URL.
+/// By the bound fields, digested exactly as the item was, either way: a
+/// fetch's arguments carry the body, and a declared operation's arguments are
+/// the fields its body is built from, under the same names. For an operation
+/// the method and URL come from what its result echoes, which every fetch the
+/// guest makes reports.
+///
+/// Matching on the method and URL alone was the first shape, and it found the
+/// wrong refusal: a conversation that had charged before had older refusals of
+/// the same `POST /charges`, the first of them was taken, and the one the
+/// person had just approved stayed refused -- so the model made the charge
+/// again and was asked about it again.
 ///
 /// Either way it is the guest's word, and safe for the reason `answered`
 /// gives: what this decides is which sentence the model reads. Which request
@@ -532,29 +538,43 @@ fn is_held_call(
     arguments: Option<&serde_json::Value>,
     result: &str,
 ) -> bool {
-    if let Some(shape) = arguments.and_then(outturn_core::egress::grant::Shape::of_fetch_arguments)
-    {
-        let grant = held.grant();
-        return gates
-            .covering_all(&shape.host, &shape.method, &shape.path)
-            .iter()
-            .any(|gate| {
-                grant.permits(
-                    gate,
-                    &shape.method,
-                    &shape.host,
-                    &shape.path,
-                    shape.body.as_deref(),
-                )
-            });
-    }
-    let Ok(echoed) = serde_json::from_str::<serde_json::Value>(result) else {
-        return false;
+    let shape = match arguments.and_then(outturn_core::egress::grant::Shape::of_fetch_arguments) {
+        Some(shape) => shape,
+        None => {
+            let Ok(echoed) = serde_json::from_str::<serde_json::Value>(result) else {
+                return false;
+            };
+            let (Some(method), Some(url)) = (echoed["method"].as_str(), echoed["url"].as_str())
+            else {
+                return false;
+            };
+            let Ok(url) = reqwest::Url::parse(url) else {
+                return false;
+            };
+            let Some(host) = url.host_str() else {
+                return false;
+            };
+            outturn_core::egress::grant::Shape {
+                method: method.to_ascii_uppercase(),
+                host: host.to_string(),
+                path: url.path().to_string(),
+                body: arguments.and_then(|a| a.as_str()).map(str::to_string),
+            }
+        }
     };
-    echoed["method"]
-        .as_str()
-        .is_some_and(|m| m.eq_ignore_ascii_case(&held.method))
-        && echoed["url"].as_str() == Some(held.url.as_str())
+    let grant = held.grant();
+    gates
+        .covering_all(&shape.host, &shape.method, &shape.path)
+        .iter()
+        .any(|gate| {
+            grant.permits(
+                gate,
+                &shape.method,
+                &shape.host,
+                &shape.path,
+                shape.body.as_deref(),
+            )
+        })
 }
 
 /// Puts what became of an approved call where its refusal was.
@@ -588,6 +608,7 @@ fn answered(
     gates: &outturn_core::egress::gate::Gates,
     granted: &[outturn_core::egress::grant::Granted],
     held: &[super::held::Held],
+    sources: Option<&[Uuid]>,
 ) -> (
     Vec<serde_json::Value>,
     std::collections::HashMap<Uuid, String>,
@@ -632,40 +653,65 @@ fn answered(
     // guest that retried a refused call in the same round has two refusals
     // and one question, and telling it both were sent would be telling it the
     // charge went twice.
-    let mut used: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-    let mut sending: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
-
-    let mut out = Vec::with_capacity(projected.len());
-    for mut message in projected {
-        if message["role"] != "tool" {
-            out.push(message);
-            continue;
-        }
-        let call_id = message["tool_call_id"].as_str().map(str::to_string);
-        let args = call_id.as_deref().and_then(|id| arguments.get(id));
-        let text: String = message["parts"]
+    //
+    // Of the refusals that are its call, the latest one stored before it was
+    // held: the request is held from the refusal that raised it, so a refusal
+    // written later is a fresh ask with its own question, and an earlier one of
+    // the same call is an older ask somebody already dealt with. Where the
+    // projection's sources are not known, the latest of them.
+    let text_of = |message: &serde_json::Value| -> String {
+        message["parts"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|p| p["text"].as_str())
-            .collect();
-
-        if text.contains(outturn_core::egress::gate::GATED_MARK)
-            && let Some(found) = held.iter().find(|h| {
-                !used.contains(&h.id) && is_held_call(gates, h, args, &without_mark(&text))
-            })
-        {
-            used.insert(found.id);
-            if let Some(told) = found.told() {
-                message["parts"] = serde_json::json!([{ "type": "text", "text": told }]);
-                out.push(message);
-                continue;
+            .collect()
+    };
+    let mut answering: std::collections::HashMap<usize, &super::held::Held> =
+        std::collections::HashMap::new();
+    let mut sending: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
+    for h in held {
+        let found = projected.iter().enumerate().rev().find(|(i, message)| {
+            if message["role"] != "tool" || answering.contains_key(i) {
+                return false;
             }
-            if found.waiting()
-                && let Some(id) = &call_id
+            if sources
+                .and_then(|s| s.get(*i))
+                .is_some_and(|source| *source > h.id)
             {
-                sending.insert(found.id, id.clone());
+                return false;
             }
+            let text = text_of(message);
+            let args = message["tool_call_id"]
+                .as_str()
+                .and_then(|id| arguments.get(id));
+            text.contains(outturn_core::egress::gate::GATED_MARK)
+                && is_held_call(gates, h, args, &without_mark(&text))
+        });
+        if let Some((i, message)) = found {
+            answering.insert(i, h);
+            if h.waiting()
+                && let Some(id) = message["tool_call_id"].as_str()
+            {
+                sending.insert(h.id, id.to_string());
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(projected.len());
+    for (index, mut message) in projected.into_iter().enumerate() {
+        if message["role"] != "tool" {
+            out.push(message);
+            continue;
+        }
+        let args = message["tool_call_id"]
+            .as_str()
+            .and_then(|id| arguments.get(id));
+
+        if let Some(told) = answering.get(&index).and_then(|h| h.told()) {
+            message["parts"] = serde_json::json!([{ "type": "text", "text": told }]);
+            out.push(message);
+            continue;
         }
 
         // Which call this result answered. A refusal is retracted only where a
@@ -2211,7 +2257,7 @@ impl Worker {
         // entry immediately before the final message, which is past anything a
         // summary cuts at, so the indices a cut uses mean the same in both.
         let (projected, sources) = projected_with_sources(&history);
-        let (projected, sending) = answered(projected, &gates, &granted, &held);
+        let (projected, sending) = answered(projected, &gates, &granted, &held, Some(&sources));
         let held_calls: Vec<outturn_core::egress::held::HeldCall> = waiting
             .iter()
             .map(|h| h.call(sending.get(&h.id).cloned()))
@@ -3432,7 +3478,7 @@ mod projection_tests {
         gates: &outturn_core::egress::gate::Gates,
         granted: &[outturn_core::egress::grant::Granted],
     ) -> Vec<serde_json::Value> {
-        super::answered(projected, gates, granted, &[]).0
+        super::answered(projected, gates, granted, &[], None).0
     }
 
     use super::*;
@@ -3652,7 +3698,7 @@ mod projection_tests {
     #[test]
     fn a_sent_request_is_told_as_its_answer() {
         let held = [held_charge("spent", Some(charged()))];
-        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held);
+        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held, None);
         let wire = results(&out).join("\n");
         assert!(wire.contains("Approved by Dana Reyes and sent:"), "{wire}");
         assert!(wire.contains("ch_1"), "{wire}");
@@ -3668,7 +3714,7 @@ mod projection_tests {
     #[test]
     fn a_request_waiting_to_be_sent_is_found_by_its_call() {
         let held = [held_charge("approved", None)];
-        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held);
+        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held, None);
         assert_eq!(sending.get(&held[0].id).map(String::as_str), Some("c1"));
         let wire = results(&out).join("\n");
         assert!(!wire.contains("make this call now"), "{wire}");
@@ -3684,7 +3730,7 @@ mod projection_tests {
         let held = [held_charge("spent", Some(charged()))];
         let mut projected = refused("c1", BOOKING_B);
         projected.extend(refused("c2", BOOKING_A));
-        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let (out, _) = answered(projected, &charge_gate(), &[], &held, None);
         let results = results(&out);
         assert!(
             results[0].contains(outturn_core::egress::gate::GATED_REFUSAL),
@@ -3701,12 +3747,101 @@ mod projection_tests {
         let held = [held_charge("spent", Some(charged()))];
         let mut projected = refused("c1", BOOKING_A);
         projected.extend(refused("c2", BOOKING_A));
-        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let (out, _) = answered(projected, &charge_gate(), &[], &held, None);
         let told = results(&out)
             .iter()
             .filter(|r| r.contains("Approved by"))
             .count();
         assert_eq!(told, 1);
+    }
+
+    /// A refused operation call as the default guest stores it: the
+    /// operation's own arguments, and a result echoing what it sent with the
+    /// refusal under `error` -- copied from a real conversation.
+    fn refused_operation(id: &str, arguments: &str) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "role": "assistant",
+                "parts": [{
+                    "type": "call",
+                    "call": {"id": id, "name": "hollowbrook_charge_payment_account",
+                             "arguments": arguments},
+                }],
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "parts": [{"type": "text", "text": serde_json::json!({
+                    "error": format!(
+                        "this needs approval before it can go out: POST /charges on \
+                         outturn-hollowbrook requires \"charge\". Somebody has been asked to \
+                         approve it, and this conversation will pause until they answer. {}{}",
+                        outturn_core::egress::gate::GATED_REFUSAL,
+                        outturn_core::egress::gate::GATED_MARK
+                    ),
+                    "method": "POST",
+                    "url": "http://outturn-hollowbrook:8084/charges",
+                }).to_string()}],
+            }),
+        ]
+    }
+
+    /// The live failure: a conversation that had charged before holds older
+    /// refusals of the same `POST /charges`. Matching on method and URL took
+    /// the first of them, so the charge just approved stayed refused and the
+    /// model made it again. The bound fields decide, and of identical asks the
+    /// latest one stored before the request was held.
+    #[test]
+    fn an_approved_operation_answers_its_own_refusal_not_an_older_one() {
+        let older_other = r#"{"booking_id":"bk_b","amount_pence":99000}"#;
+        let older_same = r#"{"amount_pence":14500,"booking_id":"bk_a"}"#;
+        let mut projected = refused_operation("old_other", older_other);
+        projected.extend(refused_operation("old_same", older_same));
+        projected.extend(refused_operation("this_one", BOOKING_A));
+
+        // Sources as `projected_with_sources` gives them: the replies the
+        // entries came from, in the order they were written, and the hold
+        // after the last refusal.
+        let replies: Vec<Uuid> = (0..3).map(|_| Uuid::now_v7()).collect();
+        let sources: Vec<Uuid> = replies.iter().flat_map(|r| [*r, *r]).collect();
+        let held = [held_charge("approved", None)];
+
+        let (_, sending) = answered(projected, &charge_gate(), &[], &held, Some(&sources));
+        assert_eq!(
+            sending.get(&held[0].id).map(String::as_str),
+            Some("this_one"),
+            "the refusal just approved, not an older one"
+        );
+        // And once spent, it is that one the model reads as sent.
+        let spent = [super::super::held::Held {
+            state: "spent".into(),
+            outcome: Some(charged()),
+            ..held[0].clone()
+        }];
+        let mut projected = refused_operation("old_other", older_other);
+        projected.extend(refused_operation("old_same", older_same));
+        projected.extend(refused_operation("this_one", BOOKING_A));
+        let (out2, _) = answered(projected, &charge_gate(), &[], &spent, Some(&sources));
+        let results = results(&out2);
+        assert!(
+            results[2].contains("Approved by Dana Reyes and sent:"),
+            "{}",
+            results[2]
+        );
+        assert!(!results[0].contains("Approved by"), "{}", results[0]);
+        assert!(!results[1].contains("Approved by"), "{}", results[1]);
+    }
+
+    /// A refusal written after the request was held is a fresh ask with a
+    /// question of its own, and is not answered by the older yes.
+    #[test]
+    fn a_refusal_after_the_hold_is_not_the_held_one() {
+        let held = [held_charge("approved", None)];
+        let after = Uuid::now_v7();
+        let projected = refused_operation("later", BOOKING_A);
+        let sources = vec![after, after];
+        let (_, sending) = answered(projected, &charge_gate(), &[], &held, Some(&sources));
+        assert!(sending.is_empty(), "{sending:?}");
     }
 
     /// A declared operation's arguments are its own fields, not a fetch's; its
@@ -3737,7 +3872,7 @@ mod projection_tests {
                 }).to_string()}],
             }),
         ];
-        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let (out, _) = answered(projected, &charge_gate(), &[], &held, None);
         let wire = results(&out).join("\n");
         assert!(wire.contains("Approved by Dana Reyes and sent:"), "{wire}");
     }

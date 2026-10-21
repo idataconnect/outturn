@@ -2891,12 +2891,38 @@ impl AgentRunner {
                     answered = matches!(outcome, outturn_core::egress::held::Outcome::Answered { .. }),
                     "sent a request somebody approved"
                 );
+                let mut replaced = false;
                 if let Some(id) = &call.tool_call_id {
                     for message in conversation
                         .iter_mut()
                         .filter(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(id))
                     {
                         message.parts = vec![ContentPart::Text(told.clone())];
+                        replaced = true;
+                    }
+                }
+                // Sent, and no refusal found to put the answer in -- trimmed
+                // away, or not recognized. Said anyway, as a note: a model
+                // left with only the stale refusal makes the call itself, and
+                // is asked about it a second time.
+                if !replaced {
+                    let note = Message {
+                        role: "user".into(),
+                        parts: vec![ContentPart::Text(format!(
+                            "[A request this conversation was waiting on: {} {}. {told}]",
+                            call.method, call.url
+                        ))],
+                        tool_call_id: None,
+                    };
+                    // Before the prompt where the prompt is last; after
+                    // everything otherwise, since a resumed turn can end on a
+                    // call and its result, which must not be split.
+                    match conversation.last() {
+                        Some(last) if last.role == "user" => {
+                            let at = conversation.len() - 1;
+                            conversation.insert(at, note);
+                        }
+                        _ => conversation.push(note),
                     }
                 }
             }

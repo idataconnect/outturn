@@ -3811,3 +3811,30 @@ async fn an_approved_request_with_no_answer_is_reported_as_unknown() {
     let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
     assert!(sent.contains("not known"), "{sent}");
 }
+
+/// Sent with no refusal found to put the answer in, the model is told anyway,
+/// in a note, rather than left with the stale refusal to act on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_request_with_no_refusal_found_is_still_told() {
+    let gateway = FakeGateway::start(Behavior::Reply("The deposit is paid.".into())).await;
+    gateway.answer_egress(201, r#"{"charge":"ch_1"}"#);
+
+    let reported = Arc::default();
+    let mut options = options(&gateway, None);
+    options.egress = pay_rule();
+    let unfound = outturn::egress::held::HeldCall {
+        tool_call_id: None,
+        ..the_charge(Uuid::now_v7())
+    };
+    options.held = Some(held_sends(vec![unfound], &reported));
+
+    runner()
+        .run(&component(), parked_on_a_charge(), String::new(), options)
+        .await
+        .expect("run");
+
+    assert_eq!(gateway.fetched().len(), 1);
+    let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
+    assert!(sent.contains("Approved by Dana Reyes and sent:"), "{sent}");
+    assert!(sent.contains("ch_1"), "{sent}");
+}
