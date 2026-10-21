@@ -16,11 +16,12 @@
 # nothing but the four places it is allowed to.
 #
 # Requires a CNI that enforces NetworkPolicy. Calico, Cilium and most managed
-# clusters do; kind's default CNI does NOT, and neither does colima's k3s
-# unless it is started with one. On a cluster that ignores this, the object
-# applies cleanly and does nothing -- so local development is unaffected, and a
-# deployment relying on it should check that its CNI enforces rather than
-# assume the manifest is enough.
+# clusters do, and so does kind's default CNI in recent releases -- local
+# development runs under these policies, so a path missing here fails there
+# first. Colima's k3s does not unless it is started with one. On a cluster that
+# ignores this, the object applies cleanly and does nothing, so a deployment
+# relying on it should check that its CNI enforces rather than assume the
+# manifest is enough.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -271,6 +272,27 @@ spec:
         - podSelector:
             matchLabels:
               app: outturn-gateway
+---
+# The other half of that path. A connection needs the sender's egress as well
+# as the receiver's ingress, and the gateway's own policy carves the pod
+# network out of "anywhere", so without this the mocks hear from nobody.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-gateway-mocks
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [outturn-mockllm, outturn-hollowbrook]
 ---
 # Anything that calls the API from inside the cluster -- the guesthouse's
 # webhooks, the Jobs that install a component's skill -- says so with the label

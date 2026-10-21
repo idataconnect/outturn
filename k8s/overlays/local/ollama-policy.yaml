@@ -3,7 +3,8 @@
 # port the platform-settings Job's chain points at, for the gateway and for
 # MiniStack's Bedrock proxy. On a Mac (../local-mac) ollama is reached as
 # host.docker.internal, whose address depends on the VM; widen the ipBlock to
-# suit if the policy is enforced there at all -- kind's default CNI does not.
+# suit if the policy is enforced there at all. scripts/lib/dev.sh points this
+# at the configured model's address when it is not the bridge.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

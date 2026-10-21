@@ -161,7 +161,7 @@ host is the thing being defended against rather than the thing defending, and
 should say the same thing the code does -- `k8s/base/networkpolicy.yaml` denies
 the runtime any egress but the API, the gateway, minio and DNS, so a host that
 grew a socket still reaches nothing. It needs a CNI that enforces
-NetworkPolicy; kind's default does not.
+NetworkPolicy; recent kind releases do.
 
 **The commitment is what makes a rule a rule.** The API hashes a turn's egress
 rules into one root -- `crates/core/src/egress/commit.rs`, one hash whatever the list's

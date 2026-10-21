@@ -73,8 +73,11 @@ build yourself must name that user (the Dockerfile does) or `runAsNonRoot`
 refuses them.
 
 The base ships a namespace default-deny and an allow for each path the tiers
-use. It needs a CNI that enforces NetworkPolicy; kind's default does not, so
-locally the policies apply and do nothing. On a cluster that enforces them:
+use. It needs a CNI that enforces NetworkPolicy, and recent kind releases do, so
+locally a path the policies leave out fails the way it would anywhere: as a
+connection that times out or is refused, which the gateway reports as a
+provider or request that could not be reached. `scripts/lib/dev.sh` opens the
+configured model's address. On any cluster that enforces them:
 
 - Set the `ingress-nginx` namespace selector on `outturn-api` to wherever your
   ingress controller runs.

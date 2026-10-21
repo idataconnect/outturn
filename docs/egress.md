@@ -14,8 +14,9 @@ the same way. In the code, by the runtime having no outbound HTTP path at all.
 In the cluster, by a NetworkPolicy (`k8s/base/networkpolicy.yaml`) that lets the
 runtime reach DNS, the API, the gateway and the object store, and nothing else
 -- so a host that grew a socket still reaches nothing. Requires a CNI that
-enforces NetworkPolicy; kind's default does not, which is fine locally and is
-not something a deployment should assume.
+enforces NetworkPolicy. Recent kind releases enforce it, so local
+development runs under it; whether a deployment's CNI does is something to
+check rather than assume.
 
 A workspace allows hosts by name. A rule may carry a credential, which the
 gateway attaches and the guest never sees; a rule that carries one may only be
