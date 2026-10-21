@@ -208,7 +208,7 @@ limit has always been refused — see the truncation guard in
 `agents/default/src/lib.rs`.
 
 Letting a workspace stop being asked about a gate it trusts the agent with is
-designed and unbuilt in [docs/auto-approval.md](auto-approval.md):
+built in [docs/auto-approval.md](auto-approval.md):
 policies over the operator's declared `risk` and `auto` ceiling, conditions
 only on the gate's bound fields -- never the agent's own judgment -- decided at
 the gateway and recorded there before the request goes out. Configuring that,

@@ -439,7 +439,10 @@ from becoming a turn parked for ever.
 
 ### Auto-approval
 
-[auto-approval.md](auto-approval.md).
+[auto-approval.md](auto-approval.md). Built; what is left is listed under
+*What is not built* there -- chiefly the admin agent proposing a policy, the
+action queue saying a broad policy has operations waiting to be accepted, and a
+token trade-in dropping a revoked policy rather than relying on the record.
 
 A workspace deciding that some gated requests no longer need a person: policies
 by risk, act or operation, conditions on the gate's bound fields, a trial mode
