@@ -267,6 +267,116 @@ actually asks for -- stop asking about this once we trust the agent with it --
 is designed in [auto-approval.md](auto-approval.md) as policies a workspace can
 list, each naming who set it, decided at the gateway and recorded there.
 
+## The approval carries the call
+
+Designed, not built. It replaces the retry above: what a person approves is
+sent as it was shown to them, by the platform, once.
+
+### What goes wrong today
+
+A refused request is not kept. The queue item holds the method, host, path and
+the bound fields -- what a person needs to decide -- and the turn parks. When
+the answer comes, the resumed turn is told "it has since been approved, so make
+this call now", and the model writes the whole request again from its
+transcript. Three things follow, all seen driving Hollowbrook on 2026-10-21:
+
+- **The model has to reproduce the call exactly.** A grant is keyed on the
+  digest of what was refused, so a call that differs in a bound field is
+  refused again and asks again. A small model that rounds an amount or
+  reformats a date asks a person twice about one charge.
+- **A grant dies with its turn.** Grants are keyed by job, and a job is one
+  turn. A call approved and then dropped by the network ended the turn; the
+  person's "try again" started another, which had no grant, so it asked again.
+  The *Don't ask again* box did not help, because its extent is the turn too,
+  which nobody approving a payment can see.
+- **A grant is never spent.** `spent_at` is reserved and written by nothing,
+  since the gateway has no database. Within its turn an approved call can be
+  sent any number of times, and only the idempotency record stops a repeat.
+
+### The design
+
+**Hold the request.** When the runtime relays a refusal to `/work/gated`, it
+sends the whole request -- method, URL with its query, the headers the guest
+set, the body, and the operation and tool call it came from -- not only its
+shape. The API keeps it in a `held_requests` row beside the item, not in the
+item's payload: the payload is what every target of the item may see, and a
+body may carry more than a person deciding needs. It is capped at the egress
+body limit, and refused larger, as the call itself would be. The guest has no
+credentials, and the gateway attaches the rule's, so nothing held is a secret
+the platform issued -- though it is the workspace's data, kept as long as the
+item and swept with it.
+
+**Approving sends it.** The grant names the held request rather than a digest,
+and the resumed turn's runtime sends that request before the guest runs:
+through the gateway, under the turn's token, with the idempotency handling any
+call gets. The bytes are the ones refused, so the grant matches by
+construction. In the runtime rather than from the API, because an agent's
+requests are made by the gateway for a turn: the call's usage, its transcript
+entry and its idempotency record belong to the turn that asked for it, and a
+second path out of the API would be a second thing to keep honest.
+
+**The model is given the answer, not an instruction.** `worker::answered`
+replaces the refused tool result with the response, under a line saying who
+approved it -- "Approved by Dana Reyes and sent:" and then what came back. Declined
+reads "Declined by Dana Reyes", as now. The model never writes the approved call
+again; it reads what happened and carries on. A *different* call is gated as
+usual.
+
+**Spent when answered, not when used.** The API writes `spent_at` when the
+held request's outcome is reported, which it can, having the database the
+gateway lacks. A grant is keyed to its held request, not its job, so it
+outlives a turn that ended badly and is good for exactly one answer. What the
+outcome was decides what happens next:
+
+- **Answered** (any status): spent. The response is the tool result; a 4xx is
+  the recipient refusing, and the model reads it like any other.
+- **Never sent** -- the connection was refused, or failed before a byte went:
+  not spent. The next turn sends it again, up to three times, and then the item
+  reopens as *approved, but could not be sent*. This needs the gateway to tell
+  "not sent" from "sent, no answer", which its `did-not-complete` mark does not
+  yet; the transport knows, since it fails at a different step.
+- **Sent, no answer:** not sent again automatically, because it may have
+  landed. If the operation sends an idempotency key, the recipient dedupes and
+  a resend is safe, so it is resent as for *never sent*. Otherwise the item
+  reopens as *outcome unknown*, for a person to check and then either resend
+  or mark done. That is [idempotency.md](idempotency.md)'s `attempted`, given
+  to somebody who can find out.
+
+### The checkbox goes
+
+*Don't ask again for `charge` while the agent finishes what it's doing* is
+removed from the prompt. Its extent is invisible -- a turn is a word from
+inside this platform -- and it widens a yes beyond the figure shown beside it,
+which is the one place an approval must not be ambiguous. What it was for is
+covered better elsewhere:
+
+- **Several of one kind, waiting together:** the queue offers *Approve all*,
+  listing every item it covers, so the person sees each one they say yes to.
+- **The same kind, asked again and again:** after a few approvals of one
+  `requires` in a workspace, the prompt links to an
+  [auto-approval](auto-approval.md) policy with the fields filled in -- a
+  standing yes made on purpose, with a ceiling and an expiry, rather than
+  ticked in passing.
+
+The `unit` extent stays in the gateway, where a policy may yet use it; only the
+prompt stops offering it.
+
+### What it changes elsewhere
+
+- [idempotency.md](idempotency.md), *What approvals already assume*: still
+  true that the gate refuses before dispatch, and now also that only the held
+  request is sent after approval. The retraction it warns about goes away.
+- `worker::answered` stops rewriting "do not retry" into "make this call
+  now"; it substitutes the response.
+- The guest needs nothing new. It sees a tool result, as for any call.
+
+### Not settled
+
+- Whether a turn whose approved call failed should be resumed at all to try
+  again, or the item reopened straight away. Resuming costs a model call to
+  say "still could not send it".
+- How many approvals of one kind make the policy link worth showing.
+
 ## A ceiling, rather than a rule per operation
 
 Everything above is opt-in by whoever documents an operation, and that is right

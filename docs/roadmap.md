@@ -21,10 +21,11 @@ committed and verified, and new work goes in where it belongs, not at the end.
 1. **What the review of 2026-10-20 left** (*From the review*, below): ten
    fixes are on branches already; the retention sweeps and indexes go next,
    then the rest in the order given there.
-2. **An approved call made by its approval** (*Undesigned, and wanted*,
-   below): a resuming turn re-sends the whole gated request today. Seen
-   again on 2026-10-20, a card charge resent after approval -- safe only
-   because the charge is keyed. To design before building.
+2. **An approved call made by its approval** ([approvals.md](approvals.md),
+   *The approval carries the call*): the request held when refused and sent
+   by the platform once approved, a grant spent when answered rather than
+   dying with its turn, and the *Don't ask again* box removed. Designed; to
+   agree before building.
 3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
 4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
@@ -644,12 +645,8 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
-**An approved call made by its approval, not resent by the agent.** When a
-gated call is approved, the resuming turn is told to make the call again, and
-the agent re-sends the whole request -- arguments it has to reproduce exactly,
-since a grant is keyed on them. It could instead name the approval, and the
-host replay the request it already holds: nothing for the model to get wrong,
-and a request that provably matches what was approved.
+**An approved call made by its approval, not resent by the agent.** Now
+designed: [approvals.md](approvals.md), *The approval carries the call*.
 
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
