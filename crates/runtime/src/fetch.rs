@@ -44,6 +44,32 @@ pub struct GatewayFetched {
     pub truncated: bool,
 }
 
+/// Why a request through the gateway brought back no answer to hand on.
+#[derive(Debug)]
+pub struct Unanswered {
+    /// What the agent is told.
+    pub message: String,
+    /// Whether the request was sent, or may have been, with no answer back --
+    /// so a write may have landed. Read from the gateway's failure header, or
+    /// known here when the gateway itself could not be heard from.
+    pub did_not_complete: bool,
+}
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Unanswered {
+    fn answered(message: String) -> Self {
+        Unanswered {
+            message,
+            did_not_complete: false,
+        }
+    }
+}
+
 /// Sends one request through the gateway.
 ///
 /// A refusal comes back as the gateway's own words rather than being
@@ -54,7 +80,7 @@ pub async fn through_gateway(
     gateway_url: &str,
     token: &str,
     request: GatewayFetch,
-) -> Result<GatewayFetched, String> {
+) -> Result<GatewayFetched, Unanswered> {
     // The gateway holds the request open while it makes the outbound call, so
     // this waits on somebody else's upstream rather than on the gateway alone.
     let client =
@@ -65,13 +91,14 @@ pub async fn through_gateway(
         .json(&request)
         .send()
         .await
-        .map_err(|e| {
+        .map_err(|e| Unanswered {
             // Stripped, because this text reaches a model and a transcript: a
             // URL an agent composed can carry a credential in its query.
-            format!(
+            message: format!(
                 "the request did not complete: {}",
                 strip_url(&e.to_string())
-            )
+            ),
+            did_not_complete: true,
         })?;
 
     let status = response.status();
@@ -79,16 +106,23 @@ pub async fn through_gateway(
         return response
             .json::<GatewayFetched>()
             .await
-            .map_err(|e| format!("the response did not arrive whole: {e}"));
+            .map_err(|e| Unanswered::answered(format!("the response did not arrive whole: {e}")));
     }
 
     // The gateway's refusals are already written for a reader; what would be
     // unhelpful is a bare status where an explanation was sent.
+    let did_not_complete = response
+        .headers()
+        .get(outturn_core::protocol::FAILURE_HEADER)
+        .is_some_and(|v| v == outturn_core::protocol::DID_NOT_COMPLETE);
     let detail = response.text().await.unwrap_or_default();
-    Err(if detail.is_empty() {
-        format!("the request was refused ({status})")
-    } else {
-        strip_url(&detail)
+    Err(Unanswered {
+        message: if detail.is_empty() {
+            format!("the request was refused ({status})")
+        } else {
+            strip_url(&detail)
+        },
+        did_not_complete,
     })
 }
 

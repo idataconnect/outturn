@@ -1169,7 +1169,7 @@ impl outturn::agent::host::Host for AgentHost {
                         )
                         .await
                 }
-                Err(why) if why.starts_with("the request did not complete") => {}
+                Err(why) if why.did_not_complete => {}
                 _ => record.settle(key, None).await,
             }
         }
@@ -1232,7 +1232,7 @@ impl outturn::agent::host::Host for AgentHost {
                         ));
                     }
                 }
-                return Err(refusal);
+                return Err(refusal.message);
             }
         };
 

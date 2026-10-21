@@ -26,6 +26,12 @@ pub const BACKGROUND_TRAFFIC_TYPE: &str = "background";
 pub const FAILURE_HEADER: &str = "x-outturn-failure";
 /// The model answered, and its answer was unusable. See `is_malformed_reply`.
 pub const MALFORMED_REPLY: &str = "malformed-reply";
+/// An agent's outbound request was sent, or may have been, and no answer came
+/// back -- so a write may have landed. Said on the egress route's 502, for the
+/// runtime to leave a claimed write `attempted` rather than release it; see
+/// docs/idempotency.md. A header rather than the sentence beside it, which is
+/// written for a model and may be reworded.
+pub const DID_NOT_COMPLETE: &str = "did-not-complete";
 
 /// What a caller makes of a failed response from the gateway: its body, which
 /// is already the sentence `failure_message` wrote, passed on as it is -- a

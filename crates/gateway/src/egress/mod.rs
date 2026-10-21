@@ -36,6 +36,8 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use outturn_core::protocol::{DID_NOT_COMPLETE, FAILURE_HEADER};
 use serde::{Deserialize, Serialize};
 
 use outturn_core::egress::commit;
@@ -103,10 +105,42 @@ pub struct EgressResponse {
 /// the workspace's settings, and that a name resolves inside the cluster is
 /// something it had to guess to ask.
 pub async fn fetch(
+    state: State<Arc<super::GatewayState>>,
+    headers: HeaderMap,
+    request: Json<EgressRequest>,
+) -> Response {
+    match vet_and_send(state, headers, request).await {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Err(refused) => refused.into_response(),
+        // A failed request is not a refusal: the caller was allowed, and the
+        // world did not cooperate. It comes back as text the model can act on
+        // rather than as a status it cannot see.
+        Ok(Err(e)) => {
+            let detail = e.to_string();
+            match e {
+                TransportError::Malformed(_) => (StatusCode::BAD_REQUEST, detail).into_response(),
+                TransportError::Incomplete(_) => (StatusCode::BAD_GATEWAY, detail).into_response(),
+                // Said as well as written: the runtime decides from this
+                // whether a write it claimed may have landed, and must not have
+                // to read the sentence to know.
+                TransportError::Unreachable(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    [(FAILURE_HEADER, DID_NOT_COMPLETE)],
+                    detail,
+                )
+                    .into_response(),
+            }
+        }
+    }
+}
+
+/// Everything `fetch` does but saying how it went: refused, or allowed and
+/// sent with whatever the transport made of it.
+async fn vet_and_send(
     State(state): State<Arc<super::GatewayState>>,
     headers: HeaderMap,
     Json(request): Json<EgressRequest>,
-) -> Result<Json<EgressResponse>, (StatusCode, String)> {
+) -> Result<Result<EgressResponse, TransportError>, (StatusCode, String)> {
     // The token is the whole basis of this. It says which workspace is calling
     // and what its rules hashed to, and the caller cannot write either.
     //
@@ -467,7 +501,7 @@ pub async fn fetch(
             if response.status == 401 && rule.client.is_some() {
                 state.client_tokens.evict(claims.workspace_id, rule);
             }
-            Ok(Json(EgressResponse {
+            Ok(Ok(EgressResponse {
                 status: response.status,
                 headers: response.headers,
                 body: response.body,
@@ -475,18 +509,7 @@ pub async fn fetch(
                 credential_fingerprint,
             }))
         }
-        // A failed request is not a refusal: the caller was allowed, and the
-        // world did not cooperate. It comes back as text the model can act on
-        // rather than as a status it cannot see.
-        Err(e) => {
-            let detail = e.to_string();
-            match e {
-                TransportError::Malformed(_) => Err((StatusCode::BAD_REQUEST, detail)),
-                TransportError::Unreachable(_) | TransportError::Incomplete(_) => {
-                    Err((StatusCode::BAD_GATEWAY, detail))
-                }
-            }
-        }
+        Err(e) => Ok(Err(e)),
     }
 }
 
@@ -1005,11 +1028,12 @@ mod client_credentials {
                 body: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
-            let got = fetch(State(state.clone()), headers.clone(), Json(request))
+            let got = vet_and_send(State(state.clone()), headers.clone(), Json(request))
                 .await
                 .map_err(|(s, m)| format!("{s}: {m}"))
-                .expect("allowed");
-            statuses.push(got.0.status);
+                .expect("allowed")
+                .expect("sent");
+            statuses.push(got.status);
         }
 
         assert_eq!(statuses, vec![200, 401, 200], "the 401 went back as it was");
@@ -1109,9 +1133,12 @@ mod client_credentials {
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             async move {
-                fetch(State(state), headers, Json(request))
+                vet_and_send(State(state), headers, Json(request))
                     .await
-                    .map(|_| ())
+                    .and_then(|sent| {
+                        sent.map(|_| ())
+                            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))
+                    })
             }
         };
         let header = |host: &str| EgressRule {
