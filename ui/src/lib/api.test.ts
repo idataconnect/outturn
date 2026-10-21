@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, api, onSessionEnded } from './api'
+import { ApiError, NetworkError, api, isAbort, onSessionEnded } from './api'
 
 /** Answers each fetch from `script` in order, by path. */
 function serve(script: Array<[string, number]>) {
@@ -77,5 +77,30 @@ describe('a 401', () => {
     ])
     await expect(api('/v1/agents')).rejects.toBeInstanceOf(ApiError)
     expect(ended).not.toHaveBeenCalled()
+  })
+})
+
+describe('a call cut short by its own signal', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is told from an unreachable API, though both arrive as NetworkError', async () => {
+    const controller = new AbortController()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_path: string, init: RequestInit) => {
+        controller.abort()
+        throw init.signal?.reason
+      }),
+    )
+    const aborted = await api('/v1/agents', { signal: controller.signal }).catch((e) => e)
+    expect(aborted).toBeInstanceOf(NetworkError)
+    expect(isAbort(aborted)).toBe(true)
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const unreachable = await api('/v1/agents').catch((e) => e)
+    expect(unreachable).toBeInstanceOf(NetworkError)
+    expect(isAbort(unreachable)).toBe(false)
   })
 })

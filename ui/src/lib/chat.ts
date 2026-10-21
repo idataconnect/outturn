@@ -499,7 +499,10 @@ export const retryTurn = (sessionId: string, messageId: string) =>
  * miss costs one poll interval rather than an update.
  */
 export const pollEvents = (sessionId: string, after: string, signal?: AbortSignal) =>
-  api<PollResponse>(`/v1/events?session_id=${sessionId}&after=${after}`, { signal })
+  api<PollResponse>(
+    `/v1/events?session_id=${encodeURIComponent(sessionId)}&after=${encodeURIComponent(after)}`,
+    { signal },
+  )
 
 /** A file in one of a conversation's three storage scopes. */
 export type StoredFile = {

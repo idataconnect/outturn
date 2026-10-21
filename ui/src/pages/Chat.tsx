@@ -202,6 +202,19 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     storeFlag('chat.sessions', next)
   }
 
+  // On a phone the list covers the thread, so Escape puts it away.
+  useEffect(() => {
+    if (!sessionsOpen || breakpoint !== 'phone') return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setSessionsOpen(false)
+        storeFlag('chat.sessions', false)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [sessionsOpen, breakpoint])
+
   useEffect(() => {
     let cancelled = false
     void (async () => {

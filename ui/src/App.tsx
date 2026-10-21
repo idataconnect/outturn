@@ -320,6 +320,17 @@ function Shell() {
   const location = useLocation()
   useEffect(() => setDrawer(false), [location.pathname])
 
+  // And Escape, which is how a drawer that covers the page is put away without
+  // reaching for the scrim.
+  useEffect(() => {
+    if (!phone || !drawer) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setDrawer(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [phone, drawer])
+
   // Labels are shown in the drawer even though it is a phone: the drawer is
   // wide, and an icon rail the reader deliberately opened should say what its
   // icons mean.

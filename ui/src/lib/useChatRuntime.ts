@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ApiError } from './api'
 import { useDictation } from './dictation'
 import { triggerOf } from './triggers'
 import { mintedAt } from './elapsed'
@@ -733,6 +734,10 @@ export function useChatRuntime(
   /** When the thought each reply is writing now began, from its first
    *  fragment's id. The browser's half of `parts::Builder::thinking_since`. */
   const thinkingSince = useRef<Map<string, number>>(new Map())
+  /** The thinking fragments already appended, by event id. A fragment has no
+   *  index to check as a delta does, so a batch heard twice would otherwise
+   *  say everything in it twice. */
+  const reasoningSeen = useRef<Set<string>>(new Set())
   /** Replies known to be starting over, until their first delta. */
   const [retrying, setRetrying] = useState<Set<string>>(() => new Set())
   /** Why a user message's turn failed, by user message id. */
@@ -766,8 +771,15 @@ export function useChatRuntime(
   }, [sessionId])
 
   useEffect(() => {
+    // All of it belongs to the conversation that was on screen. The reload
+    // below fills `deltaProgress` again; the rest is remembered from events
+    // and would otherwise carry a call, a card or a thought into the next.
+    deltaProgress.current = new Map()
+    writingCards.current = new Map()
+    callTools.current = new Map()
+    thinkingSince.current = new Map()
+    reasoningSeen.current = new Set()
     if (!sessionId) {
-      deltaProgress.current = new Map()
       // Deferred rather than synchronous, so this does not cascade a render.
       queueMicrotask(() => {
         setMessages([])
@@ -825,14 +837,27 @@ export function useChatRuntime(
     }
 
     void (async () => {
-      let cursor: string
-      try {
-        cursor = await reload()
-        if (stopped) return
-        setStopping(false)
-      } catch {
-        if (!stopped) setMessages([])
-        return
+      let cursor: string | null = null
+      while (cursor === null) {
+        try {
+          cursor = await reload()
+          if (stopped) return
+          setStopping(false)
+          setError(null)
+        } catch (e) {
+          if (stopped) return
+          // A refused session is over: the sign-in page is already coming up,
+          // and asking again would only be refused again.
+          if (e instanceof ApiError && e.status === 401) {
+            setMessages([])
+            return
+          }
+          // Anything else -- the API restarting, a dropped connection -- says
+          // so and asks again. Giving up here left an empty thread that looked
+          // like an empty conversation, and a feed that never started.
+          setError(e instanceof Error ? e.message : 'could not load this conversation')
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        }
       }
 
       while (!stopped) {
@@ -1041,6 +1066,8 @@ export function useChatRuntime(
               // folded into content, so there is nothing for a missing fragment
               // to corrupt and a refetch would only show it twice.
               const { message_id, text } = event.payload
+              if (reasoningSeen.current.has(event.id)) continue
+              reasoningSeen.current.add(event.id)
               // Timed from the events' own ids, which are when the API stored
               // each fragment -- the clock a reload measures with, so a thought
               // reads the same duration streamed as reloaded. Measured here
