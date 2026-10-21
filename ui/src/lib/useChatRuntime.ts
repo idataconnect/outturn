@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ApiError } from './api'
 import { useDictation } from './dictation'
 import { triggerOf } from './triggers'
 import { mintedAt } from './elapsed'
@@ -825,14 +826,27 @@ export function useChatRuntime(
     }
 
     void (async () => {
-      let cursor: string
-      try {
-        cursor = await reload()
-        if (stopped) return
-        setStopping(false)
-      } catch {
-        if (!stopped) setMessages([])
-        return
+      let cursor: string | null = null
+      while (cursor === null) {
+        try {
+          cursor = await reload()
+          if (stopped) return
+          setStopping(false)
+          setError(null)
+        } catch (e) {
+          if (stopped) return
+          // A refused session is over: the sign-in page is already coming up,
+          // and asking again would only be refused again.
+          if (e instanceof ApiError && e.status === 401) {
+            setMessages([])
+            return
+          }
+          // Anything else -- the API restarting, a dropped connection -- says
+          // so and asks again. Giving up here left an empty thread that looked
+          // like an empty conversation, and a feed that never started.
+          setError(e instanceof Error ? e.message : 'could not load this conversation')
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        }
       }
 
       while (!stopped) {
