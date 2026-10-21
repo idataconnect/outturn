@@ -270,22 +270,23 @@ pub async fn rotate_secret(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let claims = authorize(&state, &headers, Authority::AgentsUpdate).await?;
-    let secret = unguessable(32);
-    let rotated = sqlx::query(
-        "update triggers set config = jsonb_set(config, '{secret}', to_jsonb($3::text)), \
-             updated_at = now() \
-         where kind = 'webhook' and workspace_id = $1 and id = $2",
-    )
-    .bind(claims.workspace_id)
-    .bind(id)
-    .bind(&secret)
-    .execute(&state.pool)
-    .await
-    .map_err(internal)?;
-
-    if rotated.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, "no such trigger".to_string()));
+    let trigger = postgres::get(&state.pool, claims.workspace_id, id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, "no such trigger".to_string()))?;
+    // A mail hook reached by its address alone checks no secret, and one
+    // minted for it would be shown as if it guarded something. Moving it to
+    // a scheme that checks one is what makes one.
+    if trigger.scheme == "path" {
+        return Err((
+            StatusCode::CONFLICT,
+            "this trigger is reached by its address alone and has no secret to rotate".to_string(),
+        ));
     }
+    let secret = unguessable(32);
+    postgres::set_secret(&state.pool, id, &secret)
+        .await
+        .map_err(internal)?;
     tracing::info!(actor = %claims.subject, trigger_id = %id, "webhook secret rotated");
     Ok(Json(serde_json::json!({ "secret": secret })))
 }

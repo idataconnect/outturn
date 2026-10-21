@@ -164,7 +164,7 @@ pub async fn update(
 
 /// Replaces a hook's secret, or clears it for a scheme that checks none.
 pub async fn set_secret(pool: &PgPool, id: Uuid, secret: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("update triggers set config = jsonb_set(config, '{secret}', to_jsonb($2::text)) where id = $1")
+    sqlx::query("update triggers set config = jsonb_set(config, '{secret}', to_jsonb($2::text)), updated_at = now() where id = $1")
         .bind(id)
         .bind(secret)
         .execute(pool)

@@ -13654,7 +13654,8 @@ async fn mail_starts_a_turn_from_an_allowed_sender_once() {
 
 /// A mail hook keeps a secret exactly when its scheme checks one: none for its
 /// address alone, one made -- and shown once -- when it moves to a scheme that
-/// checks one, and none again when it moves back.
+/// checks one, and none again when it moves back. Its secret rotates while it
+/// has one, and rotating one reached by its address alone is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mail_hook_keeps_a_secret_only_when_its_scheme_checks_one() {
     let h = harness_or_skip!();
@@ -13709,6 +13710,23 @@ async fn a_mail_hook_keeps_a_secret_only_when_its_scheme_checks_one() {
         .to_string();
     assert_eq!(stored().await, shown);
 
+    let rotate = || async {
+        h.post(
+            &format!("/v1/webhook-triggers/{id}/rotate"),
+            Some(&token),
+            "",
+        )
+        .await
+    };
+    let (status, rotated) = rotate().await;
+    assert_eq!(status, StatusCode::OK, "a mail hook's secret rotates: {rotated}");
+    let rotated = serde_json::from_str::<Value>(&rotated).unwrap()["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(rotated, shown);
+    assert_eq!(stored().await, rotated);
+
     let (_, back) = h
         .patch(
             &format!("/v1/webhook-triggers/{id}"),
@@ -13723,6 +13741,10 @@ async fn a_mail_hook_keeps_a_secret_only_when_its_scheme_checks_one() {
             .is_none()
     );
     assert_eq!(stored().await, "", "cleared when nothing checks it");
+
+    let (status, refused) = rotate().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(stored().await, "", "and none minted by rotating");
     finish!(h);
 }
 
