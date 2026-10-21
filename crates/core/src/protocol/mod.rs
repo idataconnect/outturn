@@ -32,6 +32,13 @@ pub const MALFORMED_REPLY: &str = "malformed-reply";
 /// docs/idempotency.md. A header rather than the sentence beside it, which is
 /// written for a model and may be reworded.
 pub const DID_NOT_COMPLETE: &str = "did-not-complete";
+/// An agent's outbound request never left: the connection to its host was not
+/// made, so not a byte of it was written and nothing can have landed. Said on
+/// the egress route's 502 beside `DID_NOT_COMPLETE`, as its opposite, so an
+/// approved call that could not be sent is sent again rather than handed to a
+/// person as an outcome nobody knows. A runtime that predates it reads it as
+/// neither, which releases a claimed write -- also right for one never sent.
+pub const NOT_SENT: &str = "not-sent";
 
 /// What a caller makes of a failed response from the gateway: its body, which
 /// is already the sentence `failure_message` wrote, passed on as it is -- a

@@ -129,7 +129,7 @@ struct GatewayInner {
     egress: Mutex<Option<(u16, String)>>,
     /// Where set, `/v1/egress` fails as the gateway does when the transport
     /// did: a 502 with this sentence, said to have not completed or not.
-    egress_failure: Mutex<Option<(bool, String)>>,
+    egress_failure: Mutex<Option<(Option<&'static str>, String)>>,
     /// Requests the agent asked the gateway to make.
     fetched: Mutex<Vec<serde_json::Value>>,
     /// Signaled when a held request arrives, and what lets it go.
@@ -204,7 +204,20 @@ impl FakeGateway {
     /// transport failed: a 502 with `detail`, and the header saying the
     /// request did not complete where `did_not_complete`.
     pub fn fail_egress(&self, did_not_complete: bool, detail: &str) {
-        *self.state.egress_failure.lock().unwrap() = Some((did_not_complete, detail.to_string()));
+        let mark = did_not_complete.then_some(outturn::protocol::DID_NOT_COMPLETE);
+        *self.state.egress_failure.lock().unwrap() = Some((mark, detail.to_string()));
+    }
+
+    /// Fails every outbound request the way the gateway does when the
+    /// connection was never made: a 502 marked as not sent.
+    pub fn fail_egress_unsent(&self, detail: &str) {
+        *self.state.egress_failure.lock().unwrap() =
+            Some((Some(outturn::protocol::NOT_SENT), detail.to_string()));
+    }
+
+    /// Answers outbound requests normally again.
+    pub fn heal_egress(&self) {
+        *self.state.egress_failure.lock().unwrap() = None;
     }
 
     /// The outbound requests the agent asked for, as the gateway received
@@ -219,13 +232,13 @@ async fn egress(
     Json(request): Json<serde_json::Value>,
 ) -> Response {
     let failure = state.egress_failure.lock().unwrap().clone();
-    if let Some((did_not_complete, detail)) = failure {
+    if let Some((mark, detail)) = failure {
         state.fetched.lock().unwrap().push(request);
         let mut response = (StatusCode::BAD_GATEWAY, detail).into_response();
-        if did_not_complete {
+        if let Some(mark) = mark {
             response.headers_mut().insert(
                 outturn::protocol::FAILURE_HEADER,
-                axum::http::HeaderValue::from_static(outturn::protocol::DID_NOT_COMPLETE),
+                axum::http::HeaderValue::from_static(mark),
             );
         }
         return response;

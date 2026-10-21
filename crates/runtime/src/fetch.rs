@@ -53,6 +53,11 @@ pub struct Unanswered {
     /// so a write may have landed. Read from the gateway's failure header, or
     /// known here when the gateway itself could not be heard from.
     pub did_not_complete: bool,
+    /// Whether the gateway said the request never left: the connection was not
+    /// made, so nothing can have landed. Never true beside `did_not_complete`,
+    /// and never assumed here -- a gateway this cannot hear from may have sent
+    /// it.
+    pub never_sent: bool,
 }
 
 impl std::fmt::Display for Unanswered {
@@ -66,6 +71,7 @@ impl Unanswered {
         Unanswered {
             message,
             did_not_complete: false,
+            never_sent: false,
         }
     }
 }
@@ -99,6 +105,7 @@ pub async fn through_gateway(
                 strip_url(&e.to_string())
             ),
             did_not_complete: true,
+            never_sent: false,
         })?;
 
     let status = response.status();
@@ -111,10 +118,16 @@ pub async fn through_gateway(
 
     // The gateway's refusals are already written for a reader; what would be
     // unhelpful is a bare status where an explanation was sent.
-    let did_not_complete = response
+    let mark = response
         .headers()
         .get(outturn_core::protocol::FAILURE_HEADER)
+        .cloned();
+    let did_not_complete = mark
+        .as_ref()
         .is_some_and(|v| v == outturn_core::protocol::DID_NOT_COMPLETE);
+    let never_sent = mark
+        .as_ref()
+        .is_some_and(|v| v == outturn_core::protocol::NOT_SENT);
     let detail = response.text().await.unwrap_or_default();
     Err(Unanswered {
         message: if detail.is_empty() {
@@ -123,6 +136,7 @@ pub async fn through_gateway(
             strip_url(&detail)
         },
         did_not_complete,
+        never_sent,
     })
 }
 

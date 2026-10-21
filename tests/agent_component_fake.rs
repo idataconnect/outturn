@@ -3593,6 +3593,10 @@ async fn a_write_stays_attempted_when_the_gateway_says_it_did_not_complete() {
     let held =
         one_booking(|g| g.fail_egress(false, "the request did not complete, in other words")).await;
     assert!(held.is_none(), "released: {held:?}");
+
+    // Never sent is the opposite mark, and nothing can have landed.
+    let held = one_booking(|g| g.fail_egress_unsent("connection refused")).await;
+    assert!(held.is_none(), "released: {held:?}");
 }
 
 /// A recipient's 4xx releases the claim, since nothing happened; a 5xx leaves

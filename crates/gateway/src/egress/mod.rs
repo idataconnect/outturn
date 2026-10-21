@@ -37,7 +37,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use outturn_core::protocol::{DID_NOT_COMPLETE, FAILURE_HEADER};
+use outturn_core::protocol::{DID_NOT_COMPLETE, FAILURE_HEADER, NOT_SENT};
 use serde::{Deserialize, Serialize};
 
 use outturn_core::egress::commit;
@@ -48,7 +48,8 @@ use transport::{TransportError, VettedRequest};
 /// How long a request may take before it is abandoned.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How much of a response comes back.
+/// How much of a response comes back. One figure with what a held request's
+/// body may be, so what is carried one way is carried the other.
 const FETCH_BODY_LIMIT: usize = 256 * 1024;
 
 /// How much of a document the API fetches comes back: as much as the OpenAPI
@@ -126,6 +127,15 @@ pub async fn fetch(
                 TransportError::Unreachable(_) => (
                     StatusCode::BAD_GATEWAY,
                     [(FAILURE_HEADER, DID_NOT_COMPLETE)],
+                    detail,
+                )
+                    .into_response(),
+                // Said too, and differently: a request that never left is one
+                // an approved call can be sent again for, where one that may
+                // have landed is not.
+                TransportError::NotSent(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    [(FAILURE_HEADER, NOT_SENT)],
                     detail,
                 )
                     .into_response(),

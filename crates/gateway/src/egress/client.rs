@@ -272,9 +272,9 @@ async fn exchange(
 
     let response = transport.send(vetted).await.map_err(|e| match e {
         TransportError::Malformed(_) => ExchangeError::Unusable,
-        TransportError::Unreachable(_) | TransportError::Incomplete(_) => {
-            ExchangeError::Unavailable
-        }
+        TransportError::NotSent(_)
+        | TransportError::Unreachable(_)
+        | TransportError::Incomplete(_) => ExchangeError::Unavailable,
     })?;
     if response.truncated {
         return Err(ExchangeError::Unusable);

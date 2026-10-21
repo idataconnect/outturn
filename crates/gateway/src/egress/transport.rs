@@ -66,7 +66,10 @@ pub struct TransportResponse {
 /// request fails, and they are what the breaker reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
-    /// The endpoint could not be reached at all.
+    /// The connection was never made, so no byte of the request left: refused,
+    /// unresolvable, or a handshake that failed. Nothing can have landed.
+    NotSent(String),
+    /// The request went, or may have, and no answer came back.
     Unreachable(String),
     /// It answered, and the answer did not arrive whole.
     Incomplete(String),
@@ -77,6 +80,9 @@ pub enum TransportError {
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            TransportError::NotSent(detail) => {
+                write!(f, "the request could not be sent: {detail}")
+            }
             TransportError::Unreachable(detail) => {
                 write!(f, "the request did not complete: {detail}")
             }
@@ -124,10 +130,18 @@ impl EgressTransport for Direct {
             outgoing = outgoing.body(body);
         }
 
-        let response = outgoing
-            .send()
-            .await
-            .map_err(|e| TransportError::Unreachable(strip_url(&e.to_string())))?;
+        // Told apart by the step that failed. A connect error is raised before
+        // the request is written, so nothing went; anything later -- a reset
+        // mid-write, a timeout waiting on the answer -- may have landed, and
+        // whoever decides whether to send it again has to know which.
+        let response = outgoing.send().await.map_err(|e| {
+            let detail = strip_url(&e.to_string());
+            if e.is_connect() {
+                TransportError::NotSent(detail)
+            } else {
+                TransportError::Unreachable(detail)
+            }
+        })?;
 
         let status = response.status().as_u16();
         let headers = response
@@ -265,6 +279,57 @@ mod tests {
                 .to_string()
                 .contains("could not prepare")
         );
+    }
+
+    fn vetted(addr: SocketAddr) -> VettedRequest {
+        VettedRequest {
+            method: reqwest::Method::POST,
+            url: format!("http://held.example.com:{}/charge", addr.port())
+                .parse()
+                .unwrap(),
+            host: "held.example.com".into(),
+            addrs: vec![addr],
+            headers: Default::default(),
+            body: Some("{}".into()),
+            timeout: Duration::from_secs(30),
+            body_limit: 1024,
+        }
+    }
+
+    /// A refused connection is one nothing was written to, and says so: it is
+    /// what lets an approved call be sent again rather than handed to a person
+    /// as an outcome nobody knows.
+    #[tokio::test]
+    async fn a_connection_never_made_is_not_sent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let failed = Direct
+            .send(vetted(addr))
+            .await
+            .expect_err("nothing listens");
+        assert!(matches!(failed, TransportError::NotSent(_)), "{failed:?}");
+    }
+
+    /// One that was accepted and then dropped before answering may have
+    /// landed, so it is not called unsent.
+    #[tokio::test]
+    async fn a_request_read_and_never_answered_may_have_landed() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            // Dropped with the request read and nothing said.
+        });
+        let failed = Direct.send(vetted(addr)).await.expect_err("never answered");
+        assert!(
+            matches!(failed, TransportError::Unreachable(_)),
+            "{failed:?}"
+        );
+        server.await.unwrap();
     }
 
     #[test]
