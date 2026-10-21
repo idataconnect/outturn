@@ -230,6 +230,42 @@ pub fn normalize_host(input: &str) -> Result<String, String> {
     if let Some((_, after)) = host.rsplit_once('@') {
         host = after.to_string();
     }
+    // An IPv6 literal is full of colons, so the last hextet is not a port. It
+    // is bracketed when a port follows (`[::1]:8080`) and bare otherwise.
+    let mut v6 = None;
+    if let Some(rest) = host.strip_prefix('[') {
+        let (inner, after) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("{host} is not a hostname"))?;
+        let port = after.strip_prefix(':').unwrap_or(after);
+        if !port.chars().all(|c| c.is_ascii_digit())
+            || (!after.is_empty() && !after.starts_with(':'))
+        {
+            return Err(format!("{host} is not a hostname"));
+        }
+        v6 = Some(
+            inner
+                .parse::<std::net::Ipv6Addr>()
+                .map_err(|_| format!("{host} is not a hostname"))?,
+        );
+    } else if host.matches(':').count() > 1 {
+        v6 = Some(
+            host.parse::<std::net::Ipv6Addr>()
+                .map_err(|_| format!("{host} is not a hostname"))?,
+        );
+    }
+    if let Some(addr) = v6 {
+        if is_forbidden(IpAddr::V6(addr)) {
+            return Err(format!(
+                "{addr} is inside the network running this service, so a rule for it \
+                 would never permit anything"
+            ));
+        }
+        // As a URL spells it, since `host_str()` is what a rule is matched
+        // against and it keeps the brackets.
+        return Ok(format!("[{addr}]"));
+    }
+
     // A port says which door, not which building, and a rule is about the
     // building.
     if let Some((before, after)) = host.rsplit_once(':')
@@ -707,6 +743,32 @@ mod tests {
         assert!(normalize_host("169.254.169.254").is_err());
         // A public address is a legitimate thing to name.
         assert_eq!(normalize_host("1.1.1.1").expect("public"), "1.1.1.1");
+    }
+
+    #[test]
+    fn an_ipv6_literal_is_a_host_and_not_a_host_with_a_port() {
+        // Spelled as a URL spells it, because that is what a rule is matched
+        // against.
+        for typed in [
+            "2001:db8::1",
+            "[2001:db8::1]",
+            "[2001:db8::1]:8080",
+            "https://[2001:DB8::1]:443/v1",
+            "2001:0db8:0:0:0:0:0:1",
+        ] {
+            assert_eq!(normalize_host(typed).expect(typed), "[2001:db8::1]");
+        }
+        assert!(host_matches("[2001:db8::1]", "[2001:db8::1]"));
+        for typed in [
+            "[::1]:8080",
+            "::1",
+            "[fd00::1]",
+            "[2001:db8::1",
+            "[2001:db8::1]x",
+            "1:2:3",
+        ] {
+            assert!(normalize_host(typed).is_err(), "{typed:?} was accepted");
+        }
     }
 
     #[test]
