@@ -96,6 +96,7 @@ export default function Login() {
               {choices.map((workspace) => (
                 <li key={workspace.workspace_id}>
                   <button
+                    type="button"
                     onClick={() => void submit(workspace.workspace_id)}
                     disabled={pending}
                     className="w-full flex items-center gap-3 p-4 text-left hover:bg-surface-50 dark:hover:bg-surface-800/50 disabled:opacity-50"
