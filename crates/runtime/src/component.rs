@@ -2928,14 +2928,18 @@ impl AgentRunner {
                 // Sent, and no refusal found to put the answer in -- trimmed
                 // away, or not recognized. Said anyway, as a note: a model
                 // left with only the stale refusal makes the call itself, and
-                // is asked about it a second time.
+                // is asked about it a second time. Every later turn is told
+                // the same by the API (`worker::answered`).
                 if !replaced {
                     let note = Message {
                         role: "user".into(),
-                        parts: vec![ContentPart::Text(format!(
-                            "[A request this conversation was waiting on: {} {}. {told}]",
-                            call.method, call.url
-                        ))],
+                        parts: vec![ContentPart::Text(
+                            outturn_core::egress::held::unmatched_note(
+                                &call.method,
+                                &call.url,
+                                &told,
+                            ),
+                        )],
                         tool_call_id: None,
                     };
                     // Before the prompt where the prompt is last; after

@@ -398,7 +398,12 @@ the design above, and why:
   it, and finding a refusal grants nothing. Each held request answers one
   refusal. The runtime puts the answer in the conversation it was handed, and
   `worker::answered` puts the same sentence (`egress::held::result_text`) there
-  on every later turn.
+  on every later turn. Where no refusal is found -- trimmed away, or not
+  recognized -- both say it in a note naming the request
+  (`egress::held::unmatched_note`): the runtime before the turn's prompt, and
+  the API, on later turns, before the first thing written after the send was
+  settled (`settled_at`, migration 0061), so the note stays where it happened
+  and no later turn is left a stale refusal with nothing beside it.
 - **Reopening is a new item.** A turn's attempt is chosen by whether its
   approval was answered (`grant::was_answered`), so turning the answered item
   back to pending would unanswer it. *Approved, but could not be sent* and

@@ -14677,3 +14677,53 @@ async fn a_resend_starts_a_turn_that_sends_it() {
 
     finish!(h);
 }
+
+/// Sent, with no refusal in the conversation to put the answer in, the model
+/// is told on the turns after as well -- not only on the one that sent it,
+/// after which it was left a stale refusal and nothing to explain it.
+#[tokio::test]
+async fn a_sent_request_is_still_told_on_a_later_turn() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held,
+        serde_json::json!({ "outcome": "answered", "status": 201, "body": "{\"charge\":\"ch_1\"}" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    outturn::jobs::complete(&h.db.pool, job, Some(lease))
+        .await
+        .expect("complete");
+
+    let session: Uuid =
+        sqlx::query_scalar("select session_id from held_requests where id = $1::uuid")
+            .bind(&held)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("session");
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(&admin),
+            r#"{"content":"Did it go through?"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (_, _, assignment) = take_assignment(&h).await;
+    let conversation = assignment["conversation"].to_string();
+    assert!(
+        conversation.contains("A request this conversation was waiting on"),
+        "{conversation}"
+    );
+    assert!(conversation.contains("ch_1"), "{conversation}");
+
+    finish!(h);
+}

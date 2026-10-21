@@ -126,6 +126,13 @@ pub fn result_text(method: &str, url: &str, approved_by: &str, outcome: &Outcome
     }
 }
 
+/// What the model reads where no refusal was found to put an outcome in: the
+/// request named, since nothing beside it says which call it was. Written by
+/// the runtime on the turn that sends it and by the API on every turn after.
+pub fn unmatched_note(method: &str, url: &str, told: &str) -> String {
+    format!("[A request this conversation was waiting on: {method} {url}. {told}]")
+}
+
 /// What the model reads while an approved request is still waiting for a turn
 /// to send it -- one that never left, between tries.
 pub fn pending_text(approved_by: &str) -> String {

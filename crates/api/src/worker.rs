@@ -674,6 +674,12 @@ fn canonical(value: Option<&serde_json::Value>) -> Option<String> {
 /// -- and the transcript a reader sees still says it was refused and then
 /// approved.
 ///
+/// One whose refusal is not found -- trimmed away, or not recognized -- is
+/// told anyway, in a note where it happened: before the first entry written
+/// after its send was settled, with that entry's source so a cut keeps the two
+/// together. The runtime says the same on the turn that sends it; this says it
+/// on every turn after, which were left the stale refusal before.
+///
 /// An approval with no held request behind it -- raised by a runtime that
 /// relayed only the shape, before requests were held -- is still answered the
 /// old way: where a grant this turn holds covers the call, the instruction not
@@ -685,7 +691,7 @@ fn answered(
     gates: &outturn_core::egress::gate::Gates,
     granted: &[outturn_core::egress::grant::Granted],
     held: &[super::held::Held],
-    sources: Option<&[Uuid]>,
+    mut sources: Option<&mut Vec<Uuid>>,
 ) -> (
     Vec<serde_json::Value>,
     std::collections::HashMap<Uuid, String>,
@@ -753,6 +759,7 @@ fn answered(
                 return false;
             }
             if sources
+                .as_deref()
                 .and_then(|s| s.get(*i))
                 .is_some_and(|source| *source > h.id)
             {
@@ -815,6 +822,54 @@ fn answered(
             }
         }
         out.push(message);
+    }
+
+    // Settled with no refusal found to say so in.
+    let found: std::collections::HashSet<Uuid> = answering.values().map(|h| h.id).collect();
+    let mut notes: Vec<(usize, serde_json::Value)> = Vec::new();
+    for h in held.iter().filter(|h| !found.contains(&h.id)) {
+        let Some(told) = h.told() else {
+            continue;
+        };
+        let after = |source: &Uuid| match (h.settled_at, source.get_timestamp()) {
+            (Some(at), Some(written)) => {
+                let (secs, nanos) = written.to_unix();
+                chrono::DateTime::from_timestamp(secs as i64, nanos)
+                    .is_some_and(|written| written > at)
+            }
+            _ => false,
+        };
+        // Before the first entry a person or the platform wrote after it was
+        // settled; failing that, before the prompt where the prompt is last,
+        // and at the end otherwise -- a call and its result are never split.
+        let at = sources
+            .as_deref()
+            .and_then(|s| {
+                (0..out.len()).find(|&i| out[i]["role"] == "user" && s.get(i).is_some_and(after))
+            })
+            .unwrap_or_else(|| match out.last() {
+                Some(last) if last["role"] == "user" => out.len() - 1,
+                _ => out.len(),
+            });
+        let note = outturn_core::egress::held::unmatched_note(&h.method, &h.url, &told);
+        notes.push((
+            at,
+            serde_json::json!({
+                "role": "user",
+                "parts": [{"type": "text", "text": format!("{PLATFORM_NOTE}\n\n{note}")}],
+            }),
+        ));
+    }
+    // From the back, so each index still means what it did; held requests
+    // are oldest first, so two at one place keep that order.
+    for (at, note) in notes.into_iter().rev() {
+        if let Some(sources) = sources.as_mut() {
+            let source = sources.get(at).or(sources.last()).copied();
+            if let Some(source) = source {
+                sources.insert(at.min(sources.len()), source);
+            }
+        }
+        out.insert(at, note);
     }
     (out, sending)
 }
@@ -2333,8 +2388,8 @@ impl Worker {
         // Sources come from the unmarked projection: `marked` inserts its one
         // entry immediately before the final message, which is past anything a
         // summary cuts at, so the indices a cut uses mean the same in both.
-        let (projected, sources) = projected_with_sources(&history);
-        let (projected, sending) = answered(projected, &gates, &granted, &held, Some(&sources));
+        let (projected, mut sources) = projected_with_sources(&history);
+        let (projected, sending) = answered(projected, &gates, &granted, &held, Some(&mut sources));
         let held_calls: Vec<outturn_core::egress::held::HeldCall> = waiting
             .iter()
             .map(|h| h.call(sending.get(&h.id).cloned()))
@@ -3756,6 +3811,7 @@ mod projection_tests {
             headers: Vec::new(),
             body: Some(BOOKING_A.into()),
             outcome,
+            settled_at: None,
             approved_by: "Dana Reyes".into(),
         }
     }
@@ -3883,7 +3939,13 @@ mod projection_tests {
         let sources: Vec<Uuid> = replies.iter().flat_map(|r| [*r, *r]).collect();
         let held = [held_charge("approved", None)];
 
-        let (_, sending) = answered(projected, &charge_gate(), &[], &held, Some(&sources));
+        let (_, sending) = answered(
+            projected,
+            &charge_gate(),
+            &[],
+            &held,
+            Some(&mut sources.clone()),
+        );
         assert_eq!(
             sending.get(&held[0].id).map(String::as_str),
             Some("this_one"),
@@ -3898,7 +3960,13 @@ mod projection_tests {
         let mut projected = refused_operation("old_other", older_other);
         projected.extend(refused_operation("old_same", older_same));
         projected.extend(refused_operation("this_one", BOOKING_A));
-        let (out2, _) = answered(projected, &charge_gate(), &[], &spent, Some(&sources));
+        let (out2, _) = answered(
+            projected,
+            &charge_gate(),
+            &[],
+            &spent,
+            Some(&mut sources.clone()),
+        );
         let results = results(&out2);
         assert!(
             results[2].contains("Approved by Dana Reyes and sent:"),
@@ -3975,6 +4043,48 @@ mod projection_tests {
         assert_eq!(canonical(None), None);
     }
 
+    /// Sent, and its refusal nowhere to be found: every later turn is still
+    /// told what came back, in a note where it happened, and never left the
+    /// stale refusal to act on.
+    #[test]
+    fn a_sent_request_with_no_refusal_found_is_told_on_every_later_turn() {
+        let before = Uuid::now_v7();
+        let spent = [super::super::held::Held {
+            settled_at: Some(chrono::Utc::now()),
+            ..held_charge("spent", Some(charged()))
+        }];
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let after = Uuid::now_v7();
+        let projected = vec![
+            serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "Charge it."}]}),
+            serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": "Asked."}]}),
+            serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "Done yet?"}]}),
+            serde_json::json!({"role": "assistant", "parts": [{"type": "text", "text": "Yes."}]}),
+            serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "Thanks."}]}),
+        ];
+        let mut sources = vec![before, before, after, after, after];
+        let (out, _) = answered(projected, &charge_gate(), &[], &spent, Some(&mut sources));
+        assert_eq!(out.len(), 6, "{out:?}");
+        assert_eq!(sources.len(), 6, "a source for the note too");
+        let note = out[2]["parts"][0]["text"].as_str().unwrap();
+        assert!(note.contains("Approved by Dana Reyes and sent:"), "{note}");
+        assert!(note.contains("ch_1"), "{note}");
+        assert!(note.starts_with(PLATFORM_NOTE), "{note}");
+        assert_eq!(out[3]["parts"][0]["text"], "Done yet?");
+        assert_eq!(sources[2], after, "kept with what follows it");
+
+        // Waiting, it is the runtime's to say; nothing is added here.
+        let waiting = [held_charge("approved", None)];
+        let (out, _) = answered(
+            vec![serde_json::json!({"role": "user", "parts": [{"type": "text", "text": "Go."}]})],
+            &charge_gate(),
+            &[],
+            &waiting,
+            None,
+        );
+        assert_eq!(out.len(), 1);
+    }
+
     /// A refusal written after the request was held is a fresh ask with a
     /// question of its own, and is not answered by the older yes.
     #[test]
@@ -3982,8 +4092,8 @@ mod projection_tests {
         let held = [held_charge("approved", None)];
         let after = Uuid::now_v7();
         let projected = refused_operation("later", BOOKING_A);
-        let sources = vec![after, after];
-        let (_, sending) = answered(projected, &charge_gate(), &[], &held, Some(&sources));
+        let mut sources = vec![after, after];
+        let (_, sending) = answered(projected, &charge_gate(), &[], &held, Some(&mut sources));
         assert!(sending.is_empty(), "{sending:?}");
     }
 

@@ -157,6 +157,9 @@ pub struct Held {
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
     pub outcome: Option<Outcome>,
+    /// When a send of it was last settled, which is where a note about it
+    /// goes when its refusal cannot be found.
+    pub settled_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Who said yes, by name, as the model is told it.
     pub approved_by: String,
 }
@@ -361,11 +364,12 @@ pub async fn in_session(
         serde_json::Value,
         Option<String>,
         Option<serde_json::Value>,
+        Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
     );
     let rows: Vec<Row> = sqlx::query_as(
         "select h.id, h.item_id, h.requires, h.shape, h.state, h.attempts, h.operation, \
-                h.method, h.url, h.headers, h.body, h.outcome, u.display_name \
+                h.method, h.url, h.headers, h.body, h.outcome, h.settled_at, u.display_name \
          from held_requests h left join users u on u.id = h.approved_by \
          where h.workspace_id = $1 and h.session_id = $2 and h.state not in ('held', 'declined') \
          order by h.id",
@@ -390,6 +394,7 @@ pub async fn in_session(
                 headers,
                 body,
                 outcome,
+                settled_at,
                 name,
             )| Held {
                 id,
@@ -404,6 +409,7 @@ pub async fn in_session(
                 headers: serde_json::from_value(headers).unwrap_or_default(),
                 body,
                 outcome: outcome.and_then(|o| serde_json::from_value(o).ok()),
+                settled_at,
                 approved_by: name.unwrap_or_else(|| SOMEBODY.to_string()),
             },
         )
@@ -583,7 +589,7 @@ async fn settle(
     // -- a turn retried after its pod was lost, say -- produce one answer.
     // Waiting as well as going, for a runtime that reports without marking.
     let updated = sqlx::query(
-        "update held_requests set state = $3, outcome = $4, \
+        "update held_requests set state = $3, outcome = $4, settled_at = now(), \
                 attempts = attempts + case when $5 then 1 else 0 end, \
                 spent_at = case when $6 then now() else spent_at end \
          where workspace_id = $1 and id = $2 and state in ('approved', 'sending')",
