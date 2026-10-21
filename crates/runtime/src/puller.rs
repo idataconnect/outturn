@@ -325,6 +325,29 @@ impl Puller {
                         calls: request.held.clone(),
                         token,
                         gates,
+                        begin: Some({
+                            let api_url = self.api_url.clone();
+                            let runtime_key = self.runtime_key.clone();
+                            let http = self.http.clone();
+                            Arc::new(move |held_id: Uuid| {
+                                let api_url = api_url.clone();
+                                let runtime_key = runtime_key.clone();
+                                let http = http.clone();
+                                Box::pin(async move {
+                                    begin_held(
+                                        &http,
+                                        &api_url,
+                                        &runtime_key,
+                                        lease,
+                                        outturn_core::egress::held::Sending { job_id, held_id },
+                                    )
+                                    .await
+                                })
+                                    as std::pin::Pin<
+                                        Box<dyn std::future::Future<Output = bool> + Send>,
+                                    >
+                            })
+                        }),
                         report: Some({
                             let api_url = self.api_url.clone();
                             let runtime_key = self.runtime_key.clone();
@@ -724,6 +747,43 @@ impl crate::component::InvocationRecord for ApiInvocations {
                 tracing::warn!(error = %e, "could not record what a declared write came to");
             }
         })
+    }
+}
+
+/// Tells the API a held request is about to go. True only when it said so
+/// back: a request it could not be told about is not sent, since a pod lost
+/// mid-send would then leave it looking unsent to the next turn.
+async fn begin_held(
+    http: &reqwest::Client,
+    api_url: &str,
+    runtime_key: &str,
+    lease: Uuid,
+    sending: outturn_core::egress::held::Sending,
+) -> bool {
+    let job_id = sending.job_id;
+    let response = http
+        .post(format!(
+            "{}/v1/work/held/sending",
+            api_url.trim_end_matches('/')
+        ))
+        .bearer_auth(runtime_key)
+        .header(
+            outturn_core::protocol::work::LEASE_HEADER,
+            lease.to_string(),
+        )
+        .json(&sending)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) => {
+            tracing::warn!(%job_id, status = %response.status(), "the API would not mark a held request as going");
+            false
+        }
+        Err(e) => {
+            tracing::warn!(%job_id, error = %e, "could not mark a held request as going");
+            false
+        }
     }
 }
 

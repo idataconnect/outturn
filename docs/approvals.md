@@ -422,10 +422,16 @@ the design above, and why:
   written when the answer is reported. A held request's grant is never an
   `approval_grants` row -- it is derived from the request each turn it waits --
   so that table's `spent_at` stays as reserved as it was.
-- **A send and its report are two steps.** A pod lost between them leaves the
-  request approved, and the turn's retry sends it again: a declared write is
-  answered from the idempotency record, but an undeclared `fetch_url` could go
-  twice -- the same exposure any retried turn has.
+- **Marked as going before it goes.** The runtime tells the API it is sending
+  a held request (`POST /v1/work/held/sending`, under the lease, turning
+  `approved` into `sending` once) and sends only if the API agreed. A pod lost
+  before it reports leaves the request `sending`, and before a turn of that
+  conversation is next prepared -- which no turn still sending it would allow
+  -- `held::recover` settles it as sent with no answer: sent again only where
+  the operation sends the recipient a key to dedupe on, and otherwise raised
+  as *outcome unknown*. A plain `fetch_url` is never sent twice this way.
+  Reports are accepted from `approved` as well, for a runtime that does not
+  mark.
 
 ### Not settled
 

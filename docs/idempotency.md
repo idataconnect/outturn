@@ -386,7 +386,10 @@ out. Answered, it is `completed`. Never sent -- the gateway's `not-sent` mark,
 a connection that failed before a byte was written -- nothing happened, and it
 is sent again. Sent with no answer is `attempted`: sent again only where the
 operation carries a key the recipient dedupes on, and otherwise put in front of
-a person as *outcome unknown*, to check and then resend or mark done.
+a person as *outcome unknown*, to check and then resend or mark done. A held
+request is marked `sending` with the API before it goes, so a pod lost before
+it reports leaves it `attempted` too, rather than looking unsent to the turn's
+retry -- which would otherwise send an undeclared `fetch_url` twice.
 
 An approval raised before requests were held still takes the old path:
 `worker::answered` retracts the sentence on the resuming turn, replacing it with

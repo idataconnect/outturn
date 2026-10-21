@@ -14543,3 +14543,80 @@ async fn a_request_with_no_answer_is_asked_about_and_can_be_marked_done() {
 
     finish!(h);
 }
+
+async fn mark_sending(h: &Harness, job: Uuid, lease: Uuid, held: &str) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/work/held/sending")
+        .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+        .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "job_id": job, "held_id": held }).to_string(),
+        ))
+        .unwrap();
+    h.send(req).await
+}
+
+/// A pod lost between sending an approved request and reporting it leaves the
+/// request marked as going. The turn's retry does not send it again -- nothing
+/// would dedupe this one -- and a person is asked to check instead.
+#[tokio::test]
+async fn a_request_lost_in_flight_is_not_sent_again() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+
+    let (status, body) = mark_sending(&h, job, lease, &held).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(held_state(&h, &held).await.0, "sending");
+    // Once: a second runtime is not told to go too.
+    let (status, _) = mark_sending(&h, job, lease, &held).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // The pod is lost before it reports, and the turn goes back to the queue.
+    outturn::jobs::release(
+        &h.db.pool,
+        job,
+        std::time::Duration::ZERO,
+        outturn::jobs::MAX_RELEASES,
+        Some(lease),
+    )
+    .await
+    .expect("release");
+
+    let (job, lease, assignment) = take_assignment(&h).await;
+    assert!(
+        assignment["held"].as_array().is_none_or(Vec::is_empty),
+        "handed out to be sent again: {assignment}"
+    );
+    assert_eq!(held_state(&h, &held).await, ("unknown".into(), 0, false));
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let followup = items(&queue)
+        .into_iter()
+        .find(|i| i["payload"]["followup"] == "unknown")
+        .unwrap_or_else(|| panic!("nobody asked to check: {queue}"));
+    assert!(
+        followup["payload"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("lost before it could say"),
+        "{followup}"
+    );
+
+    // And a report from the lost pod arriving late is refused, not recorded.
+    let (status, _) = report_held(
+        &h,
+        job,
+        lease,
+        &held,
+        serde_json::json!({ "outcome": "answered", "status": 201, "body": "late" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    finish!(h);
+}

@@ -67,6 +67,21 @@ pub enum Outcome {
     Refused { message: String },
 }
 
+/// What a runtime says just before it sends a held request: that it is going.
+///
+/// Said first, so a pod lost between sending and reporting leaves the request
+/// marked as sent rather than as still to send, and the turn's retry does not
+/// send it a second time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sending {
+    pub job_id: Uuid,
+    pub held_id: Uuid,
+}
+
+/// Why a request marked as going has no outcome: the turn sending it was lost
+/// before it could say.
+pub const LOST_IN_FLIGHT: &str = "the turn sending it was lost before it could say what came back";
+
 /// What a runtime reports about one held request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {

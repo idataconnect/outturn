@@ -167,6 +167,12 @@ impl Held {
         self.state == "approved"
     }
 
+    /// Whether a runtime said it was sending it and has not said what came of
+    /// it.
+    fn in_flight(&self) -> bool {
+        self.state == "sending"
+    }
+
     /// The grant that lets exactly this request through the gate it was
     /// refused by.
     pub fn grant(&self) -> outturn_core::egress::grant::Granted {
@@ -321,6 +327,69 @@ fn next(outcome: &Outcome, attempts_before: i32, keyed: bool) -> Next {
     }
 }
 
+/// Marks a held request as going, just before a runtime sends it.
+///
+/// Under the lease, as the report is. Conditional on still waiting, so two
+/// runtimes cannot both be told to go, and a request a person decided since
+/// is not sent. A runtime refused here does not send.
+pub async fn sending(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<wire::Sending>,
+) -> Result<StatusCode, ApiError> {
+    let (_, payload) = super::work::leased_turn(&state, &headers, input.job_id).await?;
+    let marked = sqlx::query(
+        "update held_requests set state = 'sending', sending_job = $4, sending_at = now() \
+         where workspace_id = $1 and session_id = $2 and id = $3 and state = 'approved'",
+    )
+    .bind(payload.workspace_id)
+    .bind(payload.session_id)
+    .bind(input.held_id)
+    .bind(input.job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .rows_affected();
+    if marked == 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            "no such request is waiting to be sent in this conversation".to_string(),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Settles what a lost turn left in flight, before a turn of its conversation
+/// is prepared.
+///
+/// A request still `sending` here went, or may have, and nobody heard what
+/// came back: the turn that marked it is gone, since this conversation's next
+/// turn could not be prepared while it ran. So it is answered as no answer
+/// would be -- sent again only where the recipient dedupes on a key, and
+/// otherwise put in front of a person to check. Never simply sent again: that
+/// is the second charge this exists to prevent.
+///
+/// Best effort. A request left `sending` by a failure here is not sent by the
+/// turn about to run, which reads it as neither waiting nor settled; the next
+/// turn tries again.
+pub async fn recover(state: &ApiState, payload: &super::worker::ChatTurnPayload) {
+    let lost = match in_session(&state.pool, payload.workspace_id, payload.session_id).await {
+        Ok(held) => held.into_iter().filter(Held::in_flight).collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::warn!(session_id = %payload.session_id, error = %e, "could not read held requests in flight");
+            return;
+        }
+    };
+    for held in lost {
+        let outcome = Outcome::NoAnswer {
+            message: wire::LOST_IN_FLIGHT.to_string(),
+        };
+        if let Err((_, e)) = settle(state, payload, &held, &outcome).await {
+            tracing::warn!(held_id = %held.id, error = %e, "a held request lost in flight was not settled");
+        }
+    }
+}
+
 /// Receives what became of a held request a runtime sent.
 ///
 /// Under the lease, as every other report: the runtime tier's key says only
@@ -344,7 +413,7 @@ pub async fn report(
             StatusCode::NOT_FOUND,
             "no such request is held in this conversation".to_string(),
         ))?;
-    if !held.waiting() {
+    if !held.waiting() && !held.in_flight() {
         // Already answered by another turn, or decided by a person since.
         // Refused rather than overwritten: one answer is what a yes is worth.
         return Err((
@@ -353,12 +422,30 @@ pub async fn report(
         ));
     }
 
+    let next = settle(&state, &payload, &held, &input.outcome).await?;
+
+    let told = match next {
+        Next::Again => wire::pending_text(&held.approved_by),
+        _ => wire::result_text(&held.method, &held.url, &held.approved_by, &input.outcome),
+    };
+    Ok(Json(Recorded { told }))
+}
+
+/// Writes what a send came to, and asks a person again where it did not go
+/// or may have.
+async fn settle(
+    state: &ApiState,
+    payload: &super::worker::ChatTurnPayload,
+    held: &Held,
+    outcome: &Outcome,
+) -> Result<Next, ApiError> {
+    let internal = |e: sqlx::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     let keyed = match &held.operation {
-        Some(name) => keyed(&state, &payload, name).await,
+        Some(name) => keyed(state, payload, name).await,
         None => false,
     };
-    let next = next(&input.outcome, held.attempts, keyed);
-    let outcome = serde_json::to_value(&input.outcome).unwrap_or_default();
+    let next = next(outcome, held.attempts, keyed);
+    let recorded = serde_json::to_value(outcome).unwrap_or_default();
 
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let (to, spent) = match next {
@@ -367,19 +454,20 @@ pub async fn report(
         Next::Unsent => ("unsent", false),
         Next::Unknown => ("unknown", false),
     };
-    // Conditional on still waiting, so two reports for one request -- a turn
-    // retried after its pod was lost, say -- produce one answer.
+    // Conditional on still waiting or going, so two reports for one request
+    // -- a turn retried after its pod was lost, say -- produce one answer.
+    // Waiting as well as going, for a runtime that reports without marking.
     let updated = sqlx::query(
         "update held_requests set state = $3, outcome = $4, \
                 attempts = attempts + case when $5 then 1 else 0 end, \
                 spent_at = case when $6 then now() else spent_at end \
-         where workspace_id = $1 and id = $2 and state = 'approved'",
+         where workspace_id = $1 and id = $2 and state in ('approved', 'sending')",
     )
     .bind(payload.workspace_id)
     .bind(held.id)
     .bind(to)
-    .bind(&outcome)
-    .bind(matches!(input.outcome, Outcome::NeverSent { .. }) || next == Next::Again)
+    .bind(&recorded)
+    .bind(matches!(outcome, Outcome::NeverSent { .. }) || next == Next::Again)
     .bind(spent)
     .execute(&mut *tx)
     .await
@@ -394,7 +482,7 @@ pub async fn report(
     tx.commit().await.map_err(internal)?;
 
     if matches!(next, Next::Unsent | Next::Unknown) {
-        ask_again(&state, &held, next == Next::Unknown, &input.outcome).await;
+        ask_again(state, held, next == Next::Unknown, outcome).await;
     }
 
     tracing::info!(
@@ -404,12 +492,7 @@ pub async fn report(
         state = to,
         "a held request was sent"
     );
-
-    let told = match next {
-        Next::Again => wire::pending_text(&held.approved_by),
-        _ => wire::result_text(&held.method, &held.url, &held.approved_by, &input.outcome),
-    };
-    Ok(Json(Recorded { told }))
+    Ok(next)
 }
 
 /// Whether the operation a request was declared as sends the recipient a key

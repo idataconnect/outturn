@@ -201,6 +201,10 @@ pub async fn take(
                 ));
             };
 
+            // What a lost pod left marked as going is settled before the turn
+            // is prepared, so it is not handed out to be sent a second time.
+            super::held::recover(&state, &payload).await;
+
             match worker.prepare_turn(handle.job.id, &payload).await {
                 // Nothing left to do: the prompt was answered inside the turn
                 // it interrupted. The job is done rather than abandoned, and

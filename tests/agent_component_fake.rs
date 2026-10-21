@@ -3700,6 +3700,7 @@ fn held_sends(
         calls,
         token: "held-token".into(),
         gates: outturn::egress::gate::Gates::none(),
+        begin: None,
         report: Some(Arc::new(move |id, outcome| {
             reported.lock().unwrap().push((id, outcome));
             Box::pin(async { None })
@@ -3848,4 +3849,59 @@ async fn an_approved_request_with_no_refusal_found_is_still_told() {
     let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
     assert!(sent.contains("Approved by Dana Reyes and sent:"), "{sent}");
     assert!(sent.contains("ch_1"), "{sent}");
+}
+
+/// Marked as going before it goes, so a pod lost before it reports leaves the
+/// request sent rather than still to send; and one that cannot be marked --
+/// the API refused, or could not be reached -- is not sent at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_request_is_marked_as_going_before_it_goes() {
+    let gateway = FakeGateway::start(Behavior::Reply("The deposit is paid.".into())).await;
+    gateway.answer_egress(201, r#"{"charge":"ch_1"}"#);
+
+    // Marked, and then the report never arrives: sent once, and only after
+    // the mark.
+    let marked: Arc<Mutex<Vec<(Uuid, usize)>>> = Arc::default();
+    let reported = Arc::default();
+    let held_id = Uuid::now_v7();
+    let mut sends = held_sends(vec![the_charge(held_id)], &reported);
+    sends.begin = Some({
+        let marked = Arc::clone(&marked);
+        let gateway = gateway.clone();
+        Arc::new(move |id| {
+            marked.lock().unwrap().push((id, gateway.fetched().len()));
+            Box::pin(async { true })
+        })
+    });
+    let mut first = options(&gateway, None);
+    first.egress = pay_rule();
+    first.held = Some(sends);
+    runner()
+        .run(&component(), parked_on_a_charge(), String::new(), first)
+        .await
+        .expect("run");
+    assert_eq!(
+        *marked.lock().unwrap(),
+        vec![(held_id, 0)],
+        "marked before it went"
+    );
+    assert_eq!(gateway.fetched().len(), 1);
+
+    // Not marked: not sent, and the model is not told it went.
+    let gateway = FakeGateway::start(Behavior::Reply("Waiting.".into())).await;
+    gateway.answer_egress(201, r#"{"charge":"ch_1"}"#);
+    let reported: Arc<Mutex<Vec<(Uuid, outturn::egress::held::Outcome)>>> = Arc::default();
+    let mut sends = held_sends(vec![the_charge(Uuid::now_v7())], &reported);
+    sends.begin = Some(Arc::new(|_| Box::pin(async { false })));
+    let mut second = options(&gateway, None);
+    second.egress = pay_rule();
+    second.held = Some(sends);
+    runner()
+        .run(&component(), parked_on_a_charge(), String::new(), second)
+        .await
+        .expect("run");
+    assert!(gateway.fetched().is_empty(), "{:?}", gateway.fetched());
+    assert!(reported.lock().unwrap().is_empty());
+    let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
+    assert!(!sent.contains("Approved by"), "{sent}");
 }

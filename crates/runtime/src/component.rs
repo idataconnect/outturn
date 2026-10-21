@@ -247,6 +247,14 @@ pub type HeldSink = Arc<
         + Sync,
 >;
 
+/// Tells the API a held request is about to go, and hears whether it may.
+/// False when the API refused or could not be told: then it is not sent.
+pub type HeldBegin = Arc<
+    dyn Fn(uuid::Uuid) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Requests a person approved, to send before the guest runs.
 pub struct HeldSends {
     pub calls: Vec<outturn_core::egress::held::HeldCall>,
@@ -254,6 +262,8 @@ pub struct HeldSends {
     /// turn's own token does not.
     pub token: String,
     pub gates: outturn_core::egress::gate::Gates,
+    /// Asked before each is sent. Absent, each is sent unasked.
+    pub begin: Option<HeldBegin>,
     pub report: Option<HeldSink>,
 }
 
@@ -2866,6 +2876,20 @@ impl AgentRunner {
         let mut conversation = conversation;
         if let Some(held) = options.held {
             for call in &held.calls {
+                // Marked as going first, so a pod lost before it reports
+                // leaves the request sent rather than still to send: the
+                // turn's retry must not send it again. Not marked, not sent --
+                // it stays waiting, and a later turn tries.
+                if let Some(begin) = &held.begin
+                    && !begin(call.id).await
+                {
+                    tracing::warn!(
+                        session_id = %store.data().session_id,
+                        held_id = %call.id,
+                        "a request somebody approved could not be marked as going, so it was not sent"
+                    );
+                    continue;
+                }
                 let outcome = store
                     .data_mut()
                     .send_held(call, held.token.clone(), held.gates.clone())

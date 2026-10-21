@@ -1903,6 +1903,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // a workspace's.
         .route("/v1/work/gated", post(super::gated::raise))
         .route("/v1/work/held", post(super::held::report))
+        .route("/v1/work/held/sending", post(super::held::sending))
         .route(
             "/v1/work/invocations/claim",
             post(super::invocations::claim),
