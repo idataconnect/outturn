@@ -19,6 +19,9 @@ export const paths = {
   user: (id: string) => `/settings/users/${id}`,
   roles: '/settings/roles',
   connections: '/settings/connections',
+  autoApprovals: '/settings/auto-approval',
+  newAutoApproval: '/settings/auto-approval/new',
+  autoApproval: (id: string) => `/settings/auto-approval/${id}`,
   newRole: '/settings/roles/new',
   role: (id: string) => `/settings/roles/${id}`,
 

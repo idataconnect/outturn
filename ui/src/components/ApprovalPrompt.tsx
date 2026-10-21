@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ShieldQuestion } from 'lucide-react'
 
 import { answerApproval } from '../lib/actions'
+import { OFFER_AFTER, answeredCount, policyLink } from '../lib/autoApproval'
+import { useHasAuthority } from '../lib/session'
 
 /**
  * An approval, answered where it was raised.
@@ -50,6 +52,31 @@ export default function ApprovalPrompt({
 }) {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
+
+  // A workspace that keeps saying yes to the same act is offered a policy for
+  // it -- a link, never a box ticked on the way past, since a policy is its own
+  // decision with its own page. Only to somebody who could set one: the count
+  // is asked for only then, and the API says again whether they may.
+  const delegates = useHasAuthority('approvals:delegate')
+  const answers = useHasAuthority('approvals:answer')
+  const mayDelegate = delegates && answers
+  const [offer, setOffer] = useState<string | null>(null)
+  const requires = approval.requires
+  const fields = (approval.binds ?? []).map((b) => b.field).join(',')
+  useEffect(() => {
+    if (!mayDelegate || !requires) return
+    let stale = false
+    answeredCount(requires)
+      .then((n) => {
+        if (!stale && n.may_delegate && n.approved >= OFFER_AFTER) {
+          setOffer(policyLink(requires, fields ? fields.split(',') : []))
+        }
+      })
+      .catch(() => {})
+    return () => {
+      stale = true
+    }
+  }, [mayDelegate, requires, fields])
 
   async function answer(approved: boolean) {
     setBusy(true)
@@ -128,6 +155,15 @@ export default function ApprovalPrompt({
               Decline
             </button>
           </div>
+
+          {offer && (
+            <p className="mt-2 text-xs text-surface-600 dark:text-surface-400">
+              <a href={offer} className="text-brand-700 hover:underline dark:text-brand-300">
+                Auto-approval policy for “{requires}”
+              </a>{' '}
+              · this workspace has approved it several times before
+            </p>
+          )}
 
           {failed && (
             // Announced, because the person who pressed Approve is the one who
