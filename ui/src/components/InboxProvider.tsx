@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { countActionItems, listActionItems, type ActionItem } from '../lib/actions'
+import { isAbort } from '../lib/api'
 import { InboxContext } from '../lib/inbox'
 
 /** The least time between two reads, however quickly the first came back. */
@@ -66,7 +67,7 @@ export default function InboxProvider({ children }: { children: ReactNode }) {
           if (stopped) return
           // Cut short on purpose by `refresh`, which has asked for a read at
           // once: go round again.
-          if (e instanceof DOMException && e.name === 'AbortError') continue
+          if (isAbort(e)) continue
           // Anything else -- the API restarting, a dropped connection -- is
           // waited out rather than retried in a tight loop.
           await new Promise((r) => setTimeout(r, 5_000))

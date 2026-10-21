@@ -38,6 +38,13 @@ export class ApiError extends Error {
 /// report a connection failure as a rejected credential.
 export class NetworkError extends Error {}
 
+/** Whether a call failed because its own signal was aborted. `call` wraps every
+ *  rejection from `fetch` in a `NetworkError`, so the abort is its `cause`. */
+export function isAbort(e: unknown): boolean {
+  const reason = e instanceof NetworkError ? e.cause : e
+  return reason instanceof Error && reason.name === 'AbortError'
+}
+
 /**
  * Calls the API.
  *
