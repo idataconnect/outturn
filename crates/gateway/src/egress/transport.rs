@@ -112,22 +112,14 @@ impl EgressTransport for Direct {
     }
 
     async fn send(&self, request: VettedRequest) -> Result<TransportResponse, TransportError> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(outturn_core::http_client::CONNECT_TIMEOUT)
-            .timeout(request.timeout)
-            // A redirect names a host that was never checked. Refusing to
-            // follow is what keeps an allowed host from being a doorway.
-            .redirect(reqwest::redirect::Policy::none())
-            // Pinned to the answer the vetting already got. Letting the client
-            // look the name up again would make the check and the connection
-            // two different questions.
-            .resolve_to_addrs(&request.host, &request.addrs)
-            .build()
-            .map_err(|e| TransportError::Malformed(e.to_string()))?;
+        let client = client_for(&request.host, &request.addrs)?;
 
         let mut outgoing = client
             .request(request.method, request.url)
-            .headers(request.headers);
+            .headers(request.headers)
+            // Per request rather than on the client, so one client can serve
+            // calls that were each given their own allowance.
+            .timeout(request.timeout);
         if let Some(body) = request.body {
             outgoing = outgoing.body(body);
         }
@@ -178,6 +170,60 @@ impl EgressTransport for Direct {
     }
 }
 
+/// How many pinned clients to keep before starting over. A deployment reaches
+/// as many hosts as its workspaces wrote rules for, and a host whose address
+/// changes leaves its old client behind; the bound only has to stop that from
+/// accumulating without end.
+const CLIENTS_KEPT: usize = 256;
+
+type Pin = (String, Vec<SocketAddr>);
+
+/// Clients by what they are pinned to.
+///
+/// A client carries its connection pool, so building one per request threw
+/// away every warm connection and paid a handshake each time. The pin is part
+/// of what makes a client the same one, though: the same host resolving to
+/// different addresses gets a different client, never the old pin.
+#[derive(Default)]
+struct Clients(std::sync::Mutex<std::collections::HashMap<Pin, reqwest::Client>>);
+
+impl Clients {
+    fn get(&self, host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, TransportError> {
+        let key: Pin = (host.to_string(), addrs.to_vec());
+        let mut clients = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = clients.get(&key) {
+            return Ok(client.clone());
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(outturn_core::http_client::CONNECT_TIMEOUT)
+            // A redirect names a host that was never checked. Refusing to
+            // follow is what keeps an allowed host from being a doorway.
+            .redirect(reqwest::redirect::Policy::none())
+            // Pinned to the answer the vetting already got. Letting the client
+            // look the name up again would make the check and the connection
+            // two different questions.
+            .resolve_to_addrs(host, addrs)
+            .build()
+            .map_err(|e| TransportError::Malformed(e.to_string()))?;
+        if clients.len() >= CLIENTS_KEPT {
+            clients.clear();
+        }
+        clients.insert(key, client.clone());
+        Ok(client)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+static CLIENTS: std::sync::LazyLock<Clients> = std::sync::LazyLock::new(Default::default);
+
+fn client_for(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, TransportError> {
+    CLIENTS.get(host, addrs)
+}
+
 /// Removes URLs from an error before it travels back.
 ///
 /// A URL an agent built can carry a credential in its query string, and these
@@ -219,5 +265,18 @@ mod tests {
                 .to_string()
                 .contains("could not prepare")
         );
+    }
+
+    #[test]
+    fn a_pinned_client_is_built_once_and_a_different_pin_gets_its_own() {
+        let one: SocketAddr = "203.0.113.7:443".parse().unwrap();
+        let two: SocketAddr = "203.0.113.8:443".parse().unwrap();
+        let clients = Clients::default();
+        clients.get("api.example.com", &[one]).unwrap();
+        clients.get("api.example.com", &[one]).unwrap();
+        assert_eq!(clients.len(), 1);
+        // The same host answering from somewhere else is not the old pin.
+        clients.get("api.example.com", &[two]).unwrap();
+        assert_eq!(clients.len(), 2);
     }
 }
