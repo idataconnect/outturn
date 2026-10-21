@@ -1103,15 +1103,7 @@ impl outturn::agent::host::Host for AgentHost {
                     .retain(|(n, _)| !n.eq_ignore_ascii_case(header));
                 request.headers.push((header.clone(), key));
             } else if let Some(field) = &op.key_field {
-                let mut body: serde_json::Value = request
-                    .body
-                    .as_deref()
-                    .and_then(|b| serde_json::from_str(b).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                if let Some(object) = body.as_object_mut() {
-                    object.insert(field.clone(), serde_json::json!(key));
-                    request.body = Some(body.to_string());
-                }
+                request.body = Some(keyed_body(request.body.as_deref(), field, &op.name, &key)?);
             } else if let Some(record) = &self.invocations {
                 match record.claim(key.clone()).await? {
                     outturn_core::protocol::work::Claimed::New => claimed = Some(key),
@@ -2241,6 +2233,36 @@ fn idempotency_key(
     format!("outturn-{hex}")
 }
 
+/// A body with the key set in its `field`, for a recipient that takes the key
+/// there.
+///
+/// Only a JSON object has a field to put it in. Sending any other body
+/// without the key would be an unkeyed write that looks keyed, and rewriting
+/// it to fit would change what was asked, so the call is refused, in words the
+/// model can act on. No body at all is an empty object.
+fn keyed_body(
+    body: Option<&str>,
+    field: &str,
+    operation: &str,
+    key: &str,
+) -> Result<String, String> {
+    let mut parsed = match body.filter(|b| !b.trim().is_empty()) {
+        None => serde_json::json!({}),
+        Some(b) => serde_json::from_str::<serde_json::Value>(b).unwrap_or_default(),
+    };
+    match parsed.as_object_mut() {
+        Some(object) => {
+            object.insert(field.to_string(), serde_json::json!(key));
+            Ok(parsed.to_string())
+        }
+        None => Err(format!(
+            "{operation} carries its idempotency key in the `{field}` field of a JSON object \
+             body, and this body is not one. Nothing was sent. Send the request body as a \
+             JSON object."
+        )),
+    }
+}
+
 /// A recorded answer, given again, marked as such so the model is not told a
 /// write happened twice.
 fn replayed(response: &serde_json::Value, at: chrono::DateTime<chrono::Utc>) -> HttpResponse {
@@ -3097,5 +3119,27 @@ mod read_clamp {
         assert_eq!(clamp_read(0), 0);
         assert_eq!(clamp_read(4096), 4096);
         assert_eq!(clamp_read(MAX_READ_CHUNK), MAX_READ_CHUNK);
+    }
+}
+
+#[cfg(test)]
+mod keyed_body_tests {
+    use super::keyed_body;
+
+    #[test]
+    fn the_key_goes_in_an_object_and_nowhere_else() {
+        let keyed = |body| keyed_body(body, "request_id", "book", "outturn-1");
+        assert_eq!(
+            keyed(Some(r#"{"a":1}"#)).unwrap(),
+            r#"{"a":1,"request_id":"outturn-1"}"#
+        );
+        assert_eq!(keyed(None).unwrap(), r#"{"request_id":"outturn-1"}"#);
+        for body in ["[1,2]", r#""text""#, "7", "null", "not json"] {
+            let refused = keyed(Some(body)).expect_err(body);
+            assert!(
+                refused.contains("request_id") && refused.contains("Nothing was sent"),
+                "{refused}"
+            );
+        }
     }
 }

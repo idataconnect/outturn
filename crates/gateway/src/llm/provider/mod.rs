@@ -153,6 +153,18 @@ impl ProviderError {
             "no longer",
             "end of its life",
         ];
+        // A 404 from a router that has no such path says so in its own
+        // words, and a base URL with `models` in it echoes the path back.
+        // None of these is a provider saying the model is gone, and reading
+        // one as that would skip a working model for a day over a typo.
+        const ROUTING: &[&str] = &[
+            "page not found",
+            "route not found",
+            "no route",
+            "cannot post",
+            "cannot get",
+            "<html",
+        ];
         // A 400 says it only in so many words. "Parameter top_k is
         // deprecated for this model" is a 400 about the request, and reading
         // it as a retirement would skip a working model for a day.
@@ -178,7 +190,9 @@ impl ProviderError {
         let detail = detail.to_lowercase();
         match status {
             404 | 410 => {
-                detail.contains("model") && MISSING.iter().any(|said| detail.contains(said))
+                detail.contains("model")
+                    && MISSING.iter().any(|said| detail.contains(said))
+                    && !ROUTING.iter().any(|said| detail.contains(said))
             }
             400 => SAID_OUTRIGHT.iter().any(|said| detail.contains(said)),
             _ => false,
@@ -450,6 +464,12 @@ mod tests {
             e(400, "temperature: parameter is deprecated for this model"),
             e(400, "messages: field required"),
             e(404, "route not found"),
+            e(404, "404 page not found: /v1/models/chat/completions"),
+            e(404, "Cannot POST /v1/models/chat/completions"),
+            e(
+                404,
+                "<html><title>404 Not Found</title><body>/models/v1</body>",
+            ),
             e(401, "invalid x-api-key"),
             e(500, "model not found"),
         ] {
