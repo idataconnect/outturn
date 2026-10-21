@@ -42,8 +42,6 @@ export default function ApprovalPrompt({
     item_id: string
     requires?: string | null
     reason?: string | null
-    /** The wider extent the request offered, where it offered one. */
-    covers?: { field?: string; unit?: string } | null
     /** What is being approved: each field the grant is keyed on, with this
      *  request's value. */
     binds?: Bound[] | null
@@ -51,14 +49,13 @@ export default function ApprovalPrompt({
   onAnswered: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const [coversUnit, setCoversUnit] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
 
   async function answer(approved: boolean) {
     setBusy(true)
     setFailed(null)
     try {
-      await answerApproval(approval.item_id, { approved, coversUnit })
+      await answerApproval(approval.item_id, { approved })
       onAnswered()
     } catch (e) {
       // Left on screen rather than swallowed: the turn is still held, and a
@@ -69,7 +66,6 @@ export default function ApprovalPrompt({
     }
   }
 
-  const unit = approval.covers?.unit
   return (
     <div className="my-3 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/40">
       <div className="flex items-start gap-3">
@@ -112,36 +108,6 @@ export default function ApprovalPrompt({
                 </div>
               ))}
             </dl>
-          )}
-
-          {/* The offer, ticked or not. Never pre-ticked: what is being widened
-              is the extent of somebody's yes, and a default that widens it is a
-              default that answers for them. */}
-          {unit && (
-            <label className="mt-2 flex items-start gap-2 text-xs text-surface-700 dark:text-surface-300">
-              <input
-                type="checkbox"
-                checked={coversUnit}
-                disabled={busy}
-                onChange={(e) => setCoversUnit(e.target.checked)}
-                className="mt-0.5"
-              />
-              {/* Not "for the rest of this turn". A turn is a word from inside
-                  this platform -- one prompt and however many tool rounds it
-                  takes -- and the person reading this is approving a payment,
-                  not reasoning about the execution model. It is also vague in
-                  the direction that matters: a reader could hear "for this
-                  whole conversation", which is far wider than the truth and
-                  would make them right to hesitate.
-
-                  What it actually means is: while the agent finishes the thing
-                  it is doing now. Seconds, usually. Said that way. */}
-              <span>
-                Don't ask again for{' '}
-                <span className="font-mono">{unit}</span> while the agent finishes
-                what it's doing.
-              </span>
-            </label>
           )}
 
           <div className="mt-2 flex flex-wrap gap-2">

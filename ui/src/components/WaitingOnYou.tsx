@@ -19,7 +19,7 @@ const SHOWN = 3
  * the queue, which is what gets worked first -- each opening in the inbox.
  */
 export default function WaitingOnYou() {
-  const { items, count, capped } = useInbox()
+  const { items, count, capped, refresh } = useInbox()
   const navigate = useNavigate()
   const state = useSession()
   // When the card was drawn, for the ages: read once, since a clock read while
@@ -61,6 +61,7 @@ export default function WaitingOnYou() {
           items={items.slice(0, SHOWN)}
           workspaceNames={names}
           onOpen={(item) => void navigate(paths.inboxItem(item.id))}
+          onAnswered={refresh}
           now={now}
         />
       </div>

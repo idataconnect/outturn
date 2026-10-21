@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
-import type { ActionItem } from '../lib/actions'
+import { answerApproval, type ActionItem } from '../lib/actions'
 import { waitingFor } from '../lib/elapsed'
 
 /**
@@ -24,6 +25,9 @@ export default function ActionQueue({
    *  workspace the column is the same word repeated. */
   workspaceNames,
   onOpen,
+  /** Called once any approval has been answered, so the owner of the list can
+   *  fetch it again. */
+  onAnswered,
   /** Shown when nothing is waiting. */
   quiet = 'Nothing is waiting on you.',
   /**
@@ -40,9 +44,13 @@ export default function ActionQueue({
   items: ActionItem[]
   workspaceNames?: Record<string, string>
   onOpen?: (item: ActionItem) => void
+  onAnswered?: () => void
   quiet?: string
   now: number
 }) {
+  // Declared before the early return: hooks run in the same order every render.
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set())
+  const [failures, setFailures] = useState<Record<string, string>>({})
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-10 text-center">
@@ -54,23 +62,138 @@ export default function ActionQueue({
 
   // Only worth a column when there is something to tell apart.
   const spansWorkspaces = new Set(items.map((i) => i.workspace_id)).size > 1
+  const nameOf = (item: ActionItem) =>
+    spansWorkspaces ? (workspaceNames?.[item.workspace_id] ?? shortId(item.workspace_id)) : null
+
+  // An item approved a moment ago stays in `items` until the owner refetches;
+  // offering it again would be a second yes to something already settled.
+  const open = items.filter((i) => !answered.has(i.id))
+  const groups = approvalGroups(open, failures)
 
   return (
-    <ul className="space-y-2">
-      {items.map((item) => (
-        <ActionRow
-          key={item.id}
-          item={item}
-          workspace={
-            spansWorkspaces
-              ? (workspaceNames?.[item.workspace_id] ?? shortId(item.workspace_id))
-              : null
-          }
-          onOpen={onOpen}
-          now={now}
+    <div className="space-y-2">
+      {groups.map((group) => (
+        <ApproveAll
+          key={`${group[0].kind}/${group[0].workspace_id}`}
+          items={group}
+          workspace={nameOf(group[0])}
+          failures={failures}
+          onResult={(done, failed) => {
+            setAnswered((prev) => new Set([...prev, ...done]))
+            setFailures((prev) => {
+              const next = { ...prev, ...failed }
+              for (const id of done) delete next[id]
+              return next
+            })
+            if (done.length > 0) onAnswered?.()
+          }}
         />
       ))}
-    </ul>
+      <ul className="space-y-2">
+        {open.map((item) => (
+          <ActionRow
+            key={item.id}
+            item={item}
+            workspace={nameOf(item)}
+            onOpen={onOpen}
+            now={now}
+          />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * Pending approvals grouped by kind within a workspace, keeping those with two
+ * or more.
+ *
+ * Within a workspace because a standing yes belongs to one: a button that
+ * answered for several workspaces at once would be a wider yes than any single
+ * row suggests. A group that a failed answer has shrunk to one stays, so the
+ * failure is still on screen next to what failed.
+ */
+function approvalGroups(items: ActionItem[], failures: Record<string, string>): ActionItem[][] {
+  const groups = new Map<string, ActionItem[]>()
+  for (const item of items) {
+    if (!item.kind.startsWith('approval.') || item.state !== 'pending') continue
+    const key = `${item.kind}/${item.workspace_id}`
+    groups.set(key, [...(groups.get(key) ?? []), item])
+  }
+  return [...groups.values()].filter((g) => g.length >= 2 || g.some((i) => failures[i.id]))
+}
+
+/**
+ * One yes for several approvals of the same kind, with every one of them listed.
+ *
+ * See `docs/approvals.md`, *The checkbox goes*. The list is the point: a single
+ * button over an unseen set is the widened yes the prompt stopped offering, so
+ * each item the button answers is written out beside it, and nothing outside
+ * the list is touched. Each is answered with the API's ordinary answer, one at
+ * a time, so a failure is that item's and the rest still go through.
+ */
+function ApproveAll({
+  items,
+  workspace,
+  failures,
+  onResult,
+}: {
+  items: ActionItem[]
+  workspace: string | null
+  failures: Record<string, string>
+  onResult: (done: string[], failed: Record<string, string>) => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  async function approveAll() {
+    setBusy(true)
+    const done: string[] = []
+    const failed: Record<string, string> = {}
+    for (const item of items) {
+      try {
+        await answerApproval(item.id, { approved: true })
+        done.push(item.id)
+      } catch (e) {
+        failed[item.id] = e instanceof Error ? e.message : 'that could not be sent'
+      }
+    }
+    // Failed ones are left pending, and stay in the list so they can be sent again.
+    setBusy(false)
+    onResult(done, failed)
+  }
+
+  const kind = label(items[0].kind)
+  return (
+    <section
+      aria-label={`Approve all: ${kind}`}
+      className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/40"
+    >
+      <p className="text-sm font-medium text-surface-900 dark:text-surface-100">
+        {items.length} waiting: {kind}
+        {workspace && <span className="font-normal"> in {workspace}</span>}
+      </p>
+      <ul className="mt-1.5 space-y-0.5 text-xs text-surface-700 dark:text-surface-300">
+        {items.map((item) => (
+          <li key={item.id}>
+            {summarize(item) ?? shortId(item.id)}
+            {failures[item.id] && (
+              <span role="alert" className="text-red-700 dark:text-red-400">
+                {' '}
+                — {failures[item.id]}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void approveAll()}
+        className="mt-2 rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+      >
+        {busy ? 'Sending…' : items.length > 1 ? `Approve all ${items.length}` : 'Approve'}
+      </button>
+    </section>
   )
 }
 

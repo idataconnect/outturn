@@ -230,7 +230,8 @@ describe('what is waiting on the reader', () => {
     show(signedIn())
     expect(await screen.findByText(/Waiting on you/)).toBeInTheDocument()
     expect(screen.getByText('(4)')).toBeInTheDocument()
-    expect(screen.getByText(/Charge for Alvarez/)).toBeInTheDocument()
+    // Named by the row and by the approve-all list that covers it.
+    expect(screen.getAllByText(/Charge for Alvarez/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/Charge for Dunmore/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Open the inbox/ })).toHaveAttribute('href', '/inbox')
   })

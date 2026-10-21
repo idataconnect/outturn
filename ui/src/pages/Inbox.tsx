@@ -333,7 +333,6 @@ function ApprovalDetail({ item, onAnswered }: { item: ActionItem; onAnswered: ()
   const request = [p.method, p.host, p.path].every((v) => typeof v === 'string')
     ? `${String(p.method)} ${String(p.host)}${String(p.path)}`
     : null
-  const covers = p.covers as { field?: string; unit?: string } | undefined
   return (
     <div className="space-y-4">
       {request && (
@@ -346,7 +345,6 @@ function ApprovalDetail({ item, onAnswered }: { item: ActionItem; onAnswered: ()
           item_id: item.id,
           requires: typeof p.requires === 'string' ? p.requires : null,
           reason: typeof p.reason === 'string' ? p.reason : null,
-          covers: covers ?? null,
           binds: Array.isArray(p.binds) ? (p.binds as Bound[]) : null,
         }}
         onAnswered={onAnswered}
