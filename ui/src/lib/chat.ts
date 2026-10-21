@@ -112,6 +112,14 @@ export type WakeRecord = {
   answers?: string[]
 }
 
+/** What the platform recorded when somebody had an approved request sent
+ *  again. See `api::held::resend_now`. */
+export type ResendRecord = {
+  held_id: string
+  requires: string
+  by: string
+}
+
 /** A conversation whose agent is asleep, and how to end it early. */
 export type Asleep = {
   item_id: string
@@ -157,6 +165,9 @@ export type Message = {
      *  or a timer. Written by the platform rather than sent by anybody, so it
      *  is drawn as a boundary rather than as somebody's message. */
     wake?: WakeRecord
+    /** Present when this message is the note a resent request's turn begins
+     *  with. Written by the platform, so drawn as a boundary like a wake. */
+    resend?: ResendRecord
   }
   /** How many deltas `content` already accounts for. */
   delta_next: number

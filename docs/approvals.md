@@ -410,9 +410,14 @@ the design above, and why:
 - **Refused on this side.** A held send the gateway refuses -- the rules
   changed, or a second gate covers it -- is not retried, since it would be
   refused the same way; it goes straight to *could not be sent*.
-- **A resend waits for the next turn.** Nothing enqueues a turn to send it; the
-  conversation's next turn does, as for any approved request. That answers the
-  first question below for now, by not resuming anything.
+- **A resend starts a turn.** Sending one again -- `/resend`, or `/answer` with
+  a yes -- writes a note in the user position that nobody typed ("Dana Reyes
+  asked for the approved charge ... to be sent again"), marked `resend` and
+  framed as the platform's on the way to the model, as a wake's is, and queues
+  a turn to answer it (`held::resend_now`). That turn sends the request before
+  its guest runs, as any turn handed an approved one does. Written together,
+  after the settle: a turn that fails to start leaves the request approved, and
+  the conversation's next turn sends it.
 - **What came before still works.** An item raised by a runtime that relayed
   only the shape holds no request, so answering it mints a grant for its turn
   and the refusal is retracted as before. The `covers_unit` field is still
@@ -435,9 +440,10 @@ the design above, and why:
 
 ### Not settled
 
-- Whether a turn whose approved call failed should be resumed at all to try
-  again, or the item reopened straight away. Resuming costs a model call to
-  say "still could not send it". For now neither: the next turn tries.
+- Whether a request that never left should start a turn of its own to try
+  again, as a resend does. That costs a model call to say "still could not
+  send it", so for now the conversation's next turn tries, and after three a
+  person is asked.
 - How many approvals of one kind make the policy link worth showing.
 
 ## A ceiling, rather than a rule per operation

@@ -212,6 +212,131 @@ impl Held {
     }
 }
 
+/// The mark on the note a resent request's turn begins with, so it is drawn
+/// as the platform's and framed as the platform's on the way to the model.
+pub const RESEND_MARK: &str = "resend";
+
+/// Starts a turn to send a request a person asked to be sent again, now.
+///
+/// The way a wake starts one: a note in the user position that nobody typed,
+/// saying what happened, and a turn queued to answer it. The turn sends the
+/// request before its guest runs, as every turn handed an approved one does,
+/// and the model reads what came back where the refusal was. Without this the
+/// resend waited for whatever the conversation said next, which for a
+/// conversation that had stopped was never -- and the person who pressed the
+/// button saw nothing happen.
+///
+/// Written together, so a note exists only with a turn to answer it. False
+/// where the item holds no request waiting to go.
+pub async fn resend_now(
+    state: &ApiState,
+    workspace_id: Uuid,
+    item_id: Uuid,
+    by: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let protocol = |e: String| sqlx::Error::Protocol(e);
+    let mut tx = state.pool.begin().await?;
+    let found: Option<(Uuid, Uuid, String, String, String, Uuid)> = sqlx::query_as(
+        "select h.id, h.session_id, h.requires, h.method, h.url, s.agent_id \
+         from held_requests h join agent_sessions s on s.id = h.session_id \
+         where h.workspace_id = $1 and h.item_id = $2 and h.state = 'approved'",
+    )
+    .bind(workspace_id)
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((held_id, session_id, requires, method, url, agent_id)) = found else {
+        return Ok(false);
+    };
+    let who: Option<String> = sqlx::query_scalar("select display_name from users where id = $1")
+        .bind(by)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let who = who.unwrap_or_else(|| SOMEBODY.to_string());
+    // The zone the conversation's last turn was asked in: nobody is sending
+    // this one from anywhere.
+    let timezone: Option<String> = sqlx::query_scalar(
+        "select payload->>'timezone' from jobs \
+         where kind = $1 and payload->>'session_id' = $2 order by id desc limit 1",
+    )
+    .bind(super::worker::CHAT_TURN)
+    .bind(session_id.to_string())
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten();
+
+    let content = format!(
+        "{who} asked for the approved {requires} ({method} {url}) to be sent again. It was sent \
+         before this turn began; what came back is where it was refused."
+    );
+    let metadata = serde_json::json!({
+        RESEND_MARK: {
+            "held_id": held_id,
+            "requires": requires,
+            "by": who,
+        }
+    });
+    // No `user_id`: nobody sent it, as for a wake.
+    let note_id = Uuid::now_v7();
+    sqlx::query(
+        "insert into agent_messages (id, session_id, role, content, user_id, metadata) \
+         values ($1, $2, 'user', $3, null, $4)",
+    )
+    .bind(note_id)
+    .bind(session_id)
+    .bind(&content)
+    .bind(&metadata)
+    .execute(&mut *tx)
+    .await?;
+    // Counted towards the pods the fleet wants, as a woken turn is.
+    sqlx::query(
+        "insert into live_sessions (session_id, expires_at) \
+         values ($1, now() + interval '5 minutes') \
+         on conflict (session_id) do update set expires_at = excluded.expires_at",
+    )
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?;
+    let payload = serde_json::to_value(super::worker::ChatTurnPayload {
+        workspace_id,
+        session_id,
+        agent_id,
+        message_id: note_id,
+        timezone,
+        user_id: None,
+    })
+    .map_err(|e| protocol(e.to_string()))?;
+    // A person pressed the button and is watching for the answer.
+    outturn_core::jobs::enqueue(
+        &mut *tx,
+        workspace_id,
+        super::worker::CHAT_TURN,
+        payload,
+        None,
+        Some(&session_id.to_string()),
+        outturn_core::jobs::PRIORITY_REALTIME,
+    )
+    .await
+    .map_err(|e| protocol(e.to_string()))?;
+    outturn_core::events::append_on(
+        &mut tx,
+        workspace_id,
+        Some(session_id),
+        "chat.message",
+        serde_json::json!({
+            "id": note_id,
+            "session_id": session_id,
+            "role": "user",
+            "content": content,
+            "metadata": metadata,
+        }),
+    )
+    .await
+    .map_err(|e| protocol(e.to_string()))?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 /// Who approved, when the account that did is gone.
 const SOMEBODY: &str = "somebody";
 

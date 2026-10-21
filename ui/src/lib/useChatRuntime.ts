@@ -396,6 +396,8 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // the same reason: in a bubble on the right it reads as the reader
       // telling the agent it had been asleep.
       wake: message.metadata.wake ?? null,
+      // The note a resent request's turn begins with, which nobody sent either.
+      resend: message.metadata.resend ?? null,
       // The schedule or webhook an opening message came from. Its words, not
       // a person's, so it is drawn as the trigger's rather than in a bubble on
       // the reader's side as though they had typed it.

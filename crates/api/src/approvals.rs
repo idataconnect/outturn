@@ -344,7 +344,7 @@ pub async fn answer(
         };
         return settle_followup(&state, &claims, &item, decision, input.note.as_deref())
             .await
-            .map(|()| Json(Answered { resumed: 0 }));
+            .map(|resumed| Json(Answered { resumed }));
     }
 
     // Whether the refused request was held. Then the yes is the request's: it
@@ -467,15 +467,15 @@ pub async fn answer(
 /// Answers an item asking about an approved request that did not go: send it
 /// again, or it needs nothing more.
 ///
-/// Nothing is parked on it, so nothing resumes. A resent request is sent by
-/// the conversation's next turn, as an approved one always is.
+/// Nothing is parked on it, so nothing resumes; a resend starts a turn of its
+/// own to send it (`held::resend_now`), counted as the one turn given back.
 async fn settle_followup(
     state: &ApiState,
     claims: &outturn_core::auth::SessionClaims,
     item: &super::actions::ActionItem,
     decision: super::held::Decision,
     note: Option<&str>,
-) -> Result<(), ApiError> {
+) -> Result<u64, ApiError> {
     state
         .actions
         .settle_and_release(super::actions::Settle {
@@ -503,7 +503,18 @@ async fn settle_followup(
         resend = decision == super::held::Decision::Resend,
         "an approved request that did not go was answered"
     );
-    Ok(())
+    // After the settle, which is the decision. A turn that failed to start
+    // leaves the request approved, and the conversation's next turn sends it.
+    if decision != super::held::Decision::Resend {
+        return Ok(0);
+    }
+    match super::held::resend_now(state, item.workspace_id, item.id, claims.subject).await {
+        Ok(started) => Ok(u64::from(started)),
+        Err(e) => {
+            tracing::warn!(item_id = %item.id, error = %e, "a resend was decided but no turn was started to send it");
+            Ok(0)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -576,8 +587,8 @@ async fn follow_up(
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("that is not a note: {e}")))?
             .note
     };
-    settle_followup(&state, &claims, &item, decision, note.as_deref()).await?;
-    Ok(Json(Answered { resumed: 0 }))
+    let resumed = settle_followup(&state, &claims, &item, decision, note.as_deref()).await?;
+    Ok(Json(Answered { resumed }))
 }
 
 /// How far into the caller's queue an answer will look for its item.

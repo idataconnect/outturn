@@ -43,7 +43,13 @@ import Working from './Working'
 import SkillMenu from './SkillMenu'
 import { compactSession } from '../lib/chat'
 import type { SkillCommand } from '../lib/useSkillCommands'
-import { deleteFile, uploadFile, uploadPastedImage, type WakeRecord } from '../lib/chat'
+import {
+  deleteFile,
+  uploadFile,
+  uploadPastedImage,
+  type ResendRecord,
+  type WakeRecord,
+} from '../lib/chat'
 import { ApiError } from '../lib/api'
 
 /**
@@ -269,6 +275,9 @@ function UserMessage({
   )
   const id = useAuiState((s) => s.message.id)
   const wake = useAuiState((s) => s.message.metadata.custom?.wake as WakeRecord | null | undefined)
+  const resend = useAuiState(
+    (s) => s.message.metadata.custom?.resend as ResendRecord | null | undefined,
+  )
 
   const finishedAt = useAuiState(
     (s) => s.message.metadata.custom?.finishedAt as string | null | undefined,
@@ -279,6 +288,7 @@ function UserMessage({
   )
   const held = status ? heldLabel(status) : null
   if (wake) return <WakeMark wake={wake} />
+  if (resend) return <ResendMark resend={resend} />
   return (
     <MessagePrimitive.Root className="flex flex-col items-end">
       {trigger ? (
@@ -361,6 +371,20 @@ function WakeMark({ wake }: { wake: WakeRecord }) {
             meanwhile.
           </p>
         )}
+      </div>
+    </MessagePrimitive.Root>
+  )
+}
+
+/** The note a resent request's turn begins with, drawn as the boundary it is. */
+function ResendMark({ resend }: { resend: ResendRecord }) {
+  return (
+    <MessagePrimitive.Root className="flex justify-center">
+      <div className="my-2 w-full rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-xs text-brand-900 dark:border-brand-900 dark:bg-brand-950/40 dark:text-brand-200">
+        <p className="mb-1 text-[10px] font-medium tracking-wide uppercase">Sent again</p>
+        <p>
+          {resend.by} asked for the approved {resend.requires} to be sent again.
+        </p>
       </div>
     </MessagePrimitive.Root>
   )

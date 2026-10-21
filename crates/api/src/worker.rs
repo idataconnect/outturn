@@ -311,10 +311,14 @@ fn projected_with_sources(
                 // free-text note the authority of the platform's instructions.
                 role = "user";
                 format!("{PLATFORM_NOTE}\n\n{}", message.content)
-            } else if message.metadata.get(super::wake::WAKE_MARK).is_some() {
+            } else if message.metadata.get(super::wake::WAKE_MARK).is_some()
+                || message.metadata.get(super::held::RESEND_MARK).is_some()
+            {
                 // In the user position, because it is what the wake turn
                 // answers, but nobody in the conversation typed it -- and read as
                 // theirs, "you slept" becomes the person telling the agent so.
+                // A resend's note is the same kind of thing: the turn it starts
+                // answers it, and nobody in the conversation wrote it.
                 format!("{PLATFORM_NOTE}\n\n{}", message.content)
             } else {
                 message.content.clone()

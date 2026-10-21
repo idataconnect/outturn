@@ -14620,3 +14620,60 @@ async fn a_request_lost_in_flight_is_not_sent_again() {
 
     finish!(h);
 }
+
+/// Sending a request again starts a turn to send it, now, rather than waiting
+/// for whatever the conversation says next; the turn begins with a note
+/// nobody typed, and is handed the request to send before its guest runs.
+#[tokio::test]
+async fn a_resend_starts_a_turn_that_sends_it() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held,
+        serde_json::json!({ "outcome": "no_answer", "message": "the connection reset" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    outturn::jobs::complete(&h.db.pool, job, Some(lease))
+        .await
+        .expect("complete");
+
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let followup = items(&queue)
+        .into_iter()
+        .find(|i| i["payload"]["followup"] == "unknown")
+        .unwrap_or_else(|| panic!("no follow-up: {queue}"));
+    let followup = followup["id"].as_str().unwrap().to_string();
+
+    // Through `/answer`, as a client that knows only approvals sends it.
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{followup}/answer"),
+        &admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["resumed"], 1);
+
+    let (_, _, assignment) = take_assignment(&h).await;
+    assert_eq!(assignment["held"][0]["id"], held.as_str(), "{assignment}");
+    let conversation = assignment["conversation"].to_string();
+    assert!(
+        conversation.contains("asked for the approved charge"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("nobody in the conversation sent it"),
+        "framed as the platform's: {conversation}"
+    );
+
+    finish!(h);
+}
