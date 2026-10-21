@@ -566,12 +566,13 @@ impl RuntimeKey {
 
     /// Whether `presented` is this key, without leaking how much of it was.
     pub fn accepts(&self, presented: &str) -> bool {
+        use sha2::{Digest, Sha256};
         use subtle::ConstantTimeEq;
-        let presented = presented.as_bytes();
-        if presented.len() != self.0.len() {
-            return false;
-        }
-        self.0.ct_eq(presented).into()
+        // Digests are the same length whatever was presented, so the
+        // comparison does not stop early on a length mismatch.
+        let ours = Sha256::digest(&self.0);
+        let theirs = Sha256::digest(presented.as_bytes());
+        ours.ct_eq(&theirs).into()
     }
 
     /// What the runtime tier is, once its key has been accepted.
@@ -642,16 +643,43 @@ impl SessionClaims {
 }
 
 pub fn extract_bearer(headers: &axum::http::HeaderMap) -> Result<&str, AuthError> {
-    headers
+    let value = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(AuthError::Missing)
+        .ok_or(AuthError::Missing)?;
+    // Auth scheme names are case-insensitive (RFC 9110 section 11.1).
+    let (scheme, token) = value.split_once(' ').ok_or(AuthError::Missing)?;
+    if scheme.eq_ignore_ascii_case("bearer") {
+        Ok(token)
+    } else {
+        Err(AuthError::Missing)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bearer_scheme_is_case_insensitive() {
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("authorization", format!("{scheme} abc").parse().unwrap());
+            assert_eq!(extract_bearer(&headers).ok(), Some("abc"));
+        }
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Basic abc".parse().unwrap());
+        assert!(extract_bearer(&headers).is_err());
+    }
+
+    #[test]
+    fn the_runtime_key_accepts_only_itself() {
+        let key = RuntimeKey::new(&"k".repeat(32)).expect("key");
+        assert!(key.accepts(&"k".repeat(32)));
+        assert!(!key.accepts(&"k".repeat(31)));
+        assert!(!key.accepts(&"k".repeat(33)));
+        assert!(!key.accepts(""));
+    }
 
     fn pair() -> (TokenMinter, [u8; 32]) {
         let seed = [7u8; 32];
