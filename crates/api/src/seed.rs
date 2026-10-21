@@ -43,7 +43,7 @@ pub async fn dev_seed(
         .create(CreateUser {
             email: email.clone(),
             display_name: "System Admin".into(),
-            password: password.clone(),
+            password,
         })
         .await?;
 
@@ -63,9 +63,8 @@ pub async fn dev_seed(
 
     tracing::warn!(
         email = %email,
-        password = %password,
         workspace = %workspace.slug,
-        "dev seed created a system admin — never enable OUTTURN_DEV_SEED outside local development"
+        "dev seed created a system admin; scripts/dev-secrets.sh --print shows its password — never enable OUTTURN_DEV_SEED outside local development"
     );
 
     Ok(())

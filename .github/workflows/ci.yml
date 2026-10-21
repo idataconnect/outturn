@@ -17,6 +17,10 @@ on:
     branches: [main]
   pull_request:
 
+# Checking out the code is all either job does with the repository token.
+permissions:
+  contents: read
+
 # A force-push or a second push to the same branch makes the earlier run
 # pointless. Cancel it rather than pay for it -- except on main, where each
 # commit's result is a fact worth keeping.
