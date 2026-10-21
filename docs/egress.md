@@ -20,7 +20,10 @@ not something a deployment should assume.
 A workspace allows hosts by name. A rule may carry a credential, which the
 gateway attaches and the guest never sees; a rule that carries one may only be
 reached over https, because a credential on a plaintext connection is a
-credential given away.
+credential given away -- unless the operator listed the host in
+`OUTTURN_INTERNAL_HOSTS`, where plain http inside their network is allowed and
+the credential travels unencrypted to it. See
+[Credentials to an internal host](#credentials-to-an-internal-host) below.
 
 A credential is named by an environment variable on the gateway, and that
 environment also holds the operator's own secrets: provider keys, the database
