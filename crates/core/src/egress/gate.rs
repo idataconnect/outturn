@@ -115,6 +115,12 @@ impl Gate {
             None => path == pattern,
         }
     }
+
+    /// This gate's own leaf, as text: what a policy is committed against, so a
+    /// policy for one skill's `charge` says nothing about another's.
+    pub fn key(&self, workspace_id: Uuid) -> String {
+        hex::encode(leaf(workspace_id, self).0)
+    }
 }
 
 /// A path as the gate compares it.
@@ -285,6 +291,12 @@ pub struct Gates {
     /// through it. See `api::grant::Granted`.
     #[serde(default)]
     grants: Vec<super::grant::Granted>,
+    /// What a workspace's policies say in advance, each about one gate. Carried
+    /// beside the grants and committed with them, for the same reason: the gate
+    /// stays standing, and this is one more way through it. See
+    /// `egress::policy`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    policies: Vec<super::policy::PolicyGrant>,
 }
 
 impl Gates {
@@ -296,6 +308,7 @@ impl Gates {
         Self {
             gates: Vec::new(),
             grants: Vec::new(),
+            policies: Vec::new(),
         }
     }
 
@@ -347,7 +360,27 @@ impl Gates {
         Self {
             gates,
             grants: Vec::new(),
+            policies: Vec::new(),
         }
+    }
+
+    /// The same set, plus what the workspace's policies say about its gates.
+    pub fn with_policies(mut self, mut policies: Vec<super::policy::PolicyGrant>) -> Self {
+        // Sorted for the tree, as the grants are.
+        policies.sort_by(|a, b| (&a.gate, a.policy_id).cmp(&(&b.gate, b.policy_id)));
+        self.policies = policies;
+        self
+    }
+
+    /// The policy committed against this gate, if one is. At most one: the API
+    /// chooses among a gate's inclusions before it commits.
+    pub fn policy_for(
+        &self,
+        workspace_id: Uuid,
+        gate: &Gate,
+    ) -> Option<&super::policy::PolicyGrant> {
+        let key = gate.key(workspace_id);
+        self.policies.iter().find(|p| p.gate == key)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -439,6 +472,11 @@ impl Gates {
                 .iter()
                 .map(|g| leaf(workspace_id, g))
                 .chain(self.grants.iter().map(|g| grant_leaf(workspace_id, g)))
+                .chain(
+                    self.policies
+                        .iter()
+                        .map(|p| super::policy::leaf(workspace_id, p)),
+                )
                 .collect(),
         )
     }

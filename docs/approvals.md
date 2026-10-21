@@ -264,7 +264,7 @@ Wider extents -- this session, until revoked -- are left undesigned. They are
 authorities rather than approvals, and the place to add one is the roles model,
 where a list of who holds what already exists. The standing case a workspace
 actually asks for -- stop asking about this once we trust the agent with it --
-is designed in [auto-approval.md](auto-approval.md) as policies a workspace can
+is built in [auto-approval.md](auto-approval.md) as policies a workspace can
 list, each naming who set it, decided at the gateway and recorded there.
 
 ## The approval carries the call
@@ -354,10 +354,11 @@ covered better elsewhere:
 - **Several of one kind, waiting together:** the queue offers *Approve all*,
   listing every item it covers, so the person sees each one they say yes to.
 - **The same kind, asked again and again:** after a few approvals of one
-  `requires` in a workspace, the prompt links to an
+  `requires` in a workspace -- three -- the prompt links to an
   [auto-approval](auto-approval.md) policy with the fields filled in -- a
   standing yes made on purpose, with a ceiling and an expiry, rather than
-  ticked in passing.
+  ticked in passing. Built: shown only to somebody holding `approvals:delegate`
+  and `approvals:answer`, from the count `GET /v1/approvals/answered` returns.
 
 The `unit` extent stays in the gateway, where a policy may yet use it; only the
 prompt stops offering it.

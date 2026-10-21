@@ -1,7 +1,8 @@
 # Auto-approval
 
 Letting a workspace stop being asked about something it has stopped needing to
-be asked about. Designed, unbuilt.
+be asked about. Built; *As built*, at the end, says where and how, and where
+it differs from what follows.
 
 [approvals.md](approvals.md) is the gate: an operation's frontmatter declares
 that it needs somebody's word, the gateway refuses the request until a grant
@@ -307,17 +308,86 @@ waved through, which is the one outcome this whole design must not permit.
   instead -- carried by any turn whose rule uses the operator's credential for
   that host -- would make it bind the API. It wants
   [integrations.md](integrations.md)'s notion of an integration to exist first.
-- **When the person who set a policy leaves.** Their policies could lapse, be
-  kept and flagged, or move to whoever holds `approvals:delegate`. Lapsing is
-  the safe direction and the disruptive one.
-- **Expiry by default.** A policy with no `expires_at` is standing for ever.
-  Whether new ones should default to ninety days and be renewed from the
-  evidence page is worth deciding with a real deployment's habits in view.
-- **Host gates.** `approve_new_hosts` turns reaching a new host into a gate with
-  no `binds`. Whether a policy may cover those -- "Bleargh Bot may reach any host
-  the workspace allowed without asking" -- is the setting being turned off for
-  one agent, and is probably better said as exactly that.
+- **When the person who set a policy leaves.** *Chosen: they lapse.* A policy
+  applies only while whoever set it still holds a role in the workspace, checked
+  in the resolution and again in the gateway's insert; the page shows it as
+  lapsed. It is the disruptive direction, and the safe one: nobody's word is
+  left standing in for a person who is gone. Moving them to a successor is a new
+  policy, set by that person.
+- **Expiry by default.** *Chosen: every policy expires.* `expires_at` is
+  required in the table, defaults to ninety days from now when a write leaves it
+  out, and may be at most a year away. Renewing is an edit, made from the page
+  that shows the evidence.
+- **Host gates.** *Chosen: not covered.* A gate binding nothing -- every host
+  gate -- is covered by no policy, in the resolution and in the gateway alike.
+  Turning `approve_new_hosts` off for one agent is a setting, and should be
+  said as one.
 - **A policy suspending itself.** If something later marks an auto-approved
   request as wrong -- a refund, a flag from evaluation -- the policy that let it
   through could return to `trial`. What counts as "marked wrong" is not defined
   anywhere yet.
+
+## As built
+
+- **Declarations.** `risk`, `auto`, `numbers` and `free` are read in
+  `api::skill::frontmatter` and stored beside each gate in
+  `skill_version_gates` (migration 0056). `numbers` must be bound and `free`
+  must not be. `free` is required where `auto: allowed` is written out; where
+  `auto` is absent, `free` reads as empty -- so a version published before these
+  keys existed is coverable only for a request carrying nothing but its bound
+  fields, rather than every such skill being refused at publish.
+- **The cap.** `auto_approve_max_risk` is an operator ceiling in the settings
+  catalog, `none` by default.
+- **The rows.** `approval_policies` and `auto_approvals`, migration 0056.
+  Policies are never deleted; revoking is a column. Each row records who set it,
+  who last changed it, who revoked it, and a `version` every edit moves on.
+- **Who.** `approvals:delegate`, in the `admin` template and backfilled as
+  `approvals:answer` was. Writes need it and `approvals:answer` together, and a
+  browser session -- a token carrying a refresh family -- so no agent's token
+  can write one. Reading needs either.
+- **The API.** `GET/POST /v1/approval-policies`, `GET/PUT
+  /v1/approval-policies/{id}`, and `POST .../revoke`, `.../expire` (ends it now,
+  renewable by an edit) and `.../accept` (covers the gates published since).
+  `GET .../evidence` returns the record so far, trial results, and for an act or
+  operation selector the last fifty approvals of what it covers, each with
+  whether its tests hold -- those it would have approved that a person declined
+  first. `GET /v1/approvals/answered?requires=` is the count the prompt reads.
+- **Resolution** is `api::auto_approval::choose`, called from `prepare_turn`
+  through `for_turn`. Deny overrides; specificity chooses among inclusions;
+  *two equally specific inclusions choose neither*, and a person is asked,
+  rather than one winning by an order nobody set. A risk or act selector covers
+  a gate published after the policy was last accepted only in trial.
+- **In the token.** A `PolicyGrant` per covered gate, committed beside the gates
+  and grants under its own tagged leaf, against the gate's own leaf
+  (`Gate::key`), carrying its tests, the fields a request may carry (`binds` and
+  `free`), the caps, the policy's version and the turn's job id.
+- **At the gateway.** `egress::policy::PolicyGrant::admits` and `record`.
+  Comparisons only on whole JSON numbers in range, a floor of zero, absent never
+  matching, `≠` and "not one of" only beside `=` or "one of" on the same field.
+  The record's insert is the check: the policy row is locked, and the insert
+  succeeds only while it is on, unrevoked, unexpired, at the committed version,
+  set by somebody still in the workspace, and within the tighter of the
+  committed caps and its own. "Per day" is the last twenty-four hours. No
+  database, or no row, and the request is refused as gated, so a person is
+  asked. What goes out is the parsed body, serialized again, as JSON.
+- **Trial** is marked by `api::gated` on the queue item as
+  `would_auto_approve`, by the same test the gateway applies; the evidence
+  counts the answers to those items.
+- **The page** is Settings → Auto-approval, `/settings/auto-approval`; a new
+  policy at `/settings/auto-approval/new` is prefilled from `requires`,
+  `selector`, `max_risk`, `skill_id`, `matches`, `agent_id` and one `field` per
+  bound field. The approval prompt links there once the workspace has approved
+  the same `requires` three times, for somebody who could set one.
+
+### What is not built
+
+- **The token trade-in still copies the root forward.** Dropping a revoked or
+  expired policy when re-signing would change the gate set the runtime carries,
+  and the runtime is not told a new one. The record makes it moot for anything
+  going out -- a revoked policy's insert fails on the next request -- so what is
+  left is a token that names a policy nothing will honor.
+- **The action queue does not yet say** a broad policy has operations waiting to
+  be accepted; the page offers *Accept operations published since* instead.
+- **The admin agent proposing a policy**, which waits for the admin agent.
+- **A policy suspending itself**, and **operator gates that follow the
+  credential**, still unsettled above.

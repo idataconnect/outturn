@@ -6,6 +6,7 @@ pub mod agent_template;
 mod agent_templates;
 mod agents;
 pub mod approvals;
+pub mod auto_approval;
 pub mod catalog;
 pub mod chat;
 pub mod compact;

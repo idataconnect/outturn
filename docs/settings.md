@@ -3,7 +3,7 @@
 How defaults cascade from the operator to workspaces to agents, and who may
 change what. Built: the catalog is `crates/api/src/settings/mod.rs`, the rows are
 `setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
-turn in `prepare_turn`. It holds eight settings, listed under
+turn in `prepare_turn`. It holds nine settings, listed under
 [What is in it](#what-is-in-it).
 
 Settings that only mean something to a model -- `temperature`,
@@ -68,7 +68,8 @@ off for itself. A row a workspace wrote before the operator turned it off is
 bounded when read, so it does not get through either. Stricter means earlier
 in the choice's options, which are listed strictest first. It stops at the
 workspace: a ceiling is about the people using the product, so an agent's page
-does not offer it and a template cannot fix it. Dictation is the one there is.
+does not offer it and a template cannot fix it. Dictation is one;
+`auto_approve_max_risk` ([auto-approval.md](auto-approval.md)) is the other.
 
 - Every setting in the catalog today: temperature, reasoning effort, file
   access for both scopes, new-host approval, model calls per turn, context
@@ -122,6 +123,7 @@ below is workspace-overridable, and so overridable per agent too.
 | `context_budget` | Conversation size sent to the model | 400,000 bytes | 1,000 to 100,000,000 bytes |
 | `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
 | `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
+| `auto_approve_max_risk` | Auto-approval | `none` | `none`, `low`, `medium`, `high`; an operator ceiling, per workspace only |
 
 Where each is explained in depth:
 

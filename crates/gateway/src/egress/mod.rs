@@ -148,6 +148,23 @@ fn failed(e: TransportError) -> Response {
     }
 }
 
+/// The refusal a gated request gets: what the runtime relays, and the API turns
+/// into somebody being asked.
+fn needs_approval(
+    method: &str,
+    url: &reqwest::Url,
+    host: &str,
+    requires: &str,
+) -> (StatusCode, String) {
+    (
+        StatusCode::FORBIDDEN,
+        format!(
+            "this needs approval before it can go out: {method} {} on {host} requires \"{requires}\"",
+            url.path(),
+        ),
+    )
+}
+
 /// Everything `fetch` does but saying how it went: refused, or allowed and
 /// sent with whatever the transport made of it.
 async fn vet_and_send(
@@ -259,23 +276,56 @@ async fn vet_and_send(
             ));
         }
     }
+    // What a workspace's policies let through, each with the gate it was let
+    // through and what it tested. Recorded before the request goes out, below.
+    let mut admitted: Vec<(
+        outturn_core::egress::gate::Gate,
+        outturn_core::egress::policy::PolicyGrant,
+        outturn_core::egress::policy::Admitted,
+    )> = Vec::new();
     if request.gates.covering(&host, &method, url.path()).is_some() {
-        // Unless somebody has already approved this particular request, through
-        // every gate that covers it. The
-        // grant travels in the same commitment the gate does, so this is still
-        // the API's word rather than the caller's, and still no database read in
-        // this tier.
+        // Unless every gate covering it is satisfied: by somebody having already
+        // approved this particular request, or by a policy committed against
+        // that gate. Both travel in the same commitment the gate does, so this
+        // is still the API's word rather than the caller's, and still no
+        // database read in this tier until a policy has said yes.
         //
         // Checked here rather than by leaving the gate out of the turn's
         // commitment, which is what this did first: a gate that is not committed
         // to is not enforced at all, so anything the omission was too broad about
-        // became an ungated request. And a `unit` grant can only be checked where
-        // the body is, which is here.
-        if let Some(gate) =
-            request
+        // became an ungated request. And a `unit` grant or a policy's test can
+        // only be checked where the body is, which is here.
+        let mut refused = None;
+        for gate in request.gates.covering_all(&host, &method, url.path()) {
+            if request
                 .gates
-                .unpermitted(&host, &method, url.path(), request.body.as_deref())
-        {
+                .permitted(gate, &method, &host, url.path(), request.body.as_deref())
+                .is_some()
+            {
+                continue;
+            }
+            let by_policy = request
+                .gates
+                .policy_for(claims.workspace_id, gate)
+                .and_then(|policy| {
+                    policy
+                        .admits(
+                            claims.workspace_id,
+                            gate,
+                            url.query(),
+                            request.body.as_deref(),
+                        )
+                        .map(|a| (gate.clone(), policy.clone(), a))
+                });
+            match by_policy {
+                Some(yes) => admitted.push(yes),
+                None => {
+                    refused = Some(gate);
+                    break;
+                }
+            }
+        }
+        if let Some(gate) = refused {
             // Refused rather than held here. Parking the turn is the API's to do --
             // it owns the job and the queue -- and this tier has a method, a URL and a
             // token. What it can do is not make the call, and say why in words the
@@ -283,17 +333,11 @@ async fn vet_and_send(
             //
             // So the money does not move and get approved afterwards, which is the
             // ordering that matters.
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!(
-                    "this needs approval before it can go out: {method} {} on {host} requires \"{}\"",
-                    url.path(),
-                    gate.requires,
-                ),
-            ));
+            return Err(needs_approval(&method, &url, &host, &gate.requires));
         }
         tracing::info!(
             workspace_id = %claims.workspace_id,
+            by_policy = admitted.len(),
             "a gated request was approved through every gate covering it, so it goes out"
         );
     }
@@ -483,6 +527,58 @@ async fn vet_and_send(
         outgoing.insert(reqwest::header::AUTHORIZATION, value);
     }
 
+    // The record of each automatic yes, written before the request goes out and
+    // only while each policy still stands: the insert is the check, so a policy
+    // revoked a moment ago stops this request whatever the token says. No
+    // database, or no row, and a person is asked -- the only safe direction,
+    // since the alternative is a request nobody approved and nobody recorded.
+    let mut body = request.body;
+    if let Some((gate, _, first)) = admitted.first() {
+        let written = match &state.health {
+            Some(pool) => {
+                let records: Vec<_> = admitted
+                    .iter()
+                    .map(|(_, grant, a)| outturn_core::egress::policy::Record {
+                        workspace_id: claims.workspace_id,
+                        session_id: claims.subject,
+                        grant,
+                        method: &method,
+                        host: &host,
+                        path: url.path(),
+                        admitted: a,
+                    })
+                    .collect();
+                outturn_core::egress::policy::record(pool, &records)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "an auto-approval could not be recorded");
+                        false
+                    })
+            }
+            None => {
+                tracing::warn!(
+                    "a policy would approve this request, and this gateway has no database \
+                     to record it in"
+                );
+                false
+            }
+        };
+        if !written {
+            return Err(needs_approval(&method, &url, &host, &gate.requires));
+        }
+        // What was tested is what is sent: the body as it was parsed, in JSON.
+        body = Some(first.body.clone());
+        outgoing.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        tracing::info!(
+            workspace_id = %claims.workspace_id,
+            policies = admitted.len(),
+            "a gated request was approved by policy and recorded"
+        );
+    }
+
     let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -496,7 +592,7 @@ async fn vet_and_send(
         host: host.clone(),
         addrs,
         headers: outgoing,
-        body: request.body,
+        body,
         timeout: FETCH_TIMEOUT,
         body_limit: if document {
             DOCUMENT_BODY_LIMIT
@@ -1258,5 +1354,150 @@ mod client_credentials {
         )
         .await
         .expect("bound to ACME at its host");
+    }
+
+    /// A policy the token commits to still lets nothing out unrecorded. With no
+    /// database to write the record in, the request is refused in the words a
+    /// gated refusal uses -- so the runtime relays it and a person is asked --
+    /// and nothing reaches the transport. A body the policy does not admit is
+    /// refused the same way, database or not.
+    #[tokio::test]
+    async fn a_policy_lets_nothing_out_that_it_cannot_record() {
+        use outturn_core::egress::policy::{Op, PolicyGrant, Test};
+        use std::sync::Mutex;
+        use transport::{TransportResponse, VettedRequest};
+
+        struct Recorder(Mutex<u32>);
+
+        #[async_trait::async_trait]
+        impl transport::EgressTransport for Recorder {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+
+            async fn send(
+                &self,
+                _request: VettedRequest,
+            ) -> Result<TransportResponse, TransportError> {
+                *self.0.lock().unwrap() += 1;
+                Ok(TransportResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: "{}".into(),
+                    truncated: false,
+                })
+            }
+        }
+
+        let seed = [13u8; 32];
+        let minter = outturn_core::auth::TokenMinter::new(&seed).expect("minter");
+        let validator = outturn_core::auth::TokenValidator::new(
+            &outturn_core::auth::TokenMinter::public_key_of(&seed),
+            outturn_core::auth::AUDIENCE_GATEWAY,
+        )
+        .expect("validator");
+        let sent = Arc::new(Recorder(Mutex::new(0)));
+        let state = Arc::new(
+            super::super::GatewayState::new(Vec::new(), validator)
+                .with_egress_transport(sent.clone()),
+        );
+
+        let workspace = uuid::Uuid::now_v7();
+        let rule = EgressRule {
+            host: "93.184.215.14".into(),
+            header: None,
+            credential_env: None,
+            client: None,
+            credential: None,
+        };
+        let charge = outturn_core::egress::gate::Gate {
+            requires: "charge".into(),
+            host: "93.184.215.14".into(),
+            method: "POST".into(),
+            path: "/charges".into(),
+            identified_by: None,
+            binds: vec!["amount_pence".into()],
+        };
+        let gates =
+            outturn_core::egress::gate::Gates::of(vec![charge.clone()]).with_policies(vec![
+                PolicyGrant {
+                    policy_id: uuid::Uuid::now_v7(),
+                    version: 1,
+                    job_id: uuid::Uuid::now_v7(),
+                    gate: charge.key(workspace),
+                    requires: "charge".into(),
+                    tests: vec![Test {
+                        field: "amount_pence".into(),
+                        op: Op::Le,
+                        value: serde_json::json!(5000),
+                    }],
+                    fields: vec!["amount_pence".into()],
+                    per_turn: 5,
+                    per_day: 5,
+                    sum_field: None,
+                    sum_per_day: None,
+                },
+            ]);
+        let rules = vec![rule.clone()];
+        let token = minter
+            .mint_turn(
+                uuid::Uuid::now_v7(),
+                workspace,
+                commit::root(workspace, &rules),
+                gates.root(workspace),
+            )
+            .expect("turn token");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        for body in [r#"{"amount_pence":40}"#, r#"{"amount_pence":900000}"#] {
+            let request = EgressRequest {
+                method: "POST".into(),
+                url: "https://93.184.215.14/charges".into(),
+                gates: gates.clone(),
+                headers: Vec::new(),
+                body: Some(body.into()),
+                proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+            };
+            let refused = vet_and_send(State(state.clone()), headers.clone(), Json(request))
+                .await
+                .expect_err("refused");
+            assert_eq!(refused.0, StatusCode::FORBIDDEN);
+            assert!(
+                refused.1.starts_with("this needs approval"),
+                "said as a gated refusal: {}",
+                refused.1
+            );
+        }
+        assert_eq!(*sent.0.lock().unwrap(), 0, "nothing was sent");
+
+        // And a policy the runtime added is a set that does not verify.
+        let committed = outturn_core::egress::gate::Gates::of(vec![charge.clone()]);
+        let token = minter
+            .mint_turn(
+                uuid::Uuid::now_v7(),
+                workspace,
+                commit::root(workspace, &rules),
+                committed.root(workspace),
+            )
+            .expect("turn token");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let request = EgressRequest {
+            method: "POST".into(),
+            url: "https://93.184.215.14/charges".into(),
+            gates,
+            headers: Vec::new(),
+            body: Some(r#"{"amount_pence":40}"#.into()),
+            proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+        };
+        let refused = vet_and_send(State(state.clone()), headers, Json(request))
+            .await
+            .expect_err("refused");
+        assert!(
+            refused.1.contains("not the ones this turn was given"),
+            "{}",
+            refused.1
+        );
     }
 }

@@ -2369,7 +2369,20 @@ impl Worker {
             outturn_core::egress::gate::Gates::of(gates.clone())
                 .with_grants(waiting.iter().map(|h| h.grant()).collect())
         });
-        let gates = outturn_core::egress::gate::Gates::of(gates).with_grants(granted.clone());
+        // And what the workspace's policies say in advance, about this turn's
+        // gates only: see `auto_approval`. Never with the held requests, which
+        // carry a person's yes already.
+        let policies = super::auto_approval::for_turn(
+            &self.pool,
+            payload.workspace_id,
+            payload.agent_id,
+            job_id,
+            &live_skills,
+        )
+        .await;
+        let gates = outturn_core::egress::gate::Gates::of(gates)
+            .with_grants(granted.clone())
+            .with_policies(policies);
         let gate_commitment = gates.root(payload.workspace_id);
 
         let prompt_text = history

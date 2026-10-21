@@ -269,6 +269,15 @@ pub async fn raise(
     // a number.
     payload_json["binds"] = bound_values(&gate.binds, input.body.as_deref());
 
+    // A policy in trial asks a person exactly as before, and the question says
+    // it would have said yes -- which is what the evidence counts its
+    // disagreements with people from. Decided here, from the request as
+    // refused, by the same test the gateway would apply; it lets nothing
+    // through, so a failure to decide only leaves the question unmarked.
+    if let Some(policy_id) = trial_verdict(&state, &payload, gate, &input).await {
+        payload_json["would_auto_approve"] = serde_json::json!(policy_id.to_string());
+    }
+
     // Offered, never granted. The approver ticks it; it is never inferred from
     // what was asked, because a person approves the instance they were shown and
     // not the class it belongs to.
@@ -362,6 +371,35 @@ pub async fn raise(
         item_id: Some(item),
         park: true,
     }))
+}
+
+/// The policy in trial that would have approved this request, if one would.
+async fn trial_verdict(
+    state: &ApiState,
+    payload: &super::worker::ChatTurnPayload,
+    gate: &outturn_core::egress::gate::Gate,
+    input: &Refused,
+) -> Option<Uuid> {
+    use super::skill::SkillStore as _;
+    let skills = super::skill::PostgresSkillStore::new(state.pool.clone())
+        .resolve_for_agent(payload.workspace_id, payload.agent_id)
+        .await
+        .ok()?;
+    let query = input
+        .url
+        .as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .and_then(|u| u.query().map(str::to_string));
+    super::auto_approval::would_approve(
+        &state.pool,
+        payload.workspace_id,
+        payload.agent_id,
+        &skills,
+        gate,
+        query.as_deref(),
+        input.body.as_deref(),
+    )
+    .await
 }
 
 /// The roles in this workspace whose holders may answer an approval.

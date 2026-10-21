@@ -38,6 +38,11 @@ pub struct DeclaredGate {
     /// The request fields a grant under this gate is keyed on, in declared
     /// order. Never empty: the frontmatter refuses a declaration without them.
     pub binds: Vec<String>,
+    /// What a policy reads: `docs/auto-approval.md`.
+    pub risk: outturn_core::egress::policy::Risk,
+    pub auto: bool,
+    pub numbers: Vec<String>,
+    pub free: Vec<String>,
 }
 
 /// Every approval a set of files declares.
@@ -65,6 +70,10 @@ pub fn declared_gates(files: &[(SkillFile, Vec<u8>)]) -> Vec<DeclaredGate> {
             path_pattern: pattern.trim().to_string(),
             identified_by: rule.identified_by,
             binds: rule.binds,
+            risk: rule.risk,
+            auto: rule.auto,
+            numbers: rule.numbers,
+            free: rule.free,
         });
     }
     out

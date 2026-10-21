@@ -15,6 +15,7 @@ import {
   Users as UsersIcon,
   KeyRound,
   Plug,
+  ShieldCheck,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -54,6 +55,8 @@ import Users from './pages/Users'
 import UserEditor from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
+import AutoApproval from './pages/AutoApproval'
+import AutoApprovalEditor from './pages/AutoApprovalEditor'
 import PlatformDefaults from './pages/PlatformDefaults'
 import PlatformModels from './pages/PlatformModels'
 import PlatformSetup from './pages/PlatformSetup'
@@ -100,7 +103,7 @@ const navItems: {
     to: paths.settings,
     icon: Settings,
     label: 'Settings',
-    anyOf: ['settings:read', 'users:read', 'roles:assign'],
+    anyOf: ['settings:read', 'users:read', 'roles:assign', 'approvals:answer', 'approvals:delegate'],
     divider: true,
   },
   // Only a system administrator holds `workspaces:read`: no workspace may grant
@@ -213,6 +216,25 @@ function RequireAuthority({
   return <>{children}</>
 }
 
+/** `RequireAuthority`, for a page any one of several authorities opens. */
+function RequireAnyAuthority({
+  authorities,
+  children,
+}: {
+  authorities: string[]
+  children: React.ReactNode
+}) {
+  const state = useSession()
+  if (state.status === 'loading') return null
+  if (
+    state.status !== 'authenticated' ||
+    !authorities.some((a) => state.session.authorities.includes(a))
+  ) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 /** The same page at its new address, keeping whatever followed the old one. */
 function Moved({ from, to }: { from: string; to: string }) {
   const { pathname, search } = useLocation()
@@ -246,6 +268,13 @@ function SettingsSection() {
           icon: Plug,
           allowed: authorities.includes('settings:read'),
         },
+        {
+          to: paths.autoApprovals,
+          label: 'Auto-approval',
+          icon: ShieldCheck,
+          allowed:
+            authorities.includes('approvals:answer') || authorities.includes('approvals:delegate'),
+        },
       ]}
     />
   )
@@ -262,6 +291,9 @@ function SettingsHome() {
   if (authorities.includes('settings:read')) return <WorkspaceSettings />
   if (authorities.includes('users:read')) return <Navigate to={paths.users} replace />
   if (authorities.includes('roles:assign')) return <Navigate to={paths.roles} replace />
+  if (authorities.includes('approvals:answer') || authorities.includes('approvals:delegate')) {
+    return <Navigate to={paths.autoApprovals} replace />
+  }
   return <Navigate to="/" replace />
 }
 
@@ -609,6 +641,30 @@ function Shell() {
                 <RequireAuthority authority="settings:read">
                   <Connections />
                 </RequireAuthority>
+              }
+            />
+            <Route
+              path="auto-approval"
+              element={
+                <RequireAnyAuthority authorities={['approvals:answer', 'approvals:delegate']}>
+                  <AutoApproval />
+                </RequireAnyAuthority>
+              }
+            />
+            <Route
+              path="auto-approval/new"
+              element={
+                <RequireAuthority authority="approvals:delegate">
+                  <AutoApprovalEditor />
+                </RequireAuthority>
+              }
+            />
+            <Route
+              path="auto-approval/:id"
+              element={
+                <RequireAnyAuthority authorities={['approvals:answer', 'approvals:delegate']}>
+                  <AutoApprovalEditor />
+                </RequireAnyAuthority>
               }
             />
             <Route

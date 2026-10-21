@@ -58,6 +58,32 @@ pub struct ApprovalRule {
     /// keyed on the path alone, a yes to charging £40 let £4,000 through. See
     /// `docs/approvals.md`.
     pub binds: Vec<String>,
+    /// How much is at stake, for a policy choosing in bulk. Absent reads as
+    /// `high`, so an operation nobody thought about is not swept into
+    /// "everything medium or lower". See `docs/auto-approval.md`.
+    #[serde(default = "high")]
+    pub risk: outturn_core::egress::policy::Risk,
+    /// Whether a workspace may auto-approve this at all. Absent reads as
+    /// allowed; `auto: never` is for the operations where a person's word is
+    /// the product.
+    #[serde(default = "yes")]
+    pub auto: bool,
+    /// Which of `binds` are numbers a policy may bound. Everything bound may be
+    /// tested for equality; only these may be compared.
+    #[serde(default)]
+    pub numbers: Vec<String>,
+    /// The top-level body fields that carry nothing worth approving. A request
+    /// carrying a field in neither `binds` nor this is covered by no policy.
+    #[serde(default)]
+    pub free: Vec<String>,
+}
+
+fn high() -> outturn_core::egress::policy::Risk {
+    outturn_core::egress::policy::Risk::High
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The request an operation is, declared so the agent can be offered it as a
@@ -374,6 +400,10 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
     let mut covers = None;
     let mut identified_by = None;
     let mut binds: Option<Vec<String>> = None;
+    let mut risk = None;
+    let mut auto = None;
+    let mut numbers: Option<Vec<String>> = None;
+    let mut free: Option<Vec<String>> = None;
 
     for (key, value) in block(yaml, "approval")?.unwrap_or_default() {
         let slot = match key {
@@ -381,10 +411,32 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             "matches" => &mut matches,
             "covers" => &mut covers,
             "identified_by" => &mut identified_by,
+            "risk" => &mut risk,
+            "auto" => &mut auto,
             // A list rather than a scalar, so it is taken here and the scalar
             // slots above are left for the keys that are one value.
             "binds" => {
                 binds = Some(parse_list(key, &value)?);
+                continue;
+            }
+            "numbers" => {
+                // `[]` is a statement here -- nothing is -- where in `binds` it
+                // would be a gate keyed on nothing.
+                numbers = Some(if value.trim() == "[]" {
+                    Vec::new()
+                } else {
+                    parse_list(key, &value)?
+                });
+                continue;
+            }
+            "free" => {
+                // `[]` is a statement here -- nothing is -- where in `binds` it
+                // would be a gate keyed on nothing.
+                free = Some(if value.trim() == "[]" {
+                    Vec::new()
+                } else {
+                    parse_list(key, &value)?
+                });
                 continue;
             }
             other => {
@@ -455,12 +507,58 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         ));
     }
 
+    // The keys a policy reads, docs/auto-approval.md. Each refused when it
+    // names something it cannot mean, because a ceiling misread is a ceiling
+    // that is not there.
+    let risk = match risk.as_deref() {
+        None => outturn_core::egress::policy::Risk::High,
+        Some(raw) => outturn_core::egress::policy::Risk::parse(raw).ok_or_else(|| {
+            FrontmatterError::Invalid(format!("risk is low, medium or high, not {raw}"))
+        })?,
+    };
+    let auto_written = auto.is_some();
+    let auto = match auto.as_deref() {
+        None | Some("allowed") => true,
+        Some("never") => false,
+        Some(raw) => {
+            return Err(FrontmatterError::Invalid(format!(
+                "auto is allowed or never, not {raw}"
+            )));
+        }
+    };
+    let numbers = numbers.unwrap_or_default();
+    if let Some(field) = numbers.iter().find(|f| !binds.contains(f)) {
+        return Err(FrontmatterError::Invalid(format!(
+            "numbers names {field}, which the approval does not bind"
+        )));
+    }
+    // Required where `auto: allowed` is written, and read as empty where it is
+    // not: a declaration that predates these keys allows a policy only for a
+    // request carrying nothing but its bound fields.
+    if auto && auto_written && free.is_none() {
+        return Err(FrontmatterError::Invalid(
+            "auto: allowed needs free naming the body fields that carry nothing worth approving \
+             (free: [] if there are none)"
+                .into(),
+        ));
+    }
+    let free = free.unwrap_or_default();
+    if let Some(field) = free.iter().find(|f| binds.contains(f)) {
+        return Err(FrontmatterError::Invalid(format!(
+            "{field} is bound, so it cannot also be free"
+        )));
+    }
+
     Ok(Some(ApprovalRule {
         requires,
         binds,
         matches,
         covers,
         identified_by,
+        risk,
+        auto,
+        numbers,
+        free,
     }))
 }
 
@@ -907,9 +1005,54 @@ mod tests {
                 covers: Some("booking".into()),
                 identified_by: Some("booking_id".into()),
                 binds: vec!["payment_account_id".into(), "amount_pence".into()],
+                risk: outturn_core::egress::policy::Risk::High,
+                auto: true,
+                numbers: vec![],
+                free: vec![],
             })
         );
         assert_eq!(parsed.body, "\n# charge\n");
+    }
+
+    #[test]
+    fn the_auto_approval_keys_are_read() {
+        let parsed = parse(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [booking_id, amount_pence]\n  risk: medium\n  auto: allowed\n  numbers: [amount_pence]\n  free: [description]\n---\n",
+        )
+        .unwrap();
+        let rule = parsed.approval.unwrap();
+        assert_eq!(rule.risk, outturn_core::egress::policy::Risk::Medium);
+        assert!(rule.auto);
+        assert_eq!(rule.numbers, vec!["amount_pence".to_string()]);
+        assert_eq!(rule.free, vec!["description".to_string()]);
+
+        let never = parse(
+            "---\napproval:\n  requires: refund\n  matches: POST /refunds\n  binds: [booking_id]\n  auto: never\n---\n",
+        )
+        .unwrap();
+        assert!(!never.approval.unwrap().auto);
+    }
+
+    #[test]
+    fn the_auto_approval_keys_are_refused_when_they_cannot_mean_anything() {
+        let rule = |extra: &str| {
+            parse(&format!(
+                "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [booking_id, amount_pence]\n{extra}---\n"
+            ))
+            .map(|_| ())
+        };
+        // A number nobody binds, a free field that is bound, a risk or an auto
+        // outside the vocabulary, and an explicit `auto: allowed` without `free`.
+        for extra in [
+            "  numbers: [total]\n",
+            "  free: [booking_id]\n",
+            "  risk: tiny\n",
+            "  auto: sometimes\n",
+            "  auto: allowed\n",
+        ] {
+            assert!(rule(extra).is_err(), "{extra}");
+        }
+        assert!(rule("  auto: allowed\n  free: []\n").is_ok());
     }
 
     #[test]

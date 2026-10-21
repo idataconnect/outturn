@@ -14727,3 +14727,7 @@ async fn a_sent_request_is_still_told_on_a_later_turn() {
 
     finish!(h);
 }
+// Its own file, sharing this one's harness. Declared last, after the macros
+// it uses.
+#[path = "api/auto_approval.rs"]
+mod auto_approval;

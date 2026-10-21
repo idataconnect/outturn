@@ -11,5 +11,6 @@ pub mod gate;
 pub mod grant;
 pub mod held;
 pub mod internal;
+pub mod policy;
 pub mod rule;
 pub mod seal;
