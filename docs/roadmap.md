@@ -174,23 +174,12 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The browser
 
-- A history load that fails for any reason but 401 shows an empty thread and
-  never starts polling (`ui/src/lib/useChatRuntime.ts`, `loadHistory`'s
-  error branch). Show the error and retry.
 - The transcript read is paged and reports `has_more`, but the client type
   omits it and nothing sends `before` (`ui/src/lib/chat.ts`, `History`).
   Older messages in a long session are simply absent. Add the page link.
-- The inbox's abort check tests for `DOMException` but `api()` wraps every
-  rejection in `NetworkError` (`ui/src/components/InboxProvider.tsx`,
-  `ui/src/lib/api.ts`), so answering an approval waits the five-second
-  backoff instead of refreshing. Check the wrapped cause.
-- `chat.reasoning` events append without dedupe by event id, so a replayed
-  batch doubles thinking text; the `writingCards`, `callTools` and
-  `thinkingSince` refs are not cleared on session switch. Dedupe by id and
-  clear everything `deltaProgress` is cleared with.
-- Small: `pollEvents` interpolates the session id unencoded; buttons on the
-  login page lack `type="button"`; the phone nav and sessions drawers have no
-  focus trap and no Escape.
+- The phone nav and sessions drawers close on Escape but have no focus trap;
+  the existing overlays have none either, so adding one is a decision for
+  all of them.
 
 ### Build, CI and tests
 
