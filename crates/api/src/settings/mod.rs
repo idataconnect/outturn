@@ -352,6 +352,41 @@ fn settings() -> Vec<Setting> {
             owner: Owner::OperatorCeiling,
             per_model: false,
         },
+        // How far a workspace's auto-approval policies may reach, by the risk an
+        // operation declares (docs/auto-approval.md). A ceiling, so a deployment
+        // opts in once and a workspace may only narrow it; `none` at the
+        // operator by default, so nothing is waved through until somebody
+        // decided it may be.
+        Setting {
+            key: "auto_approve_max_risk",
+            label: "Auto-approval",
+            description: "The highest risk an auto-approval policy may cover, as each \
+                          operation declares its own. None means every gated request \
+                          asks a person.",
+            kind: Kind::Choice {
+                options: &[
+                    ChoiceOption {
+                        value: "none",
+                        label: "None",
+                    },
+                    ChoiceOption {
+                        value: "low",
+                        label: "Low risk",
+                    },
+                    ChoiceOption {
+                        value: "medium",
+                        label: "Medium risk or lower",
+                    },
+                    ChoiceOption {
+                        value: "high",
+                        label: "Any risk",
+                    },
+                ],
+            },
+            default: serde_json::json!("none"),
+            owner: Owner::OperatorCeiling,
+            per_model: false,
+        },
     ]
 }
 

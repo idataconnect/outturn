@@ -122,6 +122,13 @@ pub enum Authority {
     /// proceed, and somebody trusted to halt an agent is not thereby the right
     /// person to authorize a payment.
     ApprovalsAnswer,
+    /// Setting a policy that answers some approvals in advance. See
+    /// docs/auto-approval.md.
+    ///
+    /// Never enough alone: writing a policy also requires `ApprovalsAnswer`,
+    /// because a policy is answering ahead of time and nobody may delegate an
+    /// answer they could not give.
+    ApprovalsDelegate,
     /// Taking turns off the queue and reporting what they produced.
     ///
     /// Held by no workspace role, however senior. A turn handed out carries the
@@ -167,6 +174,7 @@ impl Authority {
         Authority::WorkspacesInhibit,
         Authority::AgentsInhibit,
         Authority::ApprovalsAnswer,
+        Authority::ApprovalsDelegate,
         Authority::GatewayInvoke,
         Authority::GatewayFetch,
         Authority::WorkTake,
@@ -175,6 +183,7 @@ impl Authority {
     pub fn as_str(self) -> &'static str {
         match self {
             Authority::ApprovalsAnswer => "approvals:answer",
+            Authority::ApprovalsDelegate => "approvals:delegate",
             Authority::WorkspacesCreate => "workspaces:create",
             Authority::WorkspacesRead => "workspaces:read",
             Authority::WorkspacesUpdate => "workspaces:update",
@@ -247,6 +256,9 @@ impl Authority {
             Authority::CredentialsRead => "See the workspace's credentials and where each may go",
             Authority::CredentialsWrite => "Store, rotate and revoke the workspace's credentials",
             Authority::ApprovalsAnswer => "Answer approvals an agent is waiting on",
+            Authority::ApprovalsDelegate => {
+                "Set policies that approve some requests without asking"
+            }
             Authority::WorkspacesInhibit => "Stop and restart everything this workspace runs",
             Authority::AgentsInhibit => "Stop and restart one agent",
             Authority::GatewayInvoke => "Call a model",
