@@ -573,8 +573,81 @@ fn is_held_call(
                 &shape.host,
                 &shape.path,
                 shape.body.as_deref(),
-            )
+            ) || same_call(gate, held, &shape)
         })
+}
+
+/// Whether a refused call and a held request are one call, with each bound
+/// field compared for what it says rather than how it is spelled.
+///
+/// The digest tells the string "29000" from the number 29000, and must: it is
+/// what a grant is keyed on, and a body able to pick its own spelling could
+/// otherwise reach a yes given for the other. Here nothing is granted -- the
+/// held request is what goes, whichever refusal is found -- and a model
+/// writing the amount as a string where the guest sent it as a number is the
+/// same charge, which left unmatched kept its stale refusal and was made again.
+fn same_call(
+    gate: &outturn_core::egress::gate::Gate,
+    held: &super::held::Held,
+    shape: &outturn_core::egress::grant::Shape,
+) -> bool {
+    use outturn_core::egress::gate::normalize_path;
+
+    if gate.requires != held.requires {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(&held.url) else {
+        return false;
+    };
+    if !held.method.eq_ignore_ascii_case(&shape.method)
+        || !url
+            .host_str()
+            .is_some_and(|h| h.eq_ignore_ascii_case(&shape.host))
+        || normalize_path(url.path()) != normalize_path(&shape.path)
+    {
+        return false;
+    }
+    let fields = |body: Option<&str>| -> Option<serde_json::Value> {
+        body.and_then(|b| serde_json::from_str(b).ok())
+    };
+    let (Some(refused), Some(sent)) = (fields(shape.body.as_deref()), fields(held.body.as_deref()))
+    else {
+        return false;
+    };
+    gate.binds.iter().all(|field| {
+        match (
+            canonical(refused.get(field.as_str())),
+            canonical(sent.get(field.as_str())),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    })
+}
+
+/// A bound value as what it says: a number and a string spelling one are the
+/// same number, and so for a flag. `None` for what binds nothing -- absent,
+/// null, or not a scalar -- which matches nothing.
+fn canonical(value: Option<&serde_json::Value>) -> Option<String> {
+    let number = |n: &serde_json::Number| match n.as_f64() {
+        // Whole numbers by their integer spelling, so 29000 and 29000.0 agree.
+        Some(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("n{}", f as i64),
+        Some(f) => format!("n{f}"),
+        None => format!("n{n}"),
+    };
+    match value? {
+        serde_json::Value::Number(n) => Some(number(n)),
+        serde_json::Value::Bool(b) => Some(format!("b{b}")),
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(serde_json::Value::Number(n)) => Some(number(&n)),
+                Ok(serde_json::Value::Bool(b)) => Some(format!("b{b}")),
+                _ => Some(format!("s{s}")),
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Puts what became of an approved call where its refusal was.
@@ -3830,6 +3903,72 @@ mod projection_tests {
         );
         assert!(!results[0].contains("Approved by"), "{}", results[0]);
         assert!(!results[1].contains("Approved by"), "{}", results[1]);
+    }
+
+    /// The model wrote the amount as a string and the guest sent it as a
+    /// number, or the other way round: one charge, so its refusal is found.
+    /// A different amount, however spelled, is still a different charge.
+    #[test]
+    fn a_bound_field_spelled_as_a_string_is_still_the_held_call() {
+        let held = [held_charge("approved", None)];
+        let spelled = r#"{"booking_id":"bk_a","amount_pence":"14500"}"#;
+        let (_, sending) = answered(
+            refused_operation("c1", spelled),
+            &charge_gate(),
+            &[],
+            &held,
+            None,
+        );
+        assert_eq!(sending.get(&held[0].id).map(String::as_str), Some("c1"));
+
+        let (_, sending) = answered(refused("c1", spelled), &charge_gate(), &[], &held, None);
+        assert_eq!(sending.get(&held[0].id).map(String::as_str), Some("c1"));
+
+        // Held as a string, refused as a number.
+        let held_as_string = [super::super::held::Held {
+            body: Some(spelled.into()),
+            shape: grant_for(spelled).keyed_on,
+            ..held_charge("approved", None)
+        }];
+        let (_, sending) = answered(
+            refused_operation("c1", BOOKING_A),
+            &charge_gate(),
+            &[],
+            &held_as_string,
+            None,
+        );
+        assert_eq!(
+            sending.get(&held_as_string[0].id).map(String::as_str),
+            Some("c1")
+        );
+
+        let other = r#"{"booking_id":"bk_a","amount_pence":"14501"}"#;
+        let (_, sending) = answered(
+            refused_operation("c1", other),
+            &charge_gate(),
+            &[],
+            &held,
+            None,
+        );
+        assert!(sending.is_empty(), "{sending:?}");
+    }
+
+    #[test]
+    fn a_value_is_compared_for_what_it_says() {
+        let v = |j: &str| serde_json::from_str::<serde_json::Value>(j).unwrap();
+        assert_eq!(
+            canonical(Some(&v("29000"))),
+            canonical(Some(&v("\"29000\"")))
+        );
+        assert_eq!(canonical(Some(&v("29000.0"))), canonical(Some(&v("29000"))));
+        assert_eq!(canonical(Some(&v("true"))), canonical(Some(&v("\"true\""))));
+        assert_ne!(
+            canonical(Some(&v("\"bk_a\""))),
+            canonical(Some(&v("\"bk_b\"")))
+        );
+        assert_ne!(canonical(Some(&v("1"))), canonical(Some(&v("\"one\""))));
+        assert_eq!(canonical(Some(&v("null"))), None);
+        assert_eq!(canonical(None), None);
     }
 
     /// A refusal written after the request was held is a fresh ask with a

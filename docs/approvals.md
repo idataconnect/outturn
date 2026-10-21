@@ -391,7 +391,11 @@ the design above, and why:
   call id travels with a refusal. The turn being prepared finds it: by the
   call's arguments digested exactly as the item was, where they are a fetch's,
   and otherwise by the method and URL the result echoes -- a declared
-  operation's arguments are its own fields. Each held request answers one
+  operation's arguments are its own fields. Failing the digest, the bound
+  fields are compared for what they say rather than how they are spelled, so
+  a model writing `"29000"` where the guest sent `29000` still finds its
+  refusal; the digest keeps telling the two apart, since a grant is keyed on
+  it, and finding a refusal grants nothing. Each held request answers one
   refusal. The runtime puts the answer in the conversation it was handed, and
   `worker::answered` puts the same sentence (`egress::held::result_text`) there
   on every later turn.
