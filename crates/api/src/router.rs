@@ -695,15 +695,14 @@ struct UpdateUser {
 /// the caller themself, an account holding a role in the caller's workspace,
 /// or, for a system administrator, anyone. Outside that it is 404 rather than
 /// 403, so a guessed id learns nothing.
-async fn target_user(
-    state: &ApiState,
-    claims: &SessionClaims,
-    id: Uuid,
-) -> Result<User, ApiError> {
+async fn target_user(state: &ApiState, claims: &SessionClaims, id: Uuid) -> Result<User, ApiError> {
     if claims.subject == id || claims.is_system_admin() {
         return Ok(state.users.get(id).await?);
     }
-    Ok(state.users.get_in_workspace(id, claims.workspace_id).await?)
+    Ok(state
+        .users
+        .get_in_workspace(id, claims.workspace_id)
+        .await?)
 }
 
 async fn update_user(

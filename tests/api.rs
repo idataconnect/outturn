@@ -620,7 +620,11 @@ async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
             r#"{"email":"takeover@acme.example","password":"correct-horse"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "identity added across workspaces: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "identity added across workspaces: {body}"
+    );
     let (status, body) = h
         .post(
             "/v1/login",
@@ -630,12 +634,20 @@ async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
             ),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "the takeover address signs in: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the takeover address signs in: {body}"
+    );
 
     let (status, body) = h
         .get(&format!("/v1/users/{}", victim.id), Some(&acme_admin))
         .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "read across workspaces: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "read across workspaces: {body}"
+    );
 
     let (status, body) = h
         .patch(
@@ -644,7 +656,11 @@ async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
             r#"{"display_name":"Renamed"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "renamed across workspaces: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "renamed across workspaces: {body}"
+    );
 
     let req = Request::builder()
         .method("DELETE")
@@ -656,7 +672,11 @@ async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
         .body(Body::empty())
         .expect("request");
     let (status, body) = h.send(req).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "identity removed across workspaces: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "identity removed across workspaces: {body}"
+    );
 
     let req = Request::builder()
         .method("DELETE")
@@ -665,9 +685,17 @@ async fn a_workspace_admin_cannot_reach_another_workspaces_users() {
         .body(Body::empty())
         .expect("request");
     let (status, body) = h.send(req).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "deleted across workspaces: {body}");
     assert_eq!(
-        h.users.get(victim.id).await.expect("still there").display_name,
+        status,
+        StatusCode::NOT_FOUND,
+        "deleted across workspaces: {body}"
+    );
+    assert_eq!(
+        h.users
+            .get(victim.id)
+            .await
+            .expect("still there")
+            .display_name,
         "Test User"
     );
 
@@ -758,7 +786,11 @@ async fn a_role_grant_stays_within_the_granters_reach_and_workspace() {
             r#"{"email":"new@acme.example","display_name":"New","password":"correct-horse","role":"admin"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "an admin creates admins: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an admin creates admins: {body}"
+    );
 
     // Somebody from another workspace cannot be granted in here.
     h.login_as("stranger@globex.example", None, Some((globex, "viewer")))
@@ -776,7 +808,11 @@ async fn a_role_grant_stays_within_the_granters_reach_and_workspace() {
             r#"{"role":"viewer"}"#,
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "a stranger was granted: {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a stranger was granted: {body}"
+    );
     assert!(
         h.users
             .memberships(stranger)
