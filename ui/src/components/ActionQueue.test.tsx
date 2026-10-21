@@ -1,9 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ActionQueue from './ActionQueue'
-import type { ActionItem } from '../lib/actions'
+import { answerApproval, type ActionItem } from '../lib/actions'
+
+vi.mock('../lib/actions', () => ({ answerApproval: vi.fn(async () => ({ resumed: 1 })) }))
+
+const answer = vi.mocked(answerApproval)
 
 /** A v7 id minted at a known instant, so the age phrase is deterministic. */
 function idAt(millis: number): string {
@@ -164,5 +168,62 @@ describe('something that has only just arrived', () => {
     // "Just now" stands alone; after "waiting" it is lower case.
     render(<ActionQueue items={[item({ id: idAt(NOW) })]} now={NOW} />)
     expect(screen.getByText(/waiting just now/)).toBeInTheDocument()
+  })
+})
+
+describe('approving several of one kind together', () => {
+  const two = () => [
+    item({ id: idAt(NOW - 120_000), payload: { question: 'Charge bk_1 780 pence?' } }),
+    item({ id: idAt(NOW - 60_000), payload: { question: 'Charge bk_2 120 pence?' } }),
+  ]
+
+  beforeEach(() => answer.mockClear())
+
+  it('is not offered for a single item', () => {
+    render(<ActionQueue items={[item()]} now={NOW} />)
+    expect(screen.queryByRole('button', { name: /approve all/i })).not.toBeInTheDocument()
+  })
+
+  it('is not offered across different kinds', () => {
+    render(
+      <ActionQueue
+        items={[item(), item({ id: idAt(NOW - 1000), kind: 'approval.refund' })]}
+        now={NOW}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /approve all/i })).not.toBeInTheDocument()
+  })
+
+  it('lists every item it covers beside the control', () => {
+    render(<ActionQueue items={two()} now={NOW} />)
+    const group = screen.getByRole('region', { name: /approve all/i })
+    expect(group).toHaveTextContent('Charge bk_1 780 pence?')
+    expect(group).toHaveTextContent('Charge bk_2 120 pence?')
+    expect(screen.getByRole('button', { name: 'Approve all 2' })).toBeInTheDocument()
+  })
+
+  it('answers each item with a plain approval and nothing wider', async () => {
+    const items = two()
+    const onAnswered = vi.fn()
+    render(<ActionQueue items={items} onAnswered={onAnswered} now={NOW} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Approve all 2' }))
+    expect(answer).toHaveBeenCalledTimes(2)
+    expect(answer).toHaveBeenCalledWith(items[0].id, { approved: true })
+    expect(answer).toHaveBeenCalledWith(items[1].id, { approved: true })
+    expect(onAnswered).toHaveBeenCalled()
+  })
+
+  it('shows a failure against its item and leaves that one pending', async () => {
+    const items = two()
+    answer.mockRejectedValueOnce(new Error('the network went away'))
+    render(<ActionQueue items={items} now={NOW} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Approve all 2' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/network went away/i)
+    // The second still went through; only the failed one is offered again.
+    expect(answer).toHaveBeenCalledTimes(2)
+    const group = screen.getByRole('region', { name: /approve all/i })
+    expect(group).toHaveTextContent('Charge bk_1 780 pence?')
+    expect(group).not.toHaveTextContent('Charge bk_2 120 pence?')
   })
 })
