@@ -269,10 +269,11 @@ list, each naming who set it, decided at the gateway and recorded there.
 
 ## The approval carries the call
 
-Designed, not built. It replaces the retry above: what a person approves is
-sent as it was shown to them, by the platform, once.
+Built; *As built* below records where it differs from what was designed. It
+replaces the retry above: what a person approves is sent as it was shown to
+them, by the platform, once.
 
-### What goes wrong today
+### What went wrong before it
 
 A refused request is not kept. The queue item holds the method, host, path and
 the bound fields -- what a person needs to decide -- and the turn parks. When
@@ -370,11 +371,63 @@ prompt stops offering it.
   now"; it substitutes the response.
 - The guest needs nothing new. It sees a tool result, as for any call.
 
+### As built
+
+The pieces are `held_requests` (migration 0055), `api::held`, the shared types
+in `egress::held`, and `AgentHost::send_held` in the runtime. What differs from
+the design above, and why:
+
+- **The grant travels in a token of its own.** A grant in the turn's own
+  commitment would let the guest's own calls through it too, so a model reading
+  "Approved and sent" and making the call again would charge twice. The API
+  commits the turn's gates with a `call` grant per waiting request into a second
+  token (`held_token`, beside `held_gates` on the assignment), and the runtime
+  sends the held requests under that one and nothing else. The guest repeating
+  the call is refused and asks again, as any different call would. A runtime
+  that misused the second token could send the approved request more than once
+  for that token's few minutes -- what a compromised runtime still reaches,
+  bounded as everything else it holds is.
+- **The refusal is found, not named.** The guest needs nothing new, so no tool
+  call id travels with a refusal. The turn being prepared finds it: by the
+  call's arguments digested exactly as the item was, where they are a fetch's,
+  and otherwise by the method and URL the result echoes -- a declared
+  operation's arguments are its own fields. Each held request answers one
+  refusal. The runtime puts the answer in the conversation it was handed, and
+  `worker::answered` puts the same sentence (`egress::held::result_text`) there
+  on every later turn.
+- **Reopening is a new item.** A turn's attempt is chosen by whether its
+  approval was answered (`grant::was_answered`), so turning the answered item
+  back to pending would unanswer it. *Approved, but could not be sent* and
+  *outcome unknown* are raised as fresh `approval.<requires>` items carrying
+  `followup` and the held request's id, with no hold and no turn: the
+  conversation carries on, told what happened. `POST /v1/approvals/{id}/resend`
+  and `/done` answer one; `/answer` does too, approving as resend and declining
+  as done, so a client that knows only approvals still works.
+- **Refused on this side.** A held send the gateway refuses -- the rules
+  changed, or a second gate covers it -- is not retried, since it would be
+  refused the same way; it goes straight to *could not be sent*.
+- **A resend waits for the next turn.** Nothing enqueues a turn to send it; the
+  conversation's next turn does, as for any approved request. That answers the
+  first question below for now, by not resuming anything.
+- **What came before still works.** An item raised by a runtime that relayed
+  only the shape holds no request, so answering it mints a grant for its turn
+  and the refusal is retracted as before. The `covers_unit` field is still
+  accepted and still grants the unit for the turn where an item offered one;
+  only the prompt stops offering it.
+- **Spent on the held request.** `spent_at` is a column of `held_requests`,
+  written when the answer is reported. A held request's grant is never an
+  `approval_grants` row -- it is derived from the request each turn it waits --
+  so that table's `spent_at` stays as reserved as it was.
+- **A send and its report are two steps.** A pod lost between them leaves the
+  request approved, and the turn's retry sends it again: a declared write is
+  answered from the idempotency record, but an undeclared `fetch_url` could go
+  twice -- the same exposure any retried turn has.
+
 ### Not settled
 
 - Whether a turn whose approved call failed should be resumed at all to try
   again, or the item reopened straight away. Resuming costs a model call to
-  say "still could not send it".
+  say "still could not send it". For now neither: the next turn tries.
 - How many approvals of one kind make the policy link worth showing.
 
 ## A ceiling, rather than a rule per operation
@@ -550,7 +603,7 @@ move and get approved afterwards -- which is the ordering that matters.
 
 The refusal ends in a fixed suffix (`egress::gate::gated_suffix`): a sentence
 telling the model not to retry, then a mark. Three things find it by that
-suffix -- the API retracting the sentence once somebody approves, the worker
+suffix -- the API putting an approved call's answer in its place, the worker
 recording the result as `gated` so the browser draws a held call as waiting
 rather than failed, and the worker taking the suffix out of what a person reads.
 Only ever as the end of an error the gate raised: the mark is not secret, and a

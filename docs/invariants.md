@@ -109,7 +109,8 @@ another crate compiled to wasm, so it cannot share the code; a test pins the two
 readings to a real stored call instead. If `fetch_url` learns to accept an
 object body or an aliased url key, that test is what should fail -- the
 alternative is that nothing fails and approved calls quietly stop being
-retracted.
+found against their refusals, so the model is told it was refused after the
+charge went.
 
 **Ordering rides on UUIDv7 keys.** No sequence columns, no offset pagination.
 Cursors are the last id seen; `Uuid::nil()` means the beginning.

@@ -190,15 +190,15 @@ carries a lifecycle column the hold should own. That document settles which is
 the truth and what changes when suspension lands. Nothing should start reading
 `action_items.state` as the answer to whether a request is open.
 
-A refusal a turn parked on is retracted when it resumes. The gate answers the
-guest with "Do not retry this request", which is right while the turn is
-stopping and wrong once somebody says yes -- it is a tool result, so it replays
-to the turn whose whole purpose is to make that call, and the model obeys the
-last thing in its own transcript. `worker::answered` swaps that one sentence on
-a resuming turn; the refusal itself stays, being what the approver approved
-against. It is safe only because the gate refuses *before* dispatch, so the call
-provably never went out. A gate that refused after would make this a retry of a
-call that may have landed -- see "What approvals already assume" in
+A refused call is held whole, and an approved one is sent by the platform. The
+gate answers the guest with "Do not retry this request", which is right while
+the turn is stopping; once somebody says yes, the next turn's runtime sends the
+held request through the gateway before the guest runs, and the model reads
+"Approved by ... and sent:" and the response where the refusal was -- it never
+writes the approved call again, so it cannot write a different one. A request
+that never left is tried again; one that may have landed goes back to a person
+unless the recipient dedupes it. See *The approval carries the call* in
+[docs/approvals.md](approvals.md), and "What approvals already assume" in
 [docs/idempotency.md](idempotency.md).
 
 A round cut partway is therefore untrusted in full: its tool calls may carry

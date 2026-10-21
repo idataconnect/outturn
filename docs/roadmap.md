@@ -21,14 +21,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
 1. **What the review of 2026-10-20 left** (*From the review*, below): ten
    fixes are on branches already; the retention sweeps and indexes go next,
    then the rest in the order given there.
-2. **An approved call made by its approval** ([approvals.md](approvals.md),
-   *The approval carries the call*): the request held when refused and sent
-   by the platform once approved, a grant spent when answered rather than
-   dying with its turn, and the *Don't ask again* box removed. Designed; to
-   agree before building.
-3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 
@@ -644,9 +639,6 @@ tier that validates.
 ## Undesigned, and wanted
 
 Named by other work rather than chosen, which is the usual way a gap is found.
-
-**An approved call made by its approval, not resent by the agent.** Now
-designed: [approvals.md](approvals.md), *The approval carries the call*.
 
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.

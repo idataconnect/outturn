@@ -368,15 +368,29 @@ telling it not to. It obeys, says nothing, and the turn ends with the grant
 unspent and the call never made. That happened twice before it was found, with
 every other part of the loop looking correct.
 
-So `worker::answered` retracts the sentence on a resuming turn, replacing it
-with "It has since been approved, so make this call now." The refusal itself
-stays: what was asked and what came back is the record the approver approved
-against.
+So the guest is never asked to make it. The refused request is held whole,
+and once somebody says yes the platform sends it, from the next turn's runtime,
+before the guest runs -- with the claim, the key and the settle every declared
+write gets -- and `worker::answered` puts the answer where the refusal was. See
+[approvals.md](approvals.md), *The approval carries the call*. Only the held
+request is sent after approval: a call the guest makes again is refused and
+asked about again, because the grant that let the held one out travels in a
+token the guest's calls never carry.
 
-**That retraction is only safe because the gate refuses before dispatch.** The
-call provably never went out, so telling the agent to make it is telling it to
-do something once, not twice. The safety rests on *where* the gate fires, and
-nothing in the sentence says so.
+What becomes of it is this document's tristate, given to somebody who can find
+out. Answered, it is `completed`. Never sent -- the gateway's `not-sent` mark,
+a connection that failed before a byte was written -- nothing happened, and it
+is sent again. Sent with no answer is `attempted`: sent again only where the
+operation carries a key the recipient dedupes on, and otherwise put in front of
+a person as *outcome unknown*, to check and then resend or mark done.
+
+An approval raised before requests were held still takes the old path:
+`worker::answered` retracts the sentence on the resuming turn, replacing it with
+"It has since been approved, so make this call now." **That retraction is only
+safe because the gate refuses before dispatch.** The call provably never went
+out, so telling the agent to make it is telling it to do something once, not
+twice. The safety rests on *where* the gate fires, and nothing in the sentence
+says so.
 
 Two things follow for the work below:
 
