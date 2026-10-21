@@ -5,6 +5,9 @@ approval:
   binds: [payment_account_id, booking_id, amount_pence]
   covers: booking
   identified_by: booking_id
+  risk: high
+  numbers: [amount_pence]
+  free: [idempotency_key]
 operation:
   method: POST
   url: http://outturn-hollowbrook:8084/charges
@@ -18,12 +21,12 @@ operation:
 
 Take money for a booking against a card the house holds.
 
-**Somebody has to approve this before it happens.** You do not ask them and you
-do not wait for them in the conversation: call it, and
-if an approval is needed the platform holds the turn, asks whoever may answer,
-and runs this turn again once they have. Tell the guest you are putting it
-through and that you will confirm — then stop. You will pick up where you left
-off.
+**Somebody may have to approve this before it happens.** You do not ask them
+and you do not wait for them in the conversation: call it once. If an approval
+is needed the platform holds the turn and asks whoever may answer; once they
+say yes, the platform sends the charge itself and you are given what came
+back. Do not send it again. Tell the guest you are putting it through and that
+you will confirm — then stop. You will pick up where you left off.
 
 ## What to send
 
@@ -34,8 +37,8 @@ off.
 - `amount_pence` — pence, so £145 is `14500`.
 
 A charge for the same booking and amount is the same charge, however many
-times it is sent -- including the retry after an approval. The platform tells
-the house so; there is nothing to add for it.
+times it is sent. The platform tells the house so; there is nothing to add for
+it.
 
 ## What comes back
 
