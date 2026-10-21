@@ -13797,7 +13797,11 @@ async fn a_mail_hook_keeps_a_secret_only_when_its_scheme_checks_one() {
         .await
     };
     let (status, rotated) = rotate().await;
-    assert_eq!(status, StatusCode::OK, "a mail hook's secret rotates: {rotated}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a mail hook's secret rotates: {rotated}"
+    );
     let rotated = serde_json::from_str::<Value>(&rotated).unwrap()["secret"]
         .as_str()
         .unwrap()
