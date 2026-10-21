@@ -552,9 +552,14 @@ sharing the hooks' paths, ceiling, dedupe and pipeline:
   request this platform's way: the long unguessable path alone, a token
   header, or basic authentication in the URL it is given.
 - **The sender policy**: an allowlist of addresses, `@domains`, or `*`, and --
-  unless turned off on purpose -- the receiving server's SPF or DKIM pass, read
-  from the topmost `Authentication-Results` only, since any further down came
-  with the message. Mail failing either is answered 202 and acted on not at
+  unless turned off on purpose -- the receiving server's word that the domain
+  in `From:` sent it, read from the topmost `Authentication-Results` only,
+  since any further down came with the message. What counts is `dmarc=pass`,
+  or `dkim=pass` whose `header.d` is the `From:` domain or a parent of it, or
+  `spf=pass` whose `smtp.mailfrom` domain is. A pass for any other domain
+  counts for nothing: SPF and DKIM vouch for the domain they checked, and a
+  sender passing for its own can write anybody's address into `From:`, which
+  is what the allowlist reads. Mail failing either is answered 202 and acted on not at
   all: a refusal would only have the service deliver it again.
 - **Dedupe on `Message-ID`**, with a hash of date, sender and subject standing
   in where it is missing; a message delivered twice is acknowledged 200 and run
@@ -578,7 +583,7 @@ existing shared mailbox watched, with what it needs worked out already:
 
 Either way, one thing is email's own: **the sender**. anybody can send email to an address, so it is not merely
 untrusted but unauthenticated in a way a signed webhook is not. An allowlist of
-sending addresses, and the receiving server's SPF and DKIM verdict from its
+sending addresses, and the receiving server's verdict on the `From:` domain from its
 `Authentication-Results` header, is enough for a long time. The body is the
 least trusted text an agent will read: the platform preamble's rule that
 instructions come from the system prompt alone ([prompt-contributors.md](prompt-contributors.md))

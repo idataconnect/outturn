@@ -13618,7 +13618,7 @@ async fn mail_starts_a_turn_from_an_allowed_sender_once() {
 
     let mail = |from: &str, id: &str| {
         format!(
-            "Authentication-Results: mx.example.net; dkim=pass\r\nFrom: {from}\r\n\
+            "Authentication-Results: mx.example.net; dmarc=pass\r\nFrom: {from}\r\n\
              Subject: Garden room\r\nMessage-ID: <{id}>\r\n\r\nIs it free on the 24th?\r\n"
         )
     };

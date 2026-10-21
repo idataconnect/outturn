@@ -5,7 +5,8 @@
 //! Anybody can send mail to an address, so a message is not merely untrusted
 //! but unauthenticated in a way a signed webhook is not. Two checks stand
 //! between it and a turn: the sender is one the trigger allows, and the
-//! receiving server authenticated that sender -- SPF or DKIM passed, as its own
+//! receiving server authenticated that sender's domain -- DMARC passed, or SPF
+//! or DKIM passed for the domain in `From:`, as its own
 //! `Authentication-Results` says.
 
 use mail_parser::MessageParser;
@@ -19,7 +20,7 @@ pub struct Email {
     /// The sender's id for the message, or a stand-in where it gave none.
     pub id: String,
     pub text: String,
-    /// Whether the receiving server passed the sender's SPF or DKIM.
+    /// Whether the receiving server authenticated the domain in `from`.
     pub authenticated: bool,
 }
 
@@ -38,7 +39,7 @@ impl Refused {
             Refused::NotMail => "the body was not a mail message".into(),
             Refused::NoSender => "the message names no sender".into(),
             Refused::Unauthenticated(from) => format!(
-                "{from}'s mail was not authenticated by the receiving server (no SPF or DKIM pass)"
+                "{from}'s mail was not authenticated by the receiving server (no DMARC pass, nor an SPF or DKIM pass for its domain)"
             ),
             Refused::NotAllowed(from) => format!("{from} is not a sender this trigger allows"),
         }
@@ -81,7 +82,8 @@ pub fn parse(raw: &[u8]) -> Result<Email, Refused> {
             format!("sha256:{}", hex::encode(&digest[..16]))
         }
     };
-    let authenticated = authenticated(raw);
+    let domain = from.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+    let authenticated = authenticated(raw, domain);
     Ok(Email {
         from,
         subject,
@@ -91,13 +93,19 @@ pub fn parse(raw: &[u8]) -> Result<Email, Refused> {
     })
 }
 
-/// Whether the topmost `Authentication-Results` header says SPF or DKIM
-/// passed.
+/// Whether the topmost `Authentication-Results` header authenticated
+/// `domain`, the one in `From:`.
 ///
 /// The topmost only: the receiving server prepends its own, and anything
 /// further down arrived with the message -- which a sender can write
 /// whatever it likes into.
-fn authenticated(raw: &[u8]) -> bool {
+///
+/// A pass counts only for the domain the allowlist is then held to. SPF and
+/// DKIM vouch for whichever domain they checked, and a sender passing SPF for
+/// its own domain can still write anybody's address into `From:`. So it is
+/// `dmarc=pass`, which is that alignment already checked, or `dkim=pass` with
+/// `header.d` aligned, or `spf=pass` with `smtp.mailfrom` aligned.
+fn authenticated(raw: &[u8], domain: &str) -> bool {
     let head = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
         Some(end) => &raw[..end],
         None => match raw.windows(2).position(|w| w == b"\n\n") {
@@ -124,8 +132,68 @@ fn authenticated(raw: &[u8]) -> bool {
             inside = true;
         }
     }
-    let value = value.to_ascii_lowercase();
-    value.contains("spf=pass") || value.contains("dkim=pass")
+    let value = strip_comments(&value.to_ascii_lowercase());
+    let domain = domain.to_ascii_lowercase();
+    // The first part is the server's own name; each after it is one result,
+    // `method=result` and then `ptype.property=value` pairs.
+    value.split(';').skip(1).any(|result| {
+        let mut tokens = result.split_whitespace();
+        let Some((method, verdict)) = tokens.next().and_then(|t| t.split_once('=')) else {
+            return false;
+        };
+        if verdict != "pass" {
+            return false;
+        }
+        let property = |name: &str| {
+            result
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix(name)?.strip_prefix('='))
+        };
+        match method {
+            "dmarc" => true,
+            "dkim" => property("header.d").is_some_and(|d| aligned(d, &domain)),
+            "spf" => property("smtp.mailfrom")
+                .map(|m| m.rsplit_once('@').map(|(_, d)| d).unwrap_or(m))
+                .is_some_and(|d| aligned(d, &domain)),
+            _ => false,
+        }
+    })
+}
+
+/// Whether a domain that passed vouches for the one in `From:`: the same, or a
+/// parent of it, relaxed alignment's way. Without the public suffix list a
+/// parent must be at least two labels, so a pass for a bare suffix vouches for
+/// nothing.
+fn aligned(passed: &str, from: &str) -> bool {
+    let passed = passed.trim_end_matches('.');
+    !passed.is_empty()
+        && (passed == from
+            || (passed.contains('.')
+                && from
+                    .strip_suffix(passed)
+                    .is_some_and(|rest| rest.ends_with('.'))))
+}
+
+/// The header with its parenthesized comments blanked, since a comment may
+/// say anything, `spf=pass` included.
+fn strip_comments(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut depth = 0usize;
+    for c in value.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                out.push(' ');
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                out.push(' ');
+            }
+            _ if depth == 0 => out.push(c),
+            _ => out.push(' '),
+        }
+    }
+    out
 }
 
 /// Holds a message to a trigger's policy.
@@ -214,14 +282,49 @@ mod tests {
         // the message, written by whoever sent it.
         let raw = message(
             "Authentication-Results: mx.example.net; spf=fail\r\n\
-             Authentication-Results: forged; spf=pass\r\n",
+             Authentication-Results: forged; spf=pass smtp.mailfrom=example.com\r\n",
         );
         assert!(!parse(&raw).unwrap().authenticated);
     }
 
     #[test]
+    fn a_pass_counts_only_for_the_domain_in_from() {
+        let verdict = |results: &str| {
+            let header = format!("Authentication-Results: mx.example.net; {results}\r\n");
+            parse(&message(&header)).unwrap().authenticated
+        };
+        // SPF passed, but for the sender's own domain, not the one it wrote
+        // into From:.
+        assert!(!verdict("spf=pass smtp.mailfrom=ceo@attacker.example"));
+        assert!(!verdict("dkim=pass header.d=attacker.example"));
+        assert!(!verdict("dkim=pass header.d=notexample.com"));
+        assert!(!verdict("dkim=pass header.d=com"), "a bare suffix");
+        assert!(!verdict("spf=passive smtp.mailfrom=example.com"));
+        assert!(!verdict("spf=fail (spf=pass) smtp.mailfrom=example.com"));
+        assert!(!verdict("dmarc=fail header.from=example.com"));
+
+        assert!(verdict("dkim=pass header.d=example.com"));
+        assert!(verdict(
+            "spf=pass smtp.mailfrom=x@attacker.example; dkim=pass header.d=example.com"
+        ));
+        assert!(verdict("spf=pass smtp.mailfrom=bounce@example.com"));
+        assert!(verdict("dmarc=pass (p=reject) header.from=example.com"));
+    }
+
+    #[test]
+    fn a_parent_domain_vouches_for_its_subdomains() {
+        assert!(aligned("example.com", "mail.example.com"));
+        assert!(aligned("example.com", "example.com"));
+        assert!(!aligned("mail.example.com", "example.com"));
+        assert!(!aligned("le.com", "example.com"));
+    }
+
+    #[test]
     fn the_policy_names_who_may_start_a_turn() {
-        let email = parse(&message("Authentication-Results: mx; dkim=pass\r\n")).unwrap();
+        let email = parse(&message(
+            "Authentication-Results: mx; dkim=pass header.d=example.com\r\n",
+        ))
+        .unwrap();
         assert!(admit(&email, &["jo@example.com".into()], true).is_ok());
         assert!(admit(&email, &["@example.com".into()], true).is_ok());
         assert!(admit(&email, &["*".into()], true).is_ok());
