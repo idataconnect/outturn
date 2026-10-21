@@ -1213,6 +1213,48 @@ async fn cookie_authenticates_subsequent_requests() {
 }
 
 #[tokio::test]
+async fn a_valid_bearer_wins_over_an_invalid_session_cookie() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let good = h
+        .login_as("bothcreds@example.com", None, Some((acme, "admin")))
+        .await;
+
+    let with = |cookie: &str, bearer: Option<&str>| {
+        let mut b = Request::builder()
+            .method("GET")
+            .uri("/v1/session")
+            .header("cookie", format!("outturn_session={cookie}"));
+        if let Some(t) = bearer {
+            b = b.header("authorization", format!("bearer {t}"));
+        }
+        b.body(Body::empty()).expect("request")
+    };
+
+    let (status, body) = h.send(with("not-a-token", Some(&good))).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a stale cookie shadowed the bearer: {body}"
+    );
+
+    let (status, _) = h.send(with("not-a-token", Some("also-bad"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = h.send(with("not-a-token", None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A good cookie still settles the request over a stale bearer.
+    let (status, body) = h.send(with(&good, Some("stale"))).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a stale bearer shadowed the cookie: {body}"
+    );
+
+    finish!(h);
+}
+
+#[tokio::test]
 async fn logout_clears_the_cookie() {
     let h = harness_or_skip!();
 

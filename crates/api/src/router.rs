@@ -183,15 +183,34 @@ pub(super) fn authenticate(
     headers: &axum::http::HeaderMap,
 ) -> Result<SessionClaims, ApiError> {
     // Browsers send the HttpOnly session cookie; service-to-service callers
-    // send a bearer token. The cookie is preferred so a stale Authorization
-    // header cannot shadow a fresh session.
-    if let Some(token) = auth::session_from_cookies(headers) {
-        return state
-            .auth
-            .validate(token)
-            .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()));
-    }
+    // send a bearer token. A valid cookie is preferred so a stale
+    // Authorization header cannot shadow a fresh session -- but an invalid
+    // one must not shadow a valid bearer either, so the cookie only settles
+    // the request when it is good, and otherwise the bearer gets its turn.
+    let cookie = auth::session_from_cookies(headers).map(|token| state.auth.validate(token));
+    let cookie_error = match cookie {
+        Some(Ok(claims)) => return Ok(claims),
+        Some(Err(e)) => Some(e),
+        None => None,
+    };
 
+    match bearer_claims(state, headers) {
+        Ok(claims) => Ok(claims),
+        // With no bearer to blame, the cookie's own failure is the more
+        // useful thing to say (an expired session reads as expired).
+        Err(e) => match cookie_error {
+            Some(ce) if auth::extract_bearer(headers).is_err() => {
+                Err((StatusCode::UNAUTHORIZED, ce.to_string()))
+            }
+            _ => Err(e),
+        },
+    }
+}
+
+fn bearer_claims(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+) -> Result<SessionClaims, ApiError> {
     let bearer = auth::extract_bearer(headers)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "not authenticated".to_string()))?;
 
