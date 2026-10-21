@@ -30,53 +30,24 @@ describe('ApprovalPrompt', () => {
     expect(screen.getByText(/POST \/charges on the guesthouse/i)).toBeTruthy()
   })
 
-  /// The offer is not the grant. A default that widens the extent is a default
-  /// that answers for the person, which is the permission-dialog failure the
-  /// whole design is arranged against.
-  it('never pre-ticks the wider extent', () => {
-    show({
+  /// The extent of a yes is what is shown beside it, and nothing wider.
+  it('offers no wider extent, even where the request names a unit', () => {
+    // Built apart so the extra field passes the type check, as it does when
+    // it arrives from the server.
+    const approval = {
       item_id: 'item-1',
       requires: 'charge',
       reason: 'a charge',
       covers: { field: 'booking_id', unit: 'bk_8812' },
-    })
-    const tick = screen.getByRole('checkbox') as HTMLInputElement
-    expect(tick.checked).toBe(false)
-  })
-
-  it('offers no tickbox where the gate declared no unit', () => {
-    show()
+    }
+    show(approval)
     expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
-  /// Approving without ticking grants the narrow extent, whatever was offered.
-  it('approves the one request unless the extent was ticked', async () => {
-    show({
-      item_id: 'item-1',
-      requires: 'charge',
-      reason: 'a charge',
-      covers: { field: 'booking_id', unit: 'bk_8812' },
-    })
+  it('approves the one request shown', async () => {
+    show()
     await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    expect(answer).toHaveBeenCalledWith('item-1', {
-      approved: true,
-      coversUnit: false,
-    })
-  })
-
-  it('widens the extent only when the person ticked it', async () => {
-    show({
-      item_id: 'item-1',
-      requires: 'charge',
-      reason: 'a charge',
-      covers: { field: 'booking_id', unit: 'bk_8812' },
-    })
-    await userEvent.click(screen.getByRole('checkbox'))
-    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    expect(answer).toHaveBeenCalledWith('item-1', {
-      approved: true,
-      coversUnit: true,
-    })
+    expect(answer).toHaveBeenCalledWith('item-1', { approved: true })
   })
 
   /// A decline settles the item and leaves the conversation paused, so it must
@@ -84,10 +55,7 @@ describe('ApprovalPrompt', () => {
   it('declines as a decline', async () => {
     show()
     await userEvent.click(screen.getByRole('button', { name: 'Decline' }))
-    expect(answer).toHaveBeenCalledWith('item-1', {
-      approved: false,
-      coversUnit: false,
-    })
+    expect(answer).toHaveBeenCalledWith('item-1', { approved: false })
   })
 
   it('tells the caller once it is answered', async () => {

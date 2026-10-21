@@ -53,22 +53,18 @@ export function countActionItems() {
 /**
  * Answers an approval: yes lets the held turn go on, no leaves it paused.
  *
- * `coversUnit` is the wider extent the request *offered*, and only means
- * anything where one was offered. Separate from `approved` on purpose -- a
- * person approves the instance they were shown and not the class it belongs to,
- * so widening has to be its own act rather than something inferred from saying
- * yes. See `docs/approvals.md`.
+ * Only the instance shown is approved: there is no wider extent to offer, so
+ * nothing but the answer is sent. See `docs/approvals.md`.
  */
 export function answerApproval(
   itemId: string,
-  input: { approved: boolean; note?: string; coversUnit?: boolean },
+  input: { approved: boolean; note?: string },
 ) {
   return api<{ resumed: number }>(`/v1/approvals/${itemId}/answer`, {
     method: 'POST',
     body: JSON.stringify({
       approved: input.approved,
       note: input.note,
-      covers_unit: input.coversUnit ?? false,
     }),
   })
 }
