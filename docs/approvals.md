@@ -403,7 +403,7 @@ the design above, and why:
   recognized -- both say it in a note naming the request
   (`egress::held::unmatched_note`): the runtime before the turn's prompt, and
   the API, on later turns, before the first thing written after the send was
-  settled (`settled_at`, migration 0061), so the note stays where it happened
+  settled (`settled_at`, migration 0058), so the note stays where it happened
   and no later turn is left a stale refusal with nothing beside it.
 - **Reopening is a new item.** A turn's attempt is chosen by whether its
   approval was answered (`grant::was_answered`), so turning the answered item
