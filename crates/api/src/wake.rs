@@ -945,6 +945,7 @@ async fn settle(
             hold: Some(hold),
             grant: None,
             wake: Some(Note::of(due, woken_by)),
+            held: None,
         })
         .await;
     match outcome {

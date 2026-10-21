@@ -61,6 +61,10 @@ pub struct Settle<'a> {
     /// only the one that wins writes a note, and the queued turns are marked
     /// answered before they can be resumed.
     pub wake: Option<super::wake::Note>,
+    /// What was decided about the request the item holds, where it holds
+    /// one. Written with the settle, so the turn the release gives back finds
+    /// the request already approved and sends it.
+    pub held: Option<super::held::Decision>,
 }
 
 /// Who an item is waiting on.

@@ -235,6 +235,28 @@ pub type WaitSink = Arc<
         + Sync,
 >;
 
+/// Tells the API what became of a held request, and hears back what the model
+/// should read in its refusal's place. `None` when the API could not be told,
+/// and the host then says what it knows itself.
+pub type HeldSink = Arc<
+    dyn Fn(
+            uuid::Uuid,
+            outturn_core::egress::held::Outcome,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Requests a person approved, to send before the guest runs.
+pub struct HeldSends {
+    pub calls: Vec<outturn_core::egress::held::HeldCall>,
+    /// Minted for these alone: its commitment holds their grants, which the
+    /// turn's own token does not.
+    pub token: String,
+    pub gates: outturn_core::egress::gate::Gates,
+    pub report: Option<HeldSink>,
+}
+
 /// What was refused, as the runtime saw it: the whole request, as it was
 /// about to go.
 #[derive(Debug, Clone)]
@@ -412,6 +434,57 @@ impl AgentHost {
         }
 
         Ok((sent, Dispatched::Sent(outcome)))
+    }
+
+    /// Sends a request somebody approved, before the guest runs, and says what
+    /// became of it.
+    ///
+    /// Under the token and gates the API minted for exactly these requests, so
+    /// the grant that lets one out is not in the commitment the guest's own
+    /// calls travel under: the model reading the answer and making the call
+    /// again is refused, and asks again, rather than charging twice.
+    pub(crate) async fn send_held(
+        &mut self,
+        call: &outturn_core::egress::held::HeldCall,
+        token: String,
+        gates: outturn_core::egress::gate::Gates,
+    ) -> outturn_core::egress::held::Outcome {
+        use outturn_core::egress::held::Outcome;
+
+        let request = HttpRequest {
+            method: call.method.clone(),
+            url: call.url.clone(),
+            headers: call.headers.clone(),
+            body: call.body.clone(),
+            operation: call.operation.clone(),
+        };
+        match self.dispatch(request, token, gates).await {
+            Err(message) => Outcome::Refused { message },
+            // Done already, by an earlier send whose report never arrived: the
+            // record's answer is the answer, and nothing went again.
+            Ok((_, Dispatched::Replayed(response))) => Outcome::Answered {
+                status: response.status,
+                headers: response.headers,
+                body: response.body,
+                truncated: response.truncated,
+            },
+            Ok((_, Dispatched::Attempted(message))) => Outcome::NoAnswer { message },
+            Ok((_, Dispatched::Sent(Ok(answer)))) => Outcome::Answered {
+                status: answer.status,
+                headers: answer.headers,
+                body: answer.body,
+                truncated: answer.truncated,
+            },
+            Ok((_, Dispatched::Sent(Err(why)))) if why.never_sent => Outcome::NeverSent {
+                message: why.message,
+            },
+            Ok((_, Dispatched::Sent(Err(why)))) if why.did_not_complete => Outcome::NoAnswer {
+                message: why.message,
+            },
+            Ok((_, Dispatched::Sent(Err(why)))) => Outcome::Refused {
+                message: why.message,
+            },
+        }
     }
 
     /// The turn token to present, replaced first if it is close to running out.
@@ -2557,6 +2630,8 @@ pub struct RunOptions {
     pub invocations: Option<Arc<dyn InvocationRecord>>,
     /// Relays `sleep` and `set-timer` to the API.
     pub on_wait: Option<WaitSink>,
+    /// Approved requests to send before the guest runs. See `send_held`.
+    pub held: Option<HeldSends>,
     pub fuel: u64,
     /// IANA zone of the user this turn belongs to, as the client reported it.
     /// Unrecognized or absent means the clock answers in UTC.
@@ -2782,6 +2857,50 @@ impl AgentRunner {
         };
 
         let mut store = Store::new(&self.engine, host);
+
+        // Before the guest runs, so what it reads is what happened rather than
+        // an instruction to make it happen. Through the same path a guest's
+        // fetch takes -- keyed, claimed and settled the same way -- under the
+        // token minted for these requests alone. The answer replaces the
+        // refusal it was the call for, where the API found one.
+        let mut conversation = conversation;
+        if let Some(held) = options.held {
+            for call in &held.calls {
+                let outcome = store
+                    .data_mut()
+                    .send_held(call, held.token.clone(), held.gates.clone())
+                    .await;
+                let told = match &held.report {
+                    Some(report) => report(call.id, outcome.clone()).await,
+                    None => None,
+                };
+                // Unreported, the API will hand this request out again, so the
+                // model is told no more than this host knows -- and a declared
+                // write sent again is answered from the idempotency record.
+                let told = told.unwrap_or_else(|| {
+                    outturn_core::egress::held::result_text(
+                        &call.method,
+                        &call.url,
+                        &call.approved_by,
+                        &outcome,
+                    )
+                });
+                tracing::info!(
+                    session_id = %store.data().session_id,
+                    held_id = %call.id,
+                    answered = matches!(outcome, outturn_core::egress::held::Outcome::Answered { .. }),
+                    "sent a request somebody approved"
+                );
+                if let Some(id) = &call.tool_call_id {
+                    for message in conversation
+                        .iter_mut()
+                        .filter(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(id))
+                    {
+                        message.parts = vec![ContentPart::Text(told.clone())];
+                    }
+                }
+            }
+        }
 
         store.set_fuel(options.fuel)?;
         // Yield to the executor every so often while fuel is burning. Fuel

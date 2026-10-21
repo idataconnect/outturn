@@ -94,6 +94,16 @@ pub struct ExecuteRequest {
     /// as before. See `docs/skill-operations.md`.
     #[serde(default)]
     pub skill_operations: Vec<SkillOperation>,
+    /// Requests a person approved, to be sent before the guest runs and their
+    /// answers put where their refusals were. See `egress::held`. Empty from
+    /// an older API, and on almost every turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<crate::egress::held::HeldCall>,
+    /// What gates the held requests are sent under: this turn's gates, with a
+    /// grant for each. Committed into a token of their own, so the grant that
+    /// lets one out never travels with the guest's own calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_gates: Option<crate::egress::gate::Gates>,
 }
 
 /// A request a bound skill's file declares, as a tool the guest offers.

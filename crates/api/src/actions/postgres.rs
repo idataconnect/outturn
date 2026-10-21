@@ -233,6 +233,7 @@ impl ActionStore for PostgresActionStore {
             hold: None,
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .map(|_| ())
@@ -536,6 +537,7 @@ impl ActionStore for PostgresActionStore {
             hold,
             grant,
             wake,
+            held,
         } = settle;
         if state.is_open() {
             return Err(ActionError::Invalid(
@@ -637,6 +639,14 @@ impl ActionStore for PostgresActionStore {
         // and indistinguishable from a model retrying.
         if let Some(grant) = grant {
             super::super::grant::write_tx(&mut tx, grant)
+                .await
+                .map_err(internal)?;
+        }
+        // The same, for a held request: written after the resume and before the
+        // commit, so the turn given back cannot be prepared before it is
+        // approved.
+        if let Some(decision) = held {
+            super::super::held::decide_tx(&mut tx, workspace_id, item_id, decision, resolved_by)
                 .await
                 .map_err(internal)?;
         }

@@ -76,6 +76,10 @@ pub struct Assignment {
     /// is reported or handed back, so a pod whose lease lapsed cannot write
     /// over the pod that now holds it.
     pub lease_token: Uuid,
+    /// The token the held requests are sent under, committing to
+    /// `held_gates`. Absent when nothing is held, which is nearly always.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_token: Option<String>,
 }
 
 pub use outturn_core::protocol::work::LEASE_HEADER;
@@ -247,6 +251,34 @@ pub async fn take(
                             return Err(e);
                         }
                     };
+                    // A second token for the held requests, committing to the
+                    // gates with their grants in. Minted only when something is
+                    // held, and good for as long as the turn's own: the
+                    // requests are sent before the guest runs, well inside it.
+                    let held_token = match &request.held_gates {
+                        Some(gates) if !request.held.is_empty() => match mint_for(
+                            &state,
+                            payload.session_id,
+                            payload.workspace_id,
+                            request.egress_commitment,
+                            gates.root(payload.workspace_id),
+                        ) {
+                            Ok(token) => Some(token),
+                            Err(e) => {
+                                // As for the turn's own token above.
+                                let _ = jobs::release(
+                                    &state.pool,
+                                    handle.job.id,
+                                    Duration::from_secs(1),
+                                    jobs::MAX_RELEASES,
+                                    Some(lease_token),
+                                )
+                                .await;
+                                return Err(e);
+                            }
+                        },
+                        _ => None,
+                    };
                     // The runtime starts with a whole lease, not what the
                     // heartbeat's last tick left of one: its own renewal
                     // begins only when it first reports, and a turn spends
@@ -280,6 +312,7 @@ pub async fn take(
                         gateway_token,
                         gateway_token_expires_at,
                         lease_token,
+                        held_token,
                     })));
                 }
                 Err(e) => {

@@ -141,6 +141,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_gated: None,
                 invocations: None,
                 on_wait: None,
+                held: None,
                 fuel: 10_000_000_000,
             },
         )

@@ -1873,6 +1873,8 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/events", get(super::events::poll))
         .route("/v1/approvals", post(super::approvals::request))
         .route("/v1/approvals/{id}/answer", post(super::approvals::answer))
+        .route("/v1/approvals/{id}/resend", post(super::approvals::resend))
+        .route("/v1/approvals/{id}/done", post(super::approvals::done))
         .route("/v1/action-items", get(super::actions_api::queue))
         .route("/v1/action-items/count", get(super::actions_api::badge))
         .route(
@@ -1900,6 +1902,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         // require GatewayInvoke, which is the platform's own tier rather than
         // a workspace's.
         .route("/v1/work/gated", post(super::gated::raise))
+        .route("/v1/work/held", post(super::held::report))
         .route(
             "/v1/work/invocations/claim",
             post(super::invocations::claim),

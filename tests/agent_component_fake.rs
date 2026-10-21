@@ -96,6 +96,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         // Nothing reachable unless a test says so, which is the default a
         // workspace gets.
         egress: Vec::new(),
+        held: None,
         fuel: 10_000_000_000,
         // Every tool offered outright, so a test about what a tool does can
         // script the call and nothing else. A production deployment defers
@@ -3636,4 +3637,177 @@ async fn a_recipient_that_takes_a_key_is_sent_the_same_one() {
     };
     assert!(key(0).starts_with("outturn-"), "{}", key(0));
     assert_eq!(key(0), key(1));
+}
+
+/// A conversation parked on a refused charge, as a resumed turn is handed it:
+/// the call, and the refusal answering it.
+fn parked_on_a_charge() -> Vec<Message> {
+    use outturn::runtime::component::{ContentPart, ToolCall};
+    vec![
+        Message {
+            role: "user".into(),
+            parts: vec![ContentPart::Text("Charge the deposit.".into())],
+            tool_call_id: None,
+        },
+        Message {
+            role: "assistant".into(),
+            parts: vec![ContentPart::Call(ToolCall {
+                id: "c_charge".into(),
+                name: "fetch_url".into(),
+                arguments: r#"{"method":"POST","url":"https://pay.example.com/charges"}"#.into(),
+            })],
+            tool_call_id: None,
+        },
+        Message {
+            role: "tool".into(),
+            parts: vec![ContentPart::Text(
+                "this needs approval before it can go out. Do not retry this request.".into(),
+            )],
+            tool_call_id: Some("c_charge".into()),
+        },
+    ]
+}
+
+fn pay_rule() -> Vec<outturn::egress::rule::EgressRule> {
+    vec![outturn::egress::rule::EgressRule {
+        host: "pay.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }]
+}
+
+/// Held requests to send, each outcome pushed onto `reported` and nothing
+/// told back, as when the API could not be reached.
+fn held_sends(
+    calls: Vec<outturn::egress::held::HeldCall>,
+    reported: &Arc<Mutex<Vec<(Uuid, outturn::egress::held::Outcome)>>>,
+) -> outturn::runtime::component::HeldSends {
+    let reported = Arc::clone(reported);
+    outturn::runtime::component::HeldSends {
+        calls,
+        token: "held-token".into(),
+        gates: outturn::egress::gate::Gates::none(),
+        report: Some(Arc::new(move |id, outcome| {
+            reported.lock().unwrap().push((id, outcome));
+            Box::pin(async { None })
+        })),
+    }
+}
+
+fn the_charge(id: Uuid) -> outturn::egress::held::HeldCall {
+    outturn::egress::held::HeldCall {
+        id,
+        method: "POST".into(),
+        url: "https://pay.example.com/charges".into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: Some(r#"{"booking_id":"bk_1","amount_pence":14500}"#.into()),
+        operation: None,
+        tool_call_id: Some("c_charge".into()),
+        approved_by: "Dana Reyes".into(),
+    }
+}
+
+/// An approved request is sent before the guest runs, as it was held; and the
+/// model reads what came back where the refusal was, rather than an
+/// instruction to make the call itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_request_goes_before_the_guest_and_its_answer_replaces_the_refusal() {
+    use outturn::egress::held::Outcome;
+
+    let gateway = FakeGateway::start(Behavior::Reply("The deposit is paid.".into())).await;
+    gateway.answer_egress(201, r#"{"charge":"ch_1"}"#);
+
+    let reported = Arc::default();
+    let held_id = Uuid::now_v7();
+    let mut options = options(&gateway, None);
+    options.egress = pay_rule();
+    options.held = Some(held_sends(vec![the_charge(held_id)], &reported));
+
+    let reply = runner()
+        .run(&component(), parked_on_a_charge(), String::new(), options)
+        .await
+        .expect("run")
+        .reply;
+    assert_eq!(reply, "The deposit is paid.");
+
+    // Sent once, as it was held: the model never wrote it again.
+    let fetched = gateway.fetched();
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    assert_eq!(fetched[0]["url"], "https://pay.example.com/charges");
+    assert_eq!(
+        fetched[0]["body"],
+        r#"{"booking_id":"bk_1","amount_pence":14500}"#
+    );
+
+    let reported = reported.lock().unwrap().clone();
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0].0, held_id);
+    assert!(
+        matches!(reported[0].1, Outcome::Answered { status: 201, .. }),
+        "{:?}",
+        reported[0].1
+    );
+
+    // What the model was shown in the refusal's place.
+    let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
+    assert!(sent.contains("Approved by Dana Reyes and sent:"), "{sent}");
+    assert!(sent.contains("ch_1"), "{sent}");
+    assert!(!sent.contains("Do not retry"), "{sent}");
+}
+
+/// One that never left is said to have never left, and nothing pretends it
+/// went: the model is told not to make the call, and the API is told why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_request_that_never_left_is_reported_as_never_sent() {
+    use outturn::egress::held::Outcome;
+
+    let gateway = FakeGateway::start(Behavior::Reply("It did not go through.".into())).await;
+    gateway.fail_egress_unsent("connection refused");
+
+    let reported = Arc::default();
+    let mut options = options(&gateway, None);
+    options.egress = pay_rule();
+    options.held = Some(held_sends(vec![the_charge(Uuid::now_v7())], &reported));
+
+    runner()
+        .run(&component(), parked_on_a_charge(), String::new(), options)
+        .await
+        .expect("run");
+
+    let reported = reported.lock().unwrap().clone();
+    assert!(
+        matches!(reported.as_slice(), [(_, Outcome::NeverSent { .. })]),
+        "{reported:?}"
+    );
+    let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
+    assert!(sent.contains("could not be sent"), "{sent}");
+}
+
+/// One that went and was never answered may have landed, and is reported so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approved_request_with_no_answer_is_reported_as_unknown() {
+    use outturn::egress::held::Outcome;
+
+    let gateway = FakeGateway::start(Behavior::Reply("Not sure.".into())).await;
+    gateway.fail_egress(true, "the connection reset");
+
+    let reported = Arc::default();
+    let mut options = options(&gateway, None);
+    options.egress = pay_rule();
+    options.held = Some(held_sends(vec![the_charge(Uuid::now_v7())], &reported));
+
+    runner()
+        .run(&component(), parked_on_a_charge(), String::new(), options)
+        .await
+        .expect("run");
+
+    let reported = reported.lock().unwrap().clone();
+    assert!(
+        matches!(reported.as_slice(), [(_, Outcome::NoAnswer { .. })]),
+        "{reported:?}"
+    );
+    let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
+    assert!(sent.contains("not known"), "{sent}");
 }

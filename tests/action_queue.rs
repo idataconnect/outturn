@@ -1447,6 +1447,7 @@ async fn settling_lifts_the_hold_and_resumes_in_one_go() {
             hold: Some(hold),
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .expect("settle and release");
@@ -1516,6 +1517,7 @@ async fn losing_the_race_lifts_nothing() {
             hold: None,
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .expect("the winner");
@@ -1531,6 +1533,7 @@ async fn losing_the_race_lifts_nothing() {
             hold: Some(hold),
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .unwrap_err();
@@ -1567,6 +1570,7 @@ async fn a_hold_somebody_already_released_is_not_an_error() {
             hold: Some(Uuid::now_v7()),
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .expect("a missing hold is not an error");
@@ -1594,6 +1598,7 @@ async fn a_settlement_with_no_note_keeps_none() {
             hold: None,
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .expect("settle");
@@ -1655,6 +1660,7 @@ async fn declining_lets_the_conversation_carry_on() {
             hold: Some(hold),
             grant: None,
             wake: None,
+            held: None,
         })
         .await
         .expect("decline");

@@ -42,6 +42,9 @@ struct Assignment {
     /// Quoted back on every report, so the API can tell this pod's account
     /// of the turn from a later holder's.
     lease_token: Uuid,
+    /// The token the held requests are sent under, where any are.
+    #[serde(default)]
+    held_token: Option<String>,
     #[serde(flatten)]
     request: ExecuteRequest,
 }
@@ -177,6 +180,7 @@ impl Puller {
     ) -> anyhow::Result<()> {
         let job_id = assignment.job_id;
         let lease = assignment.lease_token;
+        let held_token = assignment.held_token;
         let request = assignment.request;
 
         let conversation: Vec<Message> = request
@@ -313,6 +317,50 @@ impl Puller {
                         >
                 })
             }),
+            // Sent before the guest runs, under their own token, and each
+            // outcome reported under the lease as everything else is.
+            held: match (held_token, request.held_gates.clone()) {
+                (Some(token), Some(gates)) if !request.held.is_empty() => {
+                    Some(crate::component::HeldSends {
+                        calls: request.held.clone(),
+                        token,
+                        gates,
+                        report: Some({
+                            let api_url = self.api_url.clone();
+                            let runtime_key = self.runtime_key.clone();
+                            let http = self.http.clone();
+                            Arc::new(
+                                move |held_id: Uuid, outcome: outturn_core::egress::held::Outcome| {
+                                    let api_url = api_url.clone();
+                                    let runtime_key = runtime_key.clone();
+                                    let http = http.clone();
+                                    Box::pin(async move {
+                                        report_held(
+                                            &http,
+                                            &api_url,
+                                            &runtime_key,
+                                            lease,
+                                            outturn_core::egress::held::Report {
+                                                job_id,
+                                                held_id,
+                                                outcome,
+                                            },
+                                        )
+                                        .await
+                                    })
+                                        as std::pin::Pin<
+                                            Box<
+                                                dyn std::future::Future<Output = Option<String>>
+                                                    + Send,
+                                            >,
+                                        >
+                                },
+                            )
+                        }),
+                    })
+                }
+                _ => None,
+            },
             fuel: super::router::FUEL_PER_TURN,
             timezone: request.timezone,
             reasoning_effort: request.reasoning_effort,
@@ -676,6 +724,46 @@ impl crate::component::InvocationRecord for ApiInvocations {
                 tracing::warn!(error = %e, "could not record what a declared write came to");
             }
         })
+    }
+}
+
+/// Tells the API what became of a held request, and returns what the model
+/// should read in its refusal's place. `None` on any failure: the request
+/// stays waiting and the next turn's answer from the record is what settles it.
+async fn report_held(
+    http: &reqwest::Client,
+    api_url: &str,
+    runtime_key: &str,
+    lease: Uuid,
+    report: outturn_core::egress::held::Report,
+) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Recorded {
+        told: String,
+    }
+    let job_id = report.job_id;
+    let response = http
+        .post(format!("{}/v1/work/held", api_url.trim_end_matches('/')))
+        .bearer_auth(runtime_key)
+        .header(
+            outturn_core::protocol::work::LEASE_HEADER,
+            lease.to_string(),
+        )
+        .json(&report)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => {
+            response.json::<Recorded>().await.ok().map(|r| r.told)
+        }
+        Ok(response) => {
+            tracing::warn!(%job_id, status = %response.status(), "the API would not record a held request's outcome");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(%job_id, error = %e, "could not report a held request's outcome");
+            None
+        }
     }
 }
 

@@ -515,39 +515,83 @@ fn grant_covers(
         })
 }
 
-/// Retracts the standing refusal a turn was parked on, once it is approved.
+/// Whether a refused call is the one a held request holds.
+///
+/// By the call's arguments where they are a fetch's, digested exactly as the
+/// item was -- the same reading `grant_covers` makes. A declared operation's
+/// arguments are its own fields, so for one of those it is by what its result
+/// echoes: every fetch the guest makes reports the method and URL it sent, and
+/// the held request is that method and URL.
+///
+/// Either way it is the guest's word, and safe for the reason `answered`
+/// gives: what this decides is which sentence the model reads. Which request
+/// goes out was decided when it was held.
+fn is_held_call(
+    gates: &outturn_core::egress::gate::Gates,
+    held: &super::held::Held,
+    arguments: Option<&serde_json::Value>,
+    result: &str,
+) -> bool {
+    if let Some(shape) = arguments.and_then(outturn_core::egress::grant::Shape::of_fetch_arguments)
+    {
+        let grant = held.grant();
+        return gates
+            .covering_all(&shape.host, &shape.method, &shape.path)
+            .iter()
+            .any(|gate| {
+                grant.permits(
+                    gate,
+                    &shape.method,
+                    &shape.host,
+                    &shape.path,
+                    shape.body.as_deref(),
+                )
+            });
+    }
+    let Ok(echoed) = serde_json::from_str::<serde_json::Value>(result) else {
+        return false;
+    };
+    echoed["method"]
+        .as_str()
+        .is_some_and(|m| m.eq_ignore_ascii_case(&held.method))
+        && echoed["url"].as_str() == Some(held.url.as_str())
+}
+
+/// Puts what became of an approved call where its refusal was.
 ///
 /// The gate answers a refused call with "Somebody has been asked to approve it
 /// ... Do not retry this request." That is right while the turn is stopping: it
 /// is what keeps the guest from spinning on a call nobody has answered yet.
 ///
-/// It is wrong the moment somebody says yes. The refusal is a *tool result*, so
-/// it is replayed verbatim to the turn that resumes -- a turn whose entire
-/// purpose is to make that call -- and the model reads the last thing in its own
-/// transcript telling it not to. It obeys, says nothing, and the turn ends with
-/// the grant unspent and the charge never made.
+/// Once somebody says yes, the request that was refused is held
+/// (`api::held`), and the platform sends it -- the model is never asked to make
+/// the call again, so it can never make a different one by rounding an amount.
+/// What it reads instead is who approved it and what came back, "Approved by
+/// Dana Reyes and sent:" and then the response, in place of the refusal; or why
+/// it did not go. A request still waiting to be sent is named in the map this
+/// returns, by the call whose refusal it is, and the runtime sending it before
+/// the guest runs puts the answer there itself. Declined stays as it was: the
+/// approval record beside it says so.
 ///
-/// So the sentence is replaced where the grant now covers it. The refusal itself
-/// stays: what was asked and what came back are the record the approver approved
-/// against, and rewriting that would leave a transcript claiming the call went
-/// out the first time. Only the instruction is retracted, and replaced with the
-/// one that is now true.
+/// Stored rows are untouched. This is the projection -- what this turn is told
+/// -- and the transcript a reader sees still says it was refused and then
+/// approved.
 ///
-/// Stored rows are untouched. This is the projection -- what this turn is told --
-/// and the transcript a reader sees still says it was refused and then approved.
-///
-/// **This is only safe because the gate refuses before the request is sent.**
-/// The call provably never went out, so telling the agent to make it is telling
-/// it to act once rather than twice. A gate that refused *after* dispatch would
-/// make this a retry of a call that may already have landed -- the
-/// sent-but-never-observed case in [docs/idempotency.md], which is designed and
-/// unbuilt. If that day comes this must consult the record rather than assume.
-/// The document says so too, under "What approvals already assume".
+/// An approval with no held request behind it -- raised by a runtime that
+/// relayed only the shape, before requests were held -- is still answered the
+/// old way: where a grant this turn holds covers the call, the instruction not
+/// to retry is retracted and replaced with one to make the call now. That is
+/// only safe because the gate refuses before dispatch, as
+/// [docs/idempotency.md] records under "What approvals already assume".
 fn answered(
     projected: Vec<serde_json::Value>,
     gates: &outturn_core::egress::gate::Gates,
     granted: &[outturn_core::egress::grant::Granted],
-) -> Vec<serde_json::Value> {
+    held: &[super::held::Held],
+) -> (
+    Vec<serde_json::Value>,
+    std::collections::HashMap<Uuid, String>,
+) {
     // The arguments of every call this conversation made, by id. Read out of
     // the projection rather than back out of storage: the assistant entry
     // already carries them, put there by `projected_with_sources` from the same
@@ -584,25 +628,53 @@ fn answered(
     let refused = outturn_core::egress::gate::gated_suffix();
     const NOW_ALLOWED: &str = "It has since been approved, so make this call now.";
 
-    projected
-        .into_iter()
-        .map(|mut message| {
-            if message["role"] != "tool" {
-                return message;
-            }
-            // Which call this result answered. Read before `parts` is borrowed
-            // mutably below. A refusal is retracted only
-            // where a grant covers *that* call: a turn holding one approval and
-            // two refusals must not be told both were approved, or it retries
-            // the one nobody answered and raises a second question unasked.
-            let permitted = message["tool_call_id"]
-                .as_str()
-                .and_then(|id| arguments.get(id))
-                .is_some_and(|args| grant_covers(gates, granted, args));
+    // Each held request answers one refusal, the first that is its call: a
+    // guest that retried a refused call in the same round has two refusals
+    // and one question, and telling it both were sent would be telling it the
+    // charge went twice.
+    let mut used: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut sending: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
 
-            let Some(parts) = message["parts"].as_array_mut() else {
-                return message;
-            };
+    let mut out = Vec::with_capacity(projected.len());
+    for mut message in projected {
+        if message["role"] != "tool" {
+            out.push(message);
+            continue;
+        }
+        let call_id = message["tool_call_id"].as_str().map(str::to_string);
+        let args = call_id.as_deref().and_then(|id| arguments.get(id));
+        let text: String = message["parts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+
+        if text.contains(outturn_core::egress::gate::GATED_MARK)
+            && let Some(found) = held.iter().find(|h| {
+                !used.contains(&h.id) && is_held_call(gates, h, args, &without_mark(&text))
+            })
+        {
+            used.insert(found.id);
+            if let Some(told) = found.told() {
+                message["parts"] = serde_json::json!([{ "type": "text", "text": told }]);
+                out.push(message);
+                continue;
+            }
+            if found.waiting()
+                && let Some(id) = &call_id
+            {
+                sending.insert(found.id, id.clone());
+            }
+        }
+
+        // Which call this result answered. A refusal is retracted only where a
+        // grant covers *that* call: a turn holding one approval and two
+        // refusals must not be told both were approved, or it retries the one
+        // nobody answered and raises a second question unasked.
+        let permitted = args.is_some_and(|args| grant_covers(gates, granted, args));
+
+        if let Some(parts) = message["parts"].as_array_mut() {
             for part in parts {
                 let Some(text) = part["text"].as_str() else {
                     continue;
@@ -618,9 +690,15 @@ fn answered(
                         serde_json::json!(text.replace(outturn_core::egress::gate::GATED_MARK, ""));
                 }
             }
-            message
-        })
-        .collect()
+        }
+        out.push(message);
+    }
+    (out, sending)
+}
+
+/// A tool result with the gate's mark taken out, for reading as JSON.
+fn without_mark(text: &str) -> String {
+    text.replace(outturn_core::egress::gate::GATED_MARK, "")
 }
 
 /// The turn's own prompt, sent twice: `prompt\nLet me repeat that:\nprompt`.
@@ -1954,6 +2032,12 @@ impl Worker {
         //
         // Whether a *refusal* is retracted is a third question again, asked per
         // call against the grants themselves in `answered`.
+        // The requests held in this conversation that somebody answered: those
+        // still to be sent go out from this turn, and the rest are what the
+        // model is told became of each.
+        let held = super::held::in_session(&self.pool, payload.workspace_id, payload.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("held requests: {e}"))?;
         let answered_for = super::grant::was_answered(&self.pool, payload.workspace_id, job_id)
             .await
             .map_err(|e| anyhow::anyhow!("answered: {e}"))?;
@@ -2097,6 +2181,16 @@ impl Worker {
         // about and a stripped one fails the same way.
         // Cloned because `with_grants` takes ownership and the same set is
         // needed again below, where it decides which refusal is retracted.
+        //
+        // The held requests are sent under gates of their own, with a grant for
+        // each, committed into a second token. Not in this one: the guest's
+        // calls travel under it, and the model making an approved call a
+        // second time must be refused and asked about again, not let through.
+        let waiting: Vec<&super::held::Held> = held.iter().filter(|h| h.waiting()).collect();
+        let held_gates = (!waiting.is_empty()).then(|| {
+            outturn_core::egress::gate::Gates::of(gates.clone())
+                .with_grants(waiting.iter().map(|h| h.grant()).collect())
+        });
         let gates = outturn_core::egress::gate::Gates::of(gates).with_grants(granted.clone());
         let gate_commitment = gates.root(payload.workspace_id);
 
@@ -2117,7 +2211,11 @@ impl Worker {
         // entry immediately before the final message, which is past anything a
         // summary cuts at, so the indices a cut uses mean the same in both.
         let (projected, sources) = projected_with_sources(&history);
-        let projected = answered(projected, &gates, &granted);
+        let (projected, sending) = answered(projected, &gates, &granted, &held);
+        let held_calls: Vec<outturn_core::egress::held::HeldCall> = waiting
+            .iter()
+            .map(|h| h.call(sending.get(&h.id).cloned()))
+            .collect();
         let projected = marked(projected, restarting_from.as_ref());
 
         // Over budget is where compaction begins. A summary is tried first
@@ -2259,6 +2357,8 @@ impl Worker {
                 gate_commitment,
                 gates,
                 eager_tools,
+                held: held_calls,
+                held_gates,
             },
         )))
     }
@@ -3325,6 +3425,16 @@ mod traffic_type_tests {
 
 #[cfg(test)]
 mod projection_tests {
+    /// `answered` for a conversation holding no requests, which is what the
+    /// retraction tests below are about.
+    fn retracted(
+        projected: Vec<serde_json::Value>,
+        gates: &outturn_core::egress::gate::Gates,
+        granted: &[outturn_core::egress::grant::Granted],
+    ) -> Vec<serde_json::Value> {
+        super::answered(projected, gates, granted, &[]).0
+    }
+
     use super::*;
     use crate::chat::Message;
 
@@ -3506,6 +3616,132 @@ mod projection_tests {
     const BOOKING_A: &str = r#"{"booking_id":"bk_a","amount_pence":14500}"#;
     const BOOKING_B: &str = r#"{"booking_id":"bk_b","amount_pence":99000}"#;
 
+    fn held_charge(
+        state: &str,
+        outcome: Option<outturn_core::egress::held::Outcome>,
+    ) -> super::super::held::Held {
+        super::super::held::Held {
+            id: Uuid::now_v7(),
+            item_id: Uuid::now_v7(),
+            requires: "charge".into(),
+            shape: grant_for(BOOKING_A).keyed_on,
+            state: state.into(),
+            attempts: 0,
+            operation: None,
+            method: "POST".into(),
+            url: "http://outturn-hollowbrook:8084/charges".into(),
+            headers: Vec::new(),
+            body: Some(BOOKING_A.into()),
+            outcome,
+            approved_by: "Dana Reyes".into(),
+        }
+    }
+
+    fn charged() -> outturn_core::egress::held::Outcome {
+        outturn_core::egress::held::Outcome::Answered {
+            status: 201,
+            headers: Vec::new(),
+            body: r#"{"charge":"ch_1"}"#.into(),
+            truncated: false,
+        }
+    }
+
+    /// Once the held request has been answered, every later turn reads who
+    /// approved it and what came back where the refusal was -- never the
+    /// refusal, and never an instruction to make the call.
+    #[test]
+    fn a_sent_request_is_told_as_its_answer() {
+        let held = [held_charge("spent", Some(charged()))];
+        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held);
+        let wire = results(&out).join("\n");
+        assert!(wire.contains("Approved by Dana Reyes and sent:"), "{wire}");
+        assert!(wire.contains("ch_1"), "{wire}");
+        assert!(
+            !wire.contains(outturn_core::egress::gate::GATED_REFUSAL),
+            "{wire}"
+        );
+        assert!(sending.is_empty(), "spent, so nothing to send");
+    }
+
+    /// One still to be sent is named by the call whose refusal it is, for the
+    /// runtime to put the answer there; the model is not told to make it.
+    #[test]
+    fn a_request_waiting_to_be_sent_is_found_by_its_call() {
+        let held = [held_charge("approved", None)];
+        let (out, sending) = answered(refused("c1", BOOKING_A), &charge_gate(), &[], &held);
+        assert_eq!(sending.get(&held[0].id).map(String::as_str), Some("c1"));
+        let wire = results(&out).join("\n");
+        assert!(!wire.contains("make this call now"), "{wire}");
+        assert!(
+            !wire.contains(outturn_core::egress::gate::GATED_MARK),
+            "{wire}"
+        );
+    }
+
+    /// A different call is not the held one, and stays refused.
+    #[test]
+    fn a_held_request_answers_only_its_own_call() {
+        let held = [held_charge("spent", Some(charged()))];
+        let mut projected = refused("c1", BOOKING_B);
+        projected.extend(refused("c2", BOOKING_A));
+        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let results = results(&out);
+        assert!(
+            results[0].contains(outturn_core::egress::gate::GATED_REFUSAL),
+            "{}",
+            results[0]
+        );
+        assert!(results[1].contains("Approved by"), "{}", results[1]);
+    }
+
+    /// Two refusals of one call -- a guest that retried in the same round --
+    /// and one question: only one is told the charge went.
+    #[test]
+    fn one_held_request_is_one_answer() {
+        let held = [held_charge("spent", Some(charged()))];
+        let mut projected = refused("c1", BOOKING_A);
+        projected.extend(refused("c2", BOOKING_A));
+        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let told = results(&out)
+            .iter()
+            .filter(|r| r.contains("Approved by"))
+            .count();
+        assert_eq!(told, 1);
+    }
+
+    /// A declared operation's arguments are its own fields, not a fetch's; its
+    /// result echoes the method and URL it sent, which is what finds it.
+    #[test]
+    fn an_operations_refusal_is_found_by_what_it_echoes() {
+        let held = [held_charge("spent", Some(charged()))];
+        let projected = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "parts": [{
+                    "type": "call",
+                    "call": {"id": "c1", "name": "charge_payment_account",
+                             "arguments": r#"{"booking_id":"bk_a","amount_pence":14500}"#},
+                }],
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "c1",
+                "parts": [{"type": "text", "text": serde_json::json!({
+                    "method": "POST",
+                    "url": "http://outturn-hollowbrook:8084/charges",
+                    "error": format!(
+                        "needs approval. {}{}",
+                        outturn_core::egress::gate::GATED_REFUSAL,
+                        outturn_core::egress::gate::GATED_MARK
+                    ),
+                }).to_string()}],
+            }),
+        ];
+        let (out, _) = answered(projected, &charge_gate(), &[], &held);
+        let wire = results(&out).join("\n");
+        assert!(wire.contains("Approved by Dana Reyes and sent:"), "{wire}");
+    }
+
     /// Only tool results. An assistant message quoting the sentence is
     /// something the model said, and rewriting it would put words in its mouth.
     #[test]
@@ -3518,7 +3754,7 @@ mod projection_tests {
                 outturn_core::egress::gate::GATED_MARK
             )}],
         });
-        let out = answered(vec![said], &charge_gate(), &[grant_for(BOOKING_A)]);
+        let out = retracted(vec![said], &charge_gate(), &[grant_for(BOOKING_A)]);
         assert!(
             serde_json::to_string(&out)
                 .unwrap()
@@ -3663,7 +3899,7 @@ mod projection_tests {
         let mut projected = refused("c1", BOOKING_A);
         projected.extend(refused("c2", BOOKING_B));
 
-        let out = answered(projected, &charge_gate(), &[grant_for(BOOKING_A)]);
+        let out = retracted(projected, &charge_gate(), &[grant_for(BOOKING_A)]);
         let results = results(&out);
 
         assert!(
@@ -3682,7 +3918,7 @@ mod projection_tests {
     /// mark -- it is bookkeeping between two tiers and means nothing to a model.
     #[test]
     fn a_turn_holding_nothing_releases_nothing() {
-        let out = answered(refused("c1", BOOKING_A), &charge_gate(), &[]);
+        let out = retracted(refused("c1", BOOKING_A), &charge_gate(), &[]);
         let wire = serde_json::to_string(&out).unwrap();
 
         assert!(wire.contains(outturn_core::egress::gate::GATED_REFUSAL));
@@ -3694,7 +3930,7 @@ mod projection_tests {
     /// digest covers the bound fields, so £145 is not an approval of £990.
     #[test]
     fn a_grant_for_one_charge_does_not_release_another() {
-        let out = answered(
+        let out = retracted(
             refused("c1", BOOKING_B),
             &charge_gate(),
             &[grant_for(BOOKING_A)],
@@ -3724,7 +3960,7 @@ mod projection_tests {
         // The fetched page stands in where the refusal's own result would be.
         projected[1] = fetched;
 
-        let out = answered(projected, &charge_gate(), &[grant_for(BOOKING_A)]);
+        let out = retracted(projected, &charge_gate(), &[grant_for(BOOKING_A)]);
         let wire = serde_json::to_string(&out).unwrap();
         assert!(
             wire.contains("Do not retry this request."),
@@ -3741,7 +3977,7 @@ mod projection_tests {
     #[test]
     fn the_mark_is_never_sent_to_a_model() {
         for grants in [vec![], vec![grant_for(BOOKING_A)]] {
-            let out = answered(refused("c1", BOOKING_A), &charge_gate(), &grants);
+            let out = retracted(refused("c1", BOOKING_A), &charge_gate(), &grants);
             let wire = serde_json::to_string(&out).unwrap();
             assert!(
                 !wire.contains(outturn_core::egress::gate::GATED_MARK),

@@ -334,10 +334,34 @@ pub async fn answer(
     // What stops the agent trying again immediately is being told, in the
     // transcript, that a person said no and to talk to them before re-attempting.
     // See `chat::DECLINED_GUIDANCE`.
+    // An item raised about a held request that did not go asks a different
+    // question -- send it again, or is it done -- and answers it differently.
+    if item.payload.get("followup").is_some() {
+        let decision = if input.approved {
+            super::held::Decision::Resend
+        } else {
+            super::held::Decision::Done
+        };
+        return settle_followup(&state, &claims, &item, decision, input.note.as_deref())
+            .await
+            .map(|()| Json(Answered { resumed: 0 }));
+    }
+
+    // Whether the refused request was held. Then the yes is the request's: it
+    // is sent, as it was, by the turn the release gives back, and the grant
+    // that lets it out travels only with that send. A grant for the turn as
+    // well would let the guest make the same call again under it.
+    let holds_request = super::held::held_for_item(&state.pool, item.workspace_id, item.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     // What the yes is worth, built before the settle so it commits with it.
-    // Only on an approval: a decline grants nothing.
+    // Only on an approval: a decline grants nothing. For a held request, only
+    // the wider extent where it was offered and ticked -- the one thing a held
+    // request does not carry.
     let grant = if input.approved {
         grant_from(&item, &claims, input.covers_unit)
+            .filter(|g| !holds_request || g.extent == super::grant::Extent::Unit)
     } else {
         None
     };
@@ -357,6 +381,11 @@ pub async fn answer(
             hold: held,
             grant,
             wake: None,
+            held: holds_request.then_some(if input.approved {
+                super::held::Decision::Approve
+            } else {
+                super::held::Decision::Decline
+            }),
         })
         .await
         .map_err(|e| match e {
@@ -433,6 +462,122 @@ pub async fn answer(
     );
 
     Ok(Json(Answered { resumed }))
+}
+
+/// Answers an item asking about an approved request that did not go: send it
+/// again, or it needs nothing more.
+///
+/// Nothing is parked on it, so nothing resumes. A resent request is sent by
+/// the conversation's next turn, as an approved one always is.
+async fn settle_followup(
+    state: &ApiState,
+    claims: &outturn_core::auth::SessionClaims,
+    item: &super::actions::ActionItem,
+    decision: super::held::Decision,
+    note: Option<&str>,
+) -> Result<(), ApiError> {
+    state
+        .actions
+        .settle_and_release(super::actions::Settle {
+            workspace_id: item.workspace_id,
+            item_id: item.id,
+            state: super::actions::State::Resolved,
+            resolved_by: Some(claims.subject),
+            note,
+            hold: None,
+            grant: None,
+            wake: None,
+            held: Some(decision),
+        })
+        .await
+        .map_err(|e| match e {
+            super::actions::ActionError::NotPending(state) => {
+                (StatusCode::CONFLICT, format!("this was already {state}"))
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    tracing::info!(
+        workspace_id = %item.workspace_id,
+        actor = %claims.subject,
+        item_id = %item.id,
+        resend = decision == super::held::Decision::Resend,
+        "an approved request that did not go was answered"
+    );
+    Ok(())
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct FollowUp {
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Sends an approved request again that could not be sent, or whose outcome is
+/// not known -- once a person has checked that a second send is what they want.
+pub async fn resend(
+    state: State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    path: Path<Uuid>,
+    body: axum::body::Bytes,
+) -> Result<Json<Answered>, ApiError> {
+    follow_up(state, headers, path, body, super::held::Decision::Resend).await
+}
+
+/// Marks an approved request that did not go, or may not have, as needing
+/// nothing more: the person checked, and it happened or no longer matters.
+pub async fn done(
+    state: State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    path: Path<Uuid>,
+    body: axum::body::Bytes,
+) -> Result<Json<Answered>, ApiError> {
+    follow_up(state, headers, path, body, super::held::Decision::Done).await
+}
+
+async fn follow_up(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(item_id): Path<Uuid>,
+    body: axum::body::Bytes,
+    decision: super::held::Decision,
+) -> Result<Json<Answered>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    // Through the caller's own queue, as `answer` reads it, and for the same
+    // reasons: targeting is not decorative, and the authority is the item's
+    // workspace's.
+    let mine = state
+        .actions
+        .queue_for_user_everywhere(claims.subject, None, MAX_QUEUE_SCAN)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let item = mine
+        .into_iter()
+        .find(|i| i.id == item_id)
+        .ok_or((StatusCode::NOT_FOUND, "no such approval".to_string()))?;
+    if item.payload.get("followup").is_none() {
+        return Err((
+            StatusCode::CONFLICT,
+            "this asks whether to approve, not what to do about a request that did not go"
+                .to_string(),
+        ));
+    }
+    require_in(
+        &state,
+        &claims,
+        item.workspace_id,
+        Authority::ApprovalsAnswer,
+    )
+    .await?;
+    // A note is optional, and so is a body to carry one.
+    let note = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<FollowUp>(&body)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("that is not a note: {e}")))?
+            .note
+    };
+    settle_followup(&state, &claims, &item, decision, note.as_deref()).await?;
+    Ok(Json(Answered { resumed: 0 }))
 }
 
 /// How far into the caller's queue an answer will look for its item.

@@ -14267,11 +14267,43 @@ async fn report_refused_charge(
     h.send(req).await
 }
 
-/// A refused request is held whole, beside the item rather than in it: the
-/// item's payload is what every target may read, and a body can carry more
-/// than a person deciding needs.
+async fn report_held(
+    h: &Harness,
+    job: Uuid,
+    lease: Uuid,
+    held: &str,
+    outcome: Value,
+) -> (StatusCode, String) {
+    let mut report = serde_json::json!({ "job_id": job, "held_id": held });
+    for (k, v) in outcome.as_object().unwrap() {
+        report[k] = v.clone();
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/work/held")
+        .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+        .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+        .header("content-type", "application/json")
+        .body(Body::from(report.to_string()))
+        .unwrap();
+    h.send(req).await
+}
+
+async fn held_state(h: &Harness, held: &str) -> (String, i32, bool) {
+    sqlx::query_as(
+        "select state, attempts, spent_at is not null from held_requests where id = $1::uuid",
+    )
+    .bind(held)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("held row")
+}
+
+/// What a person approves is what is sent. The refused request is held whole,
+/// beside the item rather than in it; approving it hands it to the next turn
+/// to send, under a token of its own; and the answer spends it, once.
 #[tokio::test]
-async fn a_refused_request_is_held_beside_its_approval() {
+async fn an_approved_request_is_held_and_handed_to_the_next_turn_to_send() {
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -14286,8 +14318,9 @@ async fn a_refused_request_is_held_beside_its_approval() {
         .unwrap()
         .to_string();
 
-    let (url, held_body, operation): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "select url, body, operation from held_requests where item_id = $1::uuid and state = 'held'",
+    // Held beside the item, and not in what every target of it may read.
+    let (url, held_body): (String, Option<String>) = sqlx::query_as(
+        "select url, body from held_requests where item_id = $1::uuid and state = 'held'",
     )
     .bind(&item)
     .fetch_one(&h.db.pool)
@@ -14295,9 +14328,75 @@ async fn a_refused_request_is_held_beside_its_approval() {
     .expect("held");
     assert_eq!(url, "https://api.hollowbrook.test/charges?currency=gbp");
     assert_eq!(held_body.as_deref(), Some(HELD_BODY));
-    assert_eq!(operation.as_deref(), Some("charge_payment_account"));
     let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
     assert!(!queue.contains("not bound"), "{queue}");
+
+    // The turn parks, as it does at its next boundary; then somebody says yes.
+    outturn::jobs::park(&h.db.pool, job, Some(lease))
+        .await
+        .expect("park");
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{item}/answer"),
+        &admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // No grant for the turn: the request's own travels with its send alone.
+    let grants: i64 = sqlx::query_scalar("select count(*) from approval_grants")
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(grants, 0);
+
+    // The resumed turn is handed the request, as it was held, and a token to
+    // send it under whose gates are not the turn's.
+    let (job, lease, assignment) = take_assignment(&h).await;
+    let held = &assignment["held"];
+    assert_eq!(held.as_array().map(Vec::len), Some(1), "{assignment}");
+    assert_eq!(
+        held[0]["url"],
+        "https://api.hollowbrook.test/charges?currency=gbp"
+    );
+    assert_eq!(held[0]["body"], HELD_BODY);
+    assert_eq!(held[0]["operation"], "charge_payment_account");
+    assert!(assignment["held_token"].is_string(), "{assignment}");
+    assert_ne!(
+        assignment["held_gates"], assignment["gates"],
+        "the grant must not travel with the guest's own calls"
+    );
+    let held_id = held[0]["id"].as_str().unwrap().to_string();
+
+    // Answered, it is spent; told who approved it and what came back.
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held_id,
+        serde_json::json!({ "outcome": "answered", "status": 201, "body": "{\"charge\":\"ch_1\"}" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let told = serde_json::from_str::<Value>(&body).unwrap()["told"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(told.starts_with("Approved by "), "{told}");
+    assert!(told.contains("ch_1"), "{told}");
+    assert_eq!(held_state(&h, &held_id).await, ("spent".into(), 0, true));
+
+    // One answer is what a yes is worth.
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held_id,
+        serde_json::json!({ "outcome": "answered", "status": 201, "body": "again" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
     finish!(h);
 }
@@ -14321,6 +14420,126 @@ async fn a_request_too_large_to_hold_is_refused() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
     assert!(items(&queue).is_empty(), "{queue}");
+
+    finish!(h);
+}
+
+/// Answers the approval the session's first refusal raised, yes, and hands
+/// the resumed turn back: its job, lease, and the held request's id.
+async fn approved_and_resumed(h: &Harness, admin: &str) -> (Uuid, Uuid, String) {
+    let (session, job, lease) = a_turn_that_may_charge(h, admin).await;
+    let (status, body) = report_refused_charge(h, session, job, lease, HELD_BODY).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let item = serde_json::from_str::<Value>(&body).unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    outturn::jobs::park(&h.db.pool, job, Some(lease))
+        .await
+        .expect("park");
+    let (status, body) = post_with_cookie(
+        h,
+        &format!("/v1/approvals/{item}/answer"),
+        admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (job, lease, assignment) = take_assignment(h).await;
+    let held = assignment["held"][0]["id"].as_str().unwrap().to_string();
+    (job, lease, held)
+}
+
+/// One that never left is tried again, three times, and is then put back in
+/// front of a person as approved but not sent -- who can have it sent again.
+#[tokio::test]
+async fn a_request_that_never_left_is_tried_three_times_and_then_asked_about() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+    let never = serde_json::json!({ "outcome": "never_sent", "message": "connection refused" });
+
+    for tries in 1..outturn::egress::held::MAX_ATTEMPTS {
+        let (status, body) = report_held(&h, job, lease, &held, never.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("will be tried again"), "{body}");
+        assert_eq!(
+            held_state(&h, &held).await,
+            ("approved".into(), tries, false)
+        );
+    }
+    let (status, body) = report_held(&h, job, lease, &held, never.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("could not be sent"), "{body}");
+    assert_eq!(held_state(&h, &held).await.0, "unsent");
+
+    // Asked again, and nothing parked on it.
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let followup = items(&queue)
+        .into_iter()
+        .find(|i| i["payload"]["followup"] == "unsent")
+        .unwrap_or_else(|| panic!("no follow-up: {queue}"));
+    assert!(
+        followup["payload"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be sent"),
+        "{followup}"
+    );
+    let followup = followup["id"].as_str().unwrap().to_string();
+
+    let (status, body) =
+        post_with_cookie(&h, &format!("/v1/approvals/{followup}/resend"), &admin, "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(held_state(&h, &held).await, ("approved".into(), 0, false));
+
+    finish!(h);
+}
+
+/// One that went and was never answered is not sent again where nothing would
+/// dedupe it: a person is asked to check, and can mark it done.
+#[tokio::test]
+async fn a_request_with_no_answer_is_asked_about_and_can_be_marked_done() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held,
+        serde_json::json!({ "outcome": "no_answer", "message": "the connection reset" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("not known"), "{body}");
+    assert_eq!(held_state(&h, &held).await, ("unknown".into(), 0, false));
+
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let followup = items(&queue)
+        .into_iter()
+        .find(|i| i["payload"]["followup"] == "unknown")
+        .unwrap_or_else(|| panic!("no follow-up: {queue}"));
+    let followup = followup["id"].as_str().unwrap().to_string();
+
+    // Not an approval to answer with the original's endpoint semantics: a
+    // decline there is "done" here, and the explicit endpoint says so.
+    let (status, body) =
+        post_with_cookie(&h, &format!("/v1/approvals/{followup}/done"), &admin, "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(held_state(&h, &held).await.0, "done");
+
+    // And a second answer to it is told it was already answered.
+    let (status, _) =
+        post_with_cookie(&h, &format!("/v1/approvals/{followup}/resend"), &admin, "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     finish!(h);
 }
