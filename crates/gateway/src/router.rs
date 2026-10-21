@@ -19,7 +19,7 @@ pub struct GatewayState {
     /// gateway still runs without a database -- it falls back to the
     /// statically configured providers, which is what it did before either
     /// existed.
-    health: Option<sqlx::postgres::PgPool>,
+    pub(crate) health: Option<sqlx::postgres::PgPool>,
     providers_by_account: routing::ProviderCache,
     /// Where a vetted outbound request physically leaves from. `Direct` here
     /// and in any open-source deployment; the seam exists because spreading

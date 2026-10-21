@@ -14543,3 +14543,8 @@ async fn a_request_with_no_answer_is_asked_about_and_can_be_marked_done() {
 
     finish!(h);
 }
+
+// Its own file, sharing this one's harness. Declared last, after the macros
+// it uses.
+#[path = "api/auto_approval.rs"]
+mod auto_approval;
