@@ -127,6 +127,9 @@ struct GatewayInner {
     /// is not found, as it was before the route existed, so a fetch handed
     /// over still comes back refused.
     egress: Mutex<Option<(u16, String)>>,
+    /// Where set, `/v1/egress` fails as the gateway does when the transport
+    /// did: a 502 with this sentence, said to have not completed or not.
+    egress_failure: Mutex<Option<(bool, String)>>,
     /// Requests the agent asked the gateway to make.
     fetched: Mutex<Vec<serde_json::Value>>,
     /// Signaled when a held request arrives, and what lets it go.
@@ -142,6 +145,7 @@ impl FakeGateway {
             calls: Mutex::new(0),
             seen: Mutex::new(Vec::new()),
             egress: Mutex::new(None),
+            egress_failure: Mutex::new(None),
             fetched: Mutex::new(Vec::new()),
             arrived: tokio::sync::Notify::new(),
             released: tokio::sync::Notify::new(),
@@ -196,6 +200,13 @@ impl FakeGateway {
         *self.state.egress.lock().unwrap() = Some((status, body.to_string()));
     }
 
+    /// Fails every outbound request the way the gateway does when its
+    /// transport failed: a 502 with `detail`, and the header saying the
+    /// request did not complete where `did_not_complete`.
+    pub fn fail_egress(&self, did_not_complete: bool, detail: &str) {
+        *self.state.egress_failure.lock().unwrap() = Some((did_not_complete, detail.to_string()));
+    }
+
     /// The outbound requests the agent asked for, as the gateway received
     /// them: method, url, headers and body.
     pub fn fetched(&self) -> Vec<serde_json::Value> {
@@ -207,6 +218,18 @@ async fn egress(
     State(state): State<Arc<GatewayInner>>,
     Json(request): Json<serde_json::Value>,
 ) -> Response {
+    let failure = state.egress_failure.lock().unwrap().clone();
+    if let Some((did_not_complete, detail)) = failure {
+        state.fetched.lock().unwrap().push(request);
+        let mut response = (StatusCode::BAD_GATEWAY, detail).into_response();
+        if did_not_complete {
+            response.headers_mut().insert(
+                outturn::protocol::FAILURE_HEADER,
+                axum::http::HeaderValue::from_static(outturn::protocol::DID_NOT_COMPLETE),
+            );
+        }
+        return response;
+    }
     let Some((status, body)) = state.egress.lock().unwrap().clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };

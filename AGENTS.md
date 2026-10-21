@@ -80,7 +80,7 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
 | `OUTTURN_GATEWAY_URL` | api, runtime | Where the gateway is. Unset, the API names no sessions, fetches no catalog and makes no test call |
-| `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say; see [egress.md](docs/egress.md) |
+| `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say. A credential may also travel to them over plain http, unencrypted; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
 | `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`; the UI's is `VITE_BRAND_NAME`, set at build time |

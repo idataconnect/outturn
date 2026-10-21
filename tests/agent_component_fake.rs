@@ -3542,6 +3542,78 @@ async fn a_write_with_no_answer_is_not_sent_again() {
     assert!(results[0].contains("never came back"), "{}", results[0]);
 }
 
+/// One declared booking, made against a gateway `prepare` has set up, and
+/// what the record holds for it afterwards.
+async fn one_booking(
+    prepare: impl FnOnce(&FakeGateway),
+) -> Option<outturn::protocol::work::Claimed> {
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "inn_book".into(),
+        arguments: r#"{"room_id":"garden","guest_name":"Jo","nights":2,"action":"Booking"}"#.into(),
+        reply: "Hm.".into(),
+    })
+    .await;
+    prepare(&gateway);
+    let record = Arc::new(Record::default());
+    let mut options = options(&gateway, None);
+    options.eager_tools = vec!["inn_book".into()];
+    options.skill_operations = vec![declared_booking()];
+    options.invocations = Some(Arc::clone(&record) as _);
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(&component(), user("Book it."), String::new(), options)
+        .await
+        .expect("run");
+    assert_eq!(gateway.fetched().len(), 1, "{:?}", gateway.fetched());
+    let held = record.0.lock().unwrap();
+    assert!(held.len() <= 1, "one booking, one key");
+    held.values().next().cloned()
+}
+
+/// A write the gateway says did not complete stays `attempted`, known by the
+/// gateway's header and not by its sentence; one that failed otherwise is
+/// released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_stays_attempted_when_the_gateway_says_it_did_not_complete() {
+    let held = one_booking(|g| g.fail_egress(true, "the connection reset mid-request")).await;
+    assert!(
+        matches!(
+            held,
+            Some(outturn::protocol::work::Claimed::Attempted { .. })
+        ),
+        "{held:?}"
+    );
+
+    let held =
+        one_booking(|g| g.fail_egress(false, "the request did not complete, in other words")).await;
+    assert!(held.is_none(), "released: {held:?}");
+}
+
+/// A recipient's 4xx releases the claim, since nothing happened; a 5xx leaves
+/// it `attempted`, since a 502 or 504 often follows a write that landed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_refusal_releases_a_claimed_write() {
+    let held = one_booking(|g| g.answer_egress(409, r#"{"error":"room taken"}"#)).await;
+    assert!(held.is_none(), "released: {held:?}");
+
+    for status in [502, 503, 504] {
+        let held = one_booking(|g| g.answer_egress(status, "upstream timed out")).await;
+        assert!(
+            matches!(
+                held,
+                Some(outturn::protocol::work::Claimed::Attempted { .. })
+            ),
+            "{status}: {held:?}"
+        );
+    }
+}
+
 /// A recipient that takes a key is sent one, the same for the same booking,
 /// and dedupes itself: nothing is kept here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

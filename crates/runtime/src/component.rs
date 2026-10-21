@@ -1151,9 +1151,11 @@ impl outturn::agent::host::Host for AgentHost {
         .await;
 
         // What became of a claimed write. Answered and taken, it is recorded
-        // to answer a repeat with; refused by the recipient or by the gateway,
-        // nothing happened and the claim is released. A connection that broke
-        // after sending is left `attempted`: it may have landed.
+        // to answer a repeat with; refused by the recipient (4xx) or by the
+        // gateway, nothing happened and the claim is released. A connection
+        // that broke after sending is left `attempted`, and so is a 5xx: it
+        // may have landed, since a proxy's 502 or 504 often follows a write
+        // the server behind it committed.
         if let (Some(key), Some(record)) = (claimed, &self.invocations) {
             match &outcome {
                 Ok(answer) if (200..300).contains(&answer.status) => {
@@ -1169,8 +1171,10 @@ impl outturn::agent::host::Host for AgentHost {
                         )
                         .await
                 }
-                Err(why) if why.starts_with("the request did not complete") => {}
-                _ => record.settle(key, None).await,
+                Ok(answer) if (400..500).contains(&answer.status) => record.settle(key, None).await,
+                Ok(_) => {}
+                Err(why) if why.did_not_complete => {}
+                Err(_) => record.settle(key, None).await,
             }
         }
 
@@ -1232,7 +1236,7 @@ impl outturn::agent::host::Host for AgentHost {
                         ));
                     }
                 }
-                return Err(refusal);
+                return Err(refusal.message);
             }
         };
 
