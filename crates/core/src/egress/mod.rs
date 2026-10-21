@@ -9,6 +9,7 @@ pub mod bindings;
 pub mod commit;
 pub mod gate;
 pub mod grant;
+pub mod held;
 pub mod internal;
 pub mod rule;
 pub mod seal;

@@ -50,7 +50,7 @@ const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How much of a response comes back. One figure with what a held request's
 /// body may be, so what is carried one way is carried the other.
-const FETCH_BODY_LIMIT: usize = 256 * 1024;
+const FETCH_BODY_LIMIT: usize = outturn_core::egress::held::BODY_LIMIT;
 
 /// How much of a document the API fetches comes back: as much as the OpenAPI
 /// wizard will read, which is the only thing that asks. A turn's limit would

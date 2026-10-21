@@ -64,6 +64,17 @@ pub struct Refused {
     /// could name its own unit could name the one already approved.
     #[serde(default)]
     pub body: Option<String>,
+    /// The whole URL, with its query, so the request can be held and sent as
+    /// it was once somebody approves. Absent from a runtime that relays only
+    /// the shape, whose approval then mints a grant for its turn as before.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// The headers the guest set, with any idempotency key its host added.
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    /// The skill operation the request was, where the guest said.
+    #[serde(default)]
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +131,36 @@ pub async fn raise(
         .with_grants(granted);
 
     let method = input.method.to_ascii_uppercase();
+
+    // What is held has to be what was judged. The gate is matched on the host
+    // and path and the bound fields of the body, so a URL naming anywhere else
+    // would be a request approved under one description and sent under
+    // another. And a body larger than the platform carries is refused rather
+    // than held, as the call itself would be.
+    if let Some(url) = &input.url {
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;
+        if parsed.host_str() != Some(input.host.as_str()) || parsed.path() != input.path {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "the URL relayed is not the request described".to_string(),
+            ));
+        }
+    }
+    if input
+        .body
+        .as_ref()
+        .is_some_and(|b| b.len() > outturn_core::egress::held::BODY_LIMIT)
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "that request's body is larger than {} bytes, so it cannot be held for approval",
+                outturn_core::egress::held::BODY_LIMIT
+            ),
+        ));
+    }
+
     let Some(gate) = gates.unpermitted(&input.host, &method, &input.path, input.body.as_deref())
     else {
         // Not gated, so there is nothing to approve. Logged at warn because the
@@ -280,6 +321,34 @@ pub async fn raise(
         }
     };
 
+    // The request itself, beside the item rather than in it: the payload is
+    // what every target may see, and a body can carry more than a person
+    // deciding needs. Not fatal where it fails: the approval still stands, and
+    // answering it mints a grant for this turn, as for a runtime that relays
+    // only the shape.
+    if let Some(url) = input.url.clone() {
+        let kept = super::held::hold(
+            &state.pool,
+            super::held::NewHeld {
+                workspace_id: payload.workspace_id,
+                item_id: item,
+                session_id: payload.session_id,
+                job_id: input.job_id,
+                requires: gate.requires.clone(),
+                shape: shape.clone(),
+                operation: input.operation.clone(),
+                method: method.clone(),
+                url,
+                headers: input.headers.clone(),
+                body: input.body.clone(),
+            },
+        )
+        .await;
+        if let Err(e) = kept {
+            tracing::warn!(item_id = %item, error = %e, "a refused request could not be held");
+        }
+    }
+
     tracing::info!(
         workspace_id = %payload.workspace_id,
         session_id = %payload.session_id,
@@ -300,7 +369,10 @@ pub async fn raise(
 /// Resolved from the authority rather than from a named role, so a workspace
 /// that made its own role with `approvals:answer` in it is asked too. A role is
 /// what is stored, never its members.
-async fn approvers(state: &ApiState, workspace_id: Uuid) -> Result<Vec<Target>, ApiError> {
+pub(super) async fn approvers(
+    state: &ApiState,
+    workspace_id: Uuid,
+) -> Result<Vec<Target>, ApiError> {
     let roles = state
         .roles
         .roles_with(workspace_id, Authority::ApprovalsAnswer)

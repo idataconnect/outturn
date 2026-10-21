@@ -14137,3 +14137,190 @@ async fn deleting_a_session_leaves_none_of_its_work_behind() {
 
     h.db.cleanup().await;
 }
+
+/// A charging skill on an agent with a model, a conversation with a prompt
+/// in it, and that prompt's turn taken by a runtime: the setting every
+/// held-request test starts from. Returns the session, the job and its lease.
+async fn a_turn_that_may_charge(h: &Harness, admin: &str) -> (Uuid, Uuid, Uuid) {
+    let charge_file = "---\napproval:\n  requires: charge\n  matches: POST /charges\n  binds: [booking_id, amount_pence]\n---\n\n# charge\n";
+    let (status, body) = post_with_cookie(
+        h,
+        "/v1/skills",
+        admin,
+        &serde_json::json!({
+            "slug": "charging",
+            "name": "Charging",
+            "body": "Read charge.md before charging anybody.",
+            "hosts": ["api.hollowbrook.test"],
+            "files": [{ "path": "charge.md", "content": charge_file }],
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let skill = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) =
+        post_with_cookie(h, &format!("/v1/skills/{skill}/hosts/approve"), admin, "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(admin),
+            r#"{"name":"Desk","slug":"desk","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent}/skills"))
+        .header("cookie", format!("outturn_session={admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{skill}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(admin),
+            &format!(r#"{{"agent_id":"{agent}","title":""}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let session: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(admin),
+            r#"{"content":"Charge the deposit for bk_1."}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (job, lease) = take_turn(h).await;
+    (session, job, lease)
+}
+
+/// Takes the next turn as a runtime does, returning its job and lease.
+async fn take_turn(h: &Harness) -> (Uuid, Uuid) {
+    let (job, lease, _) = take_assignment(h).await;
+    (job, lease)
+}
+
+async fn take_assignment(h: &Harness) -> (Uuid, Uuid, Value) {
+    let (status, body) = h.post("/v1/work", Some(TEST_RUNTIME_KEY), "{}").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assignment: Value = serde_json::from_str(&body).expect("assignment");
+    let job = assignment["job_id"].as_str().expect("job").parse().unwrap();
+    let lease = assignment["lease_token"]
+        .as_str()
+        .expect("lease")
+        .parse()
+        .unwrap();
+    (job, lease, assignment)
+}
+
+const HELD_BODY: &str = r#"{"amount_pence":78000,"booking_id":"bk_1","note":"not bound"}"#;
+
+/// Reports the charge refused, the whole request as a runtime relays it.
+async fn report_refused_charge(
+    h: &Harness,
+    session: Uuid,
+    job: Uuid,
+    lease: Uuid,
+    body: &str,
+) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/work/gated")
+        .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+        .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "session_id": session,
+                "job_id": job,
+                "method": "POST",
+                "host": "api.hollowbrook.test",
+                "path": "/charges",
+                "url": "https://api.hollowbrook.test/charges?currency=gbp",
+                "headers": [["content-type", "application/json"]],
+                "body": body,
+                "operation": "charge_payment_account",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    h.send(req).await
+}
+
+/// A refused request is held whole, beside the item rather than in it: the
+/// item's payload is what every target may read, and a body can carry more
+/// than a person deciding needs.
+#[tokio::test]
+async fn a_refused_request_is_held_beside_its_approval() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (session, job, lease) = a_turn_that_may_charge(&h, &admin).await;
+
+    let (status, body) = report_refused_charge(&h, session, job, lease, HELD_BODY).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let item = serde_json::from_str::<Value>(&body).unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (url, held_body, operation): (String, Option<String>, Option<String>) = sqlx::query_as(
+        "select url, body, operation from held_requests where item_id = $1::uuid and state = 'held'",
+    )
+    .bind(&item)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("held");
+    assert_eq!(url, "https://api.hollowbrook.test/charges?currency=gbp");
+    assert_eq!(held_body.as_deref(), Some(HELD_BODY));
+    assert_eq!(operation.as_deref(), Some("charge_payment_account"));
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    assert!(!queue.contains("not bound"), "{queue}");
+
+    finish!(h);
+}
+
+/// A body larger than the platform carries is refused rather than held, and
+/// nobody is asked about it.
+#[tokio::test]
+async fn a_request_too_large_to_hold_is_refused() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (session, job, lease) = a_turn_that_may_charge(&h, &admin).await;
+
+    let huge = format!(
+        r#"{{"amount_pence":1,"booking_id":"bk_1","pad":"{}"}}"#,
+        "x".repeat(outturn::egress::held::BODY_LIMIT)
+    );
+    let (status, body) = report_refused_charge(&h, session, job, lease, &huge).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    assert!(items(&queue).is_empty(), "{queue}");
+
+    finish!(h);
+}

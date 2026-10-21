@@ -235,19 +235,185 @@ pub type WaitSink = Arc<
         + Sync,
 >;
 
-/// What was refused, as the runtime saw it.
+/// What was refused, as the runtime saw it: the whole request, as it was
+/// about to go.
 #[derive(Debug, Clone)]
 pub struct GatedRequest {
     pub method: String,
     pub host: String,
     pub path: String,
+    /// With its query, as the guest wrote it.
+    pub url: String,
+    /// The guest's headers, with any idempotency key this host added.
+    pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    pub operation: Option<String>,
+}
+
+/// A request as `dispatch` sent it, keyed and all.
+struct Sent {
+    method: String,
+    url: String,
+    host: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    operation: Option<String>,
+}
+
+/// What `dispatch` made of a request.
+enum Dispatched {
+    /// A declared write already done, answered from the record.
+    Replayed(HttpResponse),
+    /// A declared write sent before with no answer, so not sent again.
+    Attempted(String),
+    /// Through the gateway, and whatever it said.
+    Sent(Result<crate::fetch::GatewayFetched, crate::fetch::Unanswered>),
 }
 
 /// Marker tying the generated host traits to AgentHost.
 struct HostData;
 
 impl AgentHost {
+    /// Sends one request through the gateway, under the token and gates given,
+    /// with the idempotency handling every declared write gets.
+    ///
+    /// Shared by the guest's own calls and by an approved request sent before
+    /// the guest runs, so the second is the same write as the first would have
+    /// been: keyed the same, claimed against the same record, and settled by
+    /// the same rule.
+    async fn dispatch(
+        &mut self,
+        request: HttpRequest,
+        token: String,
+        gates: outturn_core::egress::gate::Gates,
+    ) -> Result<(Sent, Dispatched), String> {
+        use outturn_core::egress::rule as egress;
+
+        // This tier makes no outbound request of its own. It runs workspace
+        // code, so a socket here is a socket a compromised guest's host could
+        // use for anything -- and an approval it was trusted to honor would
+        // be worth nothing, because it could simply not ask. The gateway makes
+        // the call: it holds the credentials, it can read the commitment out
+        // of the turn token this presents, and it is the tier that never runs
+        // anybody's code. The cluster should say the same thing with a
+        // NetworkPolicy, so this is a property of the network rather than of
+        // this function staying honest.
+        //
+        // What is still done here is finding which rule the URL matches, and
+        // building the proof for it. Neither is trusted: the gateway matches
+        // again against the rules that verified, and a proof for a rule the
+        // API never committed to verifies nowhere. Doing it here only saves
+        // sending a workspace's whole rule list on every fetch.
+        let url =
+            reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
+        let (_host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+        let proof = outturn_core::egress::commit::prove(self.workspace_id, &self.egress, rule)
+            .ok_or_else(|| {
+                // The rule is in the list this holds but not in what the API
+                // vouched for, so nothing can be shown about it. Refused here
+                // rather than sent, since the gateway would refuse it anyway
+                // and the message is the same fact about the workspace's
+                // settings either way.
+                egress::Refused::Unproven(rule.host.clone()).to_string()
+            })?;
+
+        // A declared write: keyed for a recipient that takes a key, or
+        // checked against the record for one that does not.
+        let mut request = request;
+        let identity = request
+            .operation
+            .as_deref()
+            .and_then(|name| self.skill_operations.iter().find(|o| o.name == name))
+            .filter(|op| !op.identity.is_empty())
+            .cloned();
+        let mut claimed: Option<String> = None;
+        let mut replay: Option<Dispatched> = None;
+        if let Some(op) = &identity {
+            let key = idempotency_key(&op.name, &op.identity, &url, request.body.as_deref());
+            if let Some(header) = &op.key_header {
+                request
+                    .headers
+                    .retain(|(n, _)| !n.eq_ignore_ascii_case(header));
+                request.headers.push((header.clone(), key));
+            } else if let Some(field) = &op.key_field {
+                request.body = Some(keyed_body(request.body.as_deref(), field, &op.name, &key)?);
+            } else if let Some(record) = &self.invocations {
+                match record.claim(key.clone()).await? {
+                    outturn_core::protocol::work::Claimed::New => claimed = Some(key),
+                    outturn_core::protocol::work::Claimed::Completed { response, at } => {
+                        replay = Some(Dispatched::Replayed(replayed(&response, at)));
+                    }
+                    outturn_core::protocol::work::Claimed::Attempted { at } => {
+                        replay = Some(Dispatched::Attempted(format!(
+                            "this exact {} was sent at {at} and its answer never came back, so \
+                             whether it happened is not known. Check before sending it again: \
+                             it is not sent twice from here.",
+                            op.name
+                        )));
+                    }
+                }
+            }
+        }
+
+        let sent = Sent {
+            method: request.method.clone(),
+            url: request.url.clone(),
+            host: url.host_str().unwrap_or_default().to_string(),
+            path: url.path().to_string(),
+            headers: request.headers.clone(),
+            body: request.body.clone(),
+            operation: request.operation.clone(),
+        };
+        if let Some(replay) = replay {
+            return Ok((sent, replay));
+        }
+
+        let outcome = crate::fetch::through_gateway(
+            &self.gateway_url,
+            &token,
+            crate::fetch::GatewayFetch {
+                method: request.method,
+                url: request.url,
+                headers: request.headers,
+                body: request.body,
+                proof,
+                gates,
+            },
+        )
+        .await;
+
+        // What became of a claimed write. Answered and taken, it is recorded
+        // to answer a repeat with; refused by the recipient (4xx) or by the
+        // gateway, or never sent at all, nothing happened and the claim is
+        // released. A connection that broke after sending is left `attempted`,
+        // and so is a 5xx: it may have landed, since a proxy's 502 or 504 often
+        // follows a write the server behind it committed.
+        if let (Some(key), Some(record)) = (claimed, &self.invocations) {
+            match &outcome {
+                Ok(answer) if (200..300).contains(&answer.status) => {
+                    record
+                        .settle(
+                            key,
+                            Some(serde_json::json!({
+                                "status": answer.status,
+                                "headers": answer.headers,
+                                "body": answer.body,
+                                "truncated": answer.truncated,
+                            })),
+                        )
+                        .await
+                }
+                Ok(answer) if (400..500).contains(&answer.status) => record.settle(key, None).await,
+                Ok(_) => {}
+                Err(why) if why.did_not_complete => {}
+                Err(_) => record.settle(key, None).await,
+            }
+        }
+
+        Ok((sent, Dispatched::Sent(outcome)))
+    }
+
     /// The turn token to present, replaced first if it is close to running out.
     ///
     /// Checked before every gateway call rather than at round boundaries: a
@@ -1055,120 +1221,14 @@ impl outturn::agent::host::Host for AgentHost {
     /// about the workspace's settings, and that one resolves inside the cluster is
     /// a fact it already had to guess to ask.
     async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
-        use outturn_core::egress::rule as egress;
-
-        // This tier makes no outbound request of its own. It runs workspace
-        // code, so a socket here is a socket a compromised guest's host could
-        // use for anything -- and an approval it was trusted to honor would
-        // be worth nothing, because it could simply not ask. The gateway makes
-        // the call: it holds the credentials, it can read the commitment out
-        // of the turn token this presents, and it is the tier that never runs
-        // anybody's code. The cluster should say the same thing with a
-        // NetworkPolicy, so this is a property of the network rather than of
-        // this function staying honest.
-        //
-        // What is still done here is finding which rule the URL matches, and
-        // building the proof for it. Neither is trusted: the gateway matches
-        // again against the rules that verified, and a proof for a rule the
-        // API never committed to verifies nowhere. Doing it here only saves
-        // sending a workspace's whole rule list on every fetch.
-        let url =
-            reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
-        let (_host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
-        let proof = outturn_core::egress::commit::prove(self.workspace_id, &self.egress, rule)
-            .ok_or_else(|| {
-                // The rule is in the list this holds but not in what the API
-                // vouched for, so nothing can be shown about it. Refused here
-                // rather than sent, since the gateway would refuse it anyway
-                // and the message is the same fact about the workspace's
-                // settings either way.
-                egress::Refused::Unproven(rule.host.clone()).to_string()
-            })?;
-
-        // A declared write: keyed for a recipient that takes a key, or
-        // checked against the record for one that does not.
-        let mut request = request;
-        let identity = request
-            .operation
-            .as_deref()
-            .and_then(|name| self.skill_operations.iter().find(|o| o.name == name))
-            .filter(|op| !op.identity.is_empty())
-            .cloned();
-        let mut claimed: Option<String> = None;
-        if let Some(op) = &identity {
-            let key = idempotency_key(&op.name, &op.identity, &url, request.body.as_deref());
-            if let Some(header) = &op.key_header {
-                request
-                    .headers
-                    .retain(|(n, _)| !n.eq_ignore_ascii_case(header));
-                request.headers.push((header.clone(), key));
-            } else if let Some(field) = &op.key_field {
-                request.body = Some(keyed_body(request.body.as_deref(), field, &op.name, &key)?);
-            } else if let Some(record) = &self.invocations {
-                match record.claim(key.clone()).await? {
-                    outturn_core::protocol::work::Claimed::New => claimed = Some(key),
-                    outturn_core::protocol::work::Claimed::Completed { response, at } => {
-                        return Ok(replayed(&response, at));
-                    }
-                    outturn_core::protocol::work::Claimed::Attempted { at } => {
-                        return Err(format!(
-                            "this exact {} was sent at {at} and its answer never came back, so \
-                             whether it happened is not known. Check before sending it again: \
-                             it is not sent twice from here.",
-                            op.name
-                        ));
-                    }
-                }
-            }
-        }
-
-        let method = request.method.clone();
-        let body = request.body.clone();
-        let path = url.path().to_string();
-        let host_name = url.host_str().unwrap_or_default().to_string();
-
         let token = self.current_token().await;
-        let outcome = crate::fetch::through_gateway(
-            &self.gateway_url,
-            &token,
-            crate::fetch::GatewayFetch {
-                method: request.method,
-                url: request.url,
-                headers: request.headers,
-                body: request.body,
-                proof,
-                gates: self.gates.clone(),
-            },
-        )
-        .await;
-
-        // What became of a claimed write. Answered and taken, it is recorded
-        // to answer a repeat with; refused by the recipient (4xx) or by the
-        // gateway, nothing happened and the claim is released. A connection
-        // that broke after sending is left `attempted`, and so is a 5xx: it
-        // may have landed, since a proxy's 502 or 504 often follows a write
-        // the server behind it committed.
-        if let (Some(key), Some(record)) = (claimed, &self.invocations) {
-            match &outcome {
-                Ok(answer) if (200..300).contains(&answer.status) => {
-                    record
-                        .settle(
-                            key,
-                            Some(serde_json::json!({
-                                "status": answer.status,
-                                "headers": answer.headers,
-                                "body": answer.body,
-                                "truncated": answer.truncated,
-                            })),
-                        )
-                        .await
-                }
-                Ok(answer) if (400..500).contains(&answer.status) => record.settle(key, None).await,
-                Ok(_) => {}
-                Err(why) if why.did_not_complete => {}
-                Err(_) => record.settle(key, None).await,
-            }
-        }
+        let gates = self.gates.clone();
+        let (sent, dispatched) = self.dispatch(request, token, gates).await?;
+        let outcome = match dispatched {
+            Dispatched::Replayed(response) => return Ok(response),
+            Dispatched::Attempted(message) => return Err(message),
+            Dispatched::Sent(outcome) => outcome,
+        };
 
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -1185,15 +1245,22 @@ impl outturn::agent::host::Host for AgentHost {
                 // this relaying a refusal it invented gets nowhere.
                 if self
                     .gates
-                    .covering(&host_name, &method.to_ascii_uppercase(), &path)
+                    .covering(&sent.host, &sent.method.to_ascii_uppercase(), &sent.path)
                     .is_some()
                     && let Some(on_gated) = &self.on_gated
                 {
+                    // The whole request, as it was about to go, so that what a
+                    // person approves is what is later sent -- see
+                    // `outturn_core::egress::held`. The idempotency key the host
+                    // added is part of it, so the send is the same write.
                     let pending = on_gated(GatedRequest {
-                        method: method.clone(),
-                        host: host_name.clone(),
-                        path: path.clone(),
-                        body,
+                        method: sent.method.clone(),
+                        host: sent.host.clone(),
+                        path: sent.path.clone(),
+                        url: sent.url.clone(),
+                        headers: sent.headers.clone(),
+                        body: sent.body.clone(),
+                        operation: sent.operation.clone(),
                     })
                     .await;
                     if pending {
@@ -1217,9 +1284,9 @@ impl outturn::agent::host::Host for AgentHost {
                         // before it stops -- what it must not do is treat this as
                         // a transient failure and retry the same call.
                         // The sentence and its mark are shared with the API,
-                        // which finds them again to retract the instruction once
-                        // somebody approves. Rewording it here alone would make
-                        // that retraction a silent no-op.
+                        // which finds them again to put the answer in their
+                        // place once somebody approves. Rewording it here alone
+                        // would leave the refusal standing after the call went.
                         return Err(format!(
                             "{refusal}. Somebody has been asked to approve it, \
                              and this conversation will pause until they answer. \
@@ -2715,6 +2782,7 @@ impl AgentRunner {
         };
 
         let mut store = Store::new(&self.engine, host);
+
         store.set_fuel(options.fuel)?;
         // Yield to the executor every so often while fuel is burning. Fuel
         // alone bounds how long a guest may run, not how long it may hold the

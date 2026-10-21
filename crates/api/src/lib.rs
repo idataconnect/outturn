@@ -18,6 +18,7 @@ mod feedback;
 mod files;
 pub mod gated;
 pub mod grant;
+pub mod held;
 pub mod inhibitor;
 pub mod invocations;
 mod login;

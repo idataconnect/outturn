@@ -493,11 +493,6 @@ impl Puller {
     }
 }
 
-/// Tells the API a request was refused for want of an approval.
-///
-/// Returns whether the turn should expect to park. False on any failure: the
-/// request has already been refused, so the worst case is an agent told less
-/// than it could have been rather than one that proceeds when it should not.
 /// Trades a running turn's gateway token for a fresh one.
 ///
 /// Presents the lease as every other report does, and the current token so the
@@ -684,6 +679,13 @@ impl crate::component::InvocationRecord for ApiInvocations {
     }
 }
 
+/// Tells the API a request was refused for want of an approval.
+///
+/// The whole request, so the API can hold it and what a person approves is
+/// what is later sent. Returns whether the turn should expect to park. False on
+/// any failure: the request has already been refused, so the worst case is an
+/// agent told less than it could have been rather than one that proceeds when
+/// it should not.
 async fn report_gated(
     http: &reqwest::Client,
     api_url: &str,
@@ -710,7 +712,10 @@ async fn report_gated(
             "method": refused.method,
             "host": refused.host,
             "path": refused.path,
+            "url": refused.url,
+            "headers": refused.headers,
             "body": refused.body,
+            "operation": refused.operation,
         }))
         .send()
         .await;
