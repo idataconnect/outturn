@@ -262,7 +262,11 @@ A recipient's refusal -- a 4xx -- or the gateway's changed nothing, so it
 releases the claim and the retry it invites goes out. A connection that broke
 after sending leaves it `attempted`, and so does a 5xx: a 502, 503 or 504 from
 a proxy often follows a write the server behind it committed, and sending it
-again is the mistake this exists to prevent. Settling is best-effort: a completed write left
+again is the mistake this exists to prevent. So does an answer cut off on the
+way back -- the recipient's reply ending mid-body, which the gateway marks
+`did-not-complete` as it does a lost connection, or the gateway's own reply
+arriving in a shape the runtime cannot read: either way the recipient
+answered, so it may have done what it was asked. Settling is best-effort: a completed write left
 unrecorded looks attempted to a repeat, and is refused rather than sent twice.
 
 ## Why the host owns it

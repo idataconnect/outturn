@@ -130,6 +130,9 @@ struct GatewayInner {
     /// Where set, `/v1/egress` fails as the gateway does when the transport
     /// did: a 502 with this sentence, said to have not completed or not.
     egress_failure: Mutex<Option<(Option<&'static str>, String)>>,
+    /// Where set, `/v1/egress` says 200 and then cuts its own reply off,
+    /// as a gateway lost mid-response would.
+    egress_garbled: Mutex<bool>,
     /// Requests the agent asked the gateway to make.
     fetched: Mutex<Vec<serde_json::Value>>,
     /// Signaled when a held request arrives, and what lets it go.
@@ -146,6 +149,7 @@ impl FakeGateway {
             seen: Mutex::new(Vec::new()),
             egress: Mutex::new(None),
             egress_failure: Mutex::new(None),
+            egress_garbled: Mutex::new(false),
             fetched: Mutex::new(Vec::new()),
             arrived: tokio::sync::Notify::new(),
             released: tokio::sync::Notify::new(),
@@ -215,6 +219,12 @@ impl FakeGateway {
             Some((Some(outturn::protocol::NOT_SENT), detail.to_string()));
     }
 
+    /// Answers every outbound request with a 200 whose body is cut off before
+    /// it parses: the gateway's own reply, lost on the way back.
+    pub fn garble_egress(&self) {
+        *self.state.egress_garbled.lock().unwrap() = true;
+    }
+
     /// Answers outbound requests normally again.
     pub fn heal_egress(&self) {
         *self.state.egress_failure.lock().unwrap() = None;
@@ -242,6 +252,15 @@ async fn egress(
             );
         }
         return response;
+    }
+    if *state.egress_garbled.lock().unwrap() {
+        state.fetched.lock().unwrap().push(request);
+        return (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            r#"{"status":201,"headers":[],"bo"#,
+        )
+            .into_response();
     }
     let Some((status, body)) = state.egress.lock().unwrap().clone() else {
         return StatusCode::NOT_FOUND.into_response();

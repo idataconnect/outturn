@@ -66,16 +66,6 @@ impl std::fmt::Display for Unanswered {
     }
 }
 
-impl Unanswered {
-    fn answered(message: String) -> Self {
-        Unanswered {
-            message,
-            did_not_complete: false,
-            never_sent: false,
-        }
-    }
-}
-
 /// Sends one request through the gateway.
 ///
 /// A refusal comes back as the gateway's own words rather than being
@@ -110,10 +100,17 @@ pub async fn through_gateway(
 
     let status = response.status();
     if status.is_success() {
+        // A success the gateway sent and this could not read is a reply cut
+        // off on the way, not a refusal: the recipient answered, so a write may
+        // well have landed, and it is marked so the claim stays `attempted`.
         return response
             .json::<GatewayFetched>()
             .await
-            .map_err(|e| Unanswered::answered(format!("the response did not arrive whole: {e}")));
+            .map_err(|e| Unanswered {
+                message: format!("the response did not arrive whole: {e}"),
+                did_not_complete: true,
+                never_sent: false,
+            });
     }
 
     // The gateway's refusals are already written for a reader; what would be

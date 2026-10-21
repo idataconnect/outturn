@@ -116,31 +116,35 @@ pub async fn fetch(
         // A failed request is not a refusal: the caller was allowed, and the
         // world did not cooperate. It comes back as text the model can act on
         // rather than as a status it cannot see.
-        Ok(Err(e)) => {
-            let detail = e.to_string();
-            match e {
-                TransportError::Malformed(_) => (StatusCode::BAD_REQUEST, detail).into_response(),
-                TransportError::Incomplete(_) => (StatusCode::BAD_GATEWAY, detail).into_response(),
-                // Said as well as written: the runtime decides from this
-                // whether a write it claimed may have landed, and must not have
-                // to read the sentence to know.
-                TransportError::Unreachable(_) => (
-                    StatusCode::BAD_GATEWAY,
-                    [(FAILURE_HEADER, DID_NOT_COMPLETE)],
-                    detail,
-                )
-                    .into_response(),
-                // Said too, and differently: a request that never left is one
-                // an approved call can be sent again for, where one that may
-                // have landed is not.
-                TransportError::NotSent(_) => (
-                    StatusCode::BAD_GATEWAY,
-                    [(FAILURE_HEADER, NOT_SENT)],
-                    detail,
-                )
-                    .into_response(),
-            }
-        }
+        Ok(Err(e)) => failed(e),
+    }
+}
+
+/// A request that was allowed and did not come back whole, as the runtime is
+/// told it.
+fn failed(e: TransportError) -> Response {
+    let detail = e.to_string();
+    match e {
+        TransportError::Malformed(_) => (StatusCode::BAD_REQUEST, detail).into_response(),
+        // Said as well as written: the runtime decides from this whether a
+        // write it claimed may have landed, and must not have to read the
+        // sentence to know. A reply cut off mid-body is one too: the recipient
+        // answered, so whatever it was asked to do it may well have done.
+        TransportError::Unreachable(_) | TransportError::Incomplete(_) => (
+            StatusCode::BAD_GATEWAY,
+            [(FAILURE_HEADER, DID_NOT_COMPLETE)],
+            detail,
+        )
+            .into_response(),
+        // Said too, and differently: a request that never left is one an
+        // approved call can be sent again for, where one that may have landed
+        // is not.
+        TransportError::NotSent(_) => (
+            StatusCode::BAD_GATEWAY,
+            [(FAILURE_HEADER, NOT_SENT)],
+            detail,
+        )
+            .into_response(),
     }
 }
 
@@ -560,6 +564,32 @@ pub(crate) fn credential_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reply cut off mid-body is marked as not completed, as a connection
+    /// lost after sending is: either way the recipient may have acted, and a
+    /// claimed write must stay attempted.
+    #[test]
+    fn a_reply_cut_off_mid_body_is_marked_as_not_completed() {
+        let mark = |e: TransportError| {
+            failed(e)
+                .headers()
+                .get(FAILURE_HEADER)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(
+            mark(TransportError::Incomplete("reset".into())).as_deref(),
+            Some(DID_NOT_COMPLETE)
+        );
+        assert_eq!(
+            mark(TransportError::Unreachable("reset".into())).as_deref(),
+            Some(DID_NOT_COMPLETE)
+        );
+        assert_eq!(
+            mark(TransportError::NotSent("refused".into())).as_deref(),
+            Some(NOT_SENT)
+        );
+        assert_eq!(mark(TransportError::Malformed("bad".into())), None);
+    }
 
     #[test]
     fn a_key_goes_in_clear_only_to_a_host_an_operator_opened() {

@@ -114,13 +114,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The gateway
 
-- A claimed write whose answer was cut off mid-body is still released
-  (`crates/runtime/src/component.rs`, the settle after a keyed call): the
-  gateway's 502 for a truncated reply carries no `did-not-complete` mark, and
-  a reply the runtime cannot parse is treated as a refusal. The recipient
-  answered, so the write may well have landed. Mark both so the write stays
-  `attempted`, as a 5xx now does.
-
 - Non-stream failover re-sends a request the provider already accepted
   (`crates/gateway/src/router.rs`, the route loop): a read timeout or cut body
   moves to the next route, billing the prompt twice with the first attempt
