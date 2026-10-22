@@ -47,6 +47,20 @@ describe('how an inbox item reads', () => {
     expect(d.sessionId).toBeNull()
   })
 
+  it('says what waits on a policy', () => {
+    const d = describeItem(
+      item('policy.accept', {
+        policy_id: 'p1',
+        summary: 'The policy covering "charge" does not cover 1 operation published since it was accepted',
+        operations: ['POST /charges in Charging'],
+      }),
+    )
+    expect(d.kind).toBe('policy')
+    expect(d.label).toBe('Operations waiting on a policy')
+    expect(d.summary).toContain('"charge"')
+    expect(d.sessionId).toBeNull()
+  })
+
   it('still shows a kind nobody has described, rather than a blank row', () => {
     const d = describeItem(item('review_needed', { question: 'Is this right?' }))
     expect(d.kind).toBe('other')

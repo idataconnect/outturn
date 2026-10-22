@@ -607,3 +607,135 @@ async fn a_refreshed_turn_token_drops_a_revoked_policy() {
     assert_eq!(copied.gate_commitment, before.gate_commitment);
     finish!(h);
 }
+
+/// The open `policy.accept` items, as (policy, operations).
+async fn waiting_items(h: &Harness) -> Vec<(String, Vec<String>)> {
+    let rows: Vec<Value> = sqlx::query_scalar(
+        "select payload from action_items \
+         where kind = 'policy.accept' and state = 'pending' order by id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+    rows.iter()
+        .map(|p| {
+            (
+                p["policy_id"].as_str().unwrap().to_string(),
+                p["operations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|o| o.as_str().unwrap().to_string())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+async fn publish(h: &Harness, c: &Covered, note: &str) {
+    let (status, body) = h
+        .post(
+            &format!("/v1/skills/{}/versions", c.skill),
+            Some(&c.admin),
+            &serde_json::json!({
+                "body": "Read charge.md before charging anybody.",
+                "hosts": [CHARGE_HOST],
+                "files": [{ "path": "charge.md", "content": charge_file(note) }],
+            })
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// Publishing an operation a broad policy would cover says so in the queue of
+/// whoever may set policies: once per policy however often it is published,
+/// naming the operation, until it is accepted -- or the policy is revoked.
+#[tokio::test]
+async fn the_queue_says_when_operations_wait_on_a_broad_policy() {
+    let h = harness_or_skip!();
+    let c = a_policy_on_for_charges(&h).await;
+    assert!(
+        waiting_items(&h).await.is_empty(),
+        "accepted with the operation already published"
+    );
+
+    publish(&h, &c, "Version two.").await;
+    assert_eq!(
+        waiting_items(&h).await,
+        vec![(
+            c.policy.clone(),
+            vec!["POST /charges in Charging".to_string()]
+        )]
+    );
+    // In the queue of the person who may accept it, saying so.
+    let (status, body) = h.get("/v1/action-items", Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let queue: Value = serde_json::from_str(&body).unwrap();
+    let item = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "policy.accept")
+        .expect("in the admin's queue")
+        .clone();
+    assert!(
+        item["payload"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("\"charge\""),
+        "{item}"
+    );
+
+    // Published again: still one item, the same one.
+    publish(&h, &c, "Version three.").await;
+    let (status, body) = h.get("/v1/action-items", Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK);
+    let queue: Value = serde_json::from_str(&body).unwrap();
+    let ids: Vec<&Value> = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "policy.accept")
+        .map(|i| &i["id"])
+        .collect();
+    assert_eq!(ids, vec![&item["id"]], "one item per policy");
+
+    // Accepted: settled as done.
+    let (status, body) = h
+        .post(
+            &format!("/v1/approval-policies/{}/accept", c.policy),
+            Some(&c.admin),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(waiting_items(&h).await.is_empty());
+    let state: String = sqlx::query_scalar("select state from action_items where id = $1::uuid")
+        .bind(item["id"].as_str().unwrap())
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "resolved");
+
+    // Waiting again, then revoked: nobody's to accept any more.
+    publish(&h, &c, "Version four.").await;
+    assert_eq!(waiting_items(&h).await.len(), 1);
+    let (status, _) = h
+        .post(
+            &format!("/v1/approval-policies/{}/revoke", c.policy),
+            Some(&c.admin),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(waiting_items(&h).await.is_empty());
+    let cancelled: i64 = sqlx::query_scalar(
+        "select count(*) from action_items where kind = 'policy.accept' and state = 'cancelled'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(cancelled, 1);
+    finish!(h);
+}

@@ -15,6 +15,7 @@
 //! after a broad policy was accepted -- resolves to a person being asked.
 
 pub mod api;
+pub mod waiting;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -605,11 +606,11 @@ mod tests {
     use outturn_core::egress::policy::Op;
     use serde_json::json;
 
-    fn workspace() -> Uuid {
+    pub(super) fn workspace() -> Uuid {
         Uuid::from_bytes([1; 16])
     }
 
-    fn agent() -> Uuid {
+    pub(super) fn agent() -> Uuid {
         Uuid::from_bytes([2; 16])
     }
 
@@ -617,7 +618,7 @@ mod tests {
         Uuid::from_bytes([4; 16])
     }
 
-    fn declared(requires: &str, risk: Risk) -> Declared {
+    pub(super) fn declared(requires: &str, risk: Risk) -> Declared {
         Declared {
             gate: Gate {
                 requires: requires.into(),
@@ -636,7 +637,7 @@ mod tests {
         }
     }
 
-    fn policy(selector: &str) -> Policy {
+    pub(super) fn policy(selector: &str) -> Policy {
         let now = Utc::now();
         Policy {
             id: Uuid::now_v7(),

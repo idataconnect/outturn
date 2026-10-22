@@ -108,6 +108,9 @@ pub(super) async fn add_version_in(
         .add_version(workspace, id, author, input, files.as_deref(), &gates)
         .await?;
     let status = if appended {
+        // Its gates are new to every broad policy, which covers them only once
+        // somebody accepts them: see `auto_approval::waiting`.
+        super::auto_approval::waiting::reconcile_after_publish(state, workspace).await;
         StatusCode::CREATED
     } else {
         StatusCode::OK
@@ -163,9 +166,10 @@ pub async fn update_skill(
     Json(input): Json<UpdateSkill>,
 ) -> Result<Json<Skill>, ApiError> {
     let claims = authorize(&state, &headers, Authority::SkillsWrite).await?;
-    Ok(Json(
-        state.skills.update(claims.workspace_id, id, input).await?,
-    ))
+    let skill = state.skills.update(claims.workspace_id, id, input).await?;
+    // A body edit is a new version, and its gates are newly published with it.
+    super::auto_approval::waiting::reconcile_after_publish(&state, claims.workspace_id).await;
+    Ok(Json(skill))
 }
 
 pub async fn delete_skill(
@@ -393,6 +397,9 @@ pub async fn set_agent_skills(
         .skills
         .set_bindings(claims.workspace_id, agent_id, &input)
         .await?;
+    // A skill bound now brings its gates to this agent's turns, and to every
+    // broad policy speaking for it.
+    super::auto_approval::waiting::reconcile(&state, claims.workspace_id).await;
     Ok(Json(
         state.skills.bindings(claims.workspace_id, agent_id).await?,
     ))
@@ -638,7 +645,9 @@ pub async fn update_platform_skill(
 ) -> Result<Json<Skill>, ApiError> {
     let claims = super::router::authenticate(&state, &headers)?;
     let workspace = as_operator(&claims)?;
-    Ok(Json(state.skills.update(workspace, id, input).await?))
+    let skill = state.skills.update(workspace, id, input).await?;
+    super::auto_approval::waiting::reconcile_after_publish(&state, workspace).await;
+    Ok(Json(skill))
 }
 
 pub async fn add_platform_version(

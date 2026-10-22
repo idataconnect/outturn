@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { AlarmClock, ArrowLeft, ArrowUpCircle, Boxes, Clock, Inbox as InboxIcon, MessageSquare } from 'lucide-react'
+import { AlarmClock, ArrowLeft, ArrowUpCircle, Boxes, Clock, Inbox as InboxIcon, ListChecks, MessageSquare } from 'lucide-react'
 
 import ApprovalPrompt, { type Bound } from '../components/ApprovalPrompt'
 import type { ActionItem } from '../lib/actions'
@@ -173,6 +173,7 @@ function Detail({ item, workspace, here }: { item: ActionItem; workspace: string
 
       {kind === 'approval' && <ApprovalDetail item={item} onAnswered={settled} />}
       {kind === 'model' && <UpgradeDetail item={item} onUpgraded={settled} />}
+      {kind === 'policy' && <PolicyDetail item={item} workspace={workspace} here={here} />}
       {kind === 'sleep' && sessionId && (
         <SleepDetail
           item={item}
@@ -320,6 +321,52 @@ function OpenConversation({
       </button>
       {failed && (
         <p className="mt-1 text-sm text-red-600 dark:text-red-400" role="alert">
+          {failed}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The operations a broad policy does not cover yet, and the way to its page,
+ * where accepting them settles this.
+ */
+function PolicyDetail({ item, workspace, here }: { item: ActionItem; workspace: string; here: boolean }) {
+  const { go, switching, failed } = useSwitchThen()
+  const policyId = typeof item.payload.policy_id === 'string' ? item.payload.policy_id : null
+  const operations = Array.isArray(item.payload.operations)
+    ? item.payload.operations.filter((o): o is string => typeof o === 'string')
+    : []
+  const to = policyId ? paths.autoApproval(policyId) : null
+  return (
+    <div className="space-y-3">
+      {operations.length > 0 && (
+        <div className="text-sm text-surface-800 dark:text-surface-200">
+          <p>Asked about until accepted:</p>
+          <ul className="mt-1 list-disc pl-5">
+            {operations.map((o) => (
+              <li key={o}>
+                <code className="font-mono text-xs">{o}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {to &&
+        (here ? (
+          <Link to={to} className={linkish}>
+            <ListChecks size={14} aria-hidden />
+            Open the policy
+          </Link>
+        ) : (
+          <button type="button" onClick={() => void go(item.workspace_id, to)} disabled={switching} className={linkish}>
+            <ListChecks size={14} aria-hidden />
+            {switching ? `Switching to ${workspace}…` : `Open the policy in ${workspace}`}
+          </button>
+        ))}
+      {failed && (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
           {failed}
         </p>
       )}

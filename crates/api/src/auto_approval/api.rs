@@ -397,6 +397,7 @@ pub async fn create(
         mode = checked.mode,
         "an auto-approval policy was set"
     );
+    super::waiting::reconcile(&state, claims.workspace_id).await;
     let policy = found(&state, claims.workspace_id, id).await?;
     Ok((StatusCode::CREATED, Json(view(policy))))
 }
@@ -461,6 +462,7 @@ pub async fn update(
         mode = checked.mode,
         "an auto-approval policy was changed"
     );
+    super::waiting::reconcile(&state, claims.workspace_id).await;
     Ok(Json(view(found(&state, claims.workspace_id, id).await?)))
 }
 
@@ -500,6 +502,9 @@ async fn mark(
         by = %claims.subject,
         "an auto-approval policy was {what}"
     );
+    // Accepting is what settles a policy's waiting operations, and revoking or
+    // expiring it leaves nobody to accept them.
+    super::waiting::reconcile(state, claims.workspace_id).await;
     Ok(Json(view(found(state, claims.workspace_id, id).await?)))
 }
 

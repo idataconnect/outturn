@@ -292,6 +292,8 @@ function label(kind: string): string {
       return 'Charge to approve'
     case 'sleep':
       return 'Agent asleep'
+    case 'policy.accept':
+      return 'Operations waiting on a policy'
     default:
       // `approval.something_else` reads better than the raw key, and says
       // enough: the producer builds the kind from the act it is asking about

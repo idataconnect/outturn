@@ -1,4 +1,4 @@
-import { ArrowUpCircle, CircleUser, Moon, ShieldQuestion, type LucideIcon } from 'lucide-react'
+import { ArrowUpCircle, CircleUser, ListChecks, Moon, ShieldQuestion, type LucideIcon } from 'lucide-react'
 
 import type { ActionItem } from './actions'
 
@@ -9,7 +9,7 @@ import type { ActionItem } from './actions'
  * component that shows an item. A kind nobody has described still renders, as
  * its own name and whatever reason it carries, rather than as a blank row.
  */
-export type ItemKind = 'approval' | 'sleep' | 'model' | 'other'
+export type ItemKind = 'approval' | 'sleep' | 'model' | 'policy' | 'other'
 
 export type Described = {
   kind: ItemKind
@@ -54,6 +54,17 @@ export function describeItem(item: ActionItem): Described {
       label: 'Model upgrade to approve',
       icon: ArrowUpCircle,
       summary: name && from && to ? `${name}: ${from} to ${to}` : text(item, 'reason'),
+      sessionId: null,
+    }
+  }
+  if (item.kind === 'policy.accept') {
+    // Operations a broad auto-approval policy would cover, published since it
+    // was accepted; the policy's page is where they are accepted.
+    return {
+      kind: 'policy',
+      label: 'Operations waiting on a policy',
+      icon: ListChecks,
+      summary: text(item, 'summary'),
       sessionId: null,
     }
   }

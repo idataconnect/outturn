@@ -383,6 +383,14 @@ waved through, which is the one outcome this whole design must not permit.
   new set (`protocol::work::TokenRefreshed::gates`) only when it changed. A gate
   set that does not hash to the presented token's root is refused; a runtime
   that sends none has its commitments copied forward as before.
+- **Waiting operations** are `api::auto_approval::waiting`: one `policy.accept`
+  item per broad policy that is on, naming the operations `choose` would give it
+  once accepted, for the roles holding `approvals:delegate`. Reconciled for the
+  workspace whenever a version is published (every workspace with a broad
+  policy on, for a platform skill), a binding changes or a policy is written;
+  replaced when the operations change, resolved when they are accepted and
+  cancelled when the policy stops standing. Migration 0059 keeps it to one open
+  item per policy. The inbox links to the policy's page.
 - **The page** is Settings → Auto-approval, `/settings/auto-approval`; a new
   policy at `/settings/auto-approval/new` is prefilled from `requires`,
   `selector`, `max_risk`, `skill_id`, `matches`, `agent_id` and one `field` per
@@ -394,8 +402,10 @@ waved through, which is the one outcome this whole design must not permit.
 - **An edited policy is not re-committed mid-turn.** A trade-in drops it, and
   the turn asks a person for what it covers until the next turn commits it on
   its new terms. Adding to a running turn's token is what a trade-in never does.
-- **The action queue does not yet say** a broad policy has operations waiting to
-  be accepted; the page offers *Accept operations published since* instead.
+- **A gate's publication is its version's.** A body-only edit copies the gates
+  onto a new version, so they read as published again: the queue says they
+  wait, and a broad policy covers them in trial until accepted, though nothing
+  about them changed.
 - **The admin agent proposing a policy**, which waits for the admin agent.
 - **A policy suspending itself**, and **operator gates that follow the
   credential**, still unsettled above.
