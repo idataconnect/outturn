@@ -30,6 +30,19 @@ constraint, the partial indexes and the `live_turn` view in the migrations,
 which a new state would need a new migration for; and the browser's unions in
 `ui/src/lib/chat.ts`, which carry a comment pointing here.
 
+A job's *state* is checked by the schema; four other enumerations are written
+down and deliberately not, because a CHECK would turn an unknown value into a
+lost row. `jobs.kind` and `events.kind` are open vocabularies three tiers add
+to -- the gateway writes `chat.absorbed` -- and every reader already passes
+over a kind it does not know, so a new one costs a migration on a table that
+takes a write per token and buys nothing a reader needs.
+`usage_ledger.credential_owner` is what the runtime reports the gateway said
+(`paid_by`),
+and `fallback` sits beside it: a ledger insert refused over a value it did not
+expect is spend that is never billed, and a compromised runtime choosing that
+value could make it so on purpose. The ledger records what it is told and the
+reports read it; constraining the value belongs where it is produced.
+
 **Streamed deltas concatenate to stored content.** What the browser renders
 during a turn must be exactly what the transcript holds afterwards, or the
 message changes under the reader when the turn ends. Every round of a tool loop

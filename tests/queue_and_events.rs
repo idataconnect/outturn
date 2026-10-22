@@ -5137,3 +5137,174 @@ async fn a_timer_reaped_mid_fire_wakes_the_agent_once() {
 
     finish!(db);
 }
+
+// -- The streamed-event sweep ---------------------------------------------------
+
+/// Every kind a turn streams, for one reply.
+async fn stream_into(pool: &PgPool, workspace: Uuid, session_id: Uuid, reply: Uuid) -> Vec<Uuid> {
+    let feed = [
+        (
+            "chat.reasoning",
+            serde_json::json!({ "message_id": reply, "text": "hm" }),
+        ),
+        ("chat.writing", serde_json::json!({ "message_id": reply })),
+        (
+            "chat.delta",
+            serde_json::json!({ "message_id": reply, "idx": 0, "text": "Look" }),
+        ),
+        (
+            "chat.tool",
+            serde_json::json!({ "message_id": reply, "call": { "id": "c1", "name": "fetch_url" } }),
+        ),
+        (
+            "chat.tool_result",
+            serde_json::json!({ "message_id": reply, "id": "c1", "details": "200", "is_error": false }),
+        ),
+        (
+            "chat.steer",
+            serde_json::json!({ "message_id": reply, "id": "u2" }),
+        ),
+        (
+            "chat.delta",
+            serde_json::json!({ "message_id": reply, "idx": 1, "text": "ed." }),
+        ),
+    ];
+    let mut ids = Vec::new();
+    for (kind, payload) in feed {
+        ids.push(
+            events::append(pool, workspace, Some(session_id), kind, payload)
+                .await
+                .expect("event"),
+        );
+    }
+    ids
+}
+
+/// Moves events past the day the sweep keeps them for. The sweep reads
+/// `created_at`, so this is the age itself, not a wait for it.
+async fn age(pool: &PgPool, ids: &[Uuid]) {
+    sqlx::query("update events set created_at = now() - interval '2 days' where id = any($1)")
+        .bind(ids)
+        .execute(pool)
+        .await
+        .expect("age");
+}
+
+async fn surviving(pool: &PgPool, ids: &[Uuid]) -> i64 {
+    sqlx::query_scalar("select count(*) from events where id = any($1)")
+        .bind(ids)
+        .fetch_one(pool)
+        .await
+        .expect("count")
+}
+
+async fn empty_reply(store: &dyn outturn::api::chat::ChatStore, session_id: Uuid) -> Uuid {
+    store
+        .append_message(
+            session_id,
+            "assistant",
+            "",
+            None,
+            Default::default(),
+            Default::default(),
+            None,
+        )
+        .await
+        .expect("reply")
+        .id
+}
+
+async fn finish_reply(store: &dyn outturn::api::chat::ChatStore, reply: Uuid) {
+    store
+        .set_message_content(
+            reply,
+            "Looked.",
+            None,
+            None,
+            Default::default(),
+            serde_json::json!({}),
+        )
+        .await
+        .expect("finish");
+}
+
+/// What a finished turn streamed is forgotten, every kind of it, and so is
+/// what a discarded placeholder streamed. A reply still streaming keeps its
+/// events however old, because they are all it has; a finished one keeps
+/// them for a day; and events that are not streamed are not touched.
+#[tokio::test]
+async fn the_stream_sweep_forgets_finished_turns_and_nothing_else() {
+    let (db, workspace) = setup_or_skip!();
+    let pool = &db.pool;
+    let (session_id, store) = streamed_session(pool, workspace).await;
+
+    // Finished, and old: swept.
+    let finished = empty_reply(&*store, session_id).await;
+    let finished_events = stream_into(pool, workspace, session_id, finished).await;
+    finish_reply(&*store, finished).await;
+    age(pool, &finished_events).await;
+
+    // Discarded -- its row is gone -- and old: swept.
+    let discarded = Uuid::now_v7();
+    let discarded_events = stream_into(pool, workspace, session_id, discarded).await;
+    age(pool, &discarded_events).await;
+
+    // Finished, but within the day: kept.
+    let recent = empty_reply(&*store, session_id).await;
+    let recent_events = stream_into(pool, workspace, session_id, recent).await;
+    finish_reply(&*store, recent).await;
+
+    // Still streaming, and old: kept.
+    let streaming = empty_reply(&*store, session_id).await;
+    let streaming_events = stream_into(pool, workspace, session_id, streaming).await;
+    age(pool, &streaming_events).await;
+
+    // Not a streamed kind, and old: kept.
+    let other = events::append(
+        pool,
+        workspace,
+        Some(session_id),
+        "chat.done",
+        serde_json::json!({ "message_id": finished }),
+    )
+    .await
+    .expect("event");
+    age(pool, &[other]).await;
+
+    let gone = outturn::api::chat::forget_streamed(pool)
+        .await
+        .expect("sweep");
+    assert_eq!(
+        gone as usize,
+        finished_events.len() + discarded_events.len()
+    );
+    assert_eq!(surviving(pool, &finished_events).await, 0);
+    assert_eq!(surviving(pool, &discarded_events).await, 0);
+    assert_eq!(
+        surviving(pool, &recent_events).await,
+        recent_events.len() as i64
+    );
+    assert_eq!(
+        surviving(pool, &streaming_events).await,
+        streaming_events.len() as i64
+    );
+    assert_eq!(surviving(pool, &[other]).await, 1);
+
+    // And the transcript reads as it did: the finished reply from its row, the
+    // one still streaming rebuilt from the events the sweep left it.
+    let history = store.messages(session_id).await.expect("history");
+    let by_id = |id: Uuid| {
+        history
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .expect("message")
+    };
+    assert_eq!(by_id(finished).content, "Looked.");
+    let live = by_id(streaming);
+    assert_eq!(live.content, "Looked.");
+    assert_eq!(live.delta_next, 2);
+    assert_eq!(live.metadata["tool_calls"][0]["details"], "200");
+
+    finish!(db);
+}

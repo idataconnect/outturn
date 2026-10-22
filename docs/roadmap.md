@@ -42,53 +42,28 @@ and timer firings made once-only with session delete taking its work along.
 What follows is the remainder: each is the exact change, with where, so it
 can be picked up without rereading the review. Ordered by what it protects.
 
-### Retention: tables that only grow
-
-- `tool_invocations` has `tool_invocations_expiry_idx` (migration 0049) and
-  nothing that deletes by `expires_at`; the only delete is per key
-  (`crates/api/src/invocations.rs`). Add a sweep to `spawn_reaper` in
-  `crates/api/src/worker.rs` beside the delta sweep.
-- `trigger_firings` (0047) has no expiry column. Add one in a new migration,
-  default thirty days from firing, and sweep it.
-- The event sweep deletes only `chat.delta`, and only once a finished message
-  exists (`worker.rs`, the sweep near the reaper). `chat.reasoning`,
-  `chat.tool`, `chat.tool_result`, `chat.writing` and `chat.steer` are never
-  pruned, and the deltas of a discarded placeholder are orphaned forever.
-  Sweep every streamed kind once its turn is finished, keyed on the turn
-  rather than on a message existing.
-- `catalog_snapshots` keeps every weekly fetch in full; only `models.snapshot_id`
-  references one. Keep the referenced ones and the last few.
-- Resolved `action_items` and `session_prompts` of deleted sessions: decide a
-  horizon and sweep, or say in [storage.md](storage.md) that they are kept.
-
 ### Indexes and constraints
 
-- Unindexed `set null` foreign keys to `users` make an account deletion scan
-  `agent_messages`, the busiest table: `agent_messages.user_id`,
-  `agent_sessions.user_id`, `action_items.resolved_by`,
-  `triggers.owner_id` and `created_by`, `skills.created_by`,
-  `skill_versions.created_by`. One migration of partial indexes where not
-  null; the same class as `absorbed_by` in 0024.
-- `agent_sessions.trigger_id` is filtered on every firing under `for update`
-  on the trigger row (`crates/api/src/trigger.rs`, `over_ceiling`) with no
-  index. Partial index where not null.
-- Wake lookups (`crates/api/src/wake.rs`, three sites) filter
-  `payload->>'session_id'` as text with `kind = 'wake'`; both expression
-  indexes cast to uuid and are partial on `chat.turn`, so these scan every
-  pending job. Either cast in the query to match an index, or add one for the
-  wake kind.
-- `egress_rules.credential_id` and `provider_accounts.credential_id` are
-  `on delete restrict` with no index. Cheap to add.
-- Enumerations documented but not checked: `usage_ledger.credential_owner`
-  and `.fallback`, `events.kind`, `jobs.kind`. A CHECK each, or a note in
-  [invariants.md](invariants.md) saying why not.
 - No `(workspace_id, name)` uniqueness on `models`, `provider_accounts` or
-  `chains`, though the UI lists and picks by name. `credentials.workspace_id`
-  went nullable in 0042 with no partial unique on `name` for the platform
-  ones.
-- Future index migrations on `events` or `agent_messages` should carry
-  `-- no-transaction` and `create index concurrently`; 0024, 0026 and 0031
-  took SHARE locks under every streaming turn.
+  `chains`, though the UI lists and picks by name, and none on
+  `credentials.name` for either the platform's or a workspace's. Not a
+  migration alone: duplicates are a state the code makes today. 0041 named
+  each migrated model after the model it asks for, so one served for two
+  traffic types became two of the same name; a model's name defaults to the
+  catalog's, so one model at two accounts is two; and Platform → Set up
+  models makes a "Local" account and chain afresh on every run, including the
+  run after one that failed at the test call. Needs, in order: the create and
+  rename endpoints answering 409 on a taken name, Set up reusing what an
+  earlier run made, a migration renaming existing duplicates (a suffix,
+  oldest keeps the name), then the unique indexes.
+- Index migrations on `events`, `agent_messages` or `jobs` carry
+  `-- no-transaction` and `create index concurrently`, one statement to a
+  file (0066, 0068, 0070); 0024, 0026 and 0031 took SHARE locks under every
+  streaming turn. A concurrent build waits out every older snapshot,
+  including that of a replica blocked on sqlx's migration lock, so two API
+  replicas starting together can deadlock it; it then leaves an invalid
+  index and fails again on the next start until the index is dropped. Worth
+  a migration step run once, before the replicas, rather than in each.
 
 ### Prompt and sandbox boundaries
 

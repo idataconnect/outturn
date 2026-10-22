@@ -123,6 +123,16 @@ impl Ceiling {
 /// What the body is substituted into.
 pub const BODY_PLACEHOLDER: &str = "{{body}}";
 
+/// Forgets firings past their thirty days, and says how many went. A sender
+/// retries for hours, so a record that old refuses no duplicate anybody will
+/// send; until this nothing deleted one (migration 0065).
+pub async fn forget_old_firings(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    let gone = sqlx::query("delete from trigger_firings where expires_at < now()")
+        .execute(pool)
+        .await?;
+    Ok(gone.rows_affected())
+}
+
 /// Fires a trigger: refuses what was seen before, counts it against the
 /// ceiling, writes the prompt, and starts the turn -- the same steps in the
 /// same order for every kind, so none of them is a kind's to forget.

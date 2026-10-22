@@ -4,7 +4,7 @@
 
 mod common;
 
-use outturn::api::invocations::{Claimed, claim_in, settle_in};
+use outturn::api::invocations::{Claimed, claim_in, forget_expired, settle_in};
 use uuid::Uuid;
 
 async fn workspace(db: &common::TestDb) -> Uuid {
@@ -76,4 +76,36 @@ async fn an_expired_record_is_claimed_over() {
         .await
         .unwrap();
     assert_eq!(claim_in(&db.pool, ws, "k4").await.unwrap(), Claimed::New);
+}
+
+#[tokio::test]
+async fn the_sweep_forgets_expired_records_and_nothing_else() {
+    let db = common::TestDb::new().await;
+    let ws = workspace(&db).await;
+    for key in ["old", "fresh"] {
+        assert_eq!(claim_in(&db.pool, ws, key).await.unwrap(), Claimed::New);
+    }
+    // Past its day by its own column, not by waiting for one.
+    sqlx::query(
+        "update tool_invocations set expires_at = now() - interval '1 minute' \
+         where workspace_id = $1 and key = 'old'",
+    )
+    .bind(ws)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(forget_expired(&db.pool).await.unwrap(), 1);
+    let left: Vec<String> =
+        sqlx::query_scalar("select key from tool_invocations where workspace_id = $1")
+            .bind(ws)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(left, ["fresh"]);
+    // The one kept still answers as it did.
+    assert!(matches!(
+        claim_in(&db.pool, ws, "fresh").await.unwrap(),
+        Claimed::Attempted { .. }
+    ));
 }

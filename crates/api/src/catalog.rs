@@ -112,6 +112,30 @@ pub async fn at_startup(pool: &PgPool) {
     after_new_catalog(pool).await;
 }
 
+/// How many of the newest snapshots are kept whether or not a model names
+/// them: the one in use, and a couple behind it for somebody asking what the
+/// last fetch changed.
+pub const SNAPSHOTS_KEPT: i64 = 3;
+
+/// Forgets snapshots no model names and that are not among the newest few,
+/// and says how many went.
+///
+/// Each is the whole catalog, and one was kept per fetch that brought
+/// anything new, for ever. A model names the snapshot its facts came from, so
+/// that one stays however old; the rest describe nothing anybody configured.
+pub async fn forget_old_snapshots(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let gone = sqlx::query(
+        "delete from catalog_snapshots s \
+         where s.id not in ( \
+                 select id from catalog_snapshots order by fetched_at desc limit $1) \
+           and not exists (select 1 from models m where m.snapshot_id = s.id)",
+    )
+    .bind(SNAPSHOTS_KEPT)
+    .execute(pool)
+    .await?;
+    Ok(gone.rows_affected())
+}
+
 /// What a newly kept catalog changes: models tracking "Latest" move, or ask.
 pub async fn after_new_catalog(pool: &PgPool) {
     if let Err(e) = super::tracking::track(pool).await {

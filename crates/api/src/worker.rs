@@ -1900,34 +1900,19 @@ impl Worker {
                             crate::catalog::check_if_due(&self.pool, minter, gateway).await;
                         }
 
-                        // Deltas exist to assemble a reply that is still
-                        // streaming and to let a browser catch up on one. Once
-                        // the reply is stored they are copies of text held
-                        // elsewhere, and the events table is the one that
-                        // grows with every token ever generated. Kept a day
-                        // so a poll cursor from a long-idle tab still finds
-                        // them, then gone.
-                        //
-                        // A batch per tick, oldest first: the first sweep of a
-                        // database that has been accumulating deltas would
-                        // otherwise delete all of them in one transaction.
-                        // `events_delta_sweep_idx` is what keeps finding them
-                        // from reading every other event.
-                        let _ = sqlx::query(
-                            "delete from events \
-                             where id in ( \
-                                 select e.id from events e \
-                                 where e.kind = 'chat.delta' \
-                                   and e.created_at < now() - interval '1 day' \
-                                   and exists ( \
-                                       select 1 from agent_messages m \
-                                       where m.id = (e.payload->>'message_id')::uuid \
-                                         and m.content <> '') \
-                                 order by e.created_at \
-                                 limit 5000)",
-                        )
-                        .execute(&self.pool)
-                        .await;
+                        // What finished turns streamed: the deltas, and the
+                        // reasoning, calls and steers beside them. Written down
+                        // at `chat::forget_streamed`, with why a turn still
+                        // streaming keeps its own.
+                        let _ = crate::chat::forget_streamed(&self.pool).await;
+
+                        // Rows nothing deleted once they stopped mattering:
+                        // declared writes past their day, trigger firings past
+                        // their thirty, and catalogs no model names. Each sweep
+                        // is written beside the rule it keeps.
+                        let _ = crate::invocations::forget_expired(&self.pool).await;
+                        let _ = crate::trigger::forget_old_firings(&self.pool).await;
+                        let _ = crate::catalog::forget_old_snapshots(&self.pool).await;
                     },
                 }
             }

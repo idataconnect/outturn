@@ -490,7 +490,8 @@ prompt template, enabled, account, owner, the ceiling and its window, the
 last firing's time, status and error, who made it and when -- with `kind`
 and a `config` for what one kind has alone: a schedule's expression, zone and
 next run; a webhook's path, scheme and sealed secret; a mailbox's address and
-cursor. `trigger_firings` holds the dedupe keys. Migrated from `schedules` and `webhook_triggers`
+cursor. `trigger_firings` holds the dedupe keys, each for thirty days from
+its firing, which no sender's retries outlast. Migrated from `schedules` and `webhook_triggers`
 keeping their ids, so a webhook's address and anything linking a schedule do
 not change.
 

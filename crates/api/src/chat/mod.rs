@@ -3,7 +3,7 @@ mod postgres;
 pub mod summarize;
 pub mod trim;
 
-pub use postgres::PostgresChatStore;
+pub use postgres::{PostgresChatStore, forget_streamed};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
