@@ -340,6 +340,44 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
     serde_json::Value::Object(metadata)
 }
 
+/// Forgets what finished turns streamed, a batch at a time, and says how many
+/// events went.
+///
+/// Every kind a turn streams is the record of a reply only while the reply's
+/// row is empty: the transcript read replays them into a reply still being
+/// written, and `seal_interrupted` folds them into one that stopped. Once the row is finished -- or gone, a placeholder discarded with
+/// nothing in it -- they are copies of what it holds, or of nothing, and
+/// `events` is the table that grows with every token. Until this only deltas
+/// were swept, and only once a reply had text: the reasoning, the calls, the
+/// steers, and every delta of a discarded placeholder stayed for ever.
+///
+/// Keyed on the reply the event names rather than on a message existing, so a
+/// reply still streaming -- or stopped and never sealed -- keeps its events
+/// however old, because they are all it has. Kept a day besides, so a poll
+/// cursor from a long-idle tab still finds them. Oldest first, a batch per
+/// call: a first sweep of a database that has been accumulating would
+/// otherwise delete all of it in one transaction.
+pub async fn forget_streamed(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    // The kinds are `events_stream_sweep_idx`'s predicate, word for word.
+    let gone = sqlx::query(
+        "delete from events \
+         where id in ( \
+             select e.id from events e \
+             where e.kind in ('chat.delta', 'chat.reasoning', 'chat.writing', 'chat.tool', \
+                              'chat.tool_result', 'chat.steer') \
+               and e.created_at < now() - interval '1 day' \
+               and not exists ( \
+                   select 1 from agent_messages m \
+                   where m.id = (e.payload->>'message_id')::uuid \
+                     and m.finished_at is null) \
+             order by e.created_at \
+             limit 5000)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(gone.rows_affected())
+}
+
 fn internal(e: sqlx::Error) -> ChatError {
     ChatError::Internal(e.to_string())
 }

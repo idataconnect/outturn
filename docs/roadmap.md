@@ -42,25 +42,6 @@ and timer firings made once-only with session delete taking its work along.
 What follows is the remainder: each is the exact change, with where, so it
 can be picked up without rereading the review. Ordered by what it protects.
 
-### Retention: tables that only grow
-
-- `tool_invocations` has `tool_invocations_expiry_idx` (migration 0049) and
-  nothing that deletes by `expires_at`; the only delete is per key
-  (`crates/api/src/invocations.rs`). Add a sweep to `spawn_reaper` in
-  `crates/api/src/worker.rs` beside the delta sweep.
-- `trigger_firings` (0047) has no expiry column. Add one in a new migration,
-  default thirty days from firing, and sweep it.
-- The event sweep deletes only `chat.delta`, and only once a finished message
-  exists (`worker.rs`, the sweep near the reaper). `chat.reasoning`,
-  `chat.tool`, `chat.tool_result`, `chat.writing` and `chat.steer` are never
-  pruned, and the deltas of a discarded placeholder are orphaned forever.
-  Sweep every streamed kind once its turn is finished, keyed on the turn
-  rather than on a message existing.
-- `catalog_snapshots` keeps every weekly fetch in full; only `models.snapshot_id`
-  references one. Keep the referenced ones and the last few.
-- Resolved `action_items` and `session_prompts` of deleted sessions: decide a
-  horizon and sweep, or say in [storage.md](storage.md) that they are kept.
-
 ### Indexes and constraints
 
 - Unindexed `set null` foreign keys to `users` make an account deletion scan

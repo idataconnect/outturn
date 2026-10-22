@@ -112,6 +112,18 @@ pub async fn claim_in(
     })
 }
 
+/// Forgets the records past their day, and says how many went.
+///
+/// An expired record already changes nothing -- a claim takes it over as if
+/// it had never been -- so this is about size alone: nothing deleted by
+/// `expires_at` before, and the table kept every declared write ever sent.
+pub async fn forget_expired(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    let gone = sqlx::query("delete from tool_invocations where expires_at < now()")
+        .execute(pool)
+        .await?;
+    Ok(gone.rows_affected())
+}
+
 pub async fn settle(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,

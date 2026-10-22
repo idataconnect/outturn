@@ -108,7 +108,9 @@ catalog_snapshots (id, fetched_at, source_url, sha256, models jsonb)
 `models` is the document reduced to the fields above, keyed by provider and
 model id. Configured models record which snapshot their facts came from, so a
 refresh never changes a model under anyone, and an entry that leaves the
-catalog keeps the facts it had.
+catalog keeps the facts it had. The newest three snapshots are kept, and any a
+model names; the rest are swept ([storage.md](storage.md), "Rows in the
+database").
 
 **Where it comes from is a setting.** The source URL defaults to the site and
 can name a mirror -- an internal copy, an object in a bucket -- and fetching

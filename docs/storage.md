@@ -152,3 +152,42 @@ the next thing that will want the session scope that now exists.
 
 Writing and reading objects in streams rather than whole, so a guest can
 produce binaries of any size: [streaming-storage.md](streaming-storage.md).
+
+## Rows in the database
+
+Objects are not the only thing that accumulates. The API's reaper tick
+(`spawn_reaper` in `crates/api/src/worker.rs`) is what sweeps tables on a
+schedule; each sweep is a function beside the rule it keeps, and the tick
+only calls it.
+
+| Table | Kept | Swept by |
+|---|---|---|
+| `events`, the streamed kinds (`chat.delta`, `.reasoning`, `.writing`, `.tool`, `.tool_result`, `.steer`) | Until the reply they name is finished, or gone, and a day besides | `chat::forget_streamed` |
+| `events`, everything else | With its conversation | The session's cascade |
+| `tool_invocations` | A day, by `expires_at` | `invocations::forget_expired` |
+| `trigger_firings` | Thirty days from firing, by `expires_at` | `trigger::forget_old_firings` |
+| `catalog_snapshots` | The newest three, and any a model names | `catalog::forget_old_snapshots` |
+| `live_sessions`, refresh tokens, webhook deliveries, breaker sightings | Until they expire | Their own stores |
+
+The streamed kinds are a reply's only record while its row is empty: the
+transcript read replays them into a reply still being written, and an
+interrupted one is sealed from them. So the sweep is keyed on the reply being
+finished, never on age alone -- a reply that stopped and was never sealed
+keeps its events however old they are. The day after finishing is for a poll
+cursor from a tab left open overnight.
+
+Kept on purpose, with nothing sweeping them:
+
+- **Settled action items.** An item is settled rather than deleted so a queue
+  that emptied can still say why, and an approval's record is what an audit
+  reads. They go with their workspace.
+- **Held requests.** Every turn of a conversation is told what became of each
+  request held in it, for as long as the refusal is in its history, so one
+  swept while its conversation lives would leave the model a stale refusal
+  with nothing to explain it. They go with their item or their conversation,
+  by cascade.
+- **Session prompts.** Already go with their session, by cascade (0030);
+  there are none of deleted sessions to sweep.
+
+A horizon on settled items is a retention policy a workspace should choose,
+not one to pick for every deployment here.
