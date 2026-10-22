@@ -44,12 +44,16 @@ pub fn database_url() -> String {
     url
 }
 
-/// The base name for the template and the copies taken from it.
+/// A name for this run's template, its own.
 ///
-/// Derived from the configured database so two checkouts pointed at different
-/// test databases do not fight over one template.
-fn template_name(url: &str) -> String {
-    format!("{}_template", database_name(url))
+/// One name per test database used to be shared by every run against it, and
+/// each run drops and rebuilds its template first -- so two runs at once, from
+/// two checkouts or two agents, dropped the template out from under each other
+/// and failed whichever test was copying from it. Named like a test database
+/// (`t_`) and claimed the same way, so `sweep` removes one a killed run left
+/// behind and never one a live run holds.
+fn template_name() -> String {
+    format!("t_template_{}", uuid::Uuid::now_v7().simple())
 }
 
 /// Migrates the template once per test binary.
@@ -63,9 +67,9 @@ async fn template(url: &str) -> &'static str {
 
     let name = READY
         .get_or_init(|| async {
-            let name = template_name(url);
+            let name = template_name();
             let admin = PgPoolOptions::new()
-                .max_connections(1)
+                .max_connections(2)
                 .connect(&server_url(url))
                 .await
                 .expect("connect to build the template");
@@ -89,20 +93,18 @@ async fn template(url: &str) -> &'static str {
             // seventy times.
             sweep(&admin).await;
 
-            // Rebuilt from nothing each run. A template left over from an
-            // older migration set would hand every test a schema that does
-            // not match the code, and the failure would look like a bug in
-            // whatever ran first.
-            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                "drop database if exists \"{name}\" with (force)"
-            )))
-            .execute(&admin)
-            .await;
+            // Claimed before it exists and for the life of the process, so
+            // no other run's sweep can drop it between its creation and its
+            // last copy; the lock goes with the connection when this process
+            // does, however it ends. Fresh each run, so a template from an
+            // older migration set is never handed out.
+            static CLAIM: std::sync::OnceLock<sqlx::pool::PoolConnection<sqlx::Postgres>> =
+                std::sync::OnceLock::new();
+            let _ = CLAIM.set(claim(&admin, &name).await);
             sqlx::raw_sql(sqlx::AssertSqlSafe(format!("create database \"{name}\"")))
                 .execute(&admin)
                 .await
                 .expect("create template database");
-            admin.close().await;
 
             let pool = PgPoolOptions::new()
                 .max_connections(1)

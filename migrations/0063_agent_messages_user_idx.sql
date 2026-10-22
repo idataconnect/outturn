@@ -5,7 +5,7 @@
 -- most of them, have none -- the same class as `absorbed_by` in 0024.
 --
 -- Concurrently, and alone without a transaction, so the build does not hold
--- off every turn writing a reply (see 0066). A build that fails leaves an
+-- off every turn writing a reply (see 0061). A build that fails leaves an
 -- invalid index under this name and the migration then fails on it; drop it
 -- concurrently and start the API again.
 create index concurrently agent_messages_user_idx

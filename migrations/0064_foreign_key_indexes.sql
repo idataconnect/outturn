@@ -3,7 +3,7 @@
 -- A delete of the row a foreign key points at looks for the rows pointing at
 -- it, and without an index that is a scan of the referencing table, whatever
 -- the `on delete` says. Partial where most rows are null, as in 0024. In a
--- transaction, unlike 0066 and 0068: none of these tables takes a write per
+-- transaction, unlike 0061 and 0063: none of these tables takes a write per
 -- token, and the builds are short.
 
 -- Deleting an account sets these to null.

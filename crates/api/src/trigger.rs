@@ -125,7 +125,7 @@ pub const BODY_PLACEHOLDER: &str = "{{body}}";
 
 /// Forgets firings past their thirty days, and says how many went. A sender
 /// retries for hours, so a record that old refuses no duplicate anybody will
-/// send; until this nothing deleted one (migration 0065).
+/// send; until this nothing deleted one (migration 0060).
 pub async fn forget_old_firings(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
     let gone = sqlx::query("delete from trigger_firings where expires_at < now()")
         .execute(pool)

@@ -18,8 +18,9 @@ The working queue: what is being done next, short enough to keep in your head.
 Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
-1. **What the review of 2026-10-20 left** (*From the review*, below): ten
-   fixes are on branches already; the retention sweeps and indexes go next,
+1. **What the review of 2026-10-20 left** (*From the review*, below): the
+   ten fixes, the retention sweeps and the indexes are in; name uniqueness
+   (in the order given there) and the prompt and sandbox boundaries go next,
    then the rest in the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
@@ -58,7 +59,7 @@ can be picked up without rereading the review. Ordered by what it protects.
   oldest keeps the name), then the unique indexes.
 - Index migrations on `events`, `agent_messages` or `jobs` carry
   `-- no-transaction` and `create index concurrently`, one statement to a
-  file (0066, 0068, 0070); 0024, 0026 and 0031 took SHARE locks under every
+  file (0061, 0063, 0065); 0024, 0026 and 0031 took SHARE locks under every
   streaming turn. A concurrent build waits out every older snapshot,
   including that of a replica blocked on sqlx's migration lock, so two API
   replicas starting together can deadlock it; it then leaves an invalid
