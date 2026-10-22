@@ -751,16 +751,19 @@ async fn pending_timers(
     pool: &sqlx::PgPool,
     session_id: Uuid,
 ) -> Result<Vec<(Uuid, Due)>, sqlx::Error> {
+    // The kind written in and the session cast to uuid, here and in the two
+    // lookups below, because that is `jobs_wake_session_idx`'s shape: a
+    // partial index is used only when the planner can prove the query implies
+    // its predicate, and compared as text these scanned every pending job.
     let sql = format!(
         "select id, payload from jobs \
-         where kind = $1 and state = {pending} \
-           and payload->>'session_id' = $2 and payload->>'kind' = 'timer' \
+         where kind = '{WAKE}' and state = {pending} \
+           and (payload->>'session_id')::uuid = $1 and payload->>'kind' = 'timer' \
          order by run_after, id",
         pending = jobs::JobState::Pending.quoted()
     );
     let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-        .bind(WAKE)
-        .bind(session_id.to_string())
+        .bind(session_id)
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -822,15 +825,14 @@ async fn cancel(
     // note is on its way.
     let sql = format!(
         "delete from jobs \
-         where id = $1 and kind = $2 and state = {pending} \
-           and payload->>'session_id' = $3 and payload->>'kind' = 'timer' \
+         where id = $1 and kind = '{WAKE}' and state = {pending} \
+           and (payload->>'session_id')::uuid = $2 and payload->>'kind' = 'timer' \
          returning payload",
         pending = jobs::JobState::Pending.quoted()
     );
     let removed: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(id)
-        .bind(WAKE)
-        .bind(turn.session_id.to_string())
+        .bind(turn.session_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -881,15 +883,14 @@ pub async fn wake_now(
     let internal = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
     let sql = format!(
         "select j.id, j.payload from jobs j \
-         where j.kind = $1 and j.state = {pending} and j.workspace_id = $2 \
-           and j.payload->>'session_id' = $3 and j.payload->>'kind' = 'sleep' \
+         where j.kind = '{WAKE}' and j.state = {pending} and j.workspace_id = $1 \
+           and (j.payload->>'session_id')::uuid = $2 and j.payload->>'kind' = 'sleep' \
          order by j.id desc limit 1",
         pending = jobs::JobState::Pending.quoted()
     );
     let pending = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(WAKE)
         .bind(claims.workspace_id)
-        .bind(session_id.to_string())
+        .bind(session_id)
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| internal(e.to_string()))?;
