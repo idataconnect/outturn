@@ -28,17 +28,6 @@ generatorOptions:
   disableNameSuffixHash: true
 
 patches:
-  # Room for two integration runs at once -- two checkouts, or two agents --
-  # beside the API. Each test holds a few connections for its whole life, and
-  # at the default hundred a second run waited on connections the first held,
-  # so both looked hung.
-  - target:
-      kind: StatefulSet
-      name: postgres
-    patch: |
-      - op: add
-        path: /spec/template/spec/containers/0/args
-        value: ["-c", "max_connections=300"]
   - target:
       kind: Deployment
       name: outturn-api

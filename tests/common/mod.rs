@@ -68,11 +68,7 @@ async fn template(url: &str) -> &'static str {
     let name = READY
         .get_or_init(|| async {
             let name = template_name();
-            let admin = PgPoolOptions::new()
-                .max_connections(2)
-                .connect(&server_url(url))
-                .await
-                .expect("connect to build the template");
+            let admin = Admin::get(url);
 
             // The database the URL names, if nobody made it. Nothing here
             // opens it -- the template and its copies are what tests use --
@@ -83,26 +79,25 @@ async fn template(url: &str) -> &'static str {
             // already asserted to be a test database, and the error from it
             // already existing is the expected case and is discarded.
             let named = database_name(url);
-            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("create database \"{named}\"")))
-                .execute(&admin)
-                .await;
+            let _ = admin.run(format!("create database \"{named}\"")).await;
 
             // Once per test binary, before anything is created. Here rather
             // than in `TestDb::new` because it is about other runs' leavings,
             // not this test's, and doing it per test would be the same scan
             // seventy times.
-            sweep(&admin).await;
+            sweep(admin).await;
 
-            // Claimed before it exists and for the life of the process, so
-            // no other run's sweep can drop it between its creation and its
-            // last copy; the lock goes with the connection when this process
-            // does, however it ends. Fresh each run, so a template from an
-            // older migration set is never handed out.
-            static CLAIM: std::sync::OnceLock<sqlx::pool::PoolConnection<sqlx::Postgres>> =
-                std::sync::OnceLock::new();
-            let _ = CLAIM.set(claim(&admin, &name).await);
-            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("create database \"{name}\"")))
-                .execute(&admin)
+            // Claimed before it exists, on the admin connection, which lives
+            // as long as the process -- so no other run's sweep can drop it
+            // while copies are still being taken from it, and the lock goes
+            // when this process does, however it ends. Fresh each run, so a
+            // template from an older migration set is never handed out.
+            assert!(
+                admin.claim(&name).await,
+                "could not claim the template {name}"
+            );
+            admin
+                .run(format!("create database \"{name}\""))
                 .await
                 .expect("create template database");
 
@@ -160,12 +155,11 @@ fn server_url(url: &str) -> String {
 pub struct TestDb {
     pub pool: PgPool,
     name: String,
-    admin: PgPool,
-    /// Held for as long as this database is in use. Its only job is to die
-    /// with the process: Postgres releases a session advisory lock when the
-    /// connection goes, including when the run was killed rather than ended,
-    /// so an unlocked test database is one nobody is using. See `sweep`.
-    _claim: sqlx::pool::PoolConnection<sqlx::Postgres>,
+    /// Holds this database's claim for as long as it is in use: the lock dies
+    /// with the process, including when the run was killed rather than
+    /// ended, so an unlocked test database is one nobody is using. See
+    /// `sweep`.
+    admin: &'static Admin,
 }
 
 /// Connections a test's pool may open.
@@ -188,22 +182,134 @@ fn claim_key(name: &str) -> i64 {
     hasher.finish() as i64
 }
 
-/// Takes the lock that marks this database as in use.
+/// What the one admin connection is asked to do.
+enum AdminOp {
+    /// Takes the lock that marks a database as in use; answers whether it was
+    /// free.
+    Claim(i64),
+    Release(i64),
+    /// A statement that cannot run inside the database it is about: a
+    /// create, or a drop.
+    Run(String),
+    /// The names of every test database on the server.
+    List,
+}
+
+enum AdminAnswer {
+    Taken(bool),
+    Done(Result<(), String>),
+    Names(Vec<String>),
+}
+
+/// One connection to the server's `postgres` database, shared by every test
+/// in this process, for claims, copies and drops.
 ///
-/// The connection is returned and held by the caller for the test's lifetime.
-/// A session advisory lock lives on its connection, so letting this go back to
-/// the pool to be reused would release the claim while the test still ran.
-async fn claim(admin: &PgPool, name: &str) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
-    let mut conn = admin.acquire().await.expect("connection to claim with");
-    let taken: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)")
-        .bind(claim_key(name))
-        .fetch_one(&mut *conn)
-        .await
-        .expect("claim the database");
-    // The name comes from a fresh UUID, so a clash means the key derivation is
-    // broken rather than that somebody got there first.
-    assert!(taken, "could not claim test database {name}");
-    conn
+/// One rather than one per test, because each test used to hold a connection
+/// for its whole life just to keep its claim, and another for its copy and
+/// drop: a third of a run's connections, doing nothing. A session holds any
+/// number of advisory locks, and creates and drops take milliseconds and
+/// serialize in Postgres anyway, so one connection taking turns loses
+/// nothing. Its locks still die with the process, which is what `sweep`
+/// relies on.
+///
+/// On its own thread with its own runtime, because every test runs on a
+/// runtime that ends with it, and a connection opened on one stops answering
+/// once that runtime has gone.
+struct Admin {
+    ops: tokio::sync::mpsc::UnboundedSender<(AdminOp, tokio::sync::oneshot::Sender<AdminAnswer>)>,
+}
+
+impl Admin {
+    fn get(url: &str) -> &'static Admin {
+        static ADMIN: std::sync::OnceLock<Admin> = std::sync::OnceLock::new();
+        ADMIN.get_or_init(|| {
+            let server = server_url(url);
+            let (ops, mut queue) = tokio::sync::mpsc::unbounded_channel::<(
+                AdminOp,
+                tokio::sync::oneshot::Sender<AdminAnswer>,
+            )>();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("admin runtime");
+                runtime.block_on(async move {
+                    use sqlx::Connection;
+                    let mut conn = sqlx::PgConnection::connect(&server)
+                        .await
+                        .expect("connect the admin connection");
+                    while let Some((op, answer)) = queue.recv().await {
+                        let said = match op {
+                            AdminOp::Claim(key) => AdminAnswer::Taken(
+                                sqlx::query_scalar("select pg_try_advisory_lock($1)")
+                                    .bind(key)
+                                    .fetch_one(&mut conn)
+                                    .await
+                                    .unwrap_or(false),
+                            ),
+                            AdminOp::Release(key) => AdminAnswer::Done(
+                                sqlx::query("select pg_advisory_unlock($1)")
+                                    .bind(key)
+                                    .execute(&mut conn)
+                                    .await
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string()),
+                            ),
+                            AdminOp::Run(sql) => AdminAnswer::Done(
+                                sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                                    .execute(&mut conn)
+                                    .await
+                                    .map(|_| ())
+                                    .map_err(|e| e.to_string()),
+                            ),
+                            AdminOp::List => AdminAnswer::Names(
+                                sqlx::query_scalar(
+                                    "select datname from pg_database where datname like 't\\_%'",
+                                )
+                                .fetch_all(&mut conn)
+                                .await
+                                .unwrap_or_default(),
+                            ),
+                        };
+                        let _ = answer.send(said);
+                    }
+                });
+            });
+            Admin { ops }
+        })
+    }
+
+    async fn ask(&self, op: AdminOp) -> AdminAnswer {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.ops.send((op, tx)).expect("admin connection gone");
+        rx.await.expect("admin connection gone")
+    }
+
+    /// Takes the lock that marks `name` as in use. False if somebody holds it.
+    async fn claim(&self, name: &str) -> bool {
+        match self.ask(AdminOp::Claim(claim_key(name))).await {
+            AdminAnswer::Taken(taken) => taken,
+            _ => false,
+        }
+    }
+
+    async fn release(&self, name: &str) {
+        let _ = self.ask(AdminOp::Release(claim_key(name))).await;
+    }
+
+    async fn run(&self, sql: String) -> Result<(), String> {
+        match self.ask(AdminOp::Run(sql)).await {
+            AdminAnswer::Done(done) => done,
+            _ => Err("unexpected answer".into()),
+        }
+    }
+
+    async fn test_databases(&self) -> Vec<String> {
+        match self.ask(AdminOp::List).await {
+            AdminAnswer::Names(names) => names,
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Drops test databases left behind by runs that did not finish.
@@ -217,49 +323,21 @@ async fn claim(admin: &PgPool, name: &str) -> sqlx::pool::PoolConnection<sqlx::P
 /// is safe to run while other suites are running in parallel. Taking the
 /// lock proves the owner is gone, because a live owner still holds it;
 /// failing to take it means somebody is using that database right now.
-async fn sweep(admin: &PgPool) {
-    let names: Vec<String> =
-        match sqlx::query_scalar("select datname from pg_database where datname like 't\\_%'")
-            .fetch_all(admin)
-            .await
-        {
-            Ok(names) => names,
-            // A sweep that cannot list is not a reason to fail the run.
-            Err(e) => {
-                eprintln!("could not list test databases to sweep: {e}");
-                return;
-            }
-        };
-
+async fn sweep(admin: &Admin) {
     let mut dropped = 0;
-    for name in names {
-        let taken: bool = match sqlx::query_scalar("select pg_try_advisory_lock($1)")
-            .bind(claim_key(&name))
-            .fetch_one(admin)
-            .await
-        {
-            Ok(taken) => taken,
-            Err(_) => continue,
-        };
-        if !taken {
+    for name in admin.test_databases().await {
+        if !admin.claim(&name).await {
             // In use by a run happening right now.
             continue;
         }
-
-        let dropped_ok = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "drop database if exists \"{name}\" with (force)"
-        )))
-        .execute(admin)
-        .await
-        .is_ok();
-        if dropped_ok {
+        if admin
+            .run(format!("drop database if exists \"{name}\" with (force)"))
+            .await
+            .is_ok()
+        {
             dropped += 1;
         }
-
-        let _ = sqlx::query("select pg_advisory_unlock($1)")
-            .bind(claim_key(&name))
-            .execute(admin)
-            .await;
+        admin.release(&name).await;
     }
 
     if dropped > 0 {
@@ -281,81 +359,57 @@ impl TestDb {
             "generated database name must be a plain identifier: {name}"
         );
 
-        let admin = PgPoolOptions::new()
-            // Two: one held for the whole test as the claim, one free for the
-            // copy now and the drop at the end.
-            .max_connections(2)
-            .connect(&server_url(&url))
-            .await
-            .expect("connect");
+        let admin = Admin::get(&url);
 
         // Claimed before the database exists, not after. A lock is on a name,
         // and the name need not name anything yet -- which closes the window
         // where a parallel run's sweep would find a finished copy that nobody
-        // had locked and drop it out from under this test.
-        let claim = claim(&admin, &name).await;
+        // had locked and drop it out from under this test. The name comes from
+        // a fresh UUID, so a clash means the key derivation is broken rather
+        // than that somebody got there first.
+        assert!(
+            admin.claim(&name).await,
+            "could not claim test database {name}"
+        );
 
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "create database \"{name}\" template \"{template}\""
-        )))
-        .execute(&admin)
-        .await
-        .expect("copy the template");
+        admin
+            .run(format!(
+                "create database \"{name}\" template \"{template}\""
+            ))
+            .await
+            .expect("copy the template");
 
         let pool = PgPoolOptions::new()
             // Five, of which a `PgListener` may hold one for as long as it
             // runs and a long poll another for the whole of its timeout.
+            // Opened as a test needs them, and closed again after a few idle
+            // seconds: each test has a database of its own, so a connection
+            // one test leaves idle is one no other test can use, and a run's
+            // tests together would otherwise hold the server's every slot.
             .max_connections(POOL)
-            // These two together, for tests that pause tokio's clock.
-            //
-            // `tokio::time::pause()` advances the clock whenever the runtime
-            // has nothing runnable, and waiting on a real socket is exactly
-            // that -- so a timeout measured in virtual time can elapse during
-            // work that takes milliseconds of real time. A connection opened
-            // after the pause loses that race, and the acquire then fails
-            // reporting a pool that is in fact sitting idle.
-            //
-            // So: open every connection up front, and set a ceiling the
-            // virtual clock cannot race past. Measured over twenty runs of
-            // `long_poll_returns_empty_on_timeout` in isolation, each alone
-            // still fails -- without the timeout every run, without the
-            // minimum about half -- and together none do.
-            .min_connections(POOL)
-            .acquire_timeout(std::time::Duration::from_secs(86_400))
+            .idle_timeout(std::time::Duration::from_secs(5))
             .connect(&with_database(&url, &name))
             .await
             .expect("connect");
 
-        Self {
-            pool,
-            name,
-            admin,
-            _claim: claim,
-        }
+        Self { pool, name, admin }
     }
 
     /// Drops the database. Called explicitly so a failing test leaves its data
     /// behind for inspection rather than tidying it away.
     pub async fn cleanup(self) {
         self.pool.close().await;
-        // Released explicitly. Returning the connection to the pool would not
-        // do it -- a session lock outlives the borrow and would ride the
-        // recycled connection into the next test.
-        let mut claim = self._claim;
-        let _ = sqlx::query("select pg_advisory_unlock($1)")
-            .bind(claim_key(&self.name))
-            .execute(&mut *claim)
-            .await;
-        drop(claim);
         // `with (force)` because a listener spawned by the code under test may
         // still hold a connection, and a drop that failed on that would leave
         // a database behind every run.
-        let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "drop database if exists \"{}\" with (force)",
-            self.name
-        )))
-        .execute(&self.admin)
-        .await;
-        self.admin.close().await;
+        let _ = self
+            .admin
+            .run(format!(
+                "drop database if exists \"{}\" with (force)",
+                self.name
+            ))
+            .await;
+        // After the drop, so no sweep can find it unclaimed while it exists.
+        self.admin.release(&self.name).await;
     }
 }
