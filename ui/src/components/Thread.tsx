@@ -4,15 +4,18 @@ import {
   MessagePrimitive,
   SelectionToolbarPrimitive,
   ThreadPrimitive,
+  useAui,
+  useAuiEvent,
   useAuiState,
 } from '@assistant-ui/react'
 import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import { ReplyModelChange } from './ModelChange'
 import TriggerIcon from './TriggerIcon'
-import type { StartedBy } from '../lib/chat'
+import type { InvokedSkill, StartedBy } from '../lib/chat'
 import { Link } from 'react-router'
 import {
+  BookText,
   Check,
   CircleSlash,
   Copy,
@@ -286,6 +289,12 @@ function UserMessage({
   const trigger = useAuiState(
     (s) => s.message.metadata.custom?.trigger as Pick<StartedBy, 'kind' | 'name'> | null | undefined,
   )
+  const skill = useAuiState(
+    (s) => s.message.metadata.custom?.skill as InvokedSkill | null | undefined,
+  )
+  const typed = useAuiState((s) =>
+    s.message.content.some((p) => p.type === 'text' && p.text.trim() !== ''),
+  )
   const held = status ? heldLabel(status) : null
   if (wake) return <WakeMark wake={wake} />
   if (resend) return <ResendMark resend={resend} />
@@ -311,7 +320,14 @@ function UserMessage({
           tabIndex={-1}
           className="group user max-w-[75%] min-w-0 [overflow-wrap:anywhere] px-4 py-2 rounded-lg text-sm bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white"
         >
-          <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />
+          {skill && (
+            <p className={typed ? 'mb-1' : undefined}>
+              <SkillChip skill={skill} tone="sent" />
+            </p>
+          )}
+          {/* A pick with nothing typed is the chip alone, not a chip over an
+              empty paragraph. */}
+          {(typed || !skill) && <MessagePrimitive.Parts components={{ Text: UserMarkdownText }} />}
         </div>
       )}
       <MessageAge phrase={phrase} shown={shown} align="right" />
@@ -336,6 +352,50 @@ function UserMessage({
         </span>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+/**
+ * A skill picked from the `/` menu: in the composer while the message is
+ * being written, and on the message once it is sent. The same icon the
+ * navigation gives skills, so it reads as one of them rather than as text.
+ *
+ * Named for a screen reader as what it is, since the icon says nothing to
+ * somebody listening.
+ */
+function SkillChip({
+  skill,
+  tone,
+  onRemove,
+}: {
+  skill: InvokedSkill
+  /** On a sent message, which sits on the brand color; or in the composer. */
+  tone: 'sent' | 'draft'
+  onRemove?: () => void
+}) {
+  const colors =
+    tone === 'sent'
+      ? 'bg-white/15 text-white'
+      : 'bg-brand-50 text-brand-800 border border-brand-200 dark:bg-brand-950/40 dark:text-brand-200 dark:border-brand-900'
+  return (
+    <span
+      className={`inline-flex items-center gap-1 max-w-full rounded-full px-2 py-0.5 text-xs font-medium ${colors}`}
+    >
+      <BookText size={12} className="shrink-0" aria-hidden />
+      <span className="sr-only">Skill: </span>
+      <span className="truncate">{skill.name}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove the skill ${skill.name}`}
+          title="Remove the skill"
+          className="-mr-1 rounded-full p-0.5 hover:bg-brand-100 dark:hover:bg-brand-900"
+        >
+          <X size={10} aria-hidden />
+        </button>
+      )}
+    </span>
   )
 }
 
@@ -663,7 +723,32 @@ export default function Thread({
   // record that one is waiting is `attached`. Counting it is what keeps the
   // send button offered to somebody who pasted a screenshot and typed
   // nothing.
-  const composerEmpty = useAuiState((s) => s.composer.isEmpty) && attached.length === 0
+  const aui = useAui()
+  // A skill picked from the `/` menu, held in the composer's run config until
+  // send: that is where assistant-ui carries what a message is sent with
+  // besides its words, so every way of sending takes it along and the runtime
+  // reads it from the message it is handed.
+  const invoked = useAuiState(
+    (s) => (s.composer.runConfig?.custom as { skill?: InvokedSkill } | undefined)?.skill ?? null,
+  )
+  const textEmpty = useAuiState((s) => s.composer.isEmpty)
+  const invoke = (command: SkillCommand) =>
+    aui.composer().setRunConfig({ custom: { skill: { slug: command.id, name: command.label } } })
+  const dropSkill = () => aui.composer().setRunConfig({})
+  // Sent with the message it was picked for, and not with the next one.
+  useAuiEvent('composer.send', dropSkill)
+  /**
+   * A pick with nothing typed is a message too, but the composer will not
+   * send one with no text -- so that case is appended here, the way the
+   * composer would have, and the form's own submit is skipped.
+   */
+  const sendSkillAlone = (e: React.FormEvent) => {
+    if (!invoked || !textEmpty) return
+    e.preventDefault()
+    void aui.thread().append({ role: 'user', content: [], runConfig: { custom: { skill: invoked } } })
+    dropSkill()
+  }
+  const composerEmpty = textEmpty && attached.length === 0 && !invoked
   // Stop is what an empty composer offers mid-run, and the only state in
   // which the send button is not the more useful of the two. `canCancel`
   // rather than the thread's `isRunning`, so the stop is never shown by a
@@ -947,6 +1032,7 @@ export default function Thread({
             agent has no skills. */}
         <SkillMenu
           commands={skills}
+          onInvoke={invoke}
           actions={
             sessionId
               ? [
@@ -960,11 +1046,21 @@ export default function Thread({
               : []
           }
         >
+        {/* The skill this message invokes, beside what is typed rather than
+            in it. */}
+        {invoked && (
+          <div
+            className={`flex px-4 pt-3 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}`}
+          >
+            <SkillChip skill={invoked} tone="draft" onRemove={dropSkill} />
+          </div>
+        )}
         <ComposerPrimitive.Root
+          onSubmit={sendSkillAlone}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
           onDrop={onDrop}
-          className={`flex gap-2 p-4 ${attached.length > 0 ? '' : 'border-t border-surface-200 dark:border-surface-800'}${
+          className={`flex gap-2 p-4 ${attached.length > 0 || invoked ? '' : 'border-t border-surface-200 dark:border-surface-800'}${
             // An outline round the whole box rather than a full-pane overlay:
             // the drop lands here, and saying so where it lands is less startling
             // than covering the conversation to say it.
@@ -980,6 +1076,11 @@ export default function Thread({
             // file and named by path, not carried along with the message.
             addAttachmentOnPaste={false}
             onPaste={onPaste}
+            // Backspace in an empty box takes the skill back, as it would a
+            // character: the chip sits just before what is typed.
+            onKeyDown={(e) => {
+              if (e.key === 'Backspace' && invoked && textEmpty) dropSkill()
+            }}
             // Nothing for a reader who may not send: the box is disabled, which
             // says so on its own, and a placeholder explaining why is an
             // explanation nobody asked for in the place they would have typed.
@@ -1028,7 +1129,18 @@ export default function Thread({
               then steers the turn at its next round boundary rather than
               waiting for a runtime. Send is what that person is reaching for,
               and clearing the box brings the stop back. */}
-          {showSend ? (
+          {showSend && invoked && textEmpty ? (
+            // The composer's own button stays disabled with no text, so a
+            // skill picked alone is sent by the form -- see `sendSkillAlone`.
+            <button
+              type="submit"
+              aria-label="Send"
+              disabled={disabled}
+              className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
+            >
+              <Send size={16} />
+            </button>
+          ) : showSend ? (
             <ComposerPrimitive.Send
               // Named, because the icon is the only thing in it and this square
               // changes which button it is: somebody listening rather than

@@ -168,6 +168,10 @@ export type Message = {
     /** Present when this message is the note a resent request's turn begins
      *  with. Written by the platform, so drawn as a boundary like a wake. */
     resend?: ResendRecord
+    /** Present on a message that invoked a skill from the `/` menu: which
+     *  one, and the name it had then. Drawn as a chip beside what was typed,
+     *  which may be nothing. */
+    skill?: InvokedSkill
   }
   /** How many deltas `content` already accounts for. */
   delta_next: number
@@ -428,10 +432,18 @@ const timezone = (): string | undefined => {
  */
 export type Delivery = 'steer' | 'follow_up'
 
-export const sendMessage = (sessionId: string, content: string, delivery?: Delivery) =>
+/** A skill picked from the `/` menu, as a message carries it. */
+export type InvokedSkill = { slug: string; name: string }
+
+export const sendMessage = (
+  sessionId: string,
+  content: string,
+  delivery?: Delivery,
+  skill?: string,
+) =>
   api<Message>(`/v1/agent-sessions/${sessionId}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ content, timezone: timezone(), delivery }),
+    body: JSON.stringify({ content, timezone: timezone(), delivery, skill }),
   })
 
 /** What asking a turn to stop achieved. */

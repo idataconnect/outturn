@@ -11,11 +11,15 @@ import type { SkillCommand } from '../lib/useSkillCommands'
 /**
  * The `/` menu over the composer, listing the skills this agent has.
  *
- * Picking one writes its slug into the message. Not a protocol: the agent
- * decides what to use, as it always has, and this only saves somebody
- * remembering what a skill was called and typing it exactly. A menu that
- * bound the turn to one skill would be a different feature with a different
- * risk -- it would have to be honored somewhere, and nothing honors it yet.
+ * Picking one invokes it: the composer shows the skill as a chip beside what
+ * is typed, and the message carries the skill's slug alongside its content
+ * rather than inside it. The API checks the agent has it, keeps the pick on
+ * the stored message, and tells the turn answering it what was picked -- see
+ * `skill::invoked` in the API. So nothing is written into the message: the
+ * two earlier attempts wrote markdown-directive syntax, which the model read
+ * raw and could not make sense of, and then the words `run skill <Name>`,
+ * which reached the model as the person's own sentence and showed in the
+ * transcript as something they had typed.
  *
  * Built on the trigger primitives rather than the styled component their
  * example names: `ComposerTriggerPopover` lives in @assistant-ui/react-ui,
@@ -34,31 +38,13 @@ import type { SkillCommand } from '../lib/useSkillCommands'
  * nowhere else.
  */
 /**
- * What picking a skill puts in the message.
+ * What picking anything puts in the message: nothing. The slash and what was
+ * typed after it go; a skill becomes the chip, an action runs.
  *
- * The library's default writes `:command[Randomness]{name=randomness}` --
- * markdown-directive syntax, meant for a renderer to turn into a visual pill.
- * Nothing renders it here, so the model received it raw and had to guess: one
- * agent answered that this was not a command syntax it responded to, and then
- * invented a fact rather than stopping. That is the failure this avoids.
- *
- * Plain words instead, legible to the model, to a person reading the
- * transcript back, and to anything else that ever reads a message.
- *
- * `parse` hands the text back whole rather than recognizing what `serialize`
- * wrote. The round trip exists so a renderer can find directives to draw; a
- * sentence has none to find, and claiming otherwise would draw a pill around
- * three ordinary words.
+ * `parse` hands the text back whole, since nothing is written for it to find.
  */
-const plainWords: Unstable_DirectiveFormatter = {
-  // The name, not the id. The slug is a database and URL identifier and
-  // reaches the model nowhere: src/api/skill/mod.rs composes the turn's prompt
-  // with `## {name}` headings and `ResolvedSkill` has no slug field to write
-  // even if it wanted to. So a message saying `run skill customer-onboarding`
-  // asks the model to match a slug against a heading called "Customer
-  // Onboarding" -- near enough to work by luck, and wrong the moment the two
-  // drift, which a rename does permanently because the slug does not follow.
-  serialize: (item) => `run skill ${item.label ?? item.id}`,
+const nothing: Unstable_DirectiveFormatter = {
+  serialize: () => '',
   parse: (text) => [{ kind: 'text', text }],
 }
 
@@ -74,22 +60,16 @@ export type MenuAction = {
 export default function SkillMenu({
   commands,
   actions = [],
+  onInvoke,
   children,
 }: {
   commands: SkillCommand[];
   actions?: MenuAction[];
+  /** Told which skill was picked, for the composer to show and send. */
+  onInvoke?: (command: SkillCommand) => void;
   children: ReactNode;
 }) {
-  const actionIds = new Set(actions.map((a) => a.id));
-  // An action writes nothing: the slash and what was typed after it go, and
-  // the action runs instead. Skills still write their name -- see `plainWords`.
-  const formatter: Unstable_DirectiveFormatter = {
-    serialize: (item) => (actionIds.has(item.id) ? '' : plainWords.serialize(item)),
-    parse: plainWords.parse,
-  };
   const slash = unstable_useSlashCommandAdapter({
-    // Selecting a skill writes its name and nothing else, so its `execute`
-    // does nothing. An action's runs.
     commands: [
       ...actions.map((action) => ({
         id: action.id,
@@ -101,7 +81,7 @@ export default function SkillMenu({
         id: command.id,
         label: command.label,
         description: command.description,
-        execute: () => {},
+        execute: () => onInvoke?.(command),
       })),
     ],
   });
@@ -117,12 +97,8 @@ export default function SkillMenu({
         adapter={slash.adapter}
         className='z-40 w-80 max-h-64 overflow-auto rounded-md border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg p-1'
       >
-        {/* Left behind rather than stripped: what somebody picked is part of
-            what they sent, and a menu that erased its own trace would leave a
-            message nobody could read back. Written as words, not as a
-            directive -- see `plainWords`. */}
         <ComposerPrimitive.Unstable_TriggerPopover.Action
-          formatter={formatter}
+          formatter={nothing}
           onExecute={slash.action.onExecute}
         />
         <ComposerPrimitive.Unstable_TriggerPopoverItems>
