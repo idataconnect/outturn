@@ -508,6 +508,34 @@ pub trait ChatStore: Send + Sync {
         // Who sent it, for a message with an author. None for anything the
         // system produced.
         user_id: Option<Uuid>,
+    ) -> Result<Message, ChatError> {
+        self.append_message_with(
+            session_id,
+            role,
+            content,
+            model,
+            usage,
+            delivery,
+            user_id,
+            serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// As `append_message`, with metadata written in the same statement -- a
+    /// skill the person invoked, which has to be there before the turn
+    /// answering the message can be queued.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_message_with(
+        &self,
+        session_id: Uuid,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+        usage: Usage,
+        delivery: Delivery,
+        user_id: Option<Uuid>,
+        metadata: serde_json::Value,
     ) -> Result<Message, ChatError>;
 }
 

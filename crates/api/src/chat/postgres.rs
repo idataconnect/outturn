@@ -1026,7 +1026,7 @@ impl ChatStore for PostgresChatStore {
         Ok(read_message(&row))
     }
 
-    async fn append_message(
+    async fn append_message_with(
         &self,
         session_id: Uuid,
         role: &str,
@@ -1035,6 +1035,7 @@ impl ChatStore for PostgresChatStore {
         usage: Usage,
         delivery: Delivery,
         user_id: Option<Uuid>,
+        metadata: serde_json::Value,
     ) -> Result<Message, ChatError> {
         // An empty assistant message is legitimate while a job is filling
         // it, and afterwards if the job finished -- a reply can legitimately
@@ -1093,8 +1094,8 @@ impl ChatStore for PostgresChatStore {
         let row = sqlx::query(
             "insert into agent_messages \
                  (id, session_id, role, content, model, prompt_tokens, completion_tokens, \
-                  delivery, user_id) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                  delivery, user_id, metadata) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              returning id, session_id, role, content, metadata, model, \
                        prompt_tokens, completion_tokens, replies_to, absorbed_by",
         )
@@ -1107,6 +1108,7 @@ impl ChatStore for PostgresChatStore {
         .bind(usage.completion_tokens)
         .bind(delivery.as_str())
         .bind(user_id)
+        .bind(metadata)
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;

@@ -189,6 +189,7 @@ async fn main() {
         // state, and a second is cheaper than restructuring what holds it.
         minter: Some(Arc::new(TokenMinter::from_env().expect("token minter"))),
         gateway_url: std::env::var("OUTTURN_GATEWAY_URL").ok(),
+        storage: storage_for_extraction.clone(),
     });
     // A turn is claimed here and reported by whichever runtime ran it, and
     // nothing joins those but a lease. When a runtime dies mid-turn the job is

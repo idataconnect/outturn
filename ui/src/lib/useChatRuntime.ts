@@ -18,6 +18,7 @@ import {
   sendMessage,
   type Asleep,
   type Delivery,
+  type InvokedSkill,
   type Message,
   type MessagePart,
   type ToolCallRecord,
@@ -402,6 +403,9 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // a person's, so it is drawn as the trigger's rather than in a bubble on
       // the reader's side as though they had typed it.
       trigger: message.role === 'user' ? triggerOf(message.metadata) : null,
+      // A skill the person picked from the `/` menu, drawn as a chip beside
+      // what they typed rather than as words they did not write.
+      skill: message.role === 'user' ? (message.metadata.skill ?? null) : null,
       // When it stopped being written. The id is creation time, which for a
       // reply that waited on an approval is not remotely the same thing.
       finishedAt: message.finished_at ?? null,
@@ -1339,7 +1343,12 @@ export function useChatRuntime(
       /** Whether the reader is still looking at what this send began in. */
       const stillHere = () =>
         showing.current === sessionId && starting.current?.agent === start?.agent
-      const part = message.content[0]
+      // A skill picked from the `/` menu, which the composer carries in its
+      // run config until send. Sent beside the content rather than in it, and
+      // the one case where there may be no content at all: the pick is the
+      // request.
+      const skill = (message.runConfig?.custom as { skill?: InvokedSkill } | undefined)?.skill
+      const part = message.content[0] ?? (skill ? { type: 'text' as const, text: '' } : undefined)
       if (part?.type !== 'text') {
         throw new Error('only text messages are supported')
       }
@@ -1373,7 +1382,9 @@ export function useChatRuntime(
         if (!sessionId) made = id
         // The POST returns the stored user message; the reply arrives later
         // over the event feed.
-        const stored = await sendMessage(id, text, delivery)
+        const stored = skill
+          ? await sendMessage(id, text, delivery, skill.slug)
+          : await sendMessage(id, text, delivery)
         // Merged only into the conversation it belongs to. The reader who
         // moved on meanwhile finds it there, and the list already has it.
         // `sending` too is left alone: it belongs to the page on screen now,

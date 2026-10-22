@@ -16,8 +16,8 @@ import { agentSkills, listSkills, type Skill } from './skills'
  */
 export type SkillCommand = {
   /** The slug. What `/` filters on, because it is what somebody types: short,
-   *  lowercase and without spaces. Not what gets written into the message --
-   *  see `plainWords` in SkillMenu for why that is the name. */
+   *  lowercase and without spaces. Also what a message invoking the skill
+   *  carries, for the API to find it among the agent's. */
   id: string
   /** What the agent knows this skill as: the turn's prompt gives each skill a
    *  `## {name}` heading, so this is the only handle the model has. */

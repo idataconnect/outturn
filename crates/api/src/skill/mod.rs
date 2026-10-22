@@ -3,6 +3,7 @@ mod stats_postgres;
 pub use stats_postgres::PostgresSkillStatsStore;
 mod files;
 mod frontmatter;
+pub mod invoked;
 mod postgres;
 pub mod wizard;
 

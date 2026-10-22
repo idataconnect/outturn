@@ -566,6 +566,11 @@ model nowhere at all: `crates/api/src/skill/mod.rs` composes each skill into the
 prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
 were found by a person trying it, not by a test.
 
+Since 2026-10-21 picking a skill invokes it rather than writing anything: the
+composer shows it as a chip, the message carries its slug beside the content,
+and the turn is told what was picked and handed the skill's main reference
+file. See [prompt-contributors.md](prompt-contributors.md#a-skill-somebody-invoked).
+
 **Dictation, and operator ceilings** — 2026-10-09. A microphone in the
 message box using the browser's own speech recognition, on by default; a
 setting of a new kind, a ceiling, which an operator can turn off for

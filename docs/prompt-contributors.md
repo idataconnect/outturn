@@ -114,6 +114,36 @@ What follows from it, deliberately:
   then, and the summary is written knowing the new system prompt, so nothing
   the old one said is lost silently between them.
 
+## A skill somebody invoked
+
+Built, and the first `message` contribution a person makes rather than the
+platform. Picking a skill from the composer's `/` menu sends its slug beside
+the message (`SendMessage.skill`); the API refuses one the session's agent was
+not given, and keeps the pick on the stored message as `metadata.skill` --
+slug, and the name it had then, which the transcript draws as a chip. The
+content stays what the person typed, which may be nothing.
+
+The model is told when the conversation is projected, not when the message is
+stored (`skill::invoked::prepare`, then the projection in `worker.rs`), so a
+retry, a later turn and a compaction all see the same thing about the same
+message. After the person's words, under the platform-note label, it says:
+
+- that the person invoked the skill, with the message above or with no
+  further instructions -- in which case the note is the whole request;
+- to follow that skill's instructions under its `## {name}` heading in the
+  system prompt -- or, when the prompt being sent was not composed with that
+  skill (a conversation whose kept prompt predates the binding), the body
+  itself, so it is never pointed at something missing;
+- its main reference file, read ahead: `index.md`, or else the file the body
+  names first, up to 16 KB and marked where it was cut. The rest are listed by
+  path for `read_object`. A skill whose body names no file and has no index
+  gets the list alone.
+
+An invocation sent mid-turn is not handed over as a steer
+(`gateway::routing::take_pending`): a steer carries only the words, so a pick
+with nothing typed would arrive as an empty message. It waits for its own
+turn, and anything sent after it waits behind it.
+
 ## Where a contribution goes
 
 The other decision that matters, and the reason the time a conversation began

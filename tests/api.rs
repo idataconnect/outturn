@@ -151,6 +151,11 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
     let scopes: Arc<dyn outturn::scope::ScopeStore> =
         Arc::new(outturn::scope::PostgresScopeStore::new(pool.clone()));
 
+    // One store for the API and the worker, as one pod has: a skill file
+    // published through the one is what an invoked skill reads through the
+    // other.
+    let storage: Arc<dyn outturn::storage::StorageBackend> =
+        Arc::new(outturn::storage::MemoryStorage::new());
     let state = Arc::new(ApiState::new(
         workspaces.clone(),
         users.clone(),
@@ -162,7 +167,7 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
         usage.clone(),
         settings.clone(),
         scopes.clone(),
-        Some(Arc::new(outturn::storage::MemoryStorage::new())),
+        Some(storage.clone()),
         validator,
         minter,
         runtime_key,
@@ -209,6 +214,7 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
             .as_ref()
             .map(|_| Arc::new(TokenMinter::new(&seed).expect("minter"))),
         gateway_url,
+        storage: Some(storage),
     }));
 
     Harness {
@@ -11442,6 +11448,7 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
         )),
         minter: None,
         gateway_url: None,
+        storage: None,
     };
     let claimed = outturn::jobs::claim(
         &h.db.pool,
@@ -14731,6 +14738,141 @@ async fn a_sent_request_is_still_told_on_a_later_turn() {
 
     finish!(h);
 }
+/// A skill picked from the composer's menu travels beside the message, not
+/// inside it: the API refuses one the agent was not given, keeps the pick on
+/// the message for the transcript to draw, and the turn answering it is told
+/// what was picked and handed the skill's main reference file.
+#[tokio::test]
+async fn an_invoked_skill_is_stored_beside_the_message_and_brought_into_the_turn() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/skills",
+            Some(&admin),
+            r#"{"slug":"inn","name":"Inn","body":"Book rooms at the inn.",
+                "files":[{"path":"index.md","content":"Doubles are 120 a night."},
+                         {"path":"rates.md","content":"Winter rates."}]}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "create: {body}");
+    let skill: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let skill_id = skill["id"].as_str().unwrap().to_string();
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let agent: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/agents/{agent_id}/skills"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"[{{"skill_id":"{skill_id}"}}]"#)))
+        .unwrap();
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::OK, "binding refused: {body}");
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(r#"{{"agent_id":"{agent_id}","title":""}}"#),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let session: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let session_id: Uuid = session["id"].as_str().unwrap().parse().unwrap();
+    let messages = format!("/v1/agent-sessions/{session_id}/messages");
+
+    // One the agent was not given is refused, and says which.
+    let (status, body) = h
+        .post(
+            &messages,
+            Some(&admin),
+            r#"{"content":"go","skill":"elsewhere"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("elsewhere"), "{body}");
+    // Nothing typed and nothing picked is still nothing.
+    let (status, _) = h.post(&messages, Some(&admin), r#"{"content":" "}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A pick alone is a message.
+    let (status, body) = h
+        .post(&messages, Some(&admin), r#"{"content":"","skill":"inn"}"#)
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let sent: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(sent["content"], "");
+    assert_eq!(sent["metadata"]["skill"]["slug"], "inn", "{body}");
+    assert_eq!(sent["metadata"]["skill"]["name"], "Inn", "{body}");
+
+    // The transcript read carries it, so a reload draws the same mark.
+    let (status, body) = h.get(&messages, Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let stored = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "user")
+        .expect("the message");
+    assert_eq!(stored["metadata"]["skill"]["slug"], "inn", "{body}");
+    assert!(stored["metadata"].get("skill_note").is_none(), "{body}");
+
+    // The turn is told, and given the main reference file.
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let assignment: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let conversation = assignment["conversation"].to_string();
+    assert!(
+        conversation.contains("invoked the skill \\\"Inn\\\" with no further instructions"),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("Doubles are 120 a night."),
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("skill/inn/rates.md"),
+        "{conversation}"
+    );
+    assert!(!conversation.contains("run skill"), "{conversation}");
+    let reply: Uuid = assignment["reply_id"].as_str().unwrap().parse().unwrap();
+
+    // Sent mid-turn, an invocation waits for its own turn rather than being
+    // handed over as a steer -- and so does what follows it.
+    let (status, _) = h
+        .post(
+            &messages,
+            Some(&admin),
+            r#"{"content":"again","skill":"inn"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _) = h
+        .post(&messages, Some(&admin), r#"{"content":"and this"}"#)
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let taken = outturn::gateway::routing::take_pending(&h.db.pool, session_id, reply)
+        .await
+        .expect("take");
+    assert!(taken.is_empty(), "{taken:?}");
+}
+
 // Its own file, sharing this one's harness. Declared last, after the macros
 // it uses.
 #[path = "api/auto_approval.rs"]

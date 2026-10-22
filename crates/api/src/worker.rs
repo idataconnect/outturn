@@ -320,6 +320,22 @@ fn projected_with_sources(
                 // A resend's note is the same kind of thing: the turn it starts
                 // answers it, and nobody in the conversation wrote it.
                 format!("{PLATFORM_NOTE}\n\n{}", message.content)
+            } else if let Some(note) = message
+                .metadata
+                .get(super::skill::invoked::NOTE)
+                .and_then(|n| n.as_str())
+            {
+                // A skill picked from the menu. The person's words come first
+                // and stay theirs; the note follows under the platform's label,
+                // so nothing they wrote is read as the platform's and nothing
+                // the platform wrote is read as theirs. A pick with nothing
+                // typed is the note alone, which is then the whole request.
+                let typed = message.content.trim();
+                if typed.is_empty() {
+                    format!("{PLATFORM_NOTE}\n\n{note}")
+                } else {
+                    format!("{typed}\n\n{PLATFORM_NOTE}\n\n{note}")
+                }
             } else {
                 message.content.clone()
             };
@@ -1133,6 +1149,9 @@ pub struct Worker {
     /// Where to ask for a summary. Absent means no summarizing, and the trim
     /// underneath carries on alone.
     pub gateway_url: Option<String>,
+    /// Where skills' reference files are, for the one an invoked skill brings
+    /// into context. Absent means the note names the file instead.
+    pub storage: Option<Arc<dyn outturn_core::storage::StorageBackend>>,
 }
 
 /// What a conversation's kept system prompt is against what would be composed
@@ -2383,6 +2402,19 @@ impl Worker {
             super::skill::compose_for_turn(&agent.system_prompt, &live_skills, &model);
         let kept = self.kept_prompt(payload.session_id, &model).await?;
 
+        // A skill somebody invoked is brought into context with the message
+        // that invoked it, on every turn the message is projected in, so a
+        // retry or a later turn sees what the first one saw. See
+        // `skill::invoked`.
+        let mut history = history;
+        super::skill::invoked::prepare(
+            &mut history,
+            &live_skills,
+            kept.as_ref().map_or(&live_skills, |(skills, _)| skills),
+            self.storage.as_ref(),
+        )
+        .await;
+
         // Sources come from the unmarked projection: `marked` inserts its one
         // entry immediately before the final message, which is past anything a
         // summary cuts at, so the indices a cut uses mean the same in both.
@@ -2639,11 +2671,20 @@ impl Worker {
         let fresh_prompt =
             super::skill::compose_for_turn(&agent.system_prompt, &live_skills, &model);
 
-        let history = self
+        let mut history = self
             .chat
             .turn_history(session_id)
             .await
             .map_err(|e| anyhow::anyhow!("history: {e}"))?;
+        // Summarized as a turn would send it, and against the prompt this
+        // compaction is about to compose.
+        super::skill::invoked::prepare(
+            &mut history.messages,
+            &live_skills,
+            &live_skills,
+            self.storage.as_ref(),
+        )
+        .await;
         let (projected, sources) = projected_with_sources(&history.messages);
 
         self.tell(
@@ -3631,6 +3672,129 @@ mod projection_tests {
             absorbed_by: None,
             job_state: None,
         }
+    }
+
+    fn skill(files: Vec<crate::skill::SkillFile>) -> crate::skill::ResolvedSkill {
+        crate::skill::ResolvedSkill {
+            skill_id: Uuid::now_v7(),
+            version_id: Uuid::now_v7(),
+            slug: "booking".into(),
+            owner: Uuid::now_v7(),
+            name: "Booking".into(),
+            kind: crate::skill::SkillKind::Standalone,
+            body: "Book rooms; the rates are in index.md.".into(),
+            files,
+            position: 0,
+        }
+    }
+
+    fn invoking(content: &str) -> Message {
+        message(
+            "user",
+            content,
+            serde_json::json!({"skill": {"slug": "booking", "name": "Booking"}}),
+        )
+    }
+
+    /// What the model receives for a message that invoked a skill: the
+    /// person's words as they wrote them, then the platform's note.
+    #[tokio::test]
+    async fn an_invoked_skill_follows_the_persons_words_under_the_platforms_label() {
+        let skills = [skill(vec![])];
+        let mut history = vec![invoking("for two nights")];
+        crate::skill::invoked::prepare(&mut history, &skills, &skills, None).await;
+        let projected = project(&history);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0]["role"], "user");
+        let text = projected[0]["parts"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("for two nights\n\n"), "{text}");
+        assert!(text.contains(PLATFORM_NOTE), "{text}");
+        assert!(
+            text.contains("\"Booking\" with the message above"),
+            "{text}"
+        );
+        assert!(text.contains("## Booking"), "{text}");
+        // In the system prompt already, so not repeated here.
+        assert!(!text.contains("Book rooms;"), "{text}");
+        // What is stored is what the person wrote.
+        assert_eq!(history[0].content, "for two nights");
+    }
+
+    #[tokio::test]
+    async fn an_invoked_skill_with_nothing_typed_is_the_note_alone() {
+        let skills = [skill(vec![])];
+        let mut history = vec![invoking("")];
+        crate::skill::invoked::prepare(&mut history, &skills, &skills, None).await;
+        let text = project(&history)[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.starts_with(PLATFORM_NOTE), "{text}");
+        assert!(text.contains("with no further instructions"), "{text}");
+    }
+
+    /// A skill the system prompt was not composed with brings its body.
+    #[tokio::test]
+    async fn an_invoked_skill_missing_from_the_prompt_brings_its_body() {
+        let skills = [skill(vec![])];
+        let mut history = vec![invoking("go")];
+        crate::skill::invoked::prepare(&mut history, &skills, &[], None).await;
+        let text = project(&history)[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("Book rooms;"), "{text}");
+    }
+
+    /// The main reference file comes with the note, and the rest are named.
+    #[tokio::test]
+    async fn an_invoked_skill_brings_its_main_reference_file() {
+        let store: Arc<dyn outturn_core::storage::StorageBackend> =
+            Arc::new(outturn_core::storage::MemoryStorage::new());
+        let index = "Double rooms are 120 a night.";
+        let file = |path: &str, sha: &str, bytes: usize| crate::skill::SkillFile {
+            path: path.into(),
+            sha256: sha.into(),
+            bytes: bytes as i32,
+            links: None,
+            operation: None,
+        };
+        let s = skill(vec![
+            file("index.md", "aa", index.len()),
+            file("rates.md", "bb", 4),
+        ]);
+        store
+            .write(&crate::skill::blob_key(s.owner, "aa"), index.as_bytes())
+            .await
+            .unwrap();
+        let skills = [s];
+        let mut history = vec![invoking("")];
+        crate::skill::invoked::prepare(&mut history, &skills, &skills, Some(&store)).await;
+        let text = project(&history)[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains(index), "{text}");
+        assert!(text.contains("skill/booking/rates.md"), "{text}");
+
+        // Without a store the file is named rather than read.
+        let mut history = vec![invoking("")];
+        crate::skill::invoked::prepare(&mut history, &skills, &skills, None).await;
+        let text = project(&history)[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!text.contains(index), "{text}");
+        assert!(text.contains("skill/booking/index.md"), "{text}");
+    }
+
+    /// A message that invoked nothing projects as it always did.
+    #[tokio::test]
+    async fn a_message_without_an_invocation_is_untouched() {
+        let skills = [skill(vec![])];
+        let mut history = vec![message("user", "hello", serde_json::json!({}))];
+        crate::skill::invoked::prepare(&mut history, &skills, &skills, None).await;
+        assert_eq!(project(&history)[0]["parts"][0]["text"], "hello");
     }
 
     /// Thinking is stored in `parts` so a reader can see where the model

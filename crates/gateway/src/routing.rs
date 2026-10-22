@@ -289,6 +289,13 @@ pub struct Pending {
 /// A message is pending when nothing has replied to it and nothing has
 /// absorbed it. The turn's own prompt is excluded automatically, because the
 /// reply being written already hangs off it.
+///
+/// A message invoking a skill (`metadata.skill`, written by the API's
+/// `send_message`) is not, and nor is anything sent after one: what invoking
+/// brings into context is a note the API derives when it prepares a turn, and
+/// a steer hands over only the words -- an invocation with nothing typed would
+/// arrive as an empty message. So it waits for its own turn, and what follows
+/// it waits behind it rather than being answered first.
 pub async fn take_pending(
     pool: &PgPool,
     session_id: Uuid,
@@ -303,6 +310,15 @@ pub async fn take_pending(
                and u.absorbed_by is null \
                and not exists ( \
                    select 1 from agent_messages r where r.replies_to = u.id \
+               ) \
+               and not exists ( \
+                   select 1 from agent_messages s \
+                   where s.session_id = $1 and s.role = 'user' \
+                     and s.metadata ? 'skill' and s.id <= u.id \
+                     and s.absorbed_by is null \
+                     and not exists ( \
+                         select 1 from agent_messages r where r.replies_to = s.id \
+                     ) \
                ) \
              order by u.id \
              for update skip locked \
