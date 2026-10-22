@@ -378,6 +378,33 @@ pub struct SignedReply {
     pub calls: std::collections::HashMap<String, String>,
 }
 
+/// What a runtime sends to trade a turn token in at `POST /v1/work/{job}/token`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenRefresh {
+    /// The token the runtime holds now, still good. What the new one may say
+    /// is read from it, so a reissued token can claim nothing its predecessor
+    /// did not.
+    pub gateway_token: String,
+    /// The gates the runtime is carrying, checked against that token's
+    /// commitment before anything is read from them. Sent so the API can drop
+    /// a policy that no longer stands and say what the set became. Absent from
+    /// an older runtime, whose commitment is then copied forward unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<crate::egress::gate::Gates>,
+}
+
+/// What comes back from a token trade-in.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenRefreshed {
+    pub gateway_token: String,
+    pub gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
+    /// The gates the new token commits to, when they are no longer the ones
+    /// presented: a policy was revoked, expired or edited since the turn began.
+    /// Absent, the runtime keeps the set it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<crate::egress::gate::Gates>,
+}
+
 #[cfg(test)]
 mod refusal_wire {
     use super::*;

@@ -159,17 +159,20 @@ pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// Carries the shape of the refused request and nothing else. Naming the act is
 /// the API's to do -- see `api::gated` -- because a `requires` chosen in this
 /// tier would be a policy decision made by the sandbox's own host.
-/// Trades the current turn token for a fresh one, returning it and its expiry.
+/// Trades the current turn token, and the gates it commits to, for a fresh
+/// token -- and a new gate set, when the API took a policy out of it.
 ///
 /// `None` when the API would not reissue it; the caller keeps the token it has
 /// and lets the gateway say whether it is still good.
 pub type TokenRefresher = Arc<
     dyn Fn(
             String,
+            outturn_core::egress::gate::Gates,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Option<(String, chrono::DateTime<chrono::Utc>)>>
-                    + Send,
+                dyn std::future::Future<
+                        Output = Option<outturn_core::protocol::work::TokenRefreshed>,
+                    > + Send,
             >,
         > + Send
         + Sync,
@@ -515,10 +518,15 @@ impl AgentHost {
                 )
         });
         if due && let Some(refresh) = &self.refresh_token {
-            match refresh(self.gateway_token.clone()).await {
-                Some((token, expires_at)) => {
-                    self.gateway_token = token;
-                    self.gateway_token_expires_at = Some(expires_at);
+            match refresh(self.gateway_token.clone(), self.gates.clone()).await {
+                Some(refreshed) => {
+                    self.gateway_token = refreshed.gateway_token;
+                    self.gateway_token_expires_at = Some(refreshed.gateway_token_expires_at);
+                    // Replaced together: the new token commits to the new set,
+                    // and either alone is refused by the gateway.
+                    if let Some(gates) = refreshed.gates {
+                        self.gates = gates;
+                    }
                 }
                 None => tracing::warn!("could not refresh this turn's gateway token"),
             }

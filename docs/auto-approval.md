@@ -218,9 +218,13 @@ person. That is a deliberate exception to this tier deciding from the token
 alone, and it is what makes revoking a policy take effect on the next request,
 whoever is running the turn.
 
-A token trade-in (`POST /v1/work/{job_id}/token`) copies a turn's commitments
-forward today. It must not carry a revoked or expired policy into the new token:
-the API drops those when it re-signs.
+A token trade-in (`POST /v1/work/{job_id}/token`) does not carry a revoked or
+expired policy into the new token: the runtime sends the gates it holds, the API
+checks them against the presented token and drops every policy that is no longer
+on at the version committed, and the runtime is handed the smaller set with the
+token that commits to it. Nothing is added on a trade-in, so an edited policy is
+dropped rather than committed again on its new terms; it covers the gate again
+from the next turn.
 
 ## The record
 
@@ -373,6 +377,12 @@ waved through, which is the one outcome this whole design must not permit.
 - **Trial** is marked by `api::gated` on the queue item as
   `would_auto_approve`, by the same test the gateway applies; the evidence
   counts the answers to those items.
+- **On a trade-in**, `api::auto_approval::still_standing` keeps each
+  committed `PolicyGrant` whose policy is still `on` at its version, and
+  `work::refresh_token` re-signs over the gates without the rest, returning the
+  new set (`protocol::work::TokenRefreshed::gates`) only when it changed. A gate
+  set that does not hash to the presented token's root is refused; a runtime
+  that sends none has its commitments copied forward as before.
 - **The page** is Settings → Auto-approval, `/settings/auto-approval`; a new
   policy at `/settings/auto-approval/new` is prefilled from `requires`,
   `selector`, `max_risk`, `skill_id`, `matches`, `agent_id` and one `field` per
@@ -381,11 +391,9 @@ waved through, which is the one outcome this whole design must not permit.
 
 ### What is not built
 
-- **The token trade-in still copies the root forward.** Dropping a revoked or
-  expired policy when re-signing would change the gate set the runtime carries,
-  and the runtime is not told a new one. The record makes it moot for anything
-  going out -- a revoked policy's insert fails on the next request -- so what is
-  left is a token that names a policy nothing will honor.
+- **An edited policy is not re-committed mid-turn.** A trade-in drops it, and
+  the turn asks a person for what it covers until the next turn commits it on
+  its new terms. Adding to a running turn's token is what a trade-in never does.
 - **The action queue does not yet say** a broad policy has operations waiting to
   be accepted; the page offers *Accept operations published since* instead.
 - **The admin agent proposing a policy**, which waits for the admin agent.

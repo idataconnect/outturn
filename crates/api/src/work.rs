@@ -399,33 +399,28 @@ fn token_expiry() -> chrono::DateTime<chrono::Utc> {
         + chrono::Duration::seconds(outturn_core::auth::SERVICE_TOKEN_LIFETIME_SECS as i64)
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct RefreshToken {
-    /// The token the runtime holds now, still good. What the new one may say
-    /// is read from it, so a reissued token can claim nothing its predecessor
-    /// did not.
-    pub gateway_token: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Refreshed {
-    pub gateway_token: String,
-    pub gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
-}
-
 /// Reissues a running turn's gateway token before it runs out.
 ///
 /// A turn has no upper bound while it is working -- onboarding in long-horizon
 /// mode can run for hours -- and its token has to, so the runtime trades one in
 /// once it is within `TURN_TOKEN_REFRESH_BELOW_SECS` of expiring.
 ///
-/// The new token commits to exactly what the old one did. The commitments are
+/// The new token commits to the egress rules the old one did. They are
 /// copied out of the presented token rather than recomputed from the
 /// workspace's rules now: the runtime is carrying the rules the turn started
 /// with, and a token committing to a different set would fail every request
 /// it made. The same reason means removing a host mid-turn does not reach into
 /// a turn already running -- which is what a five-minute token also did, for
 /// five minutes.
+///
+/// The gates are the exception, in one direction only. A runtime that sends
+/// the set it carries, and whose set hashes to the presented token's root, has
+/// any policy that no longer stands taken out of it -- revoked, expired,
+/// lapsed or edited since the turn began -- and is handed the smaller set with
+/// the token committing to it. Nothing is ever added: a policy switched on
+/// mid-turn waits for the next one, as a removed host does. Without this the
+/// gateway's record insert was the only thing refusing a revoked policy, and
+/// the token went on naming a yes nobody would honor.
 ///
 /// Only a token that is still good is accepted. An expired one is refused
 /// rather than read, because a path that honors an expired credential is the
@@ -434,8 +429,8 @@ pub async fn refresh_token(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     axum::extract::Path(job_id): axum::extract::Path<Uuid>,
-    Json(input): Json<RefreshToken>,
-) -> Result<Json<Refreshed>, ApiError> {
+    Json(input): Json<outturn_core::protocol::work::TokenRefresh>,
+) -> Result<Json<outturn_core::protocol::work::TokenRefreshed>, ApiError> {
     // The runtime tier and the lease, as every other report requires: the
     // shared key says only "a runtime", the lease says which turn is its.
     let (job, _) = leased_turn(&state, &headers, job_id).await?;
@@ -466,6 +461,34 @@ pub async fn refresh_token(
         ));
     };
 
+    // The set the runtime carries is believed only as far as it hashes to the
+    // root the presented token commits to; one that does not is refused, as the
+    // gateway would refuse it on the next request.
+    let (gates, carried) = match input.gates {
+        None => (gates, None),
+        Some(carried) if carried.matches(payload.workspace_id, &gates) => {
+            let standing = super::auto_approval::still_standing(
+                &state.pool,
+                payload.workspace_id,
+                payload.agent_id,
+                carried.policies(),
+            )
+            .await;
+            if standing.len() == carried.policies().len() {
+                (gates, None)
+            } else {
+                let narrowed = carried.with_policies(standing);
+                (narrowed.root(payload.workspace_id), Some(narrowed))
+            }
+        }
+        Some(_) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "those gates are not the ones this turn was given".to_string(),
+            ));
+        }
+    };
+
     let gateway_token_expires_at = token_expiry();
     let gateway_token = mint_for(
         &state,
@@ -474,9 +497,10 @@ pub async fn refresh_token(
         egress,
         gates,
     )?;
-    Ok(Json(Refreshed {
+    Ok(Json(outturn_core::protocol::work::TokenRefreshed {
         gateway_token,
         gateway_token_expires_at,
+        gates: carried,
     }))
 }
 

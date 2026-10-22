@@ -372,6 +372,12 @@ impl Gates {
         self
     }
 
+    /// Every policy this set commits to, for the API to check which still stand
+    /// when it reissues a turn's token.
+    pub fn policies(&self) -> &[super::policy::PolicyGrant] {
+        &self.policies
+    }
+
     /// The policy committed against this gate, if one is. At most one: the API
     /// chooses among a gate's inclusions before it commits.
     pub fn policy_for(

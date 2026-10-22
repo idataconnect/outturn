@@ -509,6 +509,54 @@ pub async fn for_turn(
     }
 }
 
+/// Which of a running turn's committed policies still stand, for its token to
+/// be reissued with those alone.
+///
+/// A grant stands while its policy is on, at the version it was committed at:
+/// revoked, expired, lapsed, put back in trial or edited, and it is dropped. An
+/// edited policy is not committed again on its new terms here -- that would be
+/// a reissue adding what the turn did not start with -- so it covers the gate
+/// again from the next turn. Anything that fails drops every grant, which asks
+/// a person.
+pub async fn still_standing(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    agent_id: Uuid,
+    committed: &[PolicyGrant],
+) -> Vec<PolicyGrant> {
+    if committed.is_empty() {
+        return Vec::new();
+    }
+    let policies = match live_for(pool, workspace_id, agent_id).await {
+        Ok(policies) => policies,
+        Err(e) => {
+            tracing::warn!(
+                %workspace_id,
+                error = %e,
+                "a turn's policies could not be checked, so its reissued token carries none"
+            );
+            return Vec::new();
+        }
+    };
+    standing(committed, &policies, Utc::now())
+}
+
+fn standing(
+    committed: &[PolicyGrant],
+    policies: &[Policy],
+    now: DateTime<Utc>,
+) -> Vec<PolicyGrant> {
+    committed
+        .iter()
+        .filter(|g| {
+            policies
+                .iter()
+                .any(|p| p.id == g.policy_id && p.version == g.version && p.state(now) == "on")
+        })
+        .cloned()
+        .collect()
+}
+
 /// The policy that would have said yes to a request a person is about to be
 /// asked about, for the question to say so.
 ///
@@ -792,6 +840,32 @@ mod tests {
         p.requires = Some("reach".into());
         p.conditions.clear();
         assert!(pick(&d, &[p], Some(Risk::High)).is_none());
+    }
+
+    #[test]
+    fn a_reissued_token_keeps_only_the_policies_still_on_at_their_version() {
+        let d = declared("charge", Risk::Low);
+        let kept = policy("act");
+        let mut revoked = policy("operation");
+        revoked.revoked_at = Some(Utc::now());
+        let mut edited = policy("risk");
+        let grants: Vec<PolicyGrant> = [&kept, &revoked, &edited]
+            .iter()
+            .map(|p| grant(workspace(), Uuid::nil(), &d, p))
+            .collect();
+        edited.version += 1;
+        let mut trial = policy("act");
+        trial.mode = "trial".into();
+        let mut grants = grants;
+        grants.push(grant(workspace(), Uuid::nil(), &d, &trial));
+
+        let left = standing(&grants, &[kept.clone(), revoked, edited, trial], Utc::now());
+        assert_eq!(
+            left.iter().map(|g| g.policy_id).collect::<Vec<_>>(),
+            vec![kept.id]
+        );
+        // A policy gone from the live set altogether -- expired -- goes too.
+        assert!(standing(&grants, &[], Utc::now()).is_empty());
     }
 
     #[test]

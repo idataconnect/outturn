@@ -42,6 +42,9 @@ struct Harness {
     /// the platform's own credentials the way the platform does.
     minter: TokenMinter,
     gateway_validator: TokenValidator,
+    /// The key both validate with, for a test standing up a gateway of its own
+    /// that has to accept the turn tokens this app mints.
+    public_key: [u8; 32],
     roles: Arc<dyn outturn::api::role::RoleStore>,
     /// The same instance the app holds. A second store would have a second
     /// cache, and without the listener a test runs without, writing through
@@ -219,6 +222,7 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
         db,
         minter: test_minter,
         gateway_validator,
+        public_key,
         roles,
         scopes,
     }

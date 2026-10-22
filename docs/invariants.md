@@ -191,6 +191,9 @@ every gateway call and, with under fifteen minutes left, trades the token in at
 out of the presented token rather than recomputing them: the runtime carries the
 rules the turn started with, and a token committing to different ones would fail
 every request. So removing a host does not reach into a turn already running.
+The one change made is a subtraction: the runtime sends its gates too, and an
+auto-approval policy revoked, expired or edited since is taken out of them, the
+new set handed back with the token committing to it.
 Only a still-good token is accepted; there is no path that reads an expired one.
 Not a heartbeat, deliberately: a check tied to calls means a stopped or parked
 turn simply never asks.

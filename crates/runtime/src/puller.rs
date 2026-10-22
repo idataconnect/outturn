@@ -223,21 +223,34 @@ impl Puller {
                 let api_url = self.api_url.clone();
                 let runtime_key = self.runtime_key.clone();
                 let http = self.http.clone();
-                Arc::new(move |current: String| {
-                    let api_url = api_url.clone();
-                    let runtime_key = runtime_key.clone();
-                    let http = http.clone();
-                    Box::pin(async move {
-                        refresh_token(&http, &api_url, &runtime_key, lease, job_id, current).await
-                    })
-                        as std::pin::Pin<
-                            Box<
-                                dyn std::future::Future<
-                                        Output = Option<(String, chrono::DateTime<chrono::Utc>)>,
-                                    > + Send,
-                            >,
-                        >
-                })
+                Arc::new(
+                    move |current: String, gates: outturn_core::egress::gate::Gates| {
+                        let api_url = api_url.clone();
+                        let runtime_key = runtime_key.clone();
+                        let http = http.clone();
+                        Box::pin(async move {
+                            refresh_token(
+                                &http,
+                                &api_url,
+                                &runtime_key,
+                                lease,
+                                job_id,
+                                current,
+                                gates,
+                            )
+                            .await
+                        })
+                            as std::pin::Pin<
+                                Box<
+                                    dyn std::future::Future<
+                                            Output = Option<
+                                                outturn_core::protocol::work::TokenRefreshed,
+                                            >,
+                                        > + Send,
+                                >,
+                            >
+                    },
+                )
             }),
             // Relayed, not read. The gateway checks it against the commitment in
             // the turn token, which this tier cannot write.
@@ -566,9 +579,10 @@ impl Puller {
 
 /// Trades a running turn's gateway token for a fresh one.
 ///
-/// Presents the lease as every other report does, and the current token so the
-/// API can copy its commitments into the new one rather than recompute them.
-/// `None` on any failure: the caller keeps the token it has.
+/// Presents the lease as every other report does, and the current token and
+/// gates so the API can copy the token's commitments into the new one, less
+/// any policy that no longer stands. `None` on any failure: the caller keeps
+/// the token it has.
 async fn refresh_token(
     http: &reqwest::Client,
     api_url: &str,
@@ -576,13 +590,8 @@ async fn refresh_token(
     lease: Uuid,
     job_id: Uuid,
     current: String,
-) -> Option<(String, chrono::DateTime<chrono::Utc>)> {
-    #[derive(serde::Deserialize)]
-    struct Refreshed {
-        gateway_token: String,
-        gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
-    }
-
+    gates: outturn_core::egress::gate::Gates,
+) -> Option<outturn_core::protocol::work::TokenRefreshed> {
     let response = http
         .post(format!(
             "{}/v1/work/{job_id}/token",
@@ -593,7 +602,10 @@ async fn refresh_token(
             outturn_core::protocol::work::LEASE_HEADER,
             lease.to_string(),
         )
-        .json(&serde_json::json!({ "gateway_token": current }))
+        .json(&outturn_core::protocol::work::TokenRefresh {
+            gateway_token: current,
+            gates: Some(gates),
+        })
         .send()
         .await
         .ok()?;
@@ -601,8 +613,7 @@ async fn refresh_token(
         tracing::warn!(status = %response.status(), %job_id, "the API would not refresh a turn token");
         return None;
     }
-    let refreshed: Refreshed = response.json().await.ok()?;
-    Some((refreshed.gateway_token, refreshed.gateway_token_expires_at))
+    response.json().await.ok()
 }
 
 /// Carries a sleep or a timer to the API, and brings back what to tell the model.
