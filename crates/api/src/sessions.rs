@@ -314,6 +314,13 @@ pub struct SendMessage {
     /// steering, which is what someone typing mid-turn usually means.
     #[serde(default)]
     pub delivery: Delivery,
+    /// The slug of a skill picked from the composer's menu. Kept beside the
+    /// content rather than written into it, so the message stays what the
+    /// person typed and the turn is told what they picked -- see
+    /// `skill::invoked`. With one, the content may be empty: the pick is
+    /// the request.
+    #[serde(default)]
+    pub skill: Option<String>,
 }
 
 /// Records the user's message and queues the turn.
@@ -330,7 +337,7 @@ pub async fn send_message(
     use axum::response::IntoResponse;
     let claims = authorize(&state, &headers, Authority::SessionsCreate).await?;
 
-    if input.content.trim().is_empty() {
+    if input.content.trim().is_empty() && input.skill.is_none() {
         return Err((StatusCode::BAD_REQUEST, "message must not be empty".into()));
     }
 
@@ -345,9 +352,33 @@ pub async fn send_message(
     )
     .await?;
 
+    // Only a skill this agent has: one it was never given has no
+    // instructions in its prompt to follow, and naming it would tell the
+    // model to follow nothing.
+    let mut metadata = serde_json::json!({});
+    if let Some(slug) = input.skill.as_deref() {
+        let skills = state
+            .skills
+            .resolve_for_agent(claims.workspace_id, session.agent_id)
+            .await
+            .map_err(internal)?;
+        let Some(skill) = crate::skill::invoked::find(&skills, slug) else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("this session's agent has no skill \"{slug}\""),
+            ));
+        };
+        metadata[crate::skill::invoked::MARK] =
+            serde_json::to_value(crate::skill::invoked::Invoked {
+                slug: skill.slug.clone(),
+                name: skill.name.trim().to_string(),
+            })
+            .map_err(internal)?;
+    }
+
     let message = state
         .chat
-        .append_message(
+        .append_message_with(
             id,
             "user",
             input.content.trim(),
@@ -357,6 +388,7 @@ pub async fn send_message(
             // The session id on a token is the account id, which is what the
             // login path mints it from.
             Some(claims.subject),
+            metadata,
         )
         .await?;
 
