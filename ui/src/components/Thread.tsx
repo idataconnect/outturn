@@ -379,7 +379,7 @@ function SkillChip({
       : 'bg-brand-50 text-brand-800 border border-brand-200 dark:bg-brand-950/40 dark:text-brand-200 dark:border-brand-900'
   return (
     <span
-      className={`inline-flex items-center gap-1 max-w-full rounded-full px-2 py-0.5 text-xs font-medium ${colors}`}
+      className={`relative inline-flex items-center gap-1 max-w-full rounded-full px-2 py-0.5 text-xs font-medium ${colors}`}
     >
       <BookText size={12} className="shrink-0" aria-hidden />
       <span className="sr-only">Skill: </span>
