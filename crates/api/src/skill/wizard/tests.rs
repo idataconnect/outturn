@@ -1581,6 +1581,15 @@ fn payments_spec() -> Vec<u8> {
                     "requestBody": json(serde_json::json!({"destination": {"type": "string"}}), serde_json::json!(["destination"]))
                 }
             },
+            "/orders": {
+                "post": {
+                    "operationId": "createOrder", "summary": "Place an order", "tags": ["Orders"],
+                    "requestBody": json(serde_json::json!({
+                        "amount": {"type": "integer"},
+                        "currency": {"type": "string", "default": "USD"}
+                    }), serde_json::json!(["amount", "currency"]))
+                }
+            },
             "/notices": {
                 "post": {
                     "operationId": "postNotice", "summary": "Post a notice", "tags": ["Reports"],
@@ -1655,6 +1664,13 @@ fn the_specifications_own_risk_can_raise_a_guess_but_not_lower_it() {
     // A payout stays a payout whatever the specification says.
     let s = suggestion("create_payout");
     assert_eq!((s.risk, s.gate), (Risk::High, true));
+}
+
+#[test]
+fn a_request_with_an_amount_is_gated_high_whatever_it_is_called() {
+    let s = suggestion("create_order");
+    assert_eq!((s.risk, s.gate), (Risk::High, true));
+    assert_eq!(s.amount.unwrap().currency.as_deref(), Some("USD"));
 }
 
 #[test]

@@ -89,6 +89,22 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
             .copied()
     };
 
+    let fields: &[BodyField] = op
+        .request_body
+        .as_ref()
+        .filter(|b| b.is_json())
+        .map(|b| b.fields.as_slice())
+        .unwrap_or_default();
+    let amount = if read {
+        None
+    } else {
+        amount_field(fields).map(|f| SuggestedAmount {
+            field: f.name.clone(),
+            currency: currency_of(f, fields),
+            minor_units: minor_units(&f.name),
+        })
+    };
+
     let (mut risk, mut gate, mut reason, requires) = match (read, method.as_str(), danger) {
         (true, _, _) => (Risk::Low, false, "reads change nothing".to_string(), None),
         (_, "DELETE", _) => (
@@ -102,6 +118,13 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
             true,
             format!("named for {word}, which moves money or cannot be undone"),
             Some(word.to_string()),
+        ),
+        // A request that carries an amount moves money whatever it is called.
+        _ if amount.is_some() => (
+            Risk::High,
+            true,
+            "it carries an amount of money".to_string(),
+            None,
         ),
         _ => (
             Risk::Medium,
@@ -122,22 +145,6 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
         }
         gate = gate || gated.unwrap_or(level != Risk::Low);
     }
-
-    let fields: &[BodyField] = op
-        .request_body
-        .as_ref()
-        .filter(|b| b.is_json())
-        .map(|b| b.fields.as_slice())
-        .unwrap_or_default();
-    let amount = if read {
-        None
-    } else {
-        amount_field(fields).map(|f| SuggestedAmount {
-            field: f.name.clone(),
-            currency: currency_of(f, fields),
-            minor_units: minor_units(&f.name),
-        })
-    };
 
     let mut binds: Vec<String> = fields
         .iter()
