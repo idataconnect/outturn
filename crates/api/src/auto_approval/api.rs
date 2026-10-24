@@ -7,6 +7,7 @@
 //! write endpoints refuse every token that is not a browser session's. An agent
 //! may one day propose a policy; a person confirms it here.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -37,7 +38,7 @@ fn forbidden() -> ApiError {
 
 /// Reading is for whoever answers approvals or sets policies: the rows say what
 /// is waved through, which is what an approver most needs to know.
-async fn may_read(state: &ApiState, claims: &SessionClaims) -> Result<(), ApiError> {
+pub(super) async fn may_read(state: &ApiState, claims: &SessionClaims) -> Result<(), ApiError> {
     let held = authorities_of(state, claims).await?;
     if held.contains(&Authority::ApprovalsAnswer) || held.contains(&Authority::ApprovalsDelegate) {
         Ok(())
@@ -47,7 +48,7 @@ async fn may_read(state: &ApiState, claims: &SessionClaims) -> Result<(), ApiErr
 }
 
 /// Writing is for a person holding both, in their own session.
-async fn may_write(state: &ApiState, claims: &SessionClaims) -> Result<(), ApiError> {
+pub(super) async fn may_write(state: &ApiState, claims: &SessionClaims) -> Result<(), ApiError> {
     // A browser session is the only token carrying a refresh family. A turn's
     // token is for the gateway and is refused here anyway; this also refuses
     // anything else that is not somebody signed in.
@@ -104,6 +105,10 @@ pub struct WritePolicy {
     pub sum_field: Option<String>,
     #[serde(default)]
     pub sum_per_day: Option<i64>,
+    /// The most of each currency it lets out in a day, in minor units:
+    /// `{"GBP": 50000}`.
+    #[serde(default)]
+    pub daily_totals: BTreeMap<String, i64>,
     #[serde(default = "trial")]
     pub mode: String,
     #[serde(default)]
@@ -135,6 +140,7 @@ struct Checked {
     per_day: i32,
     sum_field: Option<String>,
     sum_per_day: Option<i64>,
+    daily_totals: BTreeMap<String, i64>,
     mode: &'static str,
     note: Option<String>,
     expires_at: DateTime<Utc>,
@@ -152,6 +158,17 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
     };
     let word = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let requires = word(input.requires);
+    // A bound on the risk a request works out to: required of a risk selector,
+    // and for the others "charges, up to low".
+    let bound = match input.max_risk.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            Risk::parse(raw)
+                .ok_or_else(|| invalid("max_risk is low, medium or high"))?
+                .as_str()
+                .to_string(),
+        ),
+    };
     let (selector, max_risk, requires, skill_id, matches) = match input.selector.as_str() {
         "risk" => {
             let risk = input
@@ -163,7 +180,7 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
         }
         "act" => {
             let requires = requires.ok_or_else(|| invalid("an act selector needs requires"))?;
-            ("act", None, Some(requires), None, None)
+            ("act", bound, Some(requires), None, None)
         }
         "operation" => {
             let requires =
@@ -180,7 +197,7 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
                 })?;
             (
                 "operation",
-                None,
+                bound,
                 Some(requires),
                 Some(skill_id),
                 Some(matches),
@@ -190,6 +207,14 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
     };
 
     policy::check_tests(&input.conditions).map_err(invalid)?;
+    for (currency, total) in &input.daily_totals {
+        outturn_core::egress::amount::check_currency(currency).map_err(invalid)?;
+        if *total < 0 {
+            return Err(invalid(format!(
+                "the daily total in {currency} is an amount at or above zero"
+            )));
+        }
+    }
 
     let expires_at = input
         .expires_at
@@ -207,7 +232,10 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
     // nothing to test and nothing to cap, and it applies from the moment it is
     // written.
     if effect == "exclude" {
-        if !input.conditions.is_empty() || input.sum_field.is_some() {
+        if !input.conditions.is_empty()
+            || input.sum_field.is_some()
+            || !input.daily_totals.is_empty()
+        {
             return Err(invalid(
                 "an exclusion covers its whole selector, with no tests",
             ));
@@ -225,6 +253,7 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
             per_day: 1,
             sum_field: None,
             sum_per_day: None,
+            daily_totals: BTreeMap::new(),
             mode: "on",
             note: word(input.note),
             expires_at,
@@ -270,6 +299,7 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
         per_day,
         sum_per_day: input.sum_per_day.filter(|_| sum_field.is_some()),
         sum_field,
+        daily_totals: input.daily_totals,
         mode,
         note: word(input.note),
         expires_at,
@@ -364,9 +394,9 @@ pub async fn create(
         "insert into approval_policies \
              (workspace_id, id, agent_id, effect, selector, max_risk, requires, skill_id, \
               matches, conditions, per_turn, per_day, sum_field, sum_per_day, mode, note, \
-              created_by, updated_by, accepted_by, expires_at) \
+              created_by, updated_by, accepted_by, expires_at, daily_totals) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-                 $17, $17, $17, $18)",
+                 $17, $17, $17, $18, $19)",
     )
     .bind(claims.workspace_id)
     .bind(id)
@@ -386,6 +416,7 @@ pub async fn create(
     .bind(&checked.note)
     .bind(claims.subject)
     .bind(checked.expires_at)
+    .bind(serde_json::to_value(&checked.daily_totals).map_err(internal)?)
     .execute(&state.pool)
     .await
     .map_err(internal)?;
@@ -423,7 +454,7 @@ pub async fn update(
              agent_id = $3, effect = $4, selector = $5, max_risk = $6, requires = $7, \
              skill_id = $8, matches = $9, conditions = $10, per_turn = $11, per_day = $12, \
              sum_field = $13, sum_per_day = $14, mode = $15, note = $16, expires_at = $17, \
-             updated_by = $18, updated_at = now(), version = version + 1 \
+             updated_by = $18, daily_totals = $19, updated_at = now(), version = version + 1 \
          where workspace_id = $1 and id = $2 and revoked_at is null",
     )
     .bind(claims.workspace_id)
@@ -444,6 +475,7 @@ pub async fn update(
     .bind(&checked.note)
     .bind(checked.expires_at)
     .bind(claims.subject)
+    .bind(serde_json::to_value(&checked.daily_totals).map_err(internal)?)
     .execute(&state.pool)
     .await
     .map_err(internal)?
@@ -858,6 +890,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.mode, "on");
+    }
+
+    #[test]
+    fn the_one_line_policy_is_an_act_up_to_a_risk_with_a_daily_total() {
+        let now = Utc::now();
+        let ok = check(
+            write(
+                json!({"selector": "act", "requires": "charge", "max_risk": "low",
+                         "daily_totals": {"GBP": 50000}, "per_turn": 5, "per_day": 50}),
+            ),
+            now,
+        )
+        .unwrap();
+        assert_eq!(ok.max_risk.as_deref(), Some("low"));
+        assert_eq!(ok.daily_totals.get("GBP"), Some(&50000));
+        for bad in [
+            json!({"selector": "act", "requires": "charge", "max_risk": "tiny",
+                   "per_turn": 1, "per_day": 1}),
+            json!({"selector": "act", "requires": "charge", "daily_totals": {"pounds": 5},
+                   "per_turn": 1, "per_day": 1}),
+            json!({"selector": "act", "requires": "charge", "daily_totals": {"GBP": -5},
+                   "per_turn": 1, "per_day": 1}),
+            json!({"selector": "act", "requires": "refund", "effect": "exclude",
+                   "daily_totals": {"GBP": 5}}),
+        ] {
+            assert!(check(write(bad.clone()), now).is_err(), "{bad}");
+        }
     }
 
     #[test]

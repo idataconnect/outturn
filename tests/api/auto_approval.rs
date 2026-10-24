@@ -27,6 +27,16 @@ async fn put(h: &Harness, uri: &str, token: &str, body: &str) -> (StatusCode, St
     h.send(req).await
 }
 
+async fn del(h: &Harness, uri: &str, token: &str) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    h.send(req).await
+}
+
 #[tokio::test]
 async fn an_admin_sets_a_policy_that_starts_in_trial_and_names_them() {
     let h = harness_or_skip!();
@@ -243,6 +253,11 @@ struct Covered {
 /// charges of fifty pounds or less -- set after the skill was published, so it
 /// covers the operation without anybody accepting it.
 async fn a_policy_on_for_charges(h: &Harness) -> Covered {
+    a_policy_on(h, &charge_file(""), &charge_policy()).await
+}
+
+/// The same, for any operation file and any policy.
+async fn a_policy_on(h: &Harness, file: &str, written: &str) -> Covered {
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
         .login_as("alice@example.com", None, Some((acme, "admin")))
@@ -272,7 +287,7 @@ async fn a_policy_on_for_charges(h: &Harness) -> Covered {
                 "name": "Charging",
                 "body": "Read charge.md before charging anybody.",
                 "hosts": [CHARGE_HOST],
-                "files": [{ "path": "charge.md", "content": charge_file("") }],
+                "files": [{ "path": "charge.md", "content": file }],
             })
             .to_string(),
         )
@@ -313,15 +328,13 @@ async fn a_policy_on_for_charges(h: &Harness) -> Covered {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (status, body) = h
-        .post("/v1/approval-policies", Some(&admin), &charge_policy())
-        .await;
+    let (status, body) = h.post("/v1/approval-policies", Some(&admin), written).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let policy = serde_json::from_str::<Value>(&body).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let mut on: Value = serde_json::from_str(&charge_policy()).unwrap();
+    let mut on: Value = serde_json::from_str(written).unwrap();
     on["mode"] = "on".into();
     let (status, body) = put(
         h,
@@ -737,5 +750,178 @@ async fn the_queue_says_when_operations_wait_on_a_broad_policy() {
     .await
     .unwrap();
     assert_eq!(cancelled, 1);
+    finish!(h);
+}
+
+/// A charge whose base risk is high, with the operator's bands: low below
+/// £50, medium below £200, and high from £5,000 whatever a workspace says.
+fn money_charge_file() -> String {
+    "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+     binds: [booking_id, amount_pence]\n  risk: high\n  auto: allowed\n  \
+     numbers: [amount_pence]\n  free: [description]\n  \
+     amount: { field: amount_pence, currency: GBP, minor_units: 2 }\n  \
+     bands: { low: 5000, medium: 20000 }\n  floor: { high: 500000 }\n---\n\n# charge\n"
+        .to_string()
+}
+
+/// "Charges up to low go through, up to £150 a day": the one line, as the API
+/// takes it.
+fn low_charges_policy() -> String {
+    serde_json::json!({
+        "selector": "act",
+        "requires": "charge",
+        "max_risk": "low",
+        "daily_totals": {"GBP": 15000},
+        "per_turn": 10,
+        "per_day": 50,
+    })
+    .to_string()
+}
+
+/// A charge's risk is worked out at the gateway from the bands the token
+/// commits: below the low band it goes out, above it a person is asked, and the
+/// day's total in pounds stops what four small charges add up to. A
+/// workspace's own band moves where a charge falls from the next turn on.
+#[tokio::test]
+async fn a_charge_is_as_risky_as_its_amount() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let (_, _, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().unwrap();
+    let gateway = Gateway::new(&h);
+    let charge = |amount| gateway.charge(c.acme, &assignment, token, &assignment["gates"], amount);
+
+    let (status, body) = charge(4000).await;
+    assert_eq!(status, StatusCode::OK, "£40 is low: {body}");
+    let (status, body) = charge(6000).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "£60 is medium: {body}");
+    assert!(body.contains("needs approval"), "{body}");
+    assert_eq!(charge(4000).await.0, StatusCode::OK);
+    assert_eq!(charge(4000).await.0, StatusCode::OK);
+    let (status, body) = charge(4000).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "£160 is over the day's £150: {body}"
+    );
+    assert_eq!(gateway.sent(), 3);
+    let recorded: (i64, Option<String>) =
+        sqlx::query_as("select sum(currency_amount)::bigint, min(currency) from auto_approvals")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(recorded, (12000, Some("GBP".to_string())));
+
+    // The page says so in money.
+    let (status, body) = h.get("/v1/approval-bands", Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let op = &page["operations"][0];
+    assert_eq!(op["matches"], "POST /charges");
+    assert_eq!(op["source"], "operator");
+    assert_eq!(op["effective"]["low"]["display"], "£50.00");
+    assert_eq!(op["floor"]["high"]["display"], "£5,000.00");
+    assert_eq!(page["may_write"], true);
+
+    // A workspace for which £80 is small; never past the floor.
+    let (status, body) = put(
+        &h,
+        "/v1/approval-bands",
+        &c.admin,
+        r#"{"currency":"GBP","low":1000000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "past the floor: {body}");
+    let (status, body) = put(
+        &h,
+        "/v1/approval-bands",
+        &c.admin,
+        &serde_json::json!({
+            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
+            "low": 10000,
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let band: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(band["currency"], "GBP");
+
+    // The running turn keeps what it committed to; the next one carries the
+    // workspace's band. The day's total still counts what went before.
+    assert_eq!(charge(100).await.0, StatusCode::OK);
+    let (status, _) = charge(6000).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "still medium in this turn");
+    let (_, _, next) = a_turn(&h, &c).await;
+    let next_token = next["gateway_token"].as_str().unwrap();
+    let (status, body) = gateway
+        .charge(c.acme, &next, next_token, &next["gates"], 2800)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = gateway
+        .charge(c.acme, &next, next_token, &next["gates"], 6000)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "low now, but over the day's total: {body}"
+    );
+
+    // Deleting the row goes back to the operator's.
+    let (status, _) = del(
+        &h,
+        &format!("/v1/approval-bands/{}", band["id"].as_str().unwrap()),
+        &c.admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = h.get("/v1/approval-bands", Some(&c.admin)).await;
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(page["operations"][0]["source"], "operator");
+    finish!(h);
+}
+
+/// Bands are set as policies are: by a person holding both authorities, from
+/// their own session, in their own workspace.
+#[tokio::test]
+async fn bands_are_set_by_whoever_may_set_a_policy() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let viewer = h
+        .login_as("vic@example.com", None, Some((c.acme, "viewer")))
+        .await;
+    let (status, _) = h.get("/v1/approval-bands", Some(&viewer)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = put(
+        &h,
+        "/v1/approval-bands",
+        &viewer,
+        r#"{"currency":"GBP","low":10}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let other = h.make_workspace("Other", "other").await;
+    let bob = h
+        .login_as("bob@example.com", None, Some((other, "admin")))
+        .await;
+    let (status, body) = put(
+        &h,
+        "/v1/approval-bands",
+        &c.admin,
+        r#"{"currency":"GBP","low":10}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = del(&h, &format!("/v1/approval-bands/{id}"), &bob).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = h.get("/v1/approval-bands", Some(&bob)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert!(page["operations"].as_array().unwrap().is_empty());
     finish!(h);
 }

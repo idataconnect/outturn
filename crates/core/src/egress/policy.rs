@@ -285,6 +285,21 @@ pub struct PolicyGrant {
     pub per_day: i64,
     pub sum_field: Option<String>,
     pub sum_per_day: Option<i64>,
+    /// The bands the gate's operation runs under in this turn, where it
+    /// declares an amount. Absent from a gate that does not, whose risk is its
+    /// base risk and was settled when the turn was prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banding: Option<super::amount::Banding>,
+    /// The highest risk a request worked out from `banding` may have and still
+    /// be admitted: the tighter of the policy's selector and the operator's
+    /// ceiling. Read only beside `banding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_risk: Option<Risk>,
+    /// The most of `banding`'s currency this policy lets out in a day, across
+    /// everything it covers. A request whose amount cannot be read is not
+    /// admitted against one, since it could not be counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_per_day: Option<i64>,
 }
 
 /// What a policy admitted, and what the gateway sends and records for it.
@@ -295,6 +310,9 @@ pub struct Admitted {
     pub bound: serde_json::Value,
     /// The summed field's value, where the policy sums one.
     pub amount: Option<i64>,
+    /// The amount in the operation's declared currency, where it declares one
+    /// and the request carried one to trust: what a daily total counts.
+    pub money: Option<(String, i64)>,
     /// The body as it was parsed, serialized again. What goes out, so what was
     /// tested is what is sent: a body naming a field twice cannot satisfy the
     /// policy with one copy and reach the remote API with the other.
@@ -348,6 +366,21 @@ impl PolicyGrant {
             Some(field) => Some(parsed.get(field).and_then(whole).filter(|v| *v >= 0)?),
             None => None,
         };
+        // The request's own risk, from the bands the token commits rather than
+        // anything the request says about itself.
+        let money = match &self.banding {
+            Some(banding) => {
+                let (risk, money) = banding.assess(&parsed);
+                if self.max_risk.is_none_or(|max| risk > max) {
+                    return None;
+                }
+                money.map(|m| (banding.currency.clone(), m))
+            }
+            None => None,
+        };
+        if self.currency_per_day.is_some() && money.is_none() {
+            return None;
+        }
         let bound = serde_json::Value::Object(
             gate.binds
                 .iter()
@@ -357,6 +390,7 @@ impl PolicyGrant {
         Some(Admitted {
             bound,
             amount,
+            money,
             body: serde_json::to_string(&parsed).ok()?,
         })
     }
@@ -414,8 +448,8 @@ pub async fn record(pool: &sqlx::PgPool, records: &[Record<'_>]) -> Result<bool,
         let written = sqlx::query(
             "insert into auto_approvals \
                  (workspace_id, id, policy_id, session_id, job_id, requires, \
-                  method, host, path, bound, amount) \
-             select $1, $3, p.id, $4, $5, $6, $7, $8, $9, $10, $11 \
+                  method, host, path, bound, amount, currency, currency_amount) \
+             select $1, $3, p.id, $4, $5, $6, $7, $8, $9, $10, $11, $16, $17 \
              from approval_policies p \
              where p.workspace_id = $1 and p.id = $2 \
                and p.effect = 'include' and p.mode = 'on' \
@@ -436,7 +470,14 @@ pub async fn record(pool: &sqlx::PgPool, records: &[Record<'_>]) -> Result<bool,
                     coalesce((select sum(a.amount) from auto_approvals a \
                               where a.workspace_id = $1 and a.policy_id = p.id \
                                 and a.at > now() - interval '1 day'), 0) + $11 \
-                    <= least(p.sum_per_day, $15))",
+                    <= least(p.sum_per_day, $15)) \
+               and ($16::text is null or \
+                    coalesce((select sum(a.currency_amount) from auto_approvals a \
+                              where a.workspace_id = $1 and a.policy_id = p.id \
+                                and a.currency = $16 \
+                                and a.at > now() - interval '1 day'), 0) + $17 \
+                    <= coalesce(least($18::bigint, (p.daily_totals ->> $16)::bigint), \
+                                9223372036854775807))",
         )
         .bind(r.workspace_id)
         .bind(r.grant.policy_id)
@@ -453,6 +494,9 @@ pub async fn record(pool: &sqlx::PgPool, records: &[Record<'_>]) -> Result<bool,
         .bind(r.grant.per_turn)
         .bind(r.grant.per_day)
         .bind(r.grant.sum_per_day.unwrap_or(i64::MAX))
+        .bind(r.admitted.money.as_ref().map(|(c, _)| c.as_str()))
+        .bind(r.admitted.money.as_ref().map(|(_, m)| *m))
+        .bind(r.grant.currency_per_day)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -513,6 +557,9 @@ mod tests {
             per_day: 50,
             sum_field: None,
             sum_per_day: None,
+            banding: None,
+            max_risk: None,
+            currency_per_day: None,
         }
     }
 
@@ -769,5 +816,75 @@ mod tests {
             )
             .unwrap();
         assert_eq!(admitted.amount, Some(40));
+    }
+
+    fn banded(grant: &mut PolicyGrant, max: Risk) {
+        grant.banding = Some(super::super::amount::Banding {
+            field: "amount_pence".into(),
+            currency: "GBP".into(),
+            base: Risk::High,
+            bands: super::super::amount::Bands {
+                low: Some(5000),
+                medium: Some(20000),
+            },
+            floor: Default::default(),
+        });
+        grant.max_risk = Some(max);
+    }
+
+    #[test]
+    fn a_banded_policy_admits_only_up_to_its_risk() {
+        let gate = charge();
+        let mut grant = grant_for(&gate, vec![]);
+        banded(&mut grant, Risk::Low);
+        let charge = |pence: serde_json::Value| {
+            grant.admits(
+                workspace(),
+                &gate,
+                None,
+                Some(&json!({"booking_id": "bk_1", "amount_pence": pence}).to_string()),
+            )
+        };
+        let admitted = charge(json!(4999)).expect("low");
+        assert_eq!(admitted.money, Some(("GBP".to_string(), 4999)));
+        assert!(charge(json!(5000)).is_none(), "medium");
+        // An amount nobody can trust is the base risk, high.
+        assert!(charge(json!("10")).is_none());
+        assert!(charge(json!(-10)).is_none());
+    }
+
+    #[test]
+    fn a_daily_total_needs_an_amount_it_can_count() {
+        let gate = charge();
+        let mut grant = grant_for(&gate, vec![]);
+        banded(&mut grant, Risk::High);
+        grant.currency_per_day = Some(50000);
+        let ok = r#"{"booking_id":"bk_1","amount_pence":10}"#;
+        assert!(grant.admits(workspace(), &gate, None, Some(ok)).is_some());
+        // High, which the policy reaches, but not countable against the total.
+        assert!(
+            grant
+                .admits(
+                    workspace(),
+                    &gate,
+                    None,
+                    Some(r#"{"booking_id":"bk_1","amount_pence":"10"}"#)
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_grant_without_bands_commits_what_it_did_before() {
+        // The new fields are left out when absent, so a grant for a gate with no
+        // amount hashes as it did, and a runtime that predates them carries it
+        // unchanged.
+        let gate = charge();
+        let grant = grant_for(&gate, vec![]);
+        let text = serde_json::to_string(&grant).unwrap();
+        assert!(
+            !text.contains("banding") && !text.contains("max_risk"),
+            "{text}"
+        );
     }
 }

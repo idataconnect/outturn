@@ -93,6 +93,9 @@ fn grant(policy_id: Uuid, job_id: Uuid) -> PolicyGrant {
         per_day: 100,
         sum_field: Some("amount_pence".into()),
         sum_per_day: Some(100),
+        banding: None,
+        max_risk: None,
+        currency_per_day: None,
     }
 }
 
@@ -100,6 +103,7 @@ fn admitted(amount: i64) -> Admitted {
     Admitted {
         bound: serde_json::json!({ "amount_pence": amount }),
         amount: Some(amount),
+        money: None,
         body: format!(r#"{{"amount_pence":{amount}}}"#),
     }
 }
@@ -207,5 +211,112 @@ async fn a_policy_records_nothing_in_another_workspace() {
         .await
         .unwrap();
     assert!(!try_record(&w, elsewhere, &grant(id, Uuid::now_v7()), 1).await);
+    w.db.cleanup().await;
+}
+
+/// A daily total in one currency counts that currency's amounts across
+/// everything the policy covers, and nothing in another: four charges of £49
+/// against £150 a day let three through.
+#[tokio::test]
+async fn a_daily_total_counts_one_currency_across_the_policy() {
+    let w = world().await;
+    let id = policy(&w.db.pool, &w, "on", 100, 100).await;
+    sqlx::query(
+        "update approval_policies set sum_field = null, sum_per_day = null, \
+                daily_totals = '{\"GBP\": 15000}' where id = $1",
+    )
+    .bind(id)
+    .execute(&w.db.pool)
+    .await
+    .unwrap();
+    let mut g = grant(id, Uuid::now_v7());
+    g.sum_field = None;
+    g.sum_per_day = None;
+    g.currency_per_day = Some(15000);
+
+    let write = |currency: &str, pence: i64| {
+        let a = Admitted {
+            bound: serde_json::json!({ "amount_pence": pence }),
+            amount: None,
+            money: Some((currency.to_string(), pence)),
+            body: format!(r#"{{"amount_pence":{pence}}}"#),
+        };
+        let g = g.clone();
+        let pool = w.db.pool.clone();
+        let workspace = w.workspace;
+        async move {
+            record(
+                &pool,
+                &[Record {
+                    workspace_id: workspace,
+                    session_id: Uuid::now_v7(),
+                    grant: &g,
+                    method: "POST",
+                    host: "api.example.com",
+                    path: "/charges",
+                    admitted: &a,
+                }],
+            )
+            .await
+            .expect("record")
+        }
+    };
+    for _ in 0..3 {
+        assert!(write("GBP", 4900).await);
+    }
+    assert!(!write("GBP", 4900).await, "over £150 in a day");
+    // Dollars are not pounds, and this policy totals none of them.
+    assert!(write("USD", 4900).await);
+    let recorded: (i64, i64) = sqlx::query_as(
+        "select count(*), sum(currency_amount)::bigint from auto_approvals \
+         where workspace_id = $1 and currency = 'GBP'",
+    )
+    .bind(w.workspace)
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(recorded, (3, 14700));
+    w.db.cleanup().await;
+}
+
+/// The row's own total holds where the committed one is looser -- the tighter
+/// of the two, as with every other cap.
+#[tokio::test]
+async fn the_rows_daily_total_holds_over_a_looser_committed_one() {
+    let w = world().await;
+    let id = policy(&w.db.pool, &w, "on", 100, 100).await;
+    sqlx::query(
+        "update approval_policies set sum_field = null, sum_per_day = null, \
+                daily_totals = '{\"GBP\": 100}' where id = $1",
+    )
+    .bind(id)
+    .execute(&w.db.pool)
+    .await
+    .unwrap();
+    let mut g = grant(id, Uuid::now_v7());
+    g.sum_field = None;
+    g.sum_per_day = None;
+    g.currency_per_day = Some(1_000_000);
+    let a = Admitted {
+        bound: serde_json::json!({ "amount_pence": 500 }),
+        amount: None,
+        money: Some(("GBP".to_string(), 500)),
+        body: r#"{"amount_pence":500}"#.into(),
+    };
+    let written = record(
+        &w.db.pool,
+        &[Record {
+            workspace_id: w.workspace,
+            session_id: Uuid::now_v7(),
+            grant: &g,
+            method: "POST",
+            host: "api.example.com",
+            path: "/charges",
+            admitted: &a,
+        }],
+    )
+    .await
+    .expect("record");
+    assert!(!written);
     w.db.cleanup().await;
 }
