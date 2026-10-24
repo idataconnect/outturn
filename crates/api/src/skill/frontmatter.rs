@@ -76,6 +76,11 @@ pub struct ApprovalRule {
     /// carrying a field in neither `binds` nor this is covered by no policy.
     #[serde(default)]
     pub free: Vec<String>,
+    /// Which bound field is the amount, in what currency, with the operator's
+    /// default bands and floor, where the operation moves money. Absent, its
+    /// risk is `risk` whatever a request carries.
+    #[serde(default)]
+    pub amount: Option<outturn_core::egress::amount::Declaration>,
 }
 
 fn high() -> outturn_core::egress::policy::Risk {
@@ -404,6 +409,9 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
     let mut auto = None;
     let mut numbers: Option<Vec<String>> = None;
     let mut free: Option<Vec<String>> = None;
+    let mut amount: Option<Vec<(String, String)>> = None;
+    let mut bands: Option<Vec<(String, String)>> = None;
+    let mut floor: Option<Vec<(String, String)>> = None;
 
     for (key, value) in block(yaml, "approval")?.unwrap_or_default() {
         let slot = match key {
@@ -437,6 +445,19 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
                 } else {
                     parse_list(key, &value)?
                 });
+                continue;
+            }
+            // Mappings, written on one line as `{ low: 5000, medium: 20000 }`.
+            "amount" => {
+                amount = Some(parse_map(key, &value)?);
+                continue;
+            }
+            "bands" => {
+                bands = Some(parse_map(key, &value)?);
+                continue;
+            }
+            "floor" => {
+                floor = Some(parse_map(key, &value)?);
                 continue;
             }
             other => {
@@ -549,6 +570,13 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         )));
     }
 
+    let amount = declaration(amount, bands, floor)?;
+    if let Some(declared) = &amount {
+        declared
+            .check(risk, &binds, &numbers)
+            .map_err(FrontmatterError::Invalid)?;
+    }
+
     Ok(Some(ApprovalRule {
         requires,
         binds,
@@ -559,6 +587,88 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
         auto,
         numbers,
         free,
+        amount,
+    }))
+}
+
+/// `amount`, `bands` and `floor`, read into what an operation declares about
+/// money. Bands or a floor with no amount to apply them to are refused: they
+/// would read as a judgment about money on an operation that has none.
+fn declaration(
+    amount: Option<Vec<(String, String)>>,
+    bands: Option<Vec<(String, String)>>,
+    floor: Option<Vec<(String, String)>>,
+) -> Result<Option<outturn_core::egress::amount::Declaration>, FrontmatterError> {
+    use outturn_core::egress::amount::{Amount, Bands, Declaration, Floor};
+    let invalid = FrontmatterError::Invalid;
+    let Some(amount) = amount else {
+        if bands.is_some() || floor.is_some() {
+            return Err(invalid(
+                "bands and floor need an amount naming the field they are about".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    let whole = |key: &str, level: &str, raw: &str| {
+        raw.parse::<i64>()
+            .map_err(|_| invalid(format!("{key}'s {level} is a whole number, not {raw}")))
+    };
+
+    let (mut field, mut currency, mut minor_units) = (None, None, None);
+    for (key, value) in amount {
+        match key.as_str() {
+            "field" => field = Some(value),
+            "currency" => currency = Some(value),
+            "minor_units" => {
+                minor_units = Some(value.parse::<u8>().map_err(|_| {
+                    invalid(format!("minor_units is a small whole number, not {value}"))
+                })?)
+            }
+            other => return Err(invalid(format!("{other} is not a key of amount"))),
+        }
+    }
+    // Each required: a currency guessed is money misread, and so are digits
+    // after the point.
+    let (Some(field), Some(currency), Some(minor_units)) = (field, currency, minor_units) else {
+        return Err(invalid(
+            "amount needs a field, a currency and minor_units, e.g. \
+             { field: amount_pence, currency: GBP, minor_units: 2 }"
+                .into(),
+        ));
+    };
+
+    let mut declared_bands = Bands::default();
+    for (key, value) in bands.unwrap_or_default() {
+        match key.as_str() {
+            "low" => declared_bands.low = Some(whole("bands", "low", &value)?),
+            "medium" => declared_bands.medium = Some(whole("bands", "medium", &value)?),
+            other => {
+                return Err(invalid(format!(
+                    "{other} is not a band; bands are low and medium, an upper bound each"
+                )));
+            }
+        }
+    }
+    let mut declared_floor = Floor::default();
+    for (key, value) in floor.unwrap_or_default() {
+        match key.as_str() {
+            "medium" => declared_floor.medium = Some(whole("floor", "medium", &value)?),
+            "high" => declared_floor.high = Some(whole("floor", "high", &value)?),
+            other => {
+                return Err(invalid(format!(
+                    "{other} is not a floor; a floor is medium or high"
+                )));
+            }
+        }
+    }
+    Ok(Some(Declaration {
+        amount: Amount {
+            field,
+            currency,
+            minor_units,
+        },
+        bands: declared_bands,
+        floor: declared_floor,
     }))
 }
 
@@ -1009,6 +1119,7 @@ mod tests {
                 auto: true,
                 numbers: vec![],
                 free: vec![],
+                amount: None,
             })
         );
         assert_eq!(parsed.body, "\n# charge\n");
@@ -1053,6 +1164,71 @@ mod tests {
             assert!(rule(extra).is_err(), "{extra}");
         }
         assert!(rule("  auto: allowed\n  free: []\n").is_ok());
+    }
+
+    #[test]
+    fn an_amount_with_its_bands_and_floor_is_read() {
+        use outturn_core::egress::amount::{Bands, Floor};
+        let parsed = parse(
+            "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+             binds: [payment_account_id, booking_id, amount_pence]\n  risk: high\n  \
+             numbers: [amount_pence]\n  \
+             amount: { field: amount_pence, currency: GBP, minor_units: 2 }\n  \
+             bands: { low: 5000, medium: 20000 }   # below each, that risk\n  \
+             floor: { high: 500000 }\n---\n",
+        )
+        .unwrap();
+        let declared = parsed.approval.unwrap().amount.expect("an amount");
+        assert_eq!(declared.amount.field, "amount_pence");
+        assert_eq!(declared.amount.currency, "GBP");
+        assert_eq!(declared.amount.minor_units, 2);
+        assert_eq!(
+            declared.bands,
+            Bands {
+                low: Some(5000),
+                medium: Some(20000)
+            }
+        );
+        assert_eq!(
+            declared.floor,
+            Floor {
+                medium: None,
+                high: Some(500000)
+            }
+        );
+    }
+
+    #[test]
+    fn an_amount_is_refused_where_it_cannot_mean_anything() {
+        let rule = |extra: &str| {
+            parse(&format!(
+                "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+                 binds: [booking_id, amount_pence]\n  numbers: [amount_pence]\n{extra}---\n"
+            ))
+            .map(|_| ())
+        };
+        let amount = "  amount: { field: amount_pence, currency: GBP, minor_units: 2 }\n";
+        assert!(rule(amount).is_ok());
+        for extra in [
+            // Not a number comparisons read, and not bound at all.
+            "  amount: { field: booking_id, currency: GBP, minor_units: 2 }\n".to_string(),
+            "  amount: { field: total, currency: GBP, minor_units: 2 }\n".to_string(),
+            // Missing a part, or with one nobody defined.
+            "  amount: { field: amount_pence, currency: GBP }\n".to_string(),
+            "  amount: { field: amount_pence, currency: gbp, minor_units: 2 }\n".to_string(),
+            "  amount: { field: amount_pence, currency: GBP, minor_units: 2, rate: 1 }\n"
+                .to_string(),
+            "  amount: amount_pence\n".to_string(),
+            // Bands with nothing to apply them to, falling, or past the floor.
+            "  bands: { low: 5000 }\n".to_string(),
+            format!("{amount}  bands: {{ low: 20000, medium: 5000 }}\n"),
+            format!("{amount}  bands: {{ low: 5000 }}\n  floor: {{ high: 4000 }}\n"),
+            format!("{amount}  bands: {{ high: 5000 }}\n"),
+            format!("{amount}  bands: {{ low: lots }}\n"),
+            format!("{amount}  floor: {{ low: 5000 }}\n"),
+        ] {
+            assert!(rule(&extra).is_err(), "{extra}");
+        }
     }
 
     #[test]
@@ -1369,6 +1545,40 @@ mod what_it_must_not_do_quietly {
 /// Hand-parsed like the rest of this module, and narrow on purpose. A flow
 /// sequence of quoted or bare scalars is the whole contract; a block sequence,
 /// a nested collection or an anchor is refused rather than half-read.
+/// A mapping written on one line, `{ low: 5000, medium: 20000 }`, as its keys
+/// and values in order. A comment may follow the closing brace; nothing else
+/// may, and no value may itself be a collection.
+fn parse_map(key: &str, value: &str) -> Result<Vec<(String, String)>, FrontmatterError> {
+    let invalid = FrontmatterError::Invalid;
+    let inner = value
+        .strip_prefix('{')
+        .and_then(|rest| rest.split_once('}'))
+        .filter(|(_, after)| {
+            let after = after.trim();
+            after.is_empty() || after.starts_with('#')
+        })
+        .map(|(inner, _)| inner)
+        .ok_or_else(|| invalid(format!("{key} is a mapping, written {{ key: value, ... }}")))?;
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for raw in inner.split(',').filter(|r| !r.trim().is_empty()) {
+        let Some((k, v)) = raw.split_once(':') else {
+            return Err(invalid(format!("{key} has {} with no value", raw.trim())));
+        };
+        let (k, v) = (unquote(k.trim())?, unquote(v.trim())?);
+        if k.is_empty() || v.is_empty() || v.contains(['{', '[']) {
+            return Err(invalid(format!(
+                "{key} has {} with no value it can read",
+                raw.trim()
+            )));
+        }
+        if entries.iter().any(|(seen, _)| seen == k) {
+            return Err(invalid(format!("{key} gives {k} twice")));
+        }
+        entries.push((k.to_string(), v.to_string()));
+    }
+    Ok(entries)
+}
+
 fn parse_list(key: &str, value: &str) -> Result<Vec<String>, FrontmatterError> {
     let inner = match value.strip_prefix('[') {
         Some(rest) => rest.strip_suffix(']').ok_or_else(|| {

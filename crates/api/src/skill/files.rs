@@ -43,6 +43,8 @@ pub struct DeclaredGate {
     pub auto: bool,
     pub numbers: Vec<String>,
     pub free: Vec<String>,
+    /// What it declares about money, where it moves any.
+    pub amount: Option<outturn_core::egress::amount::Declaration>,
 }
 
 /// Every approval a set of files declares.
@@ -74,6 +76,7 @@ pub fn declared_gates(files: &[(SkillFile, Vec<u8>)]) -> Vec<DeclaredGate> {
             auto: rule.auto,
             numbers: rule.numbers,
             free: rule.free,
+            amount: rule.amount,
         });
     }
     out
