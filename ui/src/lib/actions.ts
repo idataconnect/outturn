@@ -56,6 +56,31 @@ export function countActionItems() {
  * Only the instance shown is approved: there is no wider extent to offer, so
  * nothing but the answer is sent. See `docs/approvals.md`.
  */
+/**
+ * What a follow-up is about, from its payload: a held request that was approved
+ * and then could not be sent (`unsent`), or was sent with no answer back, so
+ * whether it happened is not known (`unknown`). `null` for an ordinary approval.
+ *
+ * A yes to a follow-up sends the request again rather than approving it, so the
+ * two are told apart wherever an approval is answered. See `docs/approvals.md`.
+ */
+export type FollowUp = 'unsent' | 'unknown'
+
+export function followUpOf(item: ActionItem): FollowUp | null {
+  const f = item.payload.followup
+  return f === 'unsent' || f === 'unknown' ? f : null
+}
+
+/** Sends a held request again, from its follow-up. */
+export function resendFollowUp(itemId: string) {
+  return api<{ resumed: number }>(`/v1/approvals/${itemId}/resend`, { method: 'POST' })
+}
+
+/** Settles a follow-up with nothing more sent: the person says it is done. */
+export function markFollowUpDone(itemId: string) {
+  return api<{ resumed: number }>(`/v1/approvals/${itemId}/done`, { method: 'POST' })
+}
+
 export function answerApproval(
   itemId: string,
   input: { approved: boolean; note?: string },

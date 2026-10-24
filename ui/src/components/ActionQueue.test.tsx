@@ -5,7 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ActionQueue from './ActionQueue'
 import { answerApproval, type ActionItem } from '../lib/actions'
 
-vi.mock('../lib/actions', () => ({ answerApproval: vi.fn(async () => ({ resumed: 1 })) }))
+vi.mock('../lib/actions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/actions')>()),
+  answerApproval: vi.fn(async () => ({ resumed: 1 })),
+}))
 
 const answer = vi.mocked(answerApproval)
 
@@ -41,6 +44,49 @@ describe('an empty queue', () => {
   it('takes a caller-supplied quiet line', () => {
     render(<ActionQueue items={[]} quiet="All caught up." now={NOW} />)
     expect(screen.getByText('All caught up.')).toBeInTheDocument()
+  })
+})
+
+/// A yes to a follow-up sends a held request again -- for one whose outcome is
+/// not known, possibly a second charge -- so none is answered in bulk.
+describe('follow-ups', () => {
+  beforeEach(() => answer.mockClear())
+
+  const followUp = (n: number, followup: string) =>
+    item({
+      id: idAt(NOW - n * 60_000),
+      payload: { followup, reason: `charge ${n} did not go` },
+    })
+
+  it('are left out of Approve all', () => {
+    render(
+      <ActionQueue
+        items={[followUp(1, 'unknown'), followUp(2, 'unknown'), followUp(3, 'unsent')]}
+        now={NOW}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /Approve/ })).not.toBeInTheDocument()
+  })
+
+  it('do not swell a group of ordinary approvals', () => {
+    render(
+      <ActionQueue
+        items={[
+          item({ id: idAt(NOW - 60_000) }),
+          item({ id: idAt(NOW - 120_000) }),
+          followUp(3, 'unknown'),
+        ]}
+        now={NOW}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Approve all 2' })).toBeInTheDocument()
+  })
+
+  it('say what became of the request', () => {
+    render(<ActionQueue items={[followUp(1, 'unknown'), followUp(2, 'unsent')]} now={NOW} />)
+    expect(screen.getByText('Charge: sent, outcome not known')).toBeInTheDocument()
+    expect(screen.getByText('Charge: approved, not sent')).toBeInTheDocument()
+    expect(screen.queryByText('Charge to approve')).not.toBeInTheDocument()
   })
 })
 

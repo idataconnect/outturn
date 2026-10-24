@@ -5,7 +5,11 @@ import ApprovalPrompt from './ApprovalPrompt'
 import { answeredCount } from '../lib/autoApproval'
 import { SessionContext, type SessionState } from '../lib/session'
 
-vi.mock('../lib/actions', () => ({ answerApproval: vi.fn() }))
+vi.mock('../lib/actions', () => ({
+  answerApproval: vi.fn(),
+  resendFollowUp: vi.fn(),
+  markFollowUpDone: vi.fn(),
+}))
 vi.mock('../lib/autoApproval', async (actual) => ({
   ...(await actual<typeof import('../lib/autoApproval')>()),
   answeredCount: vi.fn(),

@@ -3,11 +3,17 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ApprovalPrompt from './ApprovalPrompt'
-import { answerApproval } from '../lib/actions'
+import { answerApproval, markFollowUpDone, resendFollowUp } from '../lib/actions'
 
-vi.mock('../lib/actions', () => ({ answerApproval: vi.fn(async () => ({ resumed: 1 })) }))
+vi.mock('../lib/actions', () => ({
+  answerApproval: vi.fn(async () => ({ resumed: 1 })),
+  resendFollowUp: vi.fn(async () => ({ resumed: 1 })),
+  markFollowUpDone: vi.fn(async () => ({ resumed: 0 })),
+}))
 
 const answer = vi.mocked(answerApproval)
+const resend = vi.mocked(resendFollowUp)
+const done = vi.mocked(markFollowUpDone)
 
 const show = (
   approval: Parameters<typeof ApprovalPrompt>[0]['approval'] = {
@@ -20,6 +26,44 @@ const show = (
   render(<ApprovalPrompt approval={approval} onAnswered={onAnswered} />)
   return { onAnswered }
 }
+
+/// A follow-up's yes sends the request again, so it is not worded or answered
+/// as an approval.
+describe('a follow-up', () => {
+  beforeEach(() => {
+    answer.mockClear()
+    resend.mockClear()
+    done.mockClear()
+  })
+
+  it('says an unknown outcome is not known', () => {
+    show({ item_id: 'f-1', requires: 'charge', followup: 'unknown' })
+    expect(
+      screen.getByText(/sent but no answer came back, so whether it happened is not known/),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Decline' })).toBeNull()
+  })
+
+  it('says an unsent one was approved but not sent', () => {
+    show({ item_id: 'f-1', requires: 'charge', followup: 'unsent' })
+    expect(screen.getByText('The charge was approved but could not be sent')).toBeTruthy()
+  })
+
+  it('sends again through resend, not answer', async () => {
+    show({ item_id: 'f-1', requires: 'charge', followup: 'unknown' })
+    await userEvent.click(screen.getByRole('button', { name: 'Send again' }))
+    expect(resend).toHaveBeenCalledWith('f-1')
+    expect(answer).not.toHaveBeenCalled()
+  })
+
+  it('marks as done through done', async () => {
+    show({ item_id: 'f-1', requires: 'charge', followup: 'unsent' })
+    await userEvent.click(screen.getByRole('button', { name: 'Mark as done' }))
+    expect(done).toHaveBeenCalledWith('f-1')
+    expect(answer).not.toHaveBeenCalled()
+  })
+})
 
 describe('ApprovalPrompt', () => {
   beforeEach(() => answer.mockClear())

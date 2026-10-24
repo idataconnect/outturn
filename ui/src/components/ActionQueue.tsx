@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
-import { answerApproval, type ActionItem } from '../lib/actions'
+import { answerApproval, followUpOf, type ActionItem } from '../lib/actions'
 import { waitingFor } from '../lib/elapsed'
 
 /**
@@ -112,11 +112,16 @@ export default function ActionQueue({
  * answered for several workspaces at once would be a wider yes than any single
  * row suggests. A group that a failed answer has shrunk to one stays, so the
  * failure is still on screen next to what failed.
+ *
+ * Follow-ups are left out. A yes to one sends a held request again, and for one
+ * whose outcome is not known that may be a second charge: each is decided on
+ * its own, by somebody who has checked.
  */
 function approvalGroups(items: ActionItem[], failures: Record<string, string>): ActionItem[][] {
   const groups = new Map<string, ActionItem[]>()
   for (const item of items) {
     if (!item.kind.startsWith('approval.') || item.state !== 'pending') continue
+    if (followUpOf(item)) continue
     const key = `${item.kind}/${item.workspace_id}`
     groups.set(key, [...(groups.get(key) ?? []), item])
   }
@@ -237,7 +242,7 @@ function ActionRow({
         />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm text-surface-900 dark:text-surface-100">
-            <span className="font-medium">{label(item.kind)}</span>
+            <span className="font-medium">{rowLabel(item)}</span>
             {summary && <span className="text-surface-700 dark:text-surface-300"> — {summary}</span>}
           </p>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-surface-600 dark:text-surface-400">
@@ -299,6 +304,21 @@ function label(kind: string): string {
       // enough: the producer builds the kind from the act it is asking about
       // (`requires` in docs/approvals.md), so the last segment is that word.
       return kind.split('.').at(-1)?.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) ?? kind
+  }
+}
+
+/** A row's label: a follow-up says what became of the request, not that it
+ *  needs approving. */
+function rowLabel(item: ActionItem): string {
+  // The bare act, `Charge`, by the same fallback any unlabeled kind gets.
+  const what = label(`followup.${item.kind.split('.').at(-1)}`)
+  switch (followUpOf(item)) {
+    case 'unknown':
+      return `${what}: sent, outcome not known`
+    case 'unsent':
+      return `${what}: approved, not sent`
+    default:
+      return label(item.kind)
   }
 }
 

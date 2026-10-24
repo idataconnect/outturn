@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
 import { ShieldQuestion } from 'lucide-react'
 
-import { answerApproval } from '../lib/actions'
+import {
+  answerApproval,
+  markFollowUpDone,
+  resendFollowUp,
+  type FollowUp,
+} from '../lib/actions'
 import { OFFER_AFTER, answeredCount, policyLink } from '../lib/autoApproval'
 import { useHasAuthority } from '../lib/session'
 
@@ -36,6 +41,23 @@ function shown(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/**
+ * What the prompt is asking. A follow-up's request was already approved, so it
+ * says what became of it: a yes there sends it again, and for one whose outcome
+ * is not known that may be a second time.
+ */
+function heading(followup: FollowUp | null, requires: string | null | undefined): string {
+  const what = requires ?? 'request'
+  switch (followup) {
+    case 'unknown':
+      return `The approved ${what} was sent but no answer came back, so whether it happened is not known`
+    case 'unsent':
+      return `The ${what} was approved but could not be sent`
+    default:
+      return requires ? `This needs approval: ${requires}` : 'This needs approval'
+  }
+}
+
 export default function ApprovalPrompt({
   approval,
   onAnswered,
@@ -47,6 +69,9 @@ export default function ApprovalPrompt({
     /** What is being approved: each field the grant is keyed on, with this
      *  request's value. */
     binds?: Bound[] | null
+    /** Set when this asks what to do about an approved request that did not
+     *  go, rather than whether to approve one. */
+    followup?: FollowUp | null
   }
   onAnswered: () => void
 }) {
@@ -78,11 +103,17 @@ export default function ApprovalPrompt({
     }
   }, [mayDelegate, requires, fields])
 
+  const followup = approval.followup ?? null
+
   async function answer(approved: boolean) {
     setBusy(true)
     setFailed(null)
     try {
-      await answerApproval(approval.item_id, { approved })
+      if (followup) {
+        await (approved ? resendFollowUp : markFollowUpDone)(approval.item_id)
+      } else {
+        await answerApproval(approval.item_id, { approved })
+      }
       onAnswered()
     } catch (e) {
       // Left on screen rather than swallowed: the turn is still held, and a
@@ -103,9 +134,7 @@ export default function ApprovalPrompt({
         />
         <div className="min-w-0 flex-1">
           <p className="text-sm text-surface-900 dark:text-surface-100">
-            <span className="font-medium">
-              {approval.requires ? `This needs approval: ${approval.requires}` : 'This needs approval'}
-            </span>
+            <span className="font-medium">{heading(followup, approval.requires)}</span>
           </p>
           {approval.reason && (
             <p className="mt-0.5 text-xs text-surface-700 dark:text-surface-300">
@@ -144,7 +173,7 @@ export default function ApprovalPrompt({
               onClick={() => answer(true)}
               className="rounded-md bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
             >
-              {busy ? 'Sending…' : 'Approve'}
+              {busy ? 'Sending…' : followup ? 'Send again' : 'Approve'}
             </button>
             <button
               type="button"
@@ -152,11 +181,11 @@ export default function ApprovalPrompt({
               onClick={() => answer(false)}
               className="rounded-md border border-surface-300 px-2.5 py-1 text-xs font-medium text-surface-700 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800"
             >
-              Decline
+              {followup ? 'Mark as done' : 'Decline'}
             </button>
           </div>
 
-          {offer && (
+          {offer && !followup && (
             <p className="mt-2 text-xs text-surface-600 dark:text-surface-400">
               <a href={offer} className="text-brand-700 hover:underline dark:text-brand-300">
                 Auto-approval policy for “{requires}”

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AlarmClock, ArrowLeft, ArrowUpCircle, Boxes, Clock, Inbox as InboxIcon, ListChecks, MessageSquare } from 'lucide-react'
 
 import ApprovalPrompt, { type Bound } from '../components/ApprovalPrompt'
-import type { ActionItem } from '../lib/actions'
+import { followUpOf, type ActionItem } from '../lib/actions'
 import { ApiError } from '../lib/api'
 import { wakeSession } from '../lib/chat'
 import { waitingFor } from '../lib/elapsed'
@@ -393,6 +393,7 @@ function ApprovalDetail({ item, onAnswered }: { item: ActionItem; onAnswered: ()
           requires: typeof p.requires === 'string' ? p.requires : null,
           reason: typeof p.reason === 'string' ? p.reason : null,
           binds: Array.isArray(p.binds) ? (p.binds as Bound[]) : null,
+          followup: followUpOf(item),
         }}
         onAnswered={onAnswered}
       />
