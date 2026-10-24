@@ -549,6 +549,7 @@ export type Annotation = {
   created_at: string
 }
 
+/** Mirrors `Risk` in crates/core/src/egress/policy.rs, serialized lowercase. */
 export type Risk = 'low' | 'medium' | 'high'
 
 export type SuggestedApproval = {

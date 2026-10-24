@@ -1,4 +1,5 @@
 use super::*;
+use outturn_core::egress::policy::Risk;
 
 fn small_spec() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -1599,7 +1600,7 @@ fn suggestion(name: &str) -> SuggestedApproval {
 fn reads_are_low_and_ungated() {
     for name in ["list_charges", "get_customer"] {
         let s = suggestion(name);
-        assert_eq!((s.risk, s.gate), ("low", false), "{name}");
+        assert_eq!((s.risk, s.gate), (Risk::Low, false), "{name}");
         assert!(s.amount.is_none(), "{name}");
     }
 }
@@ -1608,7 +1609,7 @@ fn reads_are_low_and_ungated() {
 fn creates_and_updates_are_medium_and_ungated() {
     for name in ["create_customer", "update_customer"] {
         let s = suggestion(name);
-        assert_eq!((s.risk, s.gate), ("medium", false), "{name}");
+        assert_eq!((s.risk, s.gate), (Risk::Medium, false), "{name}");
     }
 }
 
@@ -1621,7 +1622,7 @@ fn deletes_and_money_are_high_and_gated() {
         ("create_transfer", "transfer"),
     ] {
         let s = suggestion(name);
-        assert_eq!((s.risk, s.gate), ("high", true), "{name}");
+        assert_eq!((s.risk, s.gate), (Risk::High, true), "{name}");
         assert_eq!(s.requires, requires, "{name}");
     }
 }
@@ -1639,9 +1640,9 @@ fn a_word_that_only_looks_like_a_dangerous_one_is_not_one() {
 #[test]
 fn the_specifications_own_risk_wins() {
     let s = suggestion("run_report");
-    assert_eq!((s.risk, s.gate), ("high", true));
+    assert_eq!((s.risk, s.gate), (Risk::High, true));
     let s = suggestion("post_notice");
-    assert_eq!((s.risk, s.gate), ("low", false));
+    assert_eq!((s.risk, s.gate), (Risk::Low, false));
 }
 
 #[test]
@@ -1713,7 +1714,7 @@ fn a_confirmed_suggestion_is_a_rule_the_parser_reads() {
         s.requires,
         s.matches_path,
         s.binds.join(", "),
-        s.risk,
+        s.risk.as_str(),
         s.numbers.join(", ")
     );
     let output = generate(&payments_input(vec![Annotation {

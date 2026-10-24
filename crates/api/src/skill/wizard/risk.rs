@@ -7,13 +7,15 @@
 //! an `approval` annotation. See docs/auto-approval.md, "Where the wizard comes
 //! in".
 
+use outturn_core::egress::policy::Risk;
+
 use super::parse::{BodyField, Operation};
 
 /// What an operation would be gated as, and what its rule would say.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SuggestedApproval {
     /// `low`, `medium` or `high`: the rule's `risk` if the operator gates it.
-    pub risk: &'static str,
+    pub risk: Risk,
     /// Whether to gate it at all. A read is not; a delete or a payment is.
     pub gate: bool,
     /// The act word the rule asks for.
@@ -88,21 +90,21 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
     };
 
     let (mut risk, mut gate, mut reason, requires) = match (read, method.as_str(), danger) {
-        (true, _, _) => ("low", false, "reads change nothing".to_string(), None),
+        (true, _, _) => (Risk::Low, false, "reads change nothing".to_string(), None),
         (_, "DELETE", _) => (
-            "high",
+            Risk::High,
             true,
             "a delete cannot be taken back".to_string(),
             Some("delete".to_string()),
         ),
         (_, _, Some(word)) => (
-            "high",
+            Risk::High,
             true,
             format!("named for {word}, which moves money or cannot be undone"),
             Some(word.to_string()),
         ),
         _ => (
-            "medium",
+            Risk::Medium,
             false,
             "a create or update that can be corrected".to_string(),
             None,
@@ -112,7 +114,7 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
     // The specification's own word, where it gives one, over a guess from names.
     if let Some((level, gated)) = op.risk_hint.as_ref().and_then(hint) {
         risk = level;
-        gate = gated.unwrap_or(level != "low");
+        gate = gated.unwrap_or(level != Risk::Low);
         reason = "the specification declares x-risk".to_string();
     }
 
@@ -165,13 +167,8 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
 }
 
 /// `x-risk: high`, or `x-risk: { level: high, gated: false }`.
-fn hint(v: &serde_json::Value) -> Option<(&'static str, Option<bool>)> {
-    let level = |s: &str| match s.trim().to_ascii_lowercase().as_str() {
-        "low" => Some("low"),
-        "medium" => Some("medium"),
-        "high" => Some("high"),
-        _ => None,
-    };
+fn hint(v: &serde_json::Value) -> Option<(Risk, Option<bool>)> {
+    let level = |s: &str| Risk::parse(&s.trim().to_ascii_lowercase());
     match v {
         serde_json::Value::String(s) => level(s).map(|l| (l, None)),
         serde_json::Value::Object(o) => {
