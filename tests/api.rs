@@ -14548,9 +14548,11 @@ async fn a_request_with_no_answer_is_asked_about_and_can_be_marked_done() {
     assert_eq!(held_state(&h, &held).await.0, "done");
 
     // And a second answer to it is told it was already answered.
-    let (status, _) =
+    let (status, body) =
         post_with_cookie(&h, &format!("/v1/approvals/{followup}/resend"), &admin, "").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("already"), "{body}");
+    assert_eq!(held_state(&h, &held).await.0, "done");
 
     finish!(h);
 }

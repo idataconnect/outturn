@@ -561,10 +561,22 @@ async fn follow_up(
         .queue_for_user_everywhere(claims.subject, None, MAX_QUEUE_SCAN)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let item = mine
-        .into_iter()
-        .find(|i| i.id == item_id)
-        .ok_or((StatusCode::NOT_FOUND, "no such approval".to_string()))?;
+    let Some(item) = mine.into_iter().find(|i| i.id == item_id) else {
+        // Already settled reads as a conflict, as it does in `answer`: two
+        // people choosing at once is the ordinary way to get here.
+        let settled = state
+            .actions
+            .settled_for_user(claims.subject, item_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        return Err(match settled {
+            Some(state) => (
+                StatusCode::CONFLICT,
+                format!("this approval was already {}", state.as_str()),
+            ),
+            None => (StatusCode::NOT_FOUND, "no such approval".to_string()),
+        });
+    };
     if item.payload.get("followup").is_none() {
         return Err((
             StatusCode::CONFLICT,
