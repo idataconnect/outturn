@@ -92,8 +92,9 @@ async fn write_gates(
             sqlx::query(
                 "insert into skill_version_gates \
                  (version_id, path, requires, host, method, path_pattern, identified_by, \
-                  risk, auto, numbers, free) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict do nothing",
+                  risk, auto, numbers, free, amount) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+                 on conflict do nothing",
             )
             .bind(version_id)
             .bind(&rule.path)
@@ -106,6 +107,13 @@ async fn write_gates(
             .bind(if rule.auto { "allowed" } else { "never" })
             .bind(&rule.numbers)
             .bind(&rule.free)
+            .bind(
+                rule.amount
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| SkillError::Internal(e.to_string()))?,
+            )
             .execute(&mut **tx)
             .await
             .map_err(internal)?;
@@ -145,9 +153,9 @@ async fn copy_gates(
     sqlx::query(
         "insert into skill_version_gates \
          (version_id, path, requires, host, method, path_pattern, identified_by, \
-          risk, auto, numbers, free) \
+          risk, auto, numbers, free, amount) \
          select $2, path, requires, host, method, path_pattern, identified_by, \
-                risk, auto, numbers, free \
+                risk, auto, numbers, free, amount \
          from skill_version_gates where version_id = $1 \
          on conflict do nothing",
     )

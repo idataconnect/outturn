@@ -174,7 +174,7 @@ async fn reconcile_inner(state: &ApiState, workspace_id: Uuid) -> Result<(), Str
                 .iter()
                 .map(|s| (s.skill_id, s.name.clone()))
                 .collect();
-            let declared = super::declared_for(&state.pool, &resolved)
+            let declared = super::declared_in(&state.pool, workspace_id, &resolved)
                 .await
                 .map_err(|e| err(&e))?;
             read.push((agent, declared, names));

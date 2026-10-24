@@ -1436,6 +1436,9 @@ mod client_credentials {
                     per_day: 5,
                     sum_field: None,
                     sum_per_day: None,
+                    banding: None,
+                    max_risk: None,
+                    currency_per_day: None,
                 },
             ]);
         let rules = vec![rule.clone()];

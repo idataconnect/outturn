@@ -15,13 +15,18 @@
 //! after a broad policy was accepted -- resolves to a person being asked.
 
 pub mod api;
+pub mod bands;
+pub mod routes;
 pub mod waiting;
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::Row as _;
 use uuid::Uuid;
 
+use outturn_core::egress::amount::{Banding, Declaration};
 use outturn_core::egress::gate::Gate;
 use outturn_core::egress::policy::{self, PolicyGrant, Risk, Test};
 
@@ -45,6 +50,26 @@ pub struct Declared {
     /// When the version declaring it was published, which is what tells a gate
     /// a broad policy was accepted with from one that arrived later.
     pub published_at: DateTime<Utc>,
+    /// What the operator declared about money, where the operation moves any.
+    pub amount: Option<Declaration>,
+    /// The bands it runs under in this workspace: the operator's defaults from
+    /// `declared_for`, the workspace's own once `bands::apply` has been.
+    pub banding: Option<Banding>,
+}
+
+impl Declared {
+    /// The lowest risk a request through this gate can work out to, which is
+    /// what a selector and the deployment's cap are compared with before any
+    /// request arrives. The gateway then holds each request to the policy's
+    /// bound by the risk its own amount works out to.
+    pub fn reach(&self) -> Risk {
+        self.banding.as_ref().map_or(self.risk, Banding::lowest)
+    }
+
+    /// `METHOD /path`, as a policy or a band names an operation.
+    pub fn operation(&self) -> String {
+        format!("{} {}", self.gate.method, self.gate.path)
+    }
 }
 
 /// One policy row, as the page and the resolution read it.
@@ -66,6 +91,8 @@ pub struct Policy {
     pub per_day: i32,
     pub sum_field: Option<String>,
     pub sum_per_day: Option<i64>,
+    /// The most of each currency it lets out in a day, in minor units.
+    pub daily_totals: BTreeMap<String, i64>,
     pub mode: String,
     pub version: i32,
     pub note: Option<String>,
@@ -110,12 +137,18 @@ impl Policy {
     /// Whether this policy's selector reaches a gate, before anything about its
     /// tests is asked.
     fn selects(&self, declared: &Declared) -> bool {
+        // A bound on risk, where one is written, is a bound on the lowest risk
+        // a request through the gate can have; the gateway holds each request
+        // to it by its own amount.
+        let bound = || match self.max_risk.as_deref() {
+            None => self.selector != "risk",
+            Some(raw) => Risk::parse(raw).is_some_and(|max| declared.reach() <= max),
+        };
+        if !bound() {
+            return false;
+        }
         match self.selector.as_str() {
-            "risk" => self
-                .max_risk
-                .as_deref()
-                .and_then(Risk::parse)
-                .is_some_and(|max| declared.risk <= max),
+            "risk" => true,
             "act" => self.requires.as_deref() == Some(declared.gate.requires.as_str()),
             "operation" => {
                 self.skill_id == Some(declared.skill_id)
@@ -124,9 +157,7 @@ impl Policy {
                         .matches
                         .as_deref()
                         .and_then(normalize_matches)
-                        .is_some_and(|m| {
-                            m == format!("{} {}", declared.gate.method, declared.gate.path)
-                        })
+                        .is_some_and(|m| m == declared.operation())
             }
             _ => false,
         }
@@ -199,7 +230,7 @@ pub fn choose<'a>(
     if !declared.auto || declared.gate.binds.is_empty() {
         return None;
     }
-    if ceiling.is_none_or(|max| declared.risk > max) {
+    if ceiling.is_none_or(|max| declared.reach() > max) {
         return None;
     }
 
@@ -216,13 +247,23 @@ pub fn choose<'a>(
         if p.effect == "exclude" {
             return None;
         }
-        // A policy covers a gate only if the gate binds every field it tests.
-        if policy::fits(
-            &p.conditions,
-            p.sum_field.as_deref(),
-            &declared.gate.binds,
-            &declared.numbers,
-        ) {
+        // A policy covers a gate only if the gate binds every field it tests,
+        // and a policy with daily totals only a money operation in a currency
+        // it totals, or one that moves no money at all: "up to £500 a day"
+        // says nothing about dollars.
+        let totalled = p.daily_totals.is_empty()
+            || declared
+                .banding
+                .as_ref()
+                .is_none_or(|b| p.daily_totals.contains_key(&b.currency));
+        if totalled
+            && policy::fits(
+                &p.conditions,
+                p.sum_field.as_deref(),
+                &declared.gate.binds,
+                &declared.numbers,
+            )
+        {
             inclusions.push(p);
         }
     }
@@ -244,12 +285,33 @@ pub fn choose<'a>(
 }
 
 /// What goes into the token for one gate a policy is on for.
+///
+/// `ceiling` is the deployment's cap, as `choose` was given it. Where the gate
+/// declares an amount, the grant carries its bands and the tighter of the cap
+/// and the policy's own bound, for the gateway to hold each request to by the
+/// risk its amount works out to.
 pub fn grant(
     workspace_id: Uuid,
     job_id: Uuid,
     declared: &Declared,
     policy: &Policy,
+    ceiling: Option<Risk>,
 ) -> PolicyGrant {
+    let banding = declared.banding.clone();
+    let max_risk = banding.as_ref().map(|_| {
+        let own = policy.max_risk.as_deref().and_then(Risk::parse);
+        match (ceiling, own) {
+            (Some(c), Some(o)) => c.min(o),
+            (Some(c), None) => c,
+            (None, Some(o)) => o,
+            // No cap is `none`, which `choose` never covers; low is what is
+            // left if it ever did.
+            (None, None) => Risk::Low,
+        }
+    });
+    let currency_per_day = banding
+        .as_ref()
+        .and_then(|b| policy.daily_totals.get(&b.currency).copied());
     let mut fields: Vec<String> = declared
         .gate
         .binds
@@ -271,6 +333,9 @@ pub fn grant(
         per_day: i64::from(policy.per_day),
         sum_field: policy.sum_field.clone(),
         sum_per_day: policy.sum_per_day,
+        banding,
+        max_risk,
+        currency_per_day,
     }
 }
 
@@ -304,7 +369,7 @@ pub async fn declared_for(
     let versions: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
     let rows = sqlx::query(
         "select g.requires, g.host, g.method, g.path_pattern, g.identified_by, \
-                g.risk, g.auto, g.numbers, g.free, v.skill_id, v.created_at, \
+                g.risk, g.auto, g.numbers, g.free, g.amount, v.skill_id, v.created_at, \
                 coalesce( \
                     array_agg(b.field order by b.position) \
                         filter (where b.field is not null), \
@@ -319,7 +384,7 @@ pub async fn declared_for(
          where g.version_id = any($1) \
          group by g.version_id, g.path, g.requires, g.host, g.method, \
                   g.path_pattern, g.identified_by, g.risk, g.auto, g.numbers, g.free, \
-                  v.skill_id, v.created_at",
+                  g.amount, v.skill_id, v.created_at",
     )
     .bind(&versions)
     .fetch_all(pool)
@@ -327,26 +392,58 @@ pub async fn declared_for(
 
     Ok(rows
         .iter()
-        .map(|r| Declared {
-            gate: Gate {
-                requires: r.get("requires"),
-                host: r.get("host"),
-                method: r.get("method"),
-                path: r.get("path_pattern"),
-                identified_by: r.try_get("identified_by").ok().flatten(),
-                binds: r.get("binds"),
-            },
-            skill_id: r.get("skill_id"),
-            // A value the check constraint allows and this cannot read is the
-            // most guarded one.
-            risk: Risk::parse(r.get::<String, _>("risk").as_str()).unwrap_or(Risk::High),
-            auto: r.get::<String, _>("auto") == "allowed",
-            numbers: r.get("numbers"),
-            free: r.get("free"),
-            published_at: r.get("created_at"),
+        .map(|r| {
+            let risk = Risk::parse(r.get::<String, _>("risk").as_str()).unwrap_or(Risk::High);
+            // A declaration this cannot read is an operation with no amount,
+            // whose risk is its base risk: the conservative reading.
+            let amount: Option<Declaration> = r
+                .get::<Option<serde_json::Value>, _>("amount")
+                .and_then(|v| serde_json::from_value(v).ok());
+            let banding = amount.as_ref().map(|a| Banding {
+                field: a.amount.field.clone(),
+                currency: a.amount.currency.clone(),
+                base: risk,
+                bands: a.bands.clone(),
+                floor: a.floor.clone(),
+            });
+            Declared {
+                gate: Gate {
+                    requires: r.get("requires"),
+                    host: r.get("host"),
+                    method: r.get("method"),
+                    path: r.get("path_pattern"),
+                    identified_by: r.try_get("identified_by").ok().flatten(),
+                    binds: r.get("binds"),
+                },
+                skill_id: r.get("skill_id"),
+                // A value the check constraint allows and this cannot read is the
+                // most guarded one.
+                risk,
+                auto: r.get::<String, _>("auto") == "allowed",
+                numbers: r.get("numbers"),
+                free: r.get("free"),
+                published_at: r.get("created_at"),
+                amount,
+                banding,
+            }
         })
         .filter(|d| !d.gate.binds.is_empty())
         .collect())
+}
+
+/// What a turn's skills declare, with the bands each money operation runs
+/// under in this workspace: `declared_for`, then `bands::apply`.
+pub async fn declared_in(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    skills: &[super::skill::ResolvedSkill],
+) -> Result<Vec<Declared>, sqlx::Error> {
+    let mut declared = declared_for(pool, skills).await?;
+    if declared.iter().any(|d| d.amount.is_some()) {
+        let rows = bands::of(pool, workspace_id).await?;
+        bands::apply(&mut declared, &rows);
+    }
+    Ok(declared)
 }
 
 /// The policy columns the page and the resolution read, as a macro so each
@@ -355,7 +452,8 @@ macro_rules! select_policies {
     () => {
         "select p.id, p.workspace_id, p.agent_id, a.name as agent_name, p.effect, \
             p.selector, p.max_risk, p.requires, p.skill_id, s.name as skill_name, p.matches, \
-            p.conditions, p.per_turn, p.per_day, p.sum_field, p.sum_per_day, p.mode, \
+            p.conditions, p.per_turn, p.per_day, p.sum_field, p.sum_per_day, p.daily_totals, \
+            p.mode, \
             p.version, p.note, p.created_by, cu.display_name as created_by_name, p.created_at, \
             p.updated_by, uu.display_name as updated_by_name, p.updated_at, p.accepted_at, \
             p.expires_at, p.revoked_by, ru.display_name as revoked_by_name, p.revoked_at, \
@@ -399,6 +497,11 @@ fn read(r: &sqlx::postgres::PgRow) -> Policy {
         per_day: r.get("per_day"),
         sum_field: r.get("sum_field"),
         sum_per_day: r.get("sum_per_day"),
+        // Unreadable totals are a policy whose meaning is unknown, read as one
+        // with a total of nothing in a currency nobody uses: covering no money
+        // operation at all, since none is in that currency.
+        daily_totals: serde_json::from_value(r.get("daily_totals"))
+            .unwrap_or_else(|_| BTreeMap::from([("???".to_string(), 0)])),
         mode: r.get("mode"),
         version: r.get("version"),
         note: r.get("note"),
@@ -484,13 +587,13 @@ pub async fn for_turn(
         if policies.is_empty() {
             return Ok::<_, sqlx::Error>(Vec::new());
         }
-        let declared = declared_for(pool, skills).await?;
+        let declared = declared_in(pool, workspace_id, skills).await?;
         let now = Utc::now();
         Ok(declared
             .iter()
             .filter_map(|d| {
                 match choose(d, &policies, workspace_id, agent_id, Some(ceiling), now)? {
-                    Chosen::On(p) => Some(grant(workspace_id, job_id, d, p)),
+                    Chosen::On(p) => Some(grant(workspace_id, job_id, d, p, Some(ceiling))),
                     Chosen::Trial(_) => None,
                 }
             })
@@ -580,7 +683,7 @@ pub async fn would_approve(
     if policies.is_empty() {
         return None;
     }
-    let declared = declared_for(pool, skills).await.ok()?;
+    let declared = declared_in(pool, workspace_id, skills).await.ok()?;
     let d = declared.iter().find(|d| d.gate == *gate)?;
     let Chosen::Trial(p) = choose(
         d,
@@ -595,7 +698,7 @@ pub async fn would_approve(
     };
     // The same test the gateway applies, against a grant built the same way, so
     // "would have" means what "does" would.
-    grant(workspace_id, Uuid::nil(), d, p)
+    grant(workspace_id, Uuid::nil(), d, p, Some(ceiling))
         .admits(workspace_id, gate, query, body)
         .map(|_| p.id)
 }
@@ -634,6 +737,8 @@ mod tests {
             numbers: vec!["amount_pence".into()],
             free: vec!["description".into()],
             published_at: Utc::now() - chrono::Duration::days(30),
+            amount: None,
+            banding: None,
         }
     }
 
@@ -660,6 +765,7 @@ mod tests {
             per_day: 20,
             sum_field: None,
             sum_per_day: None,
+            daily_totals: BTreeMap::new(),
             mode: "on".into(),
             version: 1,
             note: None,
@@ -852,13 +958,13 @@ mod tests {
         let mut edited = policy("risk");
         let grants: Vec<PolicyGrant> = [&kept, &revoked, &edited]
             .iter()
-            .map(|p| grant(workspace(), Uuid::nil(), &d, p))
+            .map(|p| grant(workspace(), Uuid::nil(), &d, p, None))
             .collect();
         edited.version += 1;
         let mut trial = policy("act");
         trial.mode = "trial".into();
         let mut grants = grants;
-        grants.push(grant(workspace(), Uuid::nil(), &d, &trial));
+        grants.push(grant(workspace(), Uuid::nil(), &d, &trial, None));
 
         let left = standing(&grants, &[kept.clone(), revoked, edited, trial], Utc::now());
         assert_eq!(
@@ -869,11 +975,117 @@ mod tests {
         assert!(standing(&grants, &[], Utc::now()).is_empty());
     }
 
+    /// A charge whose base risk is high, with bands from the operator: low
+    /// below £50, medium below £200.
+    pub(super) fn charge_in(currency: &str) -> Declared {
+        use outturn_core::egress::amount::{Amount, Bands, Floor};
+        let mut d = declared("charge", Risk::High);
+        let declaration = Declaration {
+            amount: Amount {
+                field: "amount_pence".into(),
+                currency: currency.into(),
+                minor_units: 2,
+            },
+            bands: Bands {
+                low: Some(5000),
+                medium: Some(20000),
+            },
+            floor: Floor::default(),
+        };
+        d.banding = Some(Banding {
+            field: "amount_pence".into(),
+            currency: currency.into(),
+            base: Risk::High,
+            bands: declaration.bands.clone(),
+            floor: declaration.floor.clone(),
+        });
+        d.amount = Some(declaration);
+        d
+    }
+
+    #[test]
+    fn a_risk_selector_reaches_a_money_operation_by_its_lowest_band() {
+        let mut low = policy("risk");
+        low.max_risk = Some("low".into());
+        low.conditions.clear();
+        let d = charge_in("GBP");
+        // High by declaration, and still reached: some charges are low.
+        let chosen = pick(&d, std::slice::from_ref(&low), Some(Risk::Medium)).unwrap();
+        let g = grant(
+            workspace(),
+            Uuid::nil(),
+            &d,
+            chosen.policy(),
+            Some(Risk::Medium),
+        );
+        assert_eq!(
+            g.max_risk,
+            Some(Risk::Low),
+            "the tighter of the policy and the cap"
+        );
+        assert_eq!(g.banding, d.banding);
+
+        // A cap of none reaches nothing, bands or not.
+        assert!(pick(&d, std::slice::from_ref(&low), None).is_none());
+        // And with no band below high, nothing a low policy can reach.
+        let mut no_bands = charge_in("GBP");
+        no_bands.banding.as_mut().unwrap().bands = Default::default();
+        assert!(pick(&no_bands, &[low], Some(Risk::High)).is_none());
+    }
+
+    #[test]
+    fn an_act_selector_may_bound_risk_too() {
+        let mut charges = policy("act");
+        charges.max_risk = Some("low".into());
+        charges.conditions.clear();
+        let d = charge_in("GBP");
+        let chosen = pick(&d, std::slice::from_ref(&charges), Some(Risk::High)).unwrap();
+        let g = grant(
+            workspace(),
+            Uuid::nil(),
+            &d,
+            chosen.policy(),
+            Some(Risk::High),
+        );
+        assert_eq!(g.max_risk, Some(Risk::Low));
+        // Without bands the bound is on the base risk, which is high.
+        let plain = declared("charge", Risk::High);
+        assert!(pick(&plain, &[charges], Some(Risk::High)).is_none());
+    }
+
+    #[test]
+    fn a_daily_total_covers_only_its_own_currency() {
+        let mut p = policy("risk");
+        p.max_risk = Some("low".into());
+        p.conditions.clear();
+        p.daily_totals = BTreeMap::from([("GBP".to_string(), 50000)]);
+        let pounds = charge_in("GBP");
+        let chosen = pick(&pounds, std::slice::from_ref(&p), Some(Risk::High)).unwrap();
+        let g = grant(
+            workspace(),
+            Uuid::nil(),
+            &pounds,
+            chosen.policy(),
+            Some(Risk::High),
+        );
+        assert_eq!(g.currency_per_day, Some(50000));
+        assert!(
+            pick(
+                &charge_in("USD"),
+                std::slice::from_ref(&p),
+                Some(Risk::High)
+            )
+            .is_none()
+        );
+        // An operation moving no money is not one a total is about.
+        assert!(pick(&declared("charge", Risk::Low), &[p], Some(Risk::High)).is_some());
+    }
+
     #[test]
     fn the_grant_carries_the_gates_fields_and_the_policys_caps() {
         let d = declared("charge", Risk::Low);
         let p = policy("act");
-        let g = grant(workspace(), Uuid::nil(), &d, &p);
+        let g = grant(workspace(), Uuid::nil(), &d, &p, None);
         assert_eq!(g.fields, vec!["amount_pence", "booking_id", "description"]);
         assert_eq!(g.per_turn, 3);
         assert_eq!(g.gate, d.gate.key(workspace()));
