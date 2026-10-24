@@ -7,8 +7,17 @@ import {
   resendFollowUp,
   type FollowUp,
 } from '../lib/actions'
-import { OFFER_AFTER, answeredCount, policyLink } from '../lib/autoApproval'
-import type { FieldMoney, Risk } from '../lib/money'
+import {
+  OFFER_AFTER,
+  answeredCount,
+  approvedAmounts,
+  countOf,
+  kindOf,
+  oneLineLink,
+  policyLink,
+  roundUnder,
+} from '../lib/autoApproval'
+import { formatMoney, type FieldMoney, type Risk } from '../lib/money'
 import { useHasAuthority } from '../lib/session'
 import RiskBadge from './RiskBadge'
 
@@ -32,6 +41,10 @@ import RiskBadge from './RiskBadge'
  * check stays where it is -- this narrows what is offered, never what is
  * allowed.
  */
+/** What the prompt offers after a few approvals of one act: what was approved,
+ *  and where a policy for it is set. */
+type Offer = { money: boolean; said: string; action: string; href: string }
+
 /** One field the approval binds, and the value this request gave it. */
 export type Bound = { field: string; value: unknown }
 
@@ -92,25 +105,51 @@ export default function ApprovalPrompt({
   const delegates = useHasAuthority('approvals:delegate')
   const answers = useHasAuthority('approvals:answer')
   const mayDelegate = delegates && answers
-  const [offer, setOffer] = useState<string | null>(null)
+  const [offer, setOffer] = useState<Offer | null>(null)
   const requires = approval.requires
   const fields = (approval.binds ?? []).map((b) => b.field).join(',')
+  const followup = approval.followup ?? null
+  const currency = approval.money?.currency ?? null
   useEffect(() => {
-    if (!mayDelegate || !requires) return
+    // Never on a follow-up: what to do about a request that did not go is no
+    // moment to suggest letting more of them go unasked.
+    if (!mayDelegate || !requires || followup) return
     let stale = false
-    answeredCount(requires)
-      .then((n) => {
-        if (!stale && n.may_delegate && n.approved >= OFFER_AFTER) {
-          setOffer(policyLink(requires, fields ? fields.split(',') : []))
+    void (async () => {
+      // Where the act moves money, the offer is drawn from what was approved:
+      // how many, the largest, and the figure to start the one line from. In
+      // this request's currency where it has one, else the one most approved.
+      const amounts = await approvedAmounts(requires).catch(() => null)
+      const inCurrency = amounts?.currencies.find((c) => c.currency === currency)
+      const most = [...(amounts?.currencies ?? [])].sort((a, b) => b.approved - a.approved)[0]
+      const chosen = inCurrency ?? most
+      if (amounts?.may_delegate && chosen && chosen.approved >= OFFER_AFTER) {
+        const under = formatMoney(roundUnder(chosen.max.amount, chosen.minor_units), chosen.currency, chosen.minor_units)
+        if (!stale) {
+          setOffer({
+            money: true,
+            said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${under}.`,
+            action: `Approve ${kindOf(requires).replace(/^./, (c) => c.toLowerCase())} under ${chosen.suggested_low.display} automatically`,
+            href: oneLineLink(requires, chosen.currency, chosen.suggested_low.amount),
+          })
         }
-      })
-      .catch(() => {})
+        return
+      }
+      // Otherwise the count alone, and the full editor, its fields filled in.
+      const n = await answeredCount(requires).catch(() => null)
+      if (!stale && n?.may_delegate && n.approved >= OFFER_AFTER) {
+        setOffer({
+          money: false,
+          said: 'this workspace has approved it several times before',
+          action: `Auto-approval policy for “${requires}”`,
+          href: policyLink(requires, fields ? fields.split(',') : []),
+        })
+      }
+    })()
     return () => {
       stale = true
     }
-  }, [mayDelegate, requires, fields])
-
-  const followup = approval.followup ?? null
+  }, [mayDelegate, requires, fields, followup, currency])
 
   async function answer(approved: boolean) {
     setBusy(true)
@@ -208,10 +247,21 @@ export default function ApprovalPrompt({
 
           {offer && !followup && (
             <p className="mt-2 text-xs text-surface-600 dark:text-surface-400">
-              <a href={offer} className="text-brand-700 hover:underline dark:text-brand-300">
-                Auto-approval policy for “{requires}”
-              </a>{' '}
-              · this workspace has approved it several times before
+              {offer.money ? (
+                <>
+                  {offer.said}{' '}
+                  <a href={offer.href} className="text-brand-700 hover:underline dark:text-brand-300">
+                    {offer.action}
+                  </a>
+                </>
+              ) : (
+                <>
+                  <a href={offer.href} className="text-brand-700 hover:underline dark:text-brand-300">
+                    {offer.action}
+                  </a>{' '}
+                  · {offer.said}
+                </>
+              )}
             </p>
           )}
 
