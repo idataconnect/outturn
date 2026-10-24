@@ -230,10 +230,54 @@ pub async fn raise(
         })
         .await?;
 
+    // What the request's risk works out to, from the bands this workspace runs
+    // the operation under, and its amount as money where it carries one. Read
+    // here rather than from the token because it lets nothing out: it decides
+    // only who is asked, and what they are shown.
+    let skills = {
+        use super::skill::SkillStore as _;
+        super::skill::PostgresSkillStore::new(state.pool.clone())
+            .resolve_for_agent(payload.workspace_id, payload.agent_id)
+            .await
+            .ok()
+    };
+    let assessed = match &skills {
+        Some(skills) => {
+            assess(
+                &state,
+                payload.workspace_id,
+                skills,
+                gate,
+                input.body.as_deref(),
+            )
+            .await
+        }
+        None => None,
+    };
+
     // Who gets asked. The workspace's approvers, resolved as a role rather than
     // as the people in it, for the reason `action_targets` exists: membership
-    // outlives the moment.
-    let targets = approvers(&state, payload.workspace_id).await?;
+    // outlives the moment -- and of them, for a high-risk request, the roles
+    // the workspace named for it, where it named any.
+    let targets = {
+        let answerers = state
+            .roles
+            .roles_with(payload.workspace_id, Authority::ApprovalsAnswer)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let named = match assessed.as_ref().map(|a| a.risk) {
+            Some(outturn_core::egress::policy::Risk::High) => {
+                super::auto_approval::routes::named(&state.pool, payload.workspace_id)
+                    .await
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        let risk = assessed
+            .as_ref()
+            .map_or(outturn_core::egress::policy::Risk::Medium, |a| a.risk);
+        super::auto_approval::routes::targets(risk, &named, &answerers)
+    };
     if targets.is_empty() {
         // Nobody can answer, so the turn would park for ever. The hold is given
         // back and the request stays refused -- which is the safe direction, and
@@ -268,13 +312,27 @@ pub async fn raise(
     // order the skill declared them, and as the body had them, so a number stays
     // a number.
     payload_json["binds"] = bound_values(&gate.binds, input.body.as_deref());
+    // The risk it worked out to, and the amount as money, so the question says
+    // "£50.00" rather than a field and a number -- and so the offer of a policy
+    // can be drawn from what was approved.
+    if let Some(a) = &assessed {
+        payload_json["risk"] = serde_json::json!(a.risk);
+        if let Some(money) = &a.money {
+            payload_json["money"] = serde_json::to_value(money).unwrap_or_default();
+            payload_json["money"]["field"] = serde_json::json!(a.field);
+        }
+    }
 
     // A policy in trial asks a person exactly as before, and the question says
     // it would have said yes -- which is what the evidence counts its
     // disagreements with people from. Decided here, from the request as
     // refused, by the same test the gateway would apply; it lets nothing
     // through, so a failure to decide only leaves the question unmarked.
-    if let Some(policy_id) = trial_verdict(&state, &payload, gate, &input).await {
+    let verdict = match &skills {
+        Some(skills) => trial_verdict(&state, &payload, skills, gate, &input).await,
+        None => None,
+    };
+    if let Some(policy_id) = verdict {
         payload_json["would_auto_approve"] = serde_json::json!(policy_id.to_string());
     }
 
@@ -377,14 +435,10 @@ pub async fn raise(
 async fn trial_verdict(
     state: &ApiState,
     payload: &super::worker::ChatTurnPayload,
+    skills: &[super::skill::ResolvedSkill],
     gate: &outturn_core::egress::gate::Gate,
     input: &Refused,
 ) -> Option<Uuid> {
-    use super::skill::SkillStore as _;
-    let skills = super::skill::PostgresSkillStore::new(state.pool.clone())
-        .resolve_for_agent(payload.workspace_id, payload.agent_id)
-        .await
-        .ok()?;
     let query = input
         .url
         .as_deref()
@@ -394,12 +448,61 @@ async fn trial_verdict(
         &state.pool,
         payload.workspace_id,
         payload.agent_id,
-        &skills,
+        skills,
         gate,
         query.as_deref(),
         input.body.as_deref(),
     )
     .await
+}
+
+/// A refused request, as its risk is worked out.
+struct Assessed {
+    risk: outturn_core::egress::policy::Risk,
+    /// The amount field, where the operation declares one.
+    field: Option<String>,
+    /// The amount as money, where the request carried one to trust.
+    money: Option<super::auto_approval::bands::Money>,
+}
+
+/// What a refused request's risk works out to: the gate's base risk, or for a
+/// money operation the band its amount falls in under this workspace's bands.
+/// `None` where the gate is not one the turn's skills declare, which leaves the
+/// question routed as every question was before.
+async fn assess(
+    state: &ApiState,
+    workspace_id: Uuid,
+    skills: &[super::skill::ResolvedSkill],
+    gate: &outturn_core::egress::gate::Gate,
+    body: Option<&str>,
+) -> Option<Assessed> {
+    let declared = super::auto_approval::declared_in(&state.pool, workspace_id, skills)
+        .await
+        .ok()?;
+    let d = declared.iter().find(|d| d.gate == *gate)?;
+    let (Some(banding), Some(amount)) = (&d.banding, &d.amount) else {
+        return Some(Assessed {
+            risk: d.risk,
+            field: None,
+            money: None,
+        });
+    };
+    let parsed = body
+        .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let (risk, value) = banding.assess(&parsed);
+    Some(Assessed {
+        risk,
+        field: Some(amount.amount.field.clone()),
+        money: value.map(|v| {
+            super::auto_approval::bands::Money::of(
+                v,
+                &amount.amount.currency,
+                amount.amount.minor_units,
+            )
+        }),
+    })
 }
 
 /// The roles in this workspace whose holders may answer an approval.

@@ -16,6 +16,7 @@
 
 pub mod api;
 pub mod bands;
+pub mod routes;
 pub mod waiting;
 
 use std::collections::BTreeMap;

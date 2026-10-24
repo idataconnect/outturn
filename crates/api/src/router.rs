@@ -1911,6 +1911,18 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/approval-bands/{id}",
             delete(super::auto_approval::bands::delete),
         )
+        .route(
+            "/v1/approval-routes",
+            get(super::auto_approval::routes::get),
+        )
+        .route(
+            "/v1/approval-routes/high",
+            axum::routing::put(super::auto_approval::routes::put_high),
+        )
+        .route(
+            "/v1/approvals/amounts",
+            get(super::auto_approval::api::amounts),
+        )
         .route("/v1/action-items", get(super::actions_api::queue))
         .route("/v1/action-items/count", get(super::actions_api::badge))
         .route(

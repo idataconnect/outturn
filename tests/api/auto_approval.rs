@@ -925,3 +925,160 @@ async fn bands_are_set_by_whoever_may_set_a_policy() {
     assert!(page["operations"].as_array().unwrap().is_empty());
     finish!(h);
 }
+
+/// Raises an approval for a refused charge of this many pence, as the runtime
+/// relays one, and returns the queue item's payload and targets.
+async fn refuse_charge(h: &Harness, job: Uuid, lease: Uuid, pence: i64) -> (Value, Vec<Uuid>) {
+    let session: Uuid =
+        sqlx::query_scalar("select (payload->>'session_id')::uuid from jobs where id = $1")
+            .bind(job)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    let body = serde_json::json!({"booking_id": "bk_1", "amount_pence": pence}).to_string();
+    let (status, raised) = h
+        .send(
+            Request::post("/v1/work/gated")
+                .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+                .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "session_id": session, "job_id": job, "method": "POST",
+                        "host": CHARGE_HOST, "path": "/charges", "body": body,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{raised}");
+    let item: Uuid = serde_json::from_str::<Value>(&raised).unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let payload: Value = sqlx::query_scalar("select payload from action_items where id = $1")
+        .bind(item)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    let targets: Vec<Uuid> =
+        sqlx::query_scalar("select role_id from action_targets where item_id = $1 order by 1")
+            .bind(item)
+            .fetch_all(&h.db.pool)
+            .await
+            .unwrap();
+    (payload, targets)
+}
+
+/// A question says how risky the request worked out to and what it costs, as
+/// money; a high one goes to the roles the workspace named for it, and the
+/// offer of a policy is drawn from the amounts people approved.
+#[tokio::test]
+async fn a_high_charge_asks_whoever_the_workspace_named() {
+    use outturn::api::role::CreateRole;
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let admin_role: Uuid =
+        sqlx::query_scalar("select id from roles where workspace_id = $1 and name = 'admin'")
+            .bind(c.acme)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    let manager = h
+        .roles
+        .create(
+            c.acme,
+            CreateRole {
+                name: "manager".into(),
+                description: String::new(),
+                authorities: vec!["approvals:answer".into()],
+            },
+        )
+        .await
+        .expect("role")
+        .id;
+    let bystander = h
+        .roles
+        .create(
+            c.acme,
+            CreateRole {
+                name: "bystander".into(),
+                description: String::new(),
+                authorities: vec!["agents:read".into()],
+            },
+        )
+        .await
+        .expect("role")
+        .id;
+
+    // Only a role that may answer may be named.
+    let (status, _) = put(
+        &h,
+        "/v1/approval-routes/high",
+        &c.admin,
+        &serde_json::json!({ "role_ids": [bystander] }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = put(
+        &h,
+        "/v1/approval-routes/high",
+        &c.admin,
+        &serde_json::json!({ "role_ids": [manager] }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let routes: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(routes["high"][0]["name"], "manager");
+
+    // £300 is high: the manager is asked, and only the manager.
+    let (job, lease, _) = a_turn(&h, &c).await;
+    let (payload, targets) = refuse_charge(&h, job, lease, 30000).await;
+    assert_eq!(payload["risk"], "high");
+    assert_eq!(payload["money"]["display"], "£300.00");
+    assert_eq!(payload["money"]["field"], "amount_pence");
+    assert_eq!(targets, vec![manager]);
+
+    // £60 is medium: everyone who answers approvals, as before.
+    let (job, lease, _) = a_turn(&h, &c).await;
+    let (payload, targets) = refuse_charge(&h, job, lease, 6000).await;
+    assert_eq!(payload["risk"], "medium");
+    let mut everyone = vec![admin_role, manager];
+    everyone.sort();
+    let mut targets = targets;
+    targets.sort();
+    assert_eq!(targets, everyone);
+
+    // The offer: approved amounts, per currency, with a figure above them.
+    sqlx::query("update action_items set state = 'resolved' where kind = 'approval.charge'")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let (status, body) = h
+        .get("/v1/approvals/amounts?requires=charge", Some(&c.admin))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let amounts: Value = serde_json::from_str(&body).unwrap();
+    let pounds = &amounts["currencies"][0];
+    assert_eq!(pounds["currency"], "GBP");
+    assert_eq!(pounds["approved"], 2);
+    assert_eq!(pounds["max"]["display"], "£300.00");
+    assert_eq!(pounds["suggested_low"]["display"], "£500.00");
+    assert_eq!(amounts["may_delegate"], true);
+
+    // Nothing named: high asks everyone again.
+    let (status, _) = put(
+        &h,
+        "/v1/approval-routes/high",
+        &c.admin,
+        r#"{"role_ids":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (job, lease, _) = a_turn(&h, &c).await;
+    let (_, targets) = refuse_charge(&h, job, lease, 30000).await;
+    assert_eq!(targets.len(), 2);
+    finish!(h);
+}

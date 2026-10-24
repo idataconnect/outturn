@@ -783,10 +783,123 @@ pub async fn answered(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AmountsQuery {
+    pub requires: String,
+    /// How far back, in days. Thirty unless said; at most a year.
+    #[serde(default)]
+    pub days: Option<i32>,
+}
+
+/// What a workspace approved of one act in one currency.
+#[derive(Debug, Serialize)]
+pub struct ApprovedIn {
+    pub currency: String,
+    pub minor_units: u8,
+    /// How many a person said yes to.
+    pub approved: i64,
+    pub max: super::bands::Money,
+    pub total: super::bands::Money,
+    /// The figure an offer prefills: the first round amount above the largest
+    /// approved -- £50 after approvals all under £40.
+    pub suggested_low: super::bands::Money,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Amounts {
+    pub requires: String,
+    pub days: i32,
+    pub currencies: Vec<ApprovedIn>,
+    pub may_delegate: bool,
+}
+
+/// The smallest of 1, 2 and 5 times a power of ten, in whole units of the
+/// currency, above `max`.
+fn round_above(max: i64, minor_units: u8) -> i64 {
+    let mut step = 10i64.saturating_pow(u32::from(minor_units));
+    loop {
+        for m in [1, 2, 5] {
+            let n = step.saturating_mul(m);
+            if n > max || n == i64::MAX {
+                return n;
+            }
+        }
+        step = step.saturating_mul(10);
+    }
+}
+
+/// `GET /v1/approvals/amounts?requires=charge&days=30`: the amounts this
+/// workspace's people approved of one act, per currency, for the prompt's
+/// offer -- "12 charges approved this month, all under £40".
+///
+/// Scoped as the count beside it is: the caller's workspace, for somebody who
+/// answers approvals. Only questions raised since they carried their amount.
+pub async fn amounts(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<AmountsQuery>,
+) -> Result<Json<Amounts>, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let held = authorities_of(&state, &claims).await?;
+    if !held.contains(&Authority::ApprovalsAnswer) {
+        return Err(forbidden());
+    }
+    let days = query.days.unwrap_or(30).clamp(1, 365);
+    let rows = sqlx::query(
+        "select payload->'money'->>'currency' as currency, \
+                (payload->'money'->>'minor_units')::int as minor_units, \
+                count(*) as approved, \
+                max((payload->'money'->>'amount')::bigint) as max, \
+                sum((payload->'money'->>'amount')::bigint)::bigint as total \
+         from action_items \
+         where workspace_id = $1 and kind = 'approval.' || $2 and state = 'resolved' \
+           and not (payload ? 'followup') and payload ? 'money' \
+           and created_at > now() - make_interval(days => $3) \
+         group by 1, 2 order by 1",
+    )
+    .bind(claims.workspace_id)
+    .bind(&query.requires)
+    .bind(days)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    let currencies = rows
+        .iter()
+        .filter_map(|r| {
+            let currency: String = r.get("currency");
+            let minor: u8 = u8::try_from(r.get::<i32, _>("minor_units")).ok()?;
+            let max: i64 = r.get("max");
+            let m = |v| super::bands::Money::of(v, &currency, minor);
+            Some(ApprovedIn {
+                approved: r.get("approved"),
+                max: m(max),
+                total: m(r.get("total")),
+                suggested_low: m(round_above(max, minor)),
+                minor_units: minor,
+                currency: currency.clone(),
+            })
+        })
+        .collect();
+    Ok(Json(Amounts {
+        requires: query.requires,
+        days,
+        currencies,
+        may_delegate: claims.family_id.is_some() && held.contains(&Authority::ApprovalsDelegate),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_offer_rounds_up_past_the_largest_approved() {
+        assert_eq!(round_above(3999, 2), 5000);
+        assert_eq!(round_above(5000, 2), 10000);
+        assert_eq!(round_above(12, 2), 100, "never below one whole unit");
+        assert_eq!(round_above(1500, 0), 2000);
+    }
 
     fn write(v: serde_json::Value) -> WritePolicy {
         serde_json::from_value(v).unwrap()
