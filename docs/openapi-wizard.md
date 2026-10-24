@@ -460,7 +460,16 @@ Each one changes exactly one thing in the output, and says which:
   a gate the live version has unless told `remove_gates`, so retiring an
   approval annotation is a decision made twice rather than once by accident;
   and a skill adopted from before sources were kept has the rules written into
-  its files by hand turned into annotations as it is adopted.
+  its files by hand turned into annotations as it is adopted. The page offers a
+  rule per operation, guessed from its method and names and never applied
+  unasked: reads low and ungated, creates and updates medium, deletes and
+  anything named for money or irreversibility high and gated, with an
+  `x-risk` extension in the specification taking precedence, and the amount
+  field and currency read from the body's field names and what the
+  specification says of them ([auto-approval.md](auto-approval.md), "Where the
+  wizard comes in"). Each is confirmed or changed one at a time, or all
+  together. An operation with no body fields has nothing for a rule to bind, so
+  it is shown but cannot be confirmed.
 - **`example`** -- an observed call, from evaluation, carrying the turn it came
   from, so a session later flagged takes its examples down with it.
 - **`skill_note`** -- prose for the body rather than one operation: a

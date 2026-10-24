@@ -53,6 +53,10 @@ pub struct Operation {
     pub parameters: Vec<Parameter>,
     pub request_body: Option<RequestBody>,
     pub responses: BTreeMap<String, Response>,
+    /// The operation's `x-risk` vendor extension as written, if it has one:
+    /// the specification's own word on how dangerous a call is, which the
+    /// risk suggestion defers to (`super::risk`).
+    pub risk_hint: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -108,6 +112,7 @@ pub struct SchemaInfo {
     pub minimum: Option<f64>,
     pub maximum: Option<f64>,
     pub items_type: Option<String>,
+    pub default: Option<String>,
 }
 
 #[derive(Clone)]
@@ -225,6 +230,7 @@ pub fn parse(bytes: &[u8]) -> Result<Api, ParseError> {
                 parameters: params,
                 request_body,
                 responses,
+                risk_hint: op_obj.get("x-risk").cloned(),
             });
         }
     }
@@ -424,6 +430,11 @@ fn extract_schema_info(
         .get("description")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let default = obj.get("default").and_then(|v| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Null => None,
+        other => Some(other.to_string()),
+    });
     let minimum = obj.get("minimum").and_then(|v| v.as_f64());
     let maximum = obj.get("maximum").and_then(|v| v.as_f64());
 
@@ -443,6 +454,7 @@ fn extract_schema_info(
         minimum,
         maximum,
         items_type,
+        default,
     }
 }
 
@@ -455,6 +467,7 @@ fn default_schema() -> SchemaInfo {
         minimum: None,
         maximum: None,
         items_type: None,
+        default: None,
     }
 }
 

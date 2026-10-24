@@ -1508,3 +1508,223 @@ fn an_identity_is_suggested_for_a_write_and_applied_only_when_confirmed() {
         "a field the specification lacks is left out"
     );
 }
+
+fn payments_spec() -> Vec<u8> {
+    let json = |props: serde_json::Value, required: serde_json::Value| {
+        serde_json::json!({"content": {"application/json": {"schema": {
+            "type": "object", "required": required, "properties": props
+        }}}})
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Payments", "version": "1"},
+        "paths": {
+            "/charges": {
+                "get": {"operationId": "listCharges", "summary": "List charges", "tags": ["Charges"]},
+                "post": {
+                    "operationId": "createCharge", "summary": "Charge a card", "tags": ["Charges"],
+                    "requestBody": json(serde_json::json!({
+                        "customer_id": {"type": "string"},
+                        "amount_pence": {"type": "integer", "minimum": 0},
+                        "note": {"type": "string"}
+                    }), serde_json::json!(["customer_id", "amount_pence"]))
+                }
+            },
+            "/charges/{id}/refund": {
+                "post": {
+                    "operationId": "refundCharge", "summary": "Refund a charge", "tags": ["Charges"],
+                    "requestBody": json(serde_json::json!({
+                        "amount": {"type": "number", "description": "How much to give back, in USD"},
+                        "reason": {"type": "string"}
+                    }), serde_json::json!(["amount"]))
+                }
+            },
+            "/transfers": {
+                "post": {
+                    "operationId": "createTransfer", "summary": "Move money", "tags": ["Transfers"],
+                    "requestBody": json(serde_json::json!({
+                        "destination": {"type": "string"},
+                        "total": {"type": "integer"},
+                        "currency": {"type": "string", "enum": ["EUR"]}
+                    }), serde_json::json!(["destination", "total"]))
+                }
+            },
+            "/customers": {
+                "post": {
+                    "operationId": "createCustomer", "summary": "Add a customer", "tags": ["Customers"],
+                    "requestBody": json(serde_json::json!({
+                        "name": {"type": "string"},
+                        "email": {"type": "string"}
+                    }), serde_json::json!(["name"]))
+                }
+            },
+            "/customers/{id}": {
+                "get": {"operationId": "getCustomer", "summary": "Fetch a customer", "tags": ["Customers"]},
+                "patch": {
+                    "operationId": "updateCustomer", "summary": "Rename a customer", "tags": ["Customers"],
+                    "requestBody": json(serde_json::json!({"name": {"type": "string"}}), serde_json::json!([]))
+                },
+                "delete": {"operationId": "deleteCustomer", "summary": "Remove a customer", "tags": ["Customers"]}
+            },
+            "/reports": {
+                "post": {
+                    "operationId": "runReport", "summary": "Run a report", "tags": ["Reports"],
+                    "x-risk": "high",
+                    "requestBody": json(serde_json::json!({"kind": {"type": "string"}}), serde_json::json!(["kind"]))
+                }
+            },
+            "/notices": {
+                "post": {
+                    "operationId": "postNotice", "summary": "Post a notice", "tags": ["Reports"],
+                    "x-risk": {"level": "low", "gated": false},
+                    "requestBody": json(serde_json::json!({"text": {"type": "string"}}), serde_json::json!(["text"]))
+                }
+            }
+        }
+    }))
+    .unwrap()
+}
+
+fn suggestion(name: &str) -> SuggestedApproval {
+    outline(&payments_spec())
+        .unwrap()
+        .operations
+        .into_iter()
+        .find(|o| o.name == name)
+        .unwrap_or_else(|| panic!("no operation {name}"))
+        .suggested_approval
+}
+
+#[test]
+fn reads_are_low_and_ungated() {
+    for name in ["list_charges", "get_customer"] {
+        let s = suggestion(name);
+        assert_eq!((s.risk, s.gate), ("low", false), "{name}");
+        assert!(s.amount.is_none(), "{name}");
+    }
+}
+
+#[test]
+fn creates_and_updates_are_medium_and_ungated() {
+    for name in ["create_customer", "update_customer"] {
+        let s = suggestion(name);
+        assert_eq!((s.risk, s.gate), ("medium", false), "{name}");
+    }
+}
+
+#[test]
+fn deletes_and_money_are_high_and_gated() {
+    for (name, requires) in [
+        ("delete_customer", "delete"),
+        ("create_charge", "charge"),
+        ("refund_charge", "refund"),
+        ("create_transfer", "transfer"),
+    ] {
+        let s = suggestion(name);
+        assert_eq!((s.risk, s.gate), ("high", true), "{name}");
+        assert_eq!(s.requires, requires, "{name}");
+    }
+}
+
+#[test]
+fn a_word_that_only_looks_like_a_dangerous_one_is_not_one() {
+    use super::risk::is_form_of;
+    assert!(is_form_of("charges", "charge"));
+    assert!(is_form_of("charging", "charge"));
+    assert!(is_form_of("refunded", "refund"));
+    assert!(!is_form_of("sender", "send"));
+    assert!(!is_form_of("payload", "pay"));
+}
+
+#[test]
+fn the_specifications_own_risk_wins() {
+    let s = suggestion("run_report");
+    assert_eq!((s.risk, s.gate), ("high", true));
+    let s = suggestion("post_notice");
+    assert_eq!((s.risk, s.gate), ("low", false));
+}
+
+#[test]
+fn an_amount_is_found_by_name_with_its_currency_and_units() {
+    let charge = suggestion("create_charge").amount.unwrap();
+    assert_eq!(charge.field, "amount_pence");
+    assert_eq!(charge.currency.as_deref(), Some("GBP"));
+    assert_eq!(charge.minor_units, Some(2));
+
+    // A currency in the field's description, and no claim about units.
+    let refund = suggestion("refund_charge").amount.unwrap();
+    assert_eq!(refund.field, "amount");
+    assert_eq!(refund.currency.as_deref(), Some("USD"));
+    assert_eq!(refund.minor_units, None);
+
+    // A sibling currency field with one value allowed.
+    let transfer = suggestion("create_transfer").amount.unwrap();
+    assert_eq!(transfer.field, "total");
+    assert_eq!(transfer.currency.as_deref(), Some("EUR"));
+
+    assert!(suggestion("create_customer").amount.is_none());
+}
+
+#[test]
+fn a_rule_binds_required_fields_and_the_amount_and_compares_the_numbers() {
+    let s = suggestion("create_charge");
+    assert_eq!(s.binds, ["amount_pence", "customer_id"]);
+    assert_eq!(s.numbers, ["amount_pence"]);
+    assert_eq!(s.matches_path, "/charges");
+}
+
+#[test]
+fn a_gate_stops_at_the_first_path_parameter() {
+    assert_eq!(suggestion("refund_charge").matches_path, "/charges/*");
+    // Nothing in the body to bind: a rule cannot be written, and says so by
+    // having no binds rather than by inventing one.
+    let delete = suggestion("delete_customer");
+    assert_eq!(delete.matches_path, "/customers/*");
+    assert!(delete.binds.is_empty());
+}
+
+fn payments_input(annotations: Vec<Annotation>) -> WizardInput {
+    WizardInput {
+        spec_json: payments_spec(),
+        slug: "payments".into(),
+        base_url: "https://api.example.com".into(),
+        auth_header: None,
+        annotations,
+    }
+}
+
+#[test]
+fn nothing_suggested_is_applied_by_generating() {
+    outline(&payments_spec()).unwrap();
+    let output = generate(&payments_input(Vec::new())).unwrap();
+    for (path, file) in &output.files {
+        assert!(
+            !file.contains("approval:"),
+            "{path} declares an approval nobody confirmed"
+        );
+    }
+}
+
+#[test]
+fn a_confirmed_suggestion_is_a_rule_the_parser_reads() {
+    let s = suggestion("create_charge");
+    let yaml = format!(
+        "approval:\n  requires: {}\n  matches: POST {}\n  binds: [{}]\n  risk: {}\n  numbers: [{}]",
+        s.requires,
+        s.matches_path,
+        s.binds.join(", "),
+        s.risk,
+        s.numbers.join(", ")
+    );
+    let output = generate(&payments_input(vec![Annotation {
+        target: Target::Operation("create_charge".into()),
+        kind: AnnotationKind::Approval(yaml),
+    }]))
+    .unwrap();
+    let rule = crate::skill::parse(&output.files["create_charge.md"])
+        .unwrap()
+        .approval
+        .expect("the confirmed rule");
+    assert_eq!(rule.requires, "charge");
+    assert_eq!(rule.numbers, ["amount_pence"]);
+}
