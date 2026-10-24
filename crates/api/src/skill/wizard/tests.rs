@@ -1757,3 +1757,69 @@ fn a_confirmed_suggestion_is_a_rule_the_parser_reads() {
     assert_eq!(rule.requires, "charge");
     assert_eq!(rule.numbers, ["amount_pence"]);
 }
+
+/// The doc's own example (docs/auto-approval.md, "Who sets what"), so that what
+/// the page writes and what the parser reads are checked against one text.
+const AMOUNT_RULE: &str = "approval:
+  requires: charge
+  matches: POST /charges
+  binds: [payment_account_id, booking_id, amount_pence]
+  risk: high
+  amount: { field: amount_pence, currency: GBP, minor_units: 2 }
+  bands: { low: 5000, medium: 20000 }
+  floor: { high: 500000 }";
+
+fn charge_spec() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Bookings", "version": "1"},
+        "paths": {"/charges": {"post": {
+            "operationId": "createCharge", "summary": "Charge a booking", "tags": ["Charges"],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object",
+                "required": ["payment_account_id", "booking_id", "amount_pence"],
+                "properties": {
+                    "payment_account_id": {"type": "string"},
+                    "booking_id": {"type": "string"},
+                    "amount_pence": {"type": "integer"}
+                }
+            }}}}
+        }}}
+    }))
+    .unwrap()
+}
+
+fn charge_with(rule: &str) -> Option<crate::skill::frontmatter::ApprovalRule> {
+    let output = generate(&WizardInput {
+        spec_json: charge_spec(),
+        slug: "bookings".into(),
+        base_url: "https://api.example.com".into(),
+        auth_header: None,
+        annotations: vec![Annotation {
+            target: Target::Operation("create_charge".into()),
+            kind: AnnotationKind::Approval(rule.into()),
+        }],
+    })
+    .unwrap();
+    crate::skill::parse(&output.files["create_charge.md"])
+        .unwrap()
+        .approval
+}
+
+#[test]
+#[ignore = "needs the amount key from the risk-from-amount backend"]
+fn the_docs_amount_rule_is_read() {
+    let rule = charge_with(AMOUNT_RULE).expect("the rule is kept");
+    assert_eq!(rule.requires, "charge");
+}
+
+#[test]
+#[ignore = "needs the amount key from the risk-from-amount backend"]
+fn the_rule_the_page_writes_for_an_amount_is_read() {
+    // The shape the page's approvalYaml writes (ui/src/lib/approvalSuggestion.ts),
+    // which adds the `numbers` the amount field has to be in.
+    let rule =
+        charge_with(&AMOUNT_RULE.replace("  amount:", "  numbers: [amount_pence]\n  amount:"))
+            .expect("the rule is kept");
+    assert_eq!(rule.numbers, ["amount_pence"]);
+}
