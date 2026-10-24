@@ -188,6 +188,17 @@ the benefit of the doubt. What the scheme cannot do is prove absence: a host is
 refused by failing to be proven allowed, which is why "could not verify" must
 always mean refused.
 
+The gates travel whole, and the runtime relays them as the bytes the API
+wrote, never parsed and written out again (`RawGates`). The gateway hashes
+its own parse of what it is sent, so a runtime that re-encoded the set would
+send only what its build's types can hold. During a rolling deploy a runtime
+built before a policy's grant gained its bands did exactly that: it dropped
+the fields it did not know, and every request of every turn it ran was
+refused as carrying the wrong gates. The runtime may parse its copy to ask
+its own questions -- whether a refusal names a gate -- and the narrowed set a
+token refresh hands back is kept as bytes too. A runtime that alters a byte
+is still refused, since the gateway checks whatever arrives.
+
 **What a compromised runtime still reaches.** It holds the turn tokens of the
 turns it is running, so it can act as those tenants: their allowed hosts, with
 their credentials attached by the gateway, and their responses. That is the

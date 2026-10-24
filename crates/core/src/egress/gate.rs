@@ -535,6 +535,57 @@ fn grant_leaf(workspace_id: Uuid, granted: &super::grant::Granted) -> Hash {
     Hash(h.finalize().into())
 }
 
+/// A turn's gates as the bytes the API wrote, for a tier that only relays them.
+///
+/// The root is taken over the gateway's parse of what it is sent, so a relay
+/// that parsed the set into its own types and wrote them out again would send
+/// whatever its types can hold. A runtime built before a field was added to a
+/// policy's grant drops that field, and every request of the turn is then
+/// refused as carrying the wrong gates -- which is what a rolling deploy did.
+/// Carried as the original text instead, so what reaches the gateway is what
+/// the API committed to, whatever version the relay is. A relay that alters a
+/// byte is refused exactly as before: the gateway still parses and hashes what
+/// arrives.
+#[derive(Debug, Clone)]
+pub struct RawGates(Box<serde_json::value::RawValue>);
+
+impl RawGates {
+    /// The set, read with this build's types. For a relay's own questions only
+    /// -- whether a refusal names a gate it carries, say -- never to send on.
+    pub fn parse(&self) -> Result<Gates, serde_json::Error> {
+        serde_json::from_str(self.0.get())
+    }
+
+    /// The text itself.
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+}
+
+impl From<&Gates> for RawGates {
+    fn from(gates: &Gates) -> Self {
+        Self(serde_json::value::to_raw_value(gates).expect("gates serialize"))
+    }
+}
+
+impl From<Gates> for RawGates {
+    fn from(gates: Gates) -> Self {
+        Self::from(&gates)
+    }
+}
+
+impl Serialize for RawGates {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawGates {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Box::<serde_json::value::RawValue>::deserialize(deserializer).map(Self)
+    }
+}
+
 /// The tree, under this module's own tags.
 ///
 /// One implementation, in `commit`, because the shape is a security choice rather

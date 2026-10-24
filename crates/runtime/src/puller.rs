@@ -32,8 +32,31 @@ const IDLE_PAUSE: Duration = Duration::from_millis(100);
 /// not help it.
 const ERROR_PAUSE: Duration = Duration::from_secs(2);
 
-#[derive(serde::Deserialize)]
+/// A turn as the API hands it out: what the API said about the claim, beside
+/// the request itself.
+///
+/// Read as two documents from the same bytes rather than one with the request
+/// flattened into it. A flattened struct is deserialized from serde's buffered
+/// copy of the JSON, which has already lost the text, and the gates have to be
+/// relayed as the very bytes the API wrote -- see `RawGates`.
 struct Assignment {
+    head: Head,
+    request: ExecuteRequest,
+}
+
+impl Assignment {
+    /// The body of `POST /v1/work`: `null` when there is no work.
+    fn read(body: &[u8]) -> serde_json::Result<Option<Self>> {
+        let Some(head) = serde_json::from_slice::<Option<Head>>(body)? else {
+            return Ok(None);
+        };
+        let request = serde_json::from_slice(body)?;
+        Ok(Some(Self { head, request }))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Head {
     job_id: Uuid,
     gateway_token: String,
     /// Absent from an API that predates refreshing, which then never happens.
@@ -45,8 +68,6 @@ struct Assignment {
     /// The token the held requests are sent under, where any are.
     #[serde(default)]
     held_token: Option<String>,
-    #[serde(flatten)]
-    request: ExecuteRequest,
 }
 
 pub struct Puller {
@@ -151,15 +172,15 @@ impl Puller {
             anyhow::bail!("asking for work returned {}", response.status());
         }
 
-        let Some(assignment) = response.json::<Option<Assignment>>().await? else {
+        let Some(assignment) = Assignment::read(&response.bytes().await?)? else {
             return Ok(false);
         };
 
         // Spawned so the loop can go back to asking. The permit rides along,
         // so the slot is held for exactly as long as the turn runs.
         tokio::spawn(async move {
-            let job_id = assignment.job_id;
-            let lease = assignment.lease_token;
+            let job_id = assignment.head.job_id;
+            let lease = assignment.head.lease_token;
             if let Err(e) = self.run(assignment, permit).await {
                 tracing::error!(job_id = %job_id, error = %e, "turn failed");
                 // Say so, because the endpoint that would have reported this
@@ -178,9 +199,9 @@ impl Puller {
         assignment: Assignment,
         permit: super::admission::Permit,
     ) -> anyhow::Result<()> {
-        let job_id = assignment.job_id;
-        let lease = assignment.lease_token;
-        let held_token = assignment.held_token;
+        let job_id = assignment.head.job_id;
+        let lease = assignment.head.lease_token;
+        let held_token = assignment.head.held_token;
         let request = assignment.request;
 
         let conversation: Vec<Message> = request
@@ -217,14 +238,14 @@ impl Puller {
         let options = RunOptions {
             session_id: request.session_id,
             gateway_url: self.gateway_url.clone(),
-            gateway_token: assignment.gateway_token,
-            gateway_token_expires_at: assignment.gateway_token_expires_at,
+            gateway_token: assignment.head.gateway_token,
+            gateway_token_expires_at: assignment.head.gateway_token_expires_at,
             refresh_token: Some({
                 let api_url = self.api_url.clone();
                 let runtime_key = self.runtime_key.clone();
                 let http = self.http.clone();
                 Arc::new(
-                    move |current: String, gates: outturn_core::egress::gate::Gates| {
+                    move |current: String, gates: outturn_core::egress::gate::RawGates| {
                         let api_url = api_url.clone();
                         let runtime_key = runtime_key.clone();
                         let http = http.clone();
@@ -590,7 +611,7 @@ async fn refresh_token(
     lease: Uuid,
     job_id: Uuid,
     current: String,
-    gates: outturn_core::egress::gate::Gates,
+    gates: outturn_core::egress::gate::RawGates,
 ) -> Option<outturn_core::protocol::work::TokenRefreshed> {
     let response = http
         .post(format!(
@@ -901,5 +922,34 @@ async fn report_gated(
             tracing::warn!(job_id = %job_id, error = %e, "could not report a gated refusal");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod reading_an_assignment {
+    use super::*;
+
+    /// The gates come out as the very text the API wrote, a field this build
+    /// has never heard of included, so what goes on to the gateway is what the
+    /// API committed to rather than what this build's types could hold.
+    #[test]
+    fn the_gates_are_kept_as_the_api_wrote_them() {
+        let workspace = Uuid::now_v7();
+        let hash = outturn_core::egress::gate::Gates::none().root(workspace);
+        let gates = r#"{"gates":[],"grants":[],"policies":[],"added_later":{"kept":[1, 2]}}"#;
+        let body = format!(
+            r#"{{"job_id":"{job}","gateway_token":"t","lease_token":"{job}",
+                "session_id":"{job}","workspace_id":"{workspace}","conversation":[],
+                "reply_id":"{job}","egress":[],"egress_commitment":{hash},
+                "gate_commitment":{hash},"gates":{gates}}}"#,
+            job = Uuid::now_v7(),
+            hash = serde_json::to_string(&hash).unwrap(),
+        );
+        let assignment = Assignment::read(body.as_bytes())
+            .expect("reads")
+            .expect("is work");
+        assert_eq!(assignment.request.gates.get(), gates);
+        assert!(assignment.request.gates.parse().is_ok());
+        assert!(Assignment::read(b"null").expect("reads").is_none());
     }
 }

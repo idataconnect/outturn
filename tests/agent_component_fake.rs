@@ -58,7 +58,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
     RunOptions {
         session_id: Uuid::now_v7(),
         gateway_url: gateway.url.clone(),
-        gates: outturn::egress::gate::Gates::none(),
+        gates: outturn::egress::gate::Gates::none().into(),
         gateway_token: "test-token".into(),
         gateway_token_expires_at: None,
         refresh_token: None,
@@ -3699,7 +3699,7 @@ fn held_sends(
     outturn::runtime::component::HeldSends {
         calls,
         token: "held-token".into(),
-        gates: outturn::egress::gate::Gates::none(),
+        gates: outturn::egress::gate::Gates::none().into(),
         begin: None,
         report: Some(Arc::new(move |id, outcome| {
             reported.lock().unwrap().push((id, outcome));
@@ -3960,7 +3960,7 @@ async fn a_banded_policy_reaches_the_gateway_as_committed() {
     };
     let gates = Gates::of(vec![charge]).with_policies(vec![grant]);
     let root = gates.root(workspace);
-    options.gates = gates;
+    options.gates = gates.into();
     options.eager_tools = vec!["inn_book".into()];
     options.skill_operations = vec![booking()];
     options.egress = vec![outturn::egress::rule::EgressRule {

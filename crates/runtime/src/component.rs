@@ -167,7 +167,7 @@ pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 pub type TokenRefresher = Arc<
     dyn Fn(
             String,
-            outturn_core::egress::gate::Gates,
+            outturn_core::egress::gate::RawGates,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
@@ -264,7 +264,7 @@ pub struct HeldSends {
     /// Minted for these alone: its commitment holds their grants, which the
     /// turn's own token does not.
     pub token: String,
-    pub gates: outturn_core::egress::gate::Gates,
+    pub gates: outturn_core::egress::gate::RawGates,
     /// Asked before each is sent. Absent, each is sent unasked.
     pub begin: Option<HeldBegin>,
     pub report: Option<HeldSink>,
@@ -321,7 +321,7 @@ impl AgentHost {
         &mut self,
         request: HttpRequest,
         token: String,
-        gates: outturn_core::egress::gate::Gates,
+        gates: outturn_core::egress::gate::RawGates,
     ) -> Result<(Sent, Dispatched), String> {
         use outturn_core::egress::rule as egress;
 
@@ -460,7 +460,7 @@ impl AgentHost {
         &mut self,
         call: &outturn_core::egress::held::HeldCall,
         token: String,
-        gates: outturn_core::egress::gate::Gates,
+        gates: outturn_core::egress::gate::RawGates,
     ) -> outturn_core::egress::held::Outcome {
         use outturn_core::egress::held::Outcome;
 
@@ -548,10 +548,11 @@ pub struct AgentHost {
     /// say, in which case the token is never refreshed -- what it always was.
     gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     refresh_token: Option<TokenRefresher>,
-    /// What the API said gates this turn. Relayed to the gateway with every
-    /// outbound request and read by nothing here: it is checked against the
-    /// commitment in the turn token, which this tier cannot write.
-    gates: outturn_core::egress::gate::Gates,
+    /// What the API said gates this turn, as the bytes it sent. Relayed to the
+    /// gateway with every outbound request exactly as received, never written
+    /// out again from this build's types: see `RawGates`. It is checked against
+    /// the commitment in the turn token, which this tier cannot write.
+    gates: outturn_core::egress::gate::RawGates,
     /// Told when the gateway refuses for want of an approval. Relays the shape
     /// of the request; decides nothing about it.
     on_gated: Option<GatedSink>,
@@ -1333,12 +1334,13 @@ impl outturn::agent::host::Host for AgentHost {
                 //
                 // Nothing here decides whether the request was allowed. The API
                 // re-derives the gates and refuses a shape that matches none, so
-                // this relaying a refusal it invented gets nowhere.
-                if self
-                    .gates
-                    .covering(&sent.host, &sent.method.to_ascii_uppercase(), &sent.path)
-                    .is_some()
-                    && let Some(on_gated) = &self.on_gated
+                // this relaying a refusal it invented gets nowhere. Read from a
+                // parse of the bytes it carries, which is never what is sent on.
+                if self.gates.parse().is_ok_and(|gates| {
+                    gates
+                        .covering(&sent.host, &sent.method.to_ascii_uppercase(), &sent.path)
+                        .is_some()
+                }) && let Some(on_gated) = &self.on_gated
                 {
                     // The whole request, as it was about to go, so that what a
                     // person approves is what is later sent -- see
@@ -2632,7 +2634,7 @@ pub struct RunOptions {
     /// Asks the API for a fresh turn token. A turn has no upper bound while it
     /// works, and its token has to outlast it.
     pub refresh_token: Option<TokenRefresher>,
-    pub gates: outturn_core::egress::gate::Gates,
+    pub gates: outturn_core::egress::gate::RawGates,
     pub default_model: String,
     pub progress: Option<ProgressSink>,
     pub reasoning: Option<ReasoningSink>,

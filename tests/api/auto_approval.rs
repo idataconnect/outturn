@@ -928,52 +928,21 @@ fn guesthouse_charge_file() -> String {
 /// What the one-line form sets: a band on the operation, then a policy on for
 /// one agent's low-risk charges with a day's total in pounds. Every request of
 /// the turn after -- the ungated look at the rooms as much as the charge --
-/// reaches the gateway with the gates as the runtime carries them, which is
-/// read back from JSON into the set and written out again.
+/// reaches the gateway with the gates as the runtime carries them: the bytes
+/// the API wrote, relayed untouched.
 #[tokio::test]
 async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
     let h = harness_or_skip!();
-    let c = a_policy_on(&h, &guesthouse_charge_file(), &low_charges_policy()).await;
-    let (status, body) = put(
-        &h,
-        "/v1/approval-bands",
-        &c.admin,
-        &serde_json::json!({
-            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
-            "low": 10000, "medium": 20000,
-        })
-        .to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let mut one_line: Value = serde_json::from_str(&low_charges_policy()).unwrap();
-    one_line["mode"] = "on".into();
-    one_line["effect"] = "include".into();
-    one_line["agent_id"] = c.agent.to_string().into();
-    one_line["conditions"] = serde_json::json!([]);
-    one_line["daily_totals"] = serde_json::json!({"GBP": 50000});
-    let (status, body) = put(
-        &h,
-        &format!("/v1/approval-policies/{}", c.policy),
-        &c.admin,
-        &one_line.to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
-    let (_, _, assignment) = a_turn(&h, &c).await;
+    let (c, assignment) = a_turn_under_the_one_line_policy(&h).await;
     let token = assignment["gateway_token"].as_str().unwrap();
-    // Read as the runtime reads an assignment: the request flattened into it.
-    #[derive(serde::Deserialize)]
-    struct Taken {
-        #[serde(flatten)]
-        request: outturn::protocol::work::ExecuteRequest,
-    }
-    let taken: Taken = serde_json::from_str(&assignment.to_string()).expect("assignment");
-    let parsed = taken.request.gates;
+    // Read as the runtime reads an assignment: the request from the same
+    // bytes, and its gates parsed for the runtime's own questions.
+    let taken: outturn::protocol::work::ExecuteRequest =
+        serde_json::from_str(&assignment.to_string()).expect("assignment");
+    let parsed = taken.gates.parse().expect("gates");
     assert_eq!(parsed.policies().len(), 1, "the policy is committed");
     assert!(parsed.policies()[0].banding.is_some(), "with its bands");
-    let carried = serde_json::to_value(&parsed).unwrap();
+    let carried = serde_json::to_value(&taken.gates).unwrap();
 
     let gateway = Gateway::new(&h);
     let (status, body) = gateway
@@ -998,6 +967,117 @@ async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
     assert_eq!(status, StatusCode::OK, "£80 is low here: {body}");
     let (status, body) = charge(15000).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "£150 is medium: {body}");
+    finish!(h);
+}
+
+/// The one-line form's policy on, and a turn under it taken as a runtime takes
+/// one.
+async fn a_turn_under_the_one_line_policy(h: &Harness) -> (Covered, Value) {
+    let c = a_policy_on(h, &guesthouse_charge_file(), &low_charges_policy()).await;
+    let (status, body) = put(
+        h,
+        "/v1/approval-bands",
+        &c.admin,
+        &serde_json::json!({
+            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
+            "low": 10000, "medium": 20000,
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut one_line: Value = serde_json::from_str(&low_charges_policy()).unwrap();
+    one_line["mode"] = "on".into();
+    one_line["effect"] = "include".into();
+    one_line["agent_id"] = c.agent.to_string().into();
+    one_line["conditions"] = serde_json::json!([]);
+    one_line["daily_totals"] = serde_json::json!({"GBP": 50000});
+    let (status, body) = put(
+        h,
+        &format!("/v1/approval-policies/{}", c.policy),
+        &c.admin,
+        &one_line.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, _, assignment) = a_turn(h, &c).await;
+    (c, assignment)
+}
+
+/// A runtime built before a field was added to the gate set relays the set
+/// the API wrote, not the set its own types can hold. Stood in for here by a
+/// field no build knows, put into the policy's grant where the API would have
+/// written it: the request carries it to the gateway untouched and is let
+/// through. The set an older runtime used to send instead -- read into its
+/// types, written out without what they lacked -- is every request refused,
+/// and so is one byte changed in what the API wrote.
+#[tokio::test]
+async fn an_older_runtime_relays_gates_it_cannot_read() {
+    let h = harness_or_skip!();
+    let (c, mut assignment) = a_turn_under_the_one_line_policy(&h).await;
+    let token = assignment["gateway_token"].as_str().unwrap().to_string();
+    assignment["gates"]["policies"][0]["added_later"] = serde_json::json!({"kept": true});
+    let wrote = assignment.to_string();
+
+    // What the runtime does with it: the request read from those bytes, and
+    // its gates written into the body it posts to the gateway.
+    let taken: outturn::protocol::work::ExecuteRequest =
+        serde_json::from_str(&wrote).expect("assignment");
+    assert!(taken.gates.parse().is_ok(), "the runtime can still read it");
+    let rules: Vec<outturn::egress::rule::EgressRule> =
+        serde_json::from_value(assignment["egress"].clone()).expect("rules");
+    let rule = rules
+        .iter()
+        .find(|r| r.host == CHARGE_HOST)
+        .unwrap()
+        .clone();
+    let posted = serde_json::to_string(&outturn::runtime::fetch::GatewayFetch {
+        method: "GET".into(),
+        url: format!("https://{CHARGE_HOST}/rooms"),
+        headers: Vec::new(),
+        body: None,
+        proof: outturn::egress::commit::prove(c.acme, &rules, &rule).unwrap(),
+        gates: taken.gates,
+    })
+    .unwrap();
+    let sent = serde_json::to_string(&assignment["gates"]).unwrap();
+    assert!(posted.contains(&sent), "relayed as written: {posted}");
+    let relayed: Value = serde_json::from_str(&posted).unwrap();
+
+    let gateway = Gateway::new(&h);
+    let look = |gates: Value| {
+        let assignment = &assignment;
+        let token = &token;
+        let gateway = &gateway;
+        async move {
+            gateway
+                .send(c.acme, assignment, token, &gates, "GET", "/rooms", None)
+                .await
+        }
+    };
+    let (status, body) = look(relayed["gates"].clone()).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the relayed set is the API's: {body}"
+    );
+
+    // Read into types that predate the bands and written out again.
+    let mut reencoded = relayed["gates"].clone();
+    let grant = reencoded["policies"][0].as_object_mut().unwrap();
+    for later in ["added_later", "banding", "max_risk", "currency_per_day"] {
+        grant.remove(later);
+    }
+    let (status, body) = look(reencoded).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("not the ones this turn was given"), "{body}");
+
+    let mut altered = relayed["gates"].clone();
+    let per_day = altered["policies"][0]["per_day"].as_i64().unwrap();
+    altered["policies"][0]["per_day"] = (per_day + 1).into();
+    let (status, body) = look(altered).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     finish!(h);
 }
 

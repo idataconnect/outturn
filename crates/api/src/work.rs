@@ -260,13 +260,18 @@ pub async fn take(
                     // held, and good for as long as the turn's own: the
                     // requests are sent before the guest runs, well inside it.
                     let held_token = match &request.held_gates {
-                        Some(gates) if !request.held.is_empty() => match mint_for(
-                            &state,
-                            payload.session_id,
-                            payload.workspace_id,
-                            request.egress_commitment,
-                            gates.root(payload.workspace_id),
-                        ) {
+                        Some(gates) if !request.held.is_empty() => match gates
+                            .parse()
+                            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+                            .and_then(|gates| {
+                                mint_for(
+                                    &state,
+                                    payload.session_id,
+                                    payload.workspace_id,
+                                    request.egress_commitment,
+                                    gates.root(payload.workspace_id),
+                                )
+                            }) {
                             Ok(token) => Some(token),
                             Err(e) => {
                                 // As for the turn's own token above.
@@ -464,7 +469,19 @@ pub async fn refresh_token(
     // The set the runtime carries is believed only as far as it hashes to the
     // root the presented token commits to; one that does not is refused, as the
     // gateway would refuse it on the next request.
-    let (gates, carried) = match input.gates {
+    // Read with this tier's types, which are current: the runtime sent the
+    // bytes it was given, and a set this cannot read is not one it gave.
+    let presented = match input.gates.as_ref().map(|raw| raw.parse()) {
+        None => None,
+        Some(Ok(parsed)) => Some(parsed),
+        Some(Err(_)) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "those gates are not the ones this turn was given".to_string(),
+            ));
+        }
+    };
+    let (gates, carried) = match presented {
         None => (gates, None),
         Some(carried) if carried.matches(payload.workspace_id, &gates) => {
             let standing = super::auto_approval::still_standing(
@@ -500,7 +517,7 @@ pub async fn refresh_token(
     Ok(Json(outturn_core::protocol::work::TokenRefreshed {
         gateway_token,
         gateway_token_expires_at,
-        gates: carried,
+        gates: carried.map(Into::into),
     }))
 }
 

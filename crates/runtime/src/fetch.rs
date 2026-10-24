@@ -31,8 +31,9 @@ pub struct GatewayFetch {
     /// gateway has to know all of before it can say a request matches none. This
     /// tier does not read it, choose it or check it -- it relays it, and the
     /// gateway checks it against the commitment in the turn token, so nothing
-    /// here could usefully rewrite it.
-    pub gates: outturn_core::egress::gate::Gates,
+    /// here could usefully rewrite it. Nor does it by accident: these are the
+    /// bytes the API wrote, never this build's types written out again.
+    pub gates: outturn_core::egress::gate::RawGates,
 }
 
 /// What came back.
@@ -175,7 +176,7 @@ mod tests {
         let proof = commit::prove(workspace, &rules, &rules[0]).expect("in the set");
 
         let body = serde_json::to_string(&GatewayFetch {
-            gates: outturn_core::egress::gate::Gates::none(),
+            gates: outturn_core::egress::gate::Gates::none().into(),
             method: "GET".into(),
             url: "https://host0.example.com/".into(),
             headers: Vec::new(),

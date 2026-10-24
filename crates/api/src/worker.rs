@@ -2563,10 +2563,10 @@ impl Worker {
                 egress,
                 egress_commitment,
                 gate_commitment,
-                gates,
+                gates: gates.into(),
                 eager_tools,
                 held: held_calls,
-                held_gates,
+                held_gates: held_gates.map(Into::into),
             },
         )))
     }

@@ -83,7 +83,7 @@ pub struct ExecuteRequest {
     ///
     /// Sent rather than proven one at a time, because a request has to be shown
     /// to match *none* of them and a Merkle proof cannot show absence.
-    pub gates: crate::egress::gate::Gates,
+    pub gates: crate::egress::gate::RawGates,
     /// Tools to offer from the first round, by name: a template agent's,
     /// which its operator chose. Empty -- an agent made by hand, or a request
     /// from an older API -- defers every tool to the guest's loader.
@@ -103,7 +103,7 @@ pub struct ExecuteRequest {
     /// grant for each. Committed into a token of their own, so the grant that
     /// lets one out never travels with the guest's own calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held_gates: Option<crate::egress::gate::Gates>,
+    pub held_gates: Option<crate::egress::gate::RawGates>,
 }
 
 /// A request a bound skill's file declares, as a tool the guest offers.
@@ -390,7 +390,7 @@ pub struct TokenRefresh {
     /// a policy that no longer stands and say what the set became. Absent from
     /// an older runtime, whose commitment is then copied forward unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gates: Option<crate::egress::gate::Gates>,
+    pub gates: Option<crate::egress::gate::RawGates>,
 }
 
 /// What comes back from a token trade-in.
@@ -402,7 +402,7 @@ pub struct TokenRefreshed {
     /// presented: a policy was revoked, expired or edited since the turn began.
     /// Absent, the runtime keeps the set it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gates: Option<crate::egress::gate::Gates>,
+    pub gates: Option<crate::egress::gate::RawGates>,
 }
 
 #[cfg(test)]
