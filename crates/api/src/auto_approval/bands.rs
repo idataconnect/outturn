@@ -600,6 +600,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: "GBP".into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: Bands {
                 low: Some(5000),
@@ -613,6 +614,7 @@ mod tests {
         d.banding = Some(Banding {
             field: "amount_pence".into(),
             currency: "GBP".into(),
+            currency_field: None,
             base: d.risk,
             bands: declaration.bands.clone(),
             floor: declaration.floor.clone(),

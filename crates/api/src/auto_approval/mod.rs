@@ -406,6 +406,7 @@ pub async fn declared_for(
             let banding = amount.as_ref().map(|a| Banding {
                 field: a.amount.field.clone(),
                 currency: a.amount.currency.clone(),
+                currency_field: a.amount.currency_field.clone(),
                 base: risk,
                 bands: a.bands.clone(),
                 floor: a.floor.clone(),
@@ -989,6 +990,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: currency.into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: Bands {
                 low: Some(5000),
@@ -999,6 +1001,7 @@ mod tests {
         d.banding = Some(Banding {
             field: "amount_pence".into(),
             currency: currency.into(),
+            currency_field: None,
             base: Risk::High,
             bands: declaration.bands.clone(),
             floor: declaration.floor.clone(),

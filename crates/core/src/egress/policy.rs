@@ -822,6 +822,7 @@ mod tests {
         grant.banding = Some(super::super::amount::Banding {
             field: "amount_pence".into(),
             currency: "GBP".into(),
+            currency_field: None,
             base: Risk::High,
             bands: super::super::amount::Bands {
                 low: Some(5000),

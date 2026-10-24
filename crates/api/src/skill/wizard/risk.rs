@@ -44,6 +44,10 @@ pub struct SuggestedAmount {
     /// says it is in one (`_cents`, `_pence`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minor_units: Option<u32>,
+    /// The sibling field a request names its currency in, where there is one,
+    /// so an amount in some other currency is not read against these bands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency_field: Option<String>,
 }
 
 /// Words that make a write dangerous whatever its method: money moving, or a
@@ -102,6 +106,7 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
             field: f.name.clone(),
             currency: currency_of(f, fields),
             minor_units: minor_units(&f.name),
+            currency_field: currency_sibling(fields).map(|c| c.name.clone()),
         })
     };
 
@@ -295,11 +300,7 @@ fn currency_of(amount: &BodyField, fields: &[BodyField]) -> Option<String> {
         let s = s.trim().to_ascii_uppercase();
         CURRENCIES.contains(&s.as_str()).then_some(s)
     };
-    for f in fields {
-        let n = f.name.to_ascii_lowercase();
-        if !(n == "currency" || n == "currency_code" || n.ends_with("_currency")) {
-            continue;
-        }
+    if let Some(f) = currency_sibling(fields) {
         if let Some([only]) = f.schema.enum_values.as_deref()
             && let Some(c) = known(only)
         {
@@ -330,6 +331,14 @@ fn currency_of(amount: &BodyField, fields: &[BodyField]) -> Option<String> {
             .to_ascii_lowercase()
             .ends_with("_pence")
             .then(|| "GBP".to_string())
+    })
+}
+
+/// A field beside the amount named for its currency.
+fn currency_sibling(fields: &[BodyField]) -> Option<&BodyField> {
+    fields.iter().find(|f| {
+        let n = f.name.to_ascii_lowercase();
+        n == "currency" || n == "currency_code" || n.ends_with("_currency")
     })
 }
 

@@ -1199,6 +1199,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: "GBP".into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: bands.clone(),
             floor: Floor::default(),
@@ -1206,6 +1207,7 @@ mod tests {
         d.banding = Some(Banding {
             field: "amount_pence".into(),
             currency: "GBP".into(),
+            currency_field: None,
             base: Risk::High,
             bands,
             floor: Floor::default(),

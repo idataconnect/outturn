@@ -45,4 +45,16 @@ describe('the approval rule the page writes', () => {
     )
     expect(yaml).toContain('  amount: { field: amount_pence }')
   })
+
+  it('binds and writes the field a request names its currency in', () => {
+    const named = {
+      ...suggested,
+      amount: { field: 'amount_pence', currency: 'GBP', minor_units: 2, currency_field: 'currency' },
+    }
+    const yaml = approvalYaml({ ...op, suggested_approval: named }, choiceFrom(named), null)
+    expect(yaml.split('\n')).toContain(
+      '  amount: { field: amount_pence, currency: GBP, minor_units: 2, currency_field: currency }',
+    )
+    expect(yaml).toContain('  binds: [payment_account_id, booking_id, amount_pence, currency]')
+  })
 })

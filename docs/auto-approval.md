@@ -214,6 +214,10 @@ how far it trusts the agent: *auto-approve up to `low`*.
 
   The amount field must be in `numbers`, so every rule about comparing numbers
   above applies to it unchanged.
+  Where a request names its own currency, `currency_field` says which bound
+  field: `amount: { field: amount, currency: GBP, minor_units: 2,
+  currency_field: currency }`. A request whose value there is anything but
+  exactly `GBP` carries an amount nobody can trust, and takes the base risk.
 - **The workspace.** Its own bands for an operation, or for every operation in
   one currency, starting from the operator's defaults -- moved either way, but
   never past the floor. A workspace that thinks £500 is small for its business

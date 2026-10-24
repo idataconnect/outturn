@@ -30,6 +30,11 @@ pub struct Amount {
     pub currency: String,
     /// How many of the field's units make a digit after the point: 2 for pence.
     pub minor_units: u8,
+    /// The bound field a request names its currency in, where it names one.
+    /// A request whose value there is not exactly `currency` carries an amount
+    /// nobody can trust: "5000" of pence and "5000" of yen are not one risk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_field: Option<String>,
 }
 
 /// Upper bounds, one per level, in the amount field's own units. Below `low`,
@@ -174,6 +179,16 @@ impl Declaration {
                 "the amount is {field}, which numbers does not list"
             ));
         }
+        if let Some(named) = &self.amount.currency_field {
+            if !binds.contains(named) {
+                return Err(format!(
+                    "the currency is named in {named}, which the approval does not bind"
+                ));
+            }
+            if named == field {
+                return Err("the currency and the amount are two fields".into());
+            }
+        }
         check_currency(&self.amount.currency)?;
         if self.amount.minor_units > MAX_MINOR_UNITS {
             return Err(format!(
@@ -227,6 +242,9 @@ pub fn risk(base: Risk, bands: &Bands, floor: &Floor, amount: Option<i64>) -> Ri
 pub struct Banding {
     pub field: String,
     pub currency: String,
+    /// Where the request names its currency, if the operation says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_field: Option<String>,
     pub base: Risk,
     pub bands: Bands,
     pub floor: Floor,
@@ -235,8 +253,15 @@ pub struct Banding {
 impl Banding {
     /// The request's risk, and the amount it was worked out from where there
     /// was one to trust.
+    ///
+    /// Where the operation names a currency field, an amount is trusted only
+    /// beside exactly the declared currency there: any other, a lower-case one,
+    /// or none at all is an amount in something the bands say nothing about.
     pub fn assess(&self, body: &serde_json::Map<String, serde_json::Value>) -> (Risk, Option<i64>) {
-        let amount = read(body, &self.field);
+        let in_currency = self.currency_field.as_ref().is_none_or(|named| {
+            matches!(body.get(named), Some(serde_json::Value::String(c)) if *c == self.currency)
+        });
+        let amount = read(body, &self.field).filter(|_| in_currency);
         (risk(self.base, &self.bands, &self.floor, amount), amount)
     }
 
@@ -301,6 +326,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: "GBP".into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: Bands {
                 low: Some(5000),
@@ -317,6 +343,7 @@ mod tests {
         Banding {
             field: d.amount.field.clone(),
             currency: d.amount.currency.clone(),
+            currency_field: d.amount.currency_field.clone(),
             base: Risk::High,
             bands,
             floor: d.floor.clone(),
@@ -409,12 +436,49 @@ mod tests {
     }
 
     #[test]
+    fn an_amount_in_another_currency_is_the_base_risk() {
+        let mut d = charge();
+        d.amount.currency_field = Some("currency".into());
+        let b = banding(&d, d.bands.clone());
+        assert_eq!(
+            b.assess(&body(json!({"amount_pence": 100, "currency": "GBP"}))),
+            (Risk::Low, Some(100))
+        );
+        for other in [
+            json!({"amount_pence": 100, "currency": "JPY"}),
+            json!({"amount_pence": 100, "currency": "gbp"}),
+            json!({"amount_pence": 100, "currency": " GBP"}),
+            json!({"amount_pence": 100, "currency": null}),
+            json!({"amount_pence": 100}),
+        ] {
+            assert_eq!(
+                b.assess(&body(other.clone())),
+                (Risk::High, None),
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_currency_field_is_one_the_approval_binds() {
+        let binds = vec!["amount_pence".to_string(), "currency".to_string()];
+        let numbers = vec!["amount_pence".to_string()];
+        let mut d = charge();
+        d.amount.currency_field = Some("currency".into());
+        assert!(d.check(Risk::High, &binds, &numbers).is_ok());
+        assert!(d.check(Risk::High, &numbers, &numbers).is_err(), "unbound");
+        d.amount.currency_field = Some("amount_pence".into());
+        assert!(d.check(Risk::High, &binds, &numbers).is_err(), "the amount");
+    }
+
+    #[test]
     fn a_band_at_or_above_the_base_means_nothing() {
         // A band for medium on a medium operation, were one ever committed,
         // would say medium of everything below it: the base already says so.
         let b = Banding {
             field: "n".into(),
             currency: "GBP".into(),
+            currency_field: None,
             base: Risk::Low,
             bands: Bands {
                 low: None,
