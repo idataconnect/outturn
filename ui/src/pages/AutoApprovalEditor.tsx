@@ -287,8 +287,9 @@ export default function AutoApprovalEditor() {
           {evidence.history && evidence.history.length > 0 && (
             <>
               <p className="mt-3 text-xs text-surface-600 dark:text-surface-400">
-                The last {evidence.history.length} approvals of what this covers, against its tests. Fields
-                outside the tests are not part of this.
+                The last {evidence.history.length} approvals of what this covers, against its tests, the risk
+                each amount works out to under the bands as they stand, and the day's total. Fields outside the
+                tests are not part of this.
               </p>
               <ul className="mt-2 space-y-1 text-xs">
                 {evidence.history.map((h) => (
@@ -301,7 +302,8 @@ export default function AutoApprovalEditor() {
                     }
                   >
                     {new Date(h.at).toLocaleDateString()} · {h.answer} ·{' '}
-                    {h.would ? 'this would have approved it' : 'this would still have asked'} ·{' '}
+                    {h.would ? 'this would have approved it' : 'this would still have asked'}
+                    {h.why ? `: ${h.why}` : ''} ·{' '}
                     <span className="font-mono">
                       {h.binds.map((b) => `${b.field}=${JSON.stringify(b.value)}`).join(' ')}
                     </span>

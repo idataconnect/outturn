@@ -617,9 +617,148 @@ pub struct Past {
     pub binds: serde_json::Value,
     /// approved, declined or pending.
     pub answer: &'static str,
-    /// Whether this policy's tests hold of the bound values. Only the tests: a
-    /// field nobody called harmless is not in what a question records.
+    /// Whether this policy would have let it out: its tests hold of the bound
+    /// values, the risk the amount works out to under the bands as they stand
+    /// is within its bound, and the amount fits in the day's total beside what
+    /// it would already have let out. Not the fields nobody called harmless,
+    /// which a question does not record.
     pub would: bool,
+    /// Why not, where the tests held and the amount is what stopped it: its
+    /// risk, or the day's total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// One question as the history reads it.
+pub struct Asked {
+    pub item_id: Uuid,
+    pub at: DateTime<Utc>,
+    pub payload: serde_json::Value,
+    pub state: String,
+}
+
+/// What a policy would have made of the questions people were asked, newest
+/// first as they are given.
+///
+/// Decided as the gateway would decide them now: the tests, then the risk the
+/// amount works out to under `money`'s bands -- the workspace's, applied --
+/// held to the tighter of the policy's bound and `ceiling`, then the day's
+/// total, counted over the day before each in the order they were asked and
+/// only from what this would have let out. Without the last two a policy for
+/// low-risk charges said it would have approved a £290 one.
+pub fn replay(
+    policy: &Policy,
+    requires: &str,
+    asked: &[Asked],
+    money: &[super::Declared],
+    ceiling: Option<Risk>,
+) -> Vec<Past> {
+    let operation = policy.matches.as_deref().and_then(super::normalize_matches);
+    let max = super::bound(policy, ceiling);
+    // What it would have let out in each currency, oldest first, for the day's
+    // total.
+    let mut let_out: Vec<(DateTime<Utc>, String, i64)> = Vec::new();
+    let mut past: Vec<Past> = asked
+        .iter()
+        .rev()
+        .filter_map(|a| {
+            let payload = &a.payload;
+            let method = payload["method"].as_str().unwrap_or_default();
+            let host = payload["host"].as_str().unwrap_or_default();
+            let path = payload["path"].as_str().unwrap_or_default();
+            if let Some(op) = &operation {
+                let (want, pattern) = op.split_once(' ')?;
+                let normalized = outturn_core::egress::gate::normalize_path(path);
+                let pattern = outturn_core::egress::gate::normalize_path(pattern);
+                let covers = match pattern.strip_suffix('*') {
+                    Some(prefix) => normalized.starts_with(prefix),
+                    None => normalized == pattern,
+                };
+                if method != want || !covers {
+                    return None;
+                }
+            }
+            let fields: serde_json::Map<String, serde_json::Value> = payload["binds"]
+                .as_array()
+                .map(|binds| {
+                    binds
+                        .iter()
+                        .filter_map(|b| {
+                            Some((b["field"].as_str()?.to_string(), b["value"].clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let answer = match a.state.as_str() {
+                "resolved" => "approved",
+                "cancelled" => "declined",
+                _ => "pending",
+            };
+            let mut would = policy::holds(&policy.conditions, &fields);
+            let mut why = None;
+            let banded = money
+                .iter()
+                .filter(|d| d.gate.requires == requires)
+                .filter(|d| d.gate.covers_request(host, method, path))
+                .find_map(|d| Some((d, d.banding.as_ref()?, d.amount.as_ref()?)));
+            if would && let Some((_, banding, declared)) = banded {
+                let (risk, amount) = banding.assess(&fields);
+                let said = |v: i64| {
+                    outturn_core::egress::amount::format(
+                        v,
+                        &banding.currency,
+                        declared.amount.minor_units,
+                    )
+                };
+                let total = policy.daily_totals.get(&banding.currency).copied();
+                if risk > max {
+                    would = false;
+                    why = Some(match amount {
+                        Some(v) => format!("{} is {} risk", said(v), risk.as_str()),
+                        None => format!("with no amount to read it is {} risk", risk.as_str()),
+                    });
+                } else if let Some(total) = total {
+                    match amount {
+                        None => {
+                            would = false;
+                            why = Some("no amount to count against the day's total".into());
+                        }
+                        Some(v) => {
+                            let day: i64 = let_out
+                                .iter()
+                                .filter(|(at, c, _)| {
+                                    *c == banding.currency && *at > a.at - chrono::Duration::days(1)
+                                })
+                                .map(|(_, _, v)| v)
+                                .sum();
+                            if day + v > total {
+                                would = false;
+                                why = Some(format!(
+                                    "{} would take the day past {}",
+                                    said(v),
+                                    said(total)
+                                ));
+                            }
+                        }
+                    }
+                }
+                if would && let Some(v) = amount {
+                    let_out.push((a.at, banding.currency.clone(), v));
+                }
+            }
+            Some(Past {
+                item_id: a.item_id,
+                at: a.at,
+                requires: requires.to_string(),
+                binds: payload["binds"].clone(),
+                answer,
+                would,
+                why,
+            })
+        })
+        .collect();
+    past.reverse();
+    past
 }
 
 /// How many of the last requests a history covers.
@@ -674,50 +813,30 @@ pub async fn evidence(
             .fetch_all(&state.pool)
             .await
             .map_err(internal)?;
-            let operation = policy.matches.as_deref().and_then(super::normalize_matches);
-            let mut past: Vec<Past> = rows
+            let asked: Vec<Asked> = rows
                 .iter()
-                .filter_map(|r| {
-                    let payload: serde_json::Value = r.get("payload");
-                    if let Some(op) = &operation {
-                        let (method, pattern) = op.split_once(' ')?;
-                        let path = payload["path"].as_str()?;
-                        let normalized = outturn_core::egress::gate::normalize_path(path);
-                        let pattern = outturn_core::egress::gate::normalize_path(pattern);
-                        let covers = match pattern.strip_suffix('*') {
-                            Some(prefix) => normalized.starts_with(prefix),
-                            None => normalized == pattern,
-                        };
-                        if payload["method"].as_str() != Some(method) || !covers {
-                            return None;
-                        }
-                    }
-                    let fields: serde_json::Map<String, serde_json::Value> = payload["binds"]
-                        .as_array()
-                        .map(|binds| {
-                            binds
-                                .iter()
-                                .filter_map(|b| {
-                                    Some((b["field"].as_str()?.to_string(), b["value"].clone()))
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let answer = match r.get::<String, _>("state").as_str() {
-                        "resolved" => "approved",
-                        "cancelled" => "declined",
-                        _ => "pending",
-                    };
-                    Some(Past {
-                        item_id: r.get("id"),
-                        at: r.get("created_at"),
-                        requires: requires.clone(),
-                        would: policy::holds(&policy.conditions, &fields),
-                        binds: payload["binds"].clone(),
-                        answer,
-                    })
+                .map(|r| Asked {
+                    item_id: r.get("id"),
+                    at: r.get("created_at"),
+                    payload: r.get("payload"),
+                    state: r.get("state"),
                 })
                 .collect();
+            // The bands each money operation runs under now, as a turn prepared
+            // now would commit them, so the replay works out risk as the gateway
+            // would.
+            let mut money = super::bands::operations(&state, claims.workspace_id)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .map(|(d, _)| d)
+                .collect::<Vec<_>>();
+            let rows = super::bands::of(&state.pool, claims.workspace_id)
+                .await
+                .map_err(internal)?;
+            super::bands::apply(&mut money, &rows);
+            let ceiling = super::ceiling(&state.pool, claims.workspace_id).await;
+            let mut past = replay(&policy, requires, &asked, &money, ceiling);
             // A policy that would have approved something a person declined says
             // so first.
             past.sort_by_key(|p| !(p.would && p.answer == "declined"));
@@ -1045,5 +1164,104 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A charge as a question records one, `hours` ago.
+    fn charge_asked(pence: i64, hours: i64) -> Asked {
+        Asked {
+            item_id: Uuid::now_v7(),
+            at: Utc::now() - chrono::Duration::hours(hours),
+            payload: json!({
+                "method": "POST", "host": "api.example.com", "path": "/charges",
+                "binds": [
+                    {"field": "booking_id", "value": "bk_1"},
+                    {"field": "amount_pence", "value": pence},
+                ],
+            }),
+            state: "resolved".into(),
+        }
+    }
+
+    /// The history of a policy for low-risk charges replays what the gateway
+    /// would decide now: £290 and £390 are medium and high under the bands, not
+    /// approved because no test said otherwise, and the day's total stops what
+    /// small ones add up to -- counted in the order they were asked.
+    #[test]
+    fn the_record_replays_risk_and_the_days_total() {
+        use outturn_core::egress::amount::{Amount, Banding, Bands, Declaration, Floor};
+        let mut d = super::super::tests::declared("charge", Risk::High);
+        let bands = Bands {
+            low: Some(5000),
+            medium: Some(30000),
+        };
+        d.amount = Some(Declaration {
+            amount: Amount {
+                field: "amount_pence".into(),
+                currency: "GBP".into(),
+                minor_units: 2,
+            },
+            bands: bands.clone(),
+            floor: Floor::default(),
+        });
+        d.banding = Some(Banding {
+            field: "amount_pence".into(),
+            currency: "GBP".into(),
+            base: Risk::High,
+            bands,
+            floor: Floor::default(),
+        });
+        let mut low = super::super::tests::policy("act");
+        low.conditions = Vec::new();
+        low.max_risk = Some("low".into());
+        low.daily_totals = BTreeMap::from([("GBP".to_string(), 10000)]);
+
+        // Newest first, as the page reads them.
+        let asked = vec![
+            charge_asked(39000, 1),
+            charge_asked(29000, 2),
+            charge_asked(4000, 3),
+            charge_asked(4000, 4),
+            charge_asked(4000, 5),
+        ];
+        let past = replay(&low, "charge", &asked, &[d.clone()], Some(Risk::Medium));
+        let said: Vec<(bool, Option<&str>)> =
+            past.iter().map(|p| (p.would, p.why.as_deref())).collect();
+        assert_eq!(
+            said,
+            vec![
+                (false, Some("£390.00 is high risk")),
+                (false, Some("£290.00 is medium risk")),
+                (false, Some("£40.00 would take the day past £100.00")),
+                (true, None),
+                (true, None),
+            ]
+        );
+        assert_eq!(past[0].item_id, asked[0].item_id, "still newest first");
+
+        // A day later the total starts again.
+        let spread = vec![
+            charge_asked(4000, 1),
+            charge_asked(4000, 26),
+            charge_asked(4000, 27),
+        ];
+        let past = replay(&low, "charge", &spread, &[d.clone()], Some(Risk::Medium));
+        assert!(past.iter().all(|p| p.would), "{past:?}");
+
+        // The ceiling is a bound too: a medium policy under a low cap is low.
+        low.max_risk = Some("medium".into());
+        low.daily_totals = BTreeMap::new();
+        let past = replay(&low, "charge", &asked[..2], &[d.clone()], Some(Risk::Low));
+        assert!(past.iter().all(|p| !p.would), "{past:?}");
+        let past = replay(&low, "charge", &asked[..2], &[d], Some(Risk::Medium));
+        assert_eq!(
+            past.iter().map(|p| p.would).collect::<Vec<_>>(),
+            vec![false, true]
+        );
+
+        // An operation that declares no amount is decided by the tests alone,
+        // as before.
+        let plain = super::super::tests::declared("charge", Risk::Low);
+        let past = replay(&low, "charge", &asked[..1], &[plain], Some(Risk::Medium));
+        assert!(past[0].would && past[0].why.is_none());
     }
 }

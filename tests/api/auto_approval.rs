@@ -1001,6 +1001,47 @@ async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
     finish!(h);
 }
 
+/// The page's record of past charges is replayed under the bands as they
+/// stand: a policy for low-risk charges does not say it would have approved
+/// £290 because no test of its own said otherwise, and says why not.
+#[tokio::test]
+async fn the_record_says_what_risk_stopped() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    for pence in [29000, 4000] {
+        sqlx::query(
+            "insert into action_items (workspace_id, id, kind, state, payload) \
+             values ($1, $2, 'approval.charge', 'resolved', $3)",
+        )
+        .bind(c.acme)
+        .bind(Uuid::now_v7())
+        .bind(serde_json::json!({
+            "requires": "charge", "method": "POST", "host": CHARGE_HOST, "path": "/charges",
+            "binds": [
+                {"field": "booking_id", "value": "bk_1"},
+                {"field": "amount_pence", "value": pence},
+            ],
+        }))
+        .execute(&h.db.pool)
+        .await
+        .expect("item");
+    }
+    let (status, body) = h
+        .get(
+            &format!("/v1/approval-policies/{}/evidence", c.policy),
+            Some(&c.admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let evidence: Value = serde_json::from_str(&body).unwrap();
+    let history = evidence["history"].as_array().expect("a history");
+    assert_eq!(history.len(), 2, "{body}");
+    assert_eq!(history[0]["would"], true, "£40 is low: {body}");
+    assert_eq!(history[1]["would"], false, "{body}");
+    assert_eq!(history[1]["why"], "£290.00 is high risk");
+    finish!(h);
+}
+
 /// Bands are set as policies are: by a person holding both authorities, from
 /// their own session, in their own workspace.
 #[tokio::test]

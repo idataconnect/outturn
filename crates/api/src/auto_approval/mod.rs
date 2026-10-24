@@ -284,6 +284,20 @@ pub fn choose<'a>(
     }
 }
 
+/// The highest risk a request worked out from its amount may have under this
+/// policy: the tighter of its own bound and the operator's ceiling.
+pub fn bound(policy: &Policy, ceiling: Option<Risk>) -> Risk {
+    let own = policy.max_risk.as_deref().and_then(Risk::parse);
+    match (ceiling, own) {
+        (Some(c), Some(o)) => c.min(o),
+        (Some(c), None) => c,
+        (None, Some(o)) => o,
+        // No cap is `none`, which `choose` never covers; low is what is left if
+        // it ever did.
+        (None, None) => Risk::Low,
+    }
+}
+
 /// What goes into the token for one gate a policy is on for.
 ///
 /// `ceiling` is the deployment's cap, as `choose` was given it. Where the gate
@@ -298,17 +312,7 @@ pub fn grant(
     ceiling: Option<Risk>,
 ) -> PolicyGrant {
     let banding = declared.banding.clone();
-    let max_risk = banding.as_ref().map(|_| {
-        let own = policy.max_risk.as_deref().and_then(Risk::parse);
-        match (ceiling, own) {
-            (Some(c), Some(o)) => c.min(o),
-            (Some(c), None) => c,
-            (None, Some(o)) => o,
-            // No cap is `none`, which `choose` never covers; low is what is
-            // left if it ever did.
-            (None, None) => Risk::Low,
-        }
-    });
+    let max_risk = banding.as_ref().map(|_| bound(policy, ceiling));
     let currency_per_day = banding
         .as_ref()
         .and_then(|b| policy.daily_totals.get(&b.currency).copied());

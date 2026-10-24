@@ -73,6 +73,8 @@ export type Evidence = {
         binds: { field: string; value: unknown }[]
         answer: 'approved' | 'declined' | 'pending'
         would: boolean
+        /** Why it would still have asked, where the amount is what stopped it. */
+        why?: string
       }[]
     | null
 }

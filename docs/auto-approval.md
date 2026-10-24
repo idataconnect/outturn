@@ -462,8 +462,13 @@ waved through, which is the one outcome this whole design must not permit.
   renewable by an edit) and `.../accept` (covers the gates published since).
   `GET .../evidence` returns the record so far, trial results, and for an act or
   operation selector the last fifty approvals of what it covers, each with
-  whether its tests hold -- those it would have approved that a person declined
-  first. `GET /v1/approvals/answered?requires=` is the count the prompt reads.
+  whether the policy would have let it out -- those it would have approved that
+  a person declined first. Replayed as the gateway would decide now
+  (`auto_approval::api::replay`): the tests, then for a money operation the
+  risk its amount works out to under the bands as they stand, held to the
+  tighter of the policy's bound and the deployment's, then the day's total
+  counted over the day before each from what the replay let out. One stopped by
+  its amount says why: `£290.00 is medium risk`, or the total it would pass. `GET /v1/approvals/answered?requires=` is the count the prompt reads.
 - **Resolution** is `api::auto_approval::choose`, called from `prepare_turn`
   through `for_turn`. Deny overrides; specificity chooses among inclusions;
   *two equally specific inclusions choose neither*, and a person is asked,
