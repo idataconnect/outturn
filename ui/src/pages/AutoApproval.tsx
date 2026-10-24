@@ -4,6 +4,7 @@ import { ShieldCheck } from 'lucide-react'
 import ApprovalBands from '../components/ApprovalBands'
 import HighRiskRoute from '../components/HighRiskRoute'
 import { Badge, PageHeader, RecordList, RecordRow } from '../components/IndexPage'
+import OneLinePolicy from '../components/OneLinePolicy'
 import { ApiError } from '../lib/api'
 import {
   covers,
@@ -73,6 +74,12 @@ export default function AutoApproval() {
         <p className="mt-4 text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
         </p>
+      )}
+
+      {/* The common case before the list of everything: a kind of request that
+          moves money, under an amount, up to a total a day. */}
+      {canWrite && bands?.may_write && bands.operations.length > 0 && (
+        <OneLinePolicy bands={bands} onChanged={reload} />
       )}
 
       <RecordList

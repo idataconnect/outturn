@@ -254,6 +254,45 @@ export type Amounts = { requires: string; days: number; currencies: ApprovedIn[]
 export const approvedAmounts = (requires: string, days = 30) =>
   api<Amounts>(`/v1/approvals/amounts?requires=${encodeURIComponent(requires)}&days=${days}`)
 
+/**
+ * The link to the one-line policy on the Auto-approval page, its kind and,
+ * where known, currency and amount filled in.
+ */
+export function oneLineLink(requires: string, currency?: string, low?: number): string {
+  const query = new URLSearchParams({ line: requires })
+  if (currency) query.set('currency', currency)
+  if (low !== undefined) query.set('low', String(low))
+  return `/settings/auto-approval?${query.toString()}`
+}
+
+/**
+ * Requests of one kind, counted: `12 charges`. A kind of more than one word
+ * reads `12 approvals of “send email”`, rather than a guess at its plural.
+ */
+export function countOf(n: number, requires: string): string {
+  const word = requires.replace(/_/g, ' ')
+  if (/\s/.test(word)) return `${n} approval${n === 1 ? '' : 's'} of “${word}”`
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/** Requests of one kind, as the start of a sentence: `Charges`. */
+export function kindOf(requires: string): string {
+  const word = requires.replace(/_/g, ' ')
+  if (/\s/.test(word)) return `Requests for “${word}”`
+  return `${word.charAt(0).toUpperCase()}${word.slice(1)}s`
+}
+
+/**
+ * A round figure every approved amount was under: one more than the largest,
+ * up to its leading digit -- £40.00 after a largest of £39.99. Never less than
+ * one whole unit.
+ */
+export function roundUnder(max: number, minorUnits: number): number {
+  const above = Math.max(max + 1, 10 ** minorUnits)
+  const magnitude = 10 ** (String(above).length - 1)
+  return Math.ceil(above / magnitude) * magnitude
+}
+
 /** The decimals of each currency the workspace's money operations are in. */
 export function decimalsOf(page: BandsPage | null | undefined):Record<string, number> {
   const out: Record<string, number> = {}
