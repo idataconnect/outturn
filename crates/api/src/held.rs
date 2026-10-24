@@ -43,6 +43,12 @@ pub struct NewHeld {
 /// Holds one.
 pub async fn hold(pool: &sqlx::PgPool, held: NewHeld) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::now_v7();
+    // Refused rather than stored as null: a held request whose headers were
+    // lost would later be sent without them, as if that were what was approved.
+    let headers = serde_json::to_value(&held.headers).map_err(|e| {
+        tracing::error!(held_id = %id, error = %e, "a held request's headers could not be encoded");
+        sqlx::Error::Encode(format!("held request {id}: headers: {e}").into())
+    })?;
     sqlx::query(
         "insert into held_requests \
          (workspace_id, id, item_id, session_id, job_id, requires, shape, operation, \
@@ -59,7 +65,7 @@ pub async fn hold(pool: &sqlx::PgPool, held: NewHeld) -> Result<Uuid, sqlx::Erro
     .bind(&held.operation)
     .bind(&held.method)
     .bind(&held.url)
-    .bind(serde_json::to_value(&held.headers).unwrap_or_default())
+    .bind(headers)
     .bind(&held.body)
     .execute(pool)
     .await?;
@@ -378,8 +384,7 @@ pub async fn in_session(
     .bind(session_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(
             |(
                 id,
@@ -396,24 +401,42 @@ pub async fn in_session(
                 outcome,
                 settled_at,
                 name,
-            )| Held {
-                id,
-                item_id,
-                requires,
-                shape,
-                state,
-                attempts,
-                operation,
-                method,
-                url,
-                headers: serde_json::from_value(headers).unwrap_or_default(),
-                body,
-                outcome: outcome.and_then(|o| serde_json::from_value(o).ok()),
-                settled_at,
-                approved_by: name.unwrap_or_else(|| SOMEBODY.to_string()),
+            )| {
+                Ok(Held {
+                    id,
+                    item_id,
+                    requires,
+                    shape,
+                    state,
+                    attempts,
+                    operation,
+                    method,
+                    url,
+                    headers: decoded(id, "headers", headers)?,
+                    body,
+                    outcome: outcome.map(|o| decoded(id, "outcome", o)).transpose()?,
+                    settled_at,
+                    approved_by: name.unwrap_or_else(|| SOMEBODY.to_string()),
+                })
             },
         )
-        .collect())
+        .collect()
+}
+
+/// One stored column of a held request, read back.
+///
+/// A row that does not decode is an error, not an empty value: headers read as
+/// none would send the request without them, and an outcome read as none would
+/// have a request that already went treated as one still waiting to.
+fn decoded<T: serde::de::DeserializeOwned>(
+    id: Uuid,
+    column: &str,
+    value: serde_json::Value,
+) -> Result<T, sqlx::Error> {
+    serde_json::from_value(value).map_err(|e| {
+        tracing::error!(held_id = %id, column, error = %e, "a held request could not be read");
+        sqlx::Error::Decode(format!("held request {id}: {column}: {e}").into())
+    })
 }
 
 /// What the runtime is told back: the sentence the model reads in place of the
@@ -576,7 +599,13 @@ async fn settle(
         None => false,
     };
     let next = next(outcome, held.attempts, keyed);
-    let recorded = serde_json::to_value(outcome).unwrap_or_default();
+    let recorded = serde_json::to_value(outcome).map_err(|e| {
+        tracing::error!(held_id = %held.id, error = %e, "a held request's outcome could not be encoded");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the outcome could not be recorded: {e}"),
+        )
+    })?;
 
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let (to, spent) = match next {
@@ -750,6 +779,17 @@ async fn original(state: &ApiState, held: &Held) -> Option<(Uuid, serde_json::Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_column_that_does_not_decode_is_an_error() {
+        let id = Uuid::now_v7();
+        let bad = serde_json::json!({ "not": "a list of pairs" });
+        let err = decoded::<Vec<(String, String)>>(id, "headers", bad).unwrap_err();
+        assert!(matches!(err, sqlx::Error::Decode(_)), "{err}");
+        assert!(err.to_string().contains("headers"), "{err}");
+        let err = decoded::<Outcome>(id, "outcome", serde_json::json!("garbled")).unwrap_err();
+        assert!(matches!(err, sqlx::Error::Decode(_)), "{err}");
+    }
 
     fn never_sent() -> Outcome {
         Outcome::NeverSent {
