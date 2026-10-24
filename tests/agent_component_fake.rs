@@ -3905,3 +3905,82 @@ async fn an_approved_request_is_marked_as_going_before_it_goes() {
     let sent = serde_json::to_string(&gateway.requests()[0]["messages"]).unwrap();
     assert!(!sent.contains("Approved by"), "{sent}");
 }
+
+/// A banded policy reaches the gateway as the API committed it: the host
+/// relays the gates it was handed, and they still hash to the root the token
+/// carries once read back. A field lost on the way is every request of the
+/// turn refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_banded_policy_reaches_the_gateway_as_committed() {
+    use outturn::egress::amount::{Banding, Bands, Floor};
+    use outturn::egress::gate::{Gate, Gates};
+    use outturn::egress::policy::{PolicyGrant, Risk};
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "inn_book".into(),
+        arguments: r#"{"room_id":"garden","guest_name":"Jo Okafor","nights":2,"action":"Booking"}"#
+            .into(),
+        reply: "Booked.".into(),
+    })
+    .await;
+    gateway.answer_egress(201, r#"{"id":"bk_1"}"#);
+    let mut options = options(&gateway, None);
+    let workspace = options.workspace_id;
+    let charge = Gate {
+        requires: "charge".into(),
+        host: "inn.example.com".into(),
+        method: "POST".into(),
+        path: "/charges".into(),
+        identified_by: Some("booking_id".into()),
+        binds: vec!["booking_id".into(), "amount_pence".into()],
+    };
+    let grant = PolicyGrant {
+        policy_id: Uuid::now_v7(),
+        version: 1,
+        job_id: Uuid::now_v7(),
+        gate: charge.key(workspace),
+        requires: "charge".into(),
+        tests: Vec::new(),
+        fields: vec!["amount_pence".into()],
+        per_turn: 1,
+        per_day: 20,
+        sum_field: None,
+        sum_per_day: None,
+        banding: Some(Banding {
+            field: "amount_pence".into(),
+            currency: "GBP".into(),
+            base: Risk::High,
+            bands: Bands {
+                low: Some(5000),
+                medium: Some(20000),
+            },
+            floor: Floor::default(),
+        }),
+        max_risk: Some(Risk::Low),
+        currency_per_day: Some(50000),
+    };
+    let gates = Gates::of(vec![charge]).with_policies(vec![grant]);
+    let root = gates.root(workspace);
+    options.gates = gates;
+    options.eager_tools = vec!["inn_book".into()];
+    options.skill_operations = vec![booking()];
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "inn.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+    }];
+    runner()
+        .run(
+            &component(),
+            user("Book the garden room."),
+            String::new(),
+            options,
+        )
+        .await
+        .expect("run");
+    let fetched = gateway.fetched();
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    let carried: Gates = serde_json::from_value(fetched[0]["gates"].clone()).unwrap();
+    assert!(carried.matches(workspace, &root), "{}", fetched[0]["gates"]);
+}

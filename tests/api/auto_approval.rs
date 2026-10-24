@@ -433,6 +433,33 @@ impl Gateway {
         gates: &Value,
         amount: i64,
     ) -> (StatusCode, String) {
+        let body = serde_json::json!({
+            "booking_id": "bk_1", "amount_pence": amount, "description": "deposit",
+        });
+        self.send(
+            acme,
+            assignment,
+            token,
+            gates,
+            "POST",
+            "/charges",
+            Some(body),
+        )
+        .await
+    }
+
+    /// Any request to the skill's host, as the runtime relays one.
+    #[allow(clippy::too_many_arguments)]
+    async fn send(
+        &self,
+        acme: Uuid,
+        assignment: &Value,
+        token: &str,
+        gates: &Value,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, String) {
         let rules: Vec<outturn::egress::rule::EgressRule> =
             serde_json::from_value(assignment["egress"].clone()).expect("rules");
         let rule = rules
@@ -440,17 +467,17 @@ impl Gateway {
             .find(|r| r.host == CHARGE_HOST)
             .expect("the skill's host is allowed")
             .clone();
-        let body = serde_json::json!({
-            "method": "POST",
-            "url": format!("https://{CHARGE_HOST}/charges"),
+        let mut body = serde_json::json!({
+            "method": method,
+            "url": format!("https://{CHARGE_HOST}{path}"),
             "gates": gates,
             "headers": [["content-type", "application/json"]],
-            "body": serde_json::json!({
-                "booking_id": "bk_1", "amount_pence": amount, "description": "deposit",
-            })
-            .to_string(),
+            "body": body.map(|b| b.to_string()),
             "proof": outturn::egress::commit::prove(acme, &rules, &rule).unwrap(),
         });
+        if body["body"].is_null() {
+            body.as_object_mut().unwrap().remove("body");
+        }
         let response = self
             .routes
             .clone()
@@ -878,6 +905,99 @@ async fn a_charge_is_as_risky_as_its_amount() {
     let (_, body) = h.get("/v1/approval-bands", Some(&c.admin)).await;
     let page: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(page["operations"][0]["source"], "operator");
+    finish!(h);
+}
+
+/// The guesthouse's charge as it is published: an operation the skill calls,
+/// keyed on the booking, carrying an idempotency key nobody binds.
+fn guesthouse_charge_file() -> String {
+    format!(
+        "---\napproval:\n  requires: charge\n  matches: POST /charges\n  \
+         binds: [payment_account_id, booking_id, amount_pence]\n  covers: booking\n  \
+         identified_by: booking_id\n  risk: high\n  auto: allowed\n  \
+         numbers: [amount_pence]\n  \
+         amount: {{ field: amount_pence, currency: GBP, minor_units: 2 }}\n  \
+         bands: {{ low: 5000, medium: 20000 }}\n  free: [idempotency_key]\n\
+         operation:\n  method: POST\n  url: https://{CHARGE_HOST}/charges\n  \
+         body: [payment_account_id, booking_id, amount_pence]\n  \
+         integer: [amount_pence]\n  identity: [booking_id, amount_pence]\n  \
+         key: field idempotency_key\n---\n\n# charge_payment_account\n"
+    )
+}
+
+/// What the one-line form sets: a band on the operation, then a policy on for
+/// one agent's low-risk charges with a day's total in pounds. Every request of
+/// the turn after -- the ungated look at the rooms as much as the charge --
+/// reaches the gateway with the gates as the runtime carries them, which is
+/// read back from JSON into the set and written out again.
+#[tokio::test]
+async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &guesthouse_charge_file(), &low_charges_policy()).await;
+    let (status, body) = put(
+        &h,
+        "/v1/approval-bands",
+        &c.admin,
+        &serde_json::json!({
+            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
+            "low": 10000, "medium": 20000,
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut one_line: Value = serde_json::from_str(&low_charges_policy()).unwrap();
+    one_line["mode"] = "on".into();
+    one_line["effect"] = "include".into();
+    one_line["agent_id"] = c.agent.to_string().into();
+    one_line["conditions"] = serde_json::json!([]);
+    one_line["daily_totals"] = serde_json::json!({"GBP": 50000});
+    let (status, body) = put(
+        &h,
+        &format!("/v1/approval-policies/{}", c.policy),
+        &c.admin,
+        &one_line.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, _, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().unwrap();
+    // Read as the runtime reads an assignment: the request flattened into it.
+    #[derive(serde::Deserialize)]
+    struct Taken {
+        #[serde(flatten)]
+        request: outturn::protocol::work::ExecuteRequest,
+    }
+    let taken: Taken = serde_json::from_str(&assignment.to_string()).expect("assignment");
+    let parsed = taken.request.gates;
+    assert_eq!(parsed.policies().len(), 1, "the policy is committed");
+    assert!(parsed.policies()[0].banding.is_some(), "with its bands");
+    let carried = serde_json::to_value(&parsed).unwrap();
+
+    let gateway = Gateway::new(&h);
+    let (status, body) = gateway
+        .send(c.acme, &assignment, token, &carried, "GET", "/rooms", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "nothing gates a look: {body}");
+    let charge = |amount: i64| {
+        gateway.send(
+            c.acme,
+            &assignment,
+            token,
+            &carried,
+            "POST",
+            "/charges",
+            Some(serde_json::json!({
+                "payment_account_id": "pa_1", "booking_id": "bk_1",
+                "amount_pence": amount, "idempotency_key": format!("k{amount}"),
+            })),
+        )
+    };
+    let (status, body) = charge(8000).await;
+    assert_eq!(status, StatusCode::OK, "£80 is low here: {body}");
+    let (status, body) = charge(15000).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "£150 is medium: {body}");
     finish!(h);
 }
 

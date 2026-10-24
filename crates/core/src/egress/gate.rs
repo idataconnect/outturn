@@ -1133,4 +1133,72 @@ mod the_tree_shape {
         let committed = all.root(workspace);
         assert!(!Gates::of(vec![a, b]).matches(workspace, &committed));
     }
+
+    /// A banded policy survives the trip the runtime gives it.
+    ///
+    /// The API takes the root over the set it built; the runtime is handed that
+    /// set as JSON, reads it back and sends it on, and the gateway hashes what it
+    /// was sent. A grant that serializes differently once read back is a root
+    /// nobody's set matches, and every request of the turn refused.
+    #[test]
+    fn a_banded_policy_hashes_the_same_after_a_round_trip() {
+        use super::super::amount::{Banding, Bands, Floor};
+        use super::super::policy::{PolicyGrant, Risk};
+        let workspace = Uuid::from_bytes([7; 16]);
+        let charge = gate("charge");
+        let grant = PolicyGrant {
+            policy_id: Uuid::from_bytes([1; 16]),
+            version: 2,
+            job_id: Uuid::from_bytes([2; 16]),
+            gate: charge.key(workspace),
+            requires: "charge".into(),
+            tests: Vec::new(),
+            fields: vec!["amount_pence".into()],
+            per_turn: 3,
+            per_day: 20,
+            sum_field: None,
+            sum_per_day: None,
+            banding: Some(Banding {
+                field: "amount_pence".into(),
+                currency: "GBP".into(),
+                base: Risk::High,
+                bands: Bands {
+                    low: Some(5000),
+                    medium: Some(20000),
+                },
+                floor: Floor::default(),
+            }),
+            max_risk: Some(Risk::Low),
+            currency_per_day: Some(50000),
+        };
+        let gates = Gates::of(vec![charge, gate("look")]).with_policies(vec![grant]);
+        let root = gates.root(workspace);
+        let carried: Gates = serde_json::from_slice(&serde_json::to_vec(&gates).unwrap()).unwrap();
+        assert_eq!(carried, gates);
+        assert!(carried.matches(workspace, &root));
+
+        // And flattened into the assignment, as the runtime reads it: a
+        // flattened struct is deserialized from serde's buffered copy of the
+        // JSON rather than from the JSON itself.
+        #[derive(Serialize, Deserialize)]
+        struct Request {
+            gates: Gates,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct Assignment {
+            job_id: Uuid,
+            #[serde(flatten)]
+            request: Request,
+        }
+        let sent = serde_json::to_vec(&Assignment {
+            job_id: Uuid::from_bytes([3; 16]),
+            request: Request {
+                gates: gates.clone(),
+            },
+        })
+        .unwrap();
+        let taken: Assignment = serde_json::from_slice(&sent).unwrap();
+        assert_eq!(taken.request.gates, gates);
+        assert!(taken.request.gates.matches(workspace, &root));
+    }
 }
