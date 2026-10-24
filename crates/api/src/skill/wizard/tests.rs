@@ -1765,6 +1765,7 @@ const AMOUNT_RULE: &str = "approval:
   matches: POST /charges
   binds: [payment_account_id, booking_id, amount_pence]
   risk: high
+  numbers: [amount_pence]
   amount: { field: amount_pence, currency: GBP, minor_units: 2 }
   bands: { low: 5000, medium: 20000 }
   floor: { high: 500000 }";
@@ -1807,19 +1808,15 @@ fn charge_with(rule: &str) -> Option<crate::skill::frontmatter::ApprovalRule> {
 }
 
 #[test]
-#[ignore = "needs the amount key from the risk-from-amount backend"]
 fn the_docs_amount_rule_is_read() {
     let rule = charge_with(AMOUNT_RULE).expect("the rule is kept");
     assert_eq!(rule.requires, "charge");
 }
 
 #[test]
-#[ignore = "needs the amount key from the risk-from-amount backend"]
 fn the_rule_the_page_writes_for_an_amount_is_read() {
     // The shape the page's approvalYaml writes (ui/src/lib/approvalSuggestion.ts),
-    // which adds the `numbers` the amount field has to be in.
-    let rule =
-        charge_with(&AMOUNT_RULE.replace("  amount:", "  numbers: [amount_pence]\n  amount:"))
-            .expect("the rule is kept");
+    // with the `numbers` the amount field has to be in.
+    let rule = charge_with(AMOUNT_RULE).expect("the rule is kept");
     assert_eq!(rule.numbers, ["amount_pence"]);
 }

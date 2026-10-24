@@ -206,6 +206,7 @@ how far it trusts the agent: *auto-approve up to `low`*.
     matches: POST /charges
     binds: [payment_account_id, booking_id, amount_pence]
     risk: high
+    numbers: [amount_pence]
     amount: { field: amount_pence, currency: GBP, minor_units: 2 }
     bands: { low: 5000, medium: 20000 }   # below each, that risk; above, `risk`
     floor: { high: 500000 }               # from here, high whatever a workspace says
