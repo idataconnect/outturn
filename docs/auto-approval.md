@@ -182,7 +182,8 @@ not covered and asks a person.
 
 ## Risk from the amount
 
-Designed, not built. It changes what a risk is: from a fixed label on an
+The backend is built; see *As built* below for where, and what differs from
+this section. It changes what a risk is: from a fixed label on an
 operation to one worked out from the operation and what a request asks for.
 
 A charge is not one risk. Nobody wants to approve a five-dollar charge, and
@@ -283,9 +284,8 @@ risk unconfirmed, since a risk decides what goes out without a person.
   beneath it.
 - Policies already written with amount conditions keep working; nothing about
   conditions changes.
-- Not settled: whether bands may be set per agent as well as per workspace, and
-  whether a workspace may raise a band at all or only lower it below the
-  operator's default. The design above lets it move either way above the floor.
+- *Settled:* bands are per workspace, not per agent; a workspace may move a
+  band either way from the operator's default, but never past the floor.
 
 ## Where it is decided
 
@@ -504,6 +504,73 @@ waved through, which is the one outcome this whole design must not permit.
   bound field. The approval prompt links there once the workspace has approved
   the same `requires` three times, for somebody who could set one.
 
+### As built: risk from the amount
+
+- **Declarations.** `amount`, `bands` and `floor` are read in
+  `api::skill::frontmatter` as one-line mappings and checked by
+  `egress::amount::Declaration::check`: the amount bound and in `numbers`, a
+  currency of three upper-case letters, `minor_units` at most 4, bands above
+  zero, only for levels below `risk`, rising, and none above the floor of a
+  higher level; floors rising. Stored as JSON in `skill_version_gates.amount`
+  (migration 0066) and copied with the gates.
+- **Workspace bands.** `approval_bands` (migration 0067): a row per currency,
+  or per operation named as a policy names one (`skill_id`, `requires`,
+  `matches`). The operation's row wins over its currency's, either over the
+  operator's defaults; a row replaces the bands whole, and deleting it goes
+  back to what stood beneath. Checked when written against the floor -- of the
+  operation, or of every money operation an agent reaches in that currency --
+  and the floor wins again when a request is assessed, so a currency row
+  written before a skill's floor rose is *held at the floor*, and the page says
+  so. Read and written as policies are (`approvals:delegate` with
+  `approvals:answer`, from a browser session). Applied by
+  `api::auto_approval::declared_in`, which every resolution now goes through.
+- **In the token.** A `PolicyGrant` for a money operation carries the bands it
+  runs under (`banding`), `max_risk` -- the tighter of the policy's bound and
+  the operator's ceiling -- and `currency_per_day`. All three are left out when
+  absent, so a grant for an operation with no amount hashes as it did.
+- **At the gateway.** `PolicyGrant::admits` works out the request's risk with
+  `egress::amount::risk` exactly as *What a request's risk is* says, and admits
+  nothing above `max_risk`. A policy with a daily total in the currency admits
+  no request whose amount it cannot read, since it could not be counted. The
+  record writes `currency` and `currency_amount`, and its insert also holds the
+  day's total per currency to the tighter of the committed and the row's.
+- **Resolution.** A selector, and the operator's ceiling, compare against the
+  *lowest* risk a gate's requests can work out to (`Declared::reach`); the
+  gateway then holds each request to the bound by its own amount. So the
+  ceiling now caps computed risk, not only base risk: bands decide where a
+  request falls beneath it.
+- **Daily totals.** `approval_policies.daily_totals`, `{"GBP": 15000}` in minor
+  units, on any selector. A policy with totals covers money operations only in
+  a currency it totals; one moving no money is covered as before.
+- **Routing.** `api::gated` works out the risk of the refused request from the
+  workspace's bands (the API's reading rather than the token's: it lets nothing
+  out, only chooses who is asked) and, for high, asks the roles in
+  `approval_routes` (migration 0068) that still hold `approvals:answer`; none
+  named, or none left, and every approver is asked as before. The item's
+  payload gains `risk`, and `money` (`amount`, `currency`, `minor_units`,
+  `display`, `field`) where the amount could be trusted.
+- **The API.** `GET/PUT /v1/approval-bands` (`DELETE .../{id}`): every money
+  operation an agent reaches, with its defaults, floor, effective bands, their
+  source and whether the floor holds, each as money (`display`: `£50.00`), the
+  currencies with their rows, and rows naming operations nobody reaches.
+  `GET /v1/approval-routes`, `PUT /v1/approval-routes/high` (`role_ids`).
+  `GET /v1/approvals/amounts?requires=&days=` -- for `approvals:answer`, this
+  workspace's resolved questions of that act carrying an amount, per currency:
+  count, largest, total, and `suggested_low`, the first round amount above the
+  largest. Policies take `max_risk` on an act or operation selector and
+  `daily_totals`, so the one line is a band (`PUT /v1/approval-bands`) and a
+  policy (`selector: act`, `max_risk: low`, `daily_totals`, the agent, an
+  expiry).
+
+#### Deviations
+
+- `max_risk` is now allowed on an act or operation selector (migration 0067
+  relaxes the check), which the design did not say; it is what "charges under
+  £50" needs without sweeping in every other low operation.
+- Low that no policy covers asks every approver, as medium does: there is
+  nobody else for it to go to.
+- The offer counts only questions raised since they carried `money`.
+
 ### What is not built
 
 - **An edited policy is not re-committed mid-turn.** A trade-in drops it, and
@@ -514,5 +581,11 @@ waved through, which is the one outcome this whole design must not permit.
   wait, and a broad policy covers them in trial until accepted, though nothing
   about them changed.
 - **The admin agent proposing a policy**, which waits for the admin agent.
+- **The pages for risk from the amount**: money on every screen, the bands
+  editor, the one-line policy and the prefilled offer. The API above is what
+  they read.
+- **The wizard's suggestions** of base risk, amount field and currency.
+- **Bands mid-turn.** A band changed while a turn runs reaches it from the
+  next turn, as a policy edit does.
 - **A policy suspending itself**, and **operator gates that follow the
   credential**, still unsettled above.

@@ -26,8 +26,10 @@ committed and verified, and new work goes in where it belongs, not at the end.
    from the amount*): a request's risk worked out from its operation and
    amount, by bands the operator defaults and a workspace adjusts above a
    floor, so a policy says only "up to `low`"; the same risk routing who is
-   asked; and the wizard suggesting base risks and amount fields. Designed;
-   to agree before building.
+   asked; and the wizard suggesting base risks and amount fields. The
+   backend is built (*As built* there); the pages that show money, edit the
+   bands and write the one-line policy go next, then the wizard's
+   suggestions.
 3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
 4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
