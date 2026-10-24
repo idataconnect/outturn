@@ -7,6 +7,8 @@ approval:
   identified_by: booking_id
   risk: high
   numbers: [amount_pence]
+  amount: { field: amount_pence, currency: GBP, minor_units: 2 }
+  bands: { low: 5000, medium: 20000 }
   free: [idempotency_key]
 operation:
   method: POST
