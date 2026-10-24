@@ -78,11 +78,14 @@ export default function SettingsCascade({
   base,
   canEdit,
   levelName,
+  setsCeilings = false,
 }: {
   base: string
   canEdit: boolean
   /** "this workspace", "this agent", "the platform": for the toggle's label. */
   levelName: string
+  /** The operator's own level, where a ceiling is set rather than lived under. */
+  setsCeilings?: boolean
 }) {
   const [settings, setSettings] = useState<Effective[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -186,8 +189,11 @@ export default function SettingsCascade({
         // is looking.
         // A ceiling the operator has set to its strictest leaves a workspace
         // nothing to choose: it may only be stricter, and there is nothing
-        // stricter.
+        // stricter. Never at the operator's own level, which is where the
+        // ceiling is raised -- a ceiling whose default is its strictest
+        // could otherwise never be opened by anyone.
         const capped =
+          !setsCeilings &&
           s.owner === 'operator_ceiling' &&
           s.kind.type === 'choice' &&
           s.inherited === s.kind.options[0]?.value

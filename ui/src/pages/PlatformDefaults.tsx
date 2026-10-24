@@ -16,7 +16,7 @@ export default function PlatformDefaults() {
           What every workspace gets unless it overrides. Visible to the operator only.
         </p>
       </div>
-      <SettingsCascade base="/v1/platform/settings" canEdit levelName="the platform" />
+      <SettingsCascade base="/v1/platform/settings" canEdit levelName="the platform" setsCeilings />
     </div>
   )
 }
