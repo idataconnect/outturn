@@ -611,11 +611,6 @@ waved through, which is the one outcome this whole design must not permit.
   wait, and a broad policy covers them in trial until accepted, though nothing
   about them changed.
 - **The admin agent proposing a policy**, which waits for the admin agent.
-- **Risk and money in a conversation.** The held banner's approval
-  (`gated::answerable`, and the history's `awaiting`) carries neither `risk`
-  nor `money`, so the prompt in a conversation shows the bound values alone;
-  the inbox's, read from the item, shows both. The page already takes them.
-- **The wizard's suggestions** of base risk, amount field and currency.
 - **Bands mid-turn.** A band changed while a turn runs reaches it from the
   next turn, as a policy edit does.
 - **A policy suspending itself**, and **operator gates that follow the
