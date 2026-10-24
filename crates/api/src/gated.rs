@@ -536,6 +536,10 @@ pub fn answerable(item: &super::actions::ActionItem) -> serde_json::Value {
         // The offer, so the client can show the tickbox. Never a grant: it is
         // the approver's act that widens the extent, not the request's.
         "covers": item.payload.get("covers"),
+        // What the request's amount worked out to, so the prompt in the
+        // conversation says what the inbox says.
+        "risk": item.payload.get("risk"),
+        "money": item.payload.get("money"),
     })
 }
 
