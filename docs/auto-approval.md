@@ -180,6 +180,113 @@ satisfy it. So every policy has a count per turn and a count per day, required,
 and may have a sum over one `numbers` field per day. Over a cap, the request is
 not covered and asks a person.
 
+## Risk from the amount
+
+Designed, not built. It changes what a risk is: from a fixed label on an
+operation to one worked out from the operation and what a request asks for.
+
+A charge is not one risk. Nobody wants to approve a five-dollar charge, and
+everybody wants to approve a ten-thousand-dollar one, and today the only way to
+say so is a condition on each policy -- `amount_pence ≤ 5000` -- written per
+workspace, per operation, in the field's own units. Every policy restates the
+same judgment about money, and a workspace with ten money operations writes it
+ten times. The judgment belongs in one place, and the policy should only say
+how far it trusts the agent: *auto-approve up to `low`*.
+
+### Who sets what
+
+- **The operator, with the skill.** An operation declares its **base risk** as
+  now, and, where it moves money, which bound field is the **amount** and in
+  what **currency**, with **default bands** and an optional **floor**:
+
+  ```yaml
+  approval:
+    requires: charge
+    matches: POST /charges
+    binds: [payment_account_id, booking_id, amount_pence]
+    risk: high
+    amount: { field: amount_pence, currency: GBP, minor_units: 2 }
+    bands: { low: 5000, medium: 20000 }   # below each, that risk; above, `risk`
+    floor: { high: 500000 }               # from here, high whatever a workspace says
+  ```
+
+  The amount field must be in `numbers`, so every rule about comparing numbers
+  above applies to it unchanged.
+- **The workspace.** Its own bands for an operation, or for every operation in
+  one currency, starting from the operator's defaults -- moved either way, but
+  never past the floor. A workspace that thinks £500 is small for its business
+  may say so; one that tries to call £10,000 low is held at the floor.
+- **The policy.** A risk selector -- *up to `low`*, for an agent -- plus its
+  caps and expiry, as now. The amount conditions stay for the case they suit,
+  one operation with a rule of its own, but are no longer how the common case is
+  written.
+
+### What a request's risk is
+
+At the gateway, from bands committed in the turn token beside the policies, so
+the agent cannot argue its way into a lower band:
+
+1. An operation with no `amount` has its base risk. A delete is high whatever
+   any band says.
+2. Otherwise read the amount as the comparisons above do: a JSON number, an
+   integer within range, never a string, at least zero. Anything else is the
+   base risk, which is the conservative reading of an amount nobody can trust.
+3. The lowest level whose band the amount is below; above every band, the base
+   risk; at or above the floor, the floor's level.
+
+Bands are upper bounds, one per level, rising with the level, so they cover
+every amount with no gap between "under 200" and "1,000 or more". They are per
+currency, never converted: a band in pounds says nothing about a charge in
+dollars, which takes the operation's base risk.
+
+**The daily caps still matter most.** A per-request risk cannot see four
+hundred charges of £49, each of them `low`. A risk selector's policy keeps its
+required counts, and gains a daily total per currency across everything it
+covers -- *up to £500 a day of `low`* -- which is what actually bounds an agent
+that splits a large payment into small ones.
+
+### The same answer routes the question
+
+A computed risk can also say who is asked. `low` goes through where a policy
+covers it; `medium` asks anyone holding `approvals:answer`; `high` asks the
+roles a workspace names for it -- a manager, say. The queue already targets
+roles, so this is a choice of targets by risk rather than a new mechanism, and
+it means one mapping answers both whether a person is needed and which one.
+
+### What the person sees
+
+- **Money as money.** With the amount field and currency declared, every screen
+  says "£50.00", never `amount_pence ≤ 5000`.
+- **One line for the common case.** "Charges under **£50** go through
+  automatically, up to **£500** a day" -- a band, a daily total, the agent and
+  an expiry -- with the full editor still there for anything else.
+- **An offer drawn from what was approved.** The prompt's link after a few
+  approvals of one kind becomes specific: "12 charges approved this month, all
+  under £40 -- approve charges under £50 automatically?", the figure prefilled.
+
+### Where the wizard comes in
+
+Suggesting, for the operator to confirm, as it suggests an identity: a base
+risk per operation (reads low and ungated; creates and updates medium; deletes
+and anything named for money or irreversibility -- pay, charge, refund,
+transfer, cancel, delete, send -- high and gated), the amount field from its
+name (`amount`, `total`, `price`, a `_cents` or `_pence` suffix) and the
+currency where the specification says, and bands from nothing but a sensible
+default the operator edits. A model may offer a second opinion on operations a
+heuristic misreads -- an `execute` that is really a delete -- but never sets a
+risk unconfirmed, since a risk decides what goes out without a person.
+
+### What it replaces, and what it leaves
+
+- The `auto_approve_max_risk` ceiling stays the operator's coarse switch: how
+  far auto-approval may reach at all. Bands decide where a request falls
+  beneath it.
+- Policies already written with amount conditions keep working; nothing about
+  conditions changes.
+- Not settled: whether bands may be set per agent as well as per workspace, and
+  whether a workspace may raise a band at all or only lower it below the
+  operator's default. The design above lets it move either way above the floor.
+
 ## Where it is decided
 
 **At the gateway, from the token, like every other grant.** The gateway is the
