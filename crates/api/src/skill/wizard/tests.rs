@@ -1574,6 +1574,13 @@ fn payments_spec() -> Vec<u8> {
                     "requestBody": json(serde_json::json!({"kind": {"type": "string"}}), serde_json::json!(["kind"]))
                 }
             },
+            "/payouts": {
+                "post": {
+                    "operationId": "createPayout", "summary": "Pay out", "tags": ["Transfers"],
+                    "x-risk": "low",
+                    "requestBody": json(serde_json::json!({"destination": {"type": "string"}}), serde_json::json!(["destination"]))
+                }
+            },
             "/notices": {
                 "post": {
                     "operationId": "postNotice", "summary": "Post a notice", "tags": ["Reports"],
@@ -1638,11 +1645,16 @@ fn a_word_that_only_looks_like_a_dangerous_one_is_not_one() {
 }
 
 #[test]
-fn the_specifications_own_risk_wins() {
+fn the_specifications_own_risk_can_raise_a_guess_but_not_lower_it() {
+    // Medium and ungated by name; declared high.
     let s = suggestion("run_report");
     assert_eq!((s.risk, s.gate), (Risk::High, true));
+    // Medium by name; a declared low changes nothing.
     let s = suggestion("post_notice");
-    assert_eq!((s.risk, s.gate), (Risk::Low, false));
+    assert_eq!((s.risk, s.gate), (Risk::Medium, false));
+    // A payout stays a payout whatever the specification says.
+    let s = suggestion("create_payout");
+    assert_eq!((s.risk, s.gate), (Risk::High, true));
 }
 
 #[test]

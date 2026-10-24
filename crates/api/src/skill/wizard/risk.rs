@@ -111,11 +111,16 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
         ),
     };
 
-    // The specification's own word, where it gives one, over a guess from names.
-    if let Some((level, gated)) = op.risk_hint.as_ref().and_then(hint) {
-        risk = level;
-        gate = gated.unwrap_or(level != Risk::Low);
-        reason = "the specification declares x-risk".to_string();
+    // The specification's own word can raise a guess and never lower it: a
+    // payout declared low is still named for a payout.
+    if let Some((level, gated)) = op.risk_hint.as_ref().and_then(hint)
+        && (level > risk || gated == Some(true))
+    {
+        if level > risk {
+            risk = level;
+            reason = "the specification declares x-risk".to_string();
+        }
+        gate = gate || gated.unwrap_or(level != Risk::Low);
     }
 
     let fields: &[BodyField] = op
