@@ -1,4 +1,5 @@
 import { allPages, api } from './api'
+import { formatMoney, type Money, type Risk } from './money'
 
 /** One test a policy applies to a field the gate binds. See docs/auto-approval.md. */
 export type Op = 'eq' | 'ne' | 'in' | 'not_in' | 'lt' | 'le' | 'gt' | 'ge'
@@ -21,6 +22,8 @@ export type Policy = {
   per_day: number
   sum_field: string | null
   sum_per_day: number | null
+  /** The most of each currency it lets out in a day, in minor units. */
+  daily_totals: Record<string, number>
   mode: 'trial' | 'on'
   version: number
   note: string | null
@@ -49,6 +52,8 @@ export type WritePolicy = {
   per_day?: number | null
   sum_field?: string | null
   sum_per_day?: number | null
+  /** The most of each currency it lets out in a day, in minor units. */
+  daily_totals?: Record<string, number>
   mode: 'trial' | 'on'
   note?: string | null
   expires_at?: string | null
@@ -111,6 +116,10 @@ export function policyLink(requires: string, fields: string[] = []): string {
   return `/settings/auto-approval/new?${query.toString()}`
 }
 
+/** A bound on an act or an operation's risk, as the end of its line. */
+const upTo = (risk: string | null) =>
+  risk === 'low' ? ' of low risk' : risk ? ` of ${risk} risk or lower` : ''
+
 /** What a policy covers, in a line. */
 export function covers(
   p: Pick<Policy, 'selector' | 'max_risk' | 'requires' | 'matches' | 'skill_name'>,
@@ -119,9 +128,9 @@ export function covers(
     case 'risk':
       return p.max_risk === 'low' ? 'Every low-risk operation' : `Every operation of ${p.max_risk} risk or lower`
     case 'act':
-      return `Every “${p.requires}”`
+      return `Every “${p.requires}”${upTo(p.max_risk)}`
     case 'operation':
-      return `${p.matches}${p.skill_name ? ` in ${p.skill_name}` : ''}`
+      return `${p.matches}${p.skill_name ? ` in ${p.skill_name}` : ''}${upTo(p.max_risk)}`
   }
 }
 
@@ -150,4 +159,115 @@ export function parseValue(op: Op, raw: string): unknown {
   }
   if (op === 'in' || op === 'not_in') return raw.split(',').map(one)
   return one(raw)
+}
+
+/** Each level's upper bound, as money: below `low` is low, below `medium`
+ *  medium. */
+export type BandsView = { low: Money | null; medium: Money | null }
+/** From each, that level whatever a band says. */
+export type FloorView = { medium: Money | null; high: Money | null }
+
+/** A row a workspace set, for a currency or for one operation. */
+export type BandRow = {
+  id: string
+  currency: string
+  skill_id: string | null
+  requires: string | null
+  matches: string | null
+  low: number | null
+  medium: number | null
+  updated_by_name: string | null
+  updated_at: string
+}
+
+/** One money operation the workspace's agents reach. */
+export type BandOperation = {
+  skill_id: string
+  skill_name: string | null
+  requires: string
+  matches: string
+  field: string
+  currency: string
+  minor_units: number
+  /** What an amount above every band, or one nobody can read, works out to. */
+  risk: Risk
+  defaults: BandsView
+  floor: FloorView
+  effective: BandsView
+  source: 'operation' | 'currency' | 'operator'
+  band_id: string | null
+  held_at_floor: boolean
+}
+
+export type BandCurrency = {
+  currency: string
+  minor_units: number
+  band: BandRow | null
+  effective: BandsView | null
+}
+
+export type BandsPage = {
+  operations: BandOperation[]
+  currencies: BandCurrency[]
+  unused: BandRow[]
+  may_write: boolean
+}
+
+/** A write: a currency, or one operation named as a policy names it, and the
+ *  bounds in minor units. */
+export type WriteBands = {
+  currency?: string
+  skill_id?: string
+  requires?: string
+  matches?: string
+  low?: number | null
+  medium?: number | null
+}
+
+export const listBands = () => api<BandsPage>('/v1/approval-bands')
+
+export const putBands = (body: WriteBands) =>
+  api<BandRow>('/v1/approval-bands', { method: 'PUT', body: JSON.stringify(body) })
+
+export const revertBands = (id: string) => api<void>(`/v1/approval-bands/${id}`, { method: 'DELETE' })
+
+export type RoleRef = { role_id: string; name: string }
+export type Routes = { high: RoleRef[]; answerers: RoleRef[]; may_write: boolean }
+
+export const getRoutes = () => api<Routes>('/v1/approval-routes')
+
+export const putHighRoute = (roleIds: string[]) =>
+  api<Routes>('/v1/approval-routes/high', { method: 'PUT', body: JSON.stringify({ role_ids: roleIds }) })
+
+/** What a workspace approved of one act in one currency. */
+export type ApprovedIn = {
+  currency: string
+  minor_units: number
+  approved: number
+  max: Money
+  total: Money
+  suggested_low: Money
+}
+
+export type Amounts = { requires: string; days: number; currencies: ApprovedIn[]; may_delegate: boolean }
+
+export const approvedAmounts = (requires: string, days = 30) =>
+  api<Amounts>(`/v1/approvals/amounts?requires=${encodeURIComponent(requires)}&days=${days}`)
+
+/** The decimals of each currency the workspace's money operations are in. */
+export function decimalsOf(page: BandsPage | null | undefined):Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const c of page?.currencies ?? []) out[c.currency] = c.minor_units
+  for (const o of page?.operations ?? []) out[o.currency] ??= o.minor_units
+  return out
+}
+
+/** A policy's daily totals as money, with each currency's decimals where they
+ *  are known, and the figure in its minor units where they are not. */
+export function dailyTotals(totals: Record<string, number> | undefined, decimals: Record<string, number>): string[] {
+  return Object.entries(totals ?? {}).map(([currency, amount]) =>
+    decimals[currency] === undefined
+      ? `${currency} ${amount} in minor units`
+      : formatMoney(amount, currency, decimals[currency]),
+  )
 }

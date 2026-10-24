@@ -10,9 +10,12 @@ import {
   policyEvidence,
   revokePolicy,
   covers,
+  decimalsOf,
+  listBands,
   parseValue,
   stateLabel,
   updatePolicy,
+  type BandsPage,
   type Condition,
   type Evidence,
   type Op,
@@ -20,6 +23,7 @@ import {
   type WritePolicy,
 } from '../lib/autoApproval'
 import { iconButtonDanger } from '../lib/buttons'
+import { formatMoney, toMajor, toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
 import { useSession } from '../lib/session'
 
@@ -36,6 +40,9 @@ const ops: { value: Op; label: string }[] = [
 
 /** A condition as the form holds it: the value as typed. */
 type Row = { field: string; op: Op; value: string }
+
+/** A daily total as the form holds it: the amount in whole units, as typed. */
+type Total = { currency: string; amount: string }
 
 /** A value as the form shows it again. */
 function showValue(value: unknown): string {
@@ -81,7 +88,13 @@ export default function AutoApprovalEditor() {
     const s = params.get('selector')
     return s === 'risk' || s === 'operation' ? s : 'act'
   })
-  const [maxRisk, setMaxRisk] = useState(params.get('max_risk') ?? 'low')
+  // Required for a risk selector; for an act or an operation, empty is every
+  // risk the operator's ceiling lets through.
+  const [maxRisk, setMaxRisk] = useState(
+    () => params.get('max_risk') ?? (params.get('selector') === 'risk' ? 'low' : ''),
+  )
+  const [bands, setBands] = useState<BandsPage | null>(null)
+  const [totals, setTotals] = useState<Total[]>([])
   const [requires, setRequires] = useState(params.get('requires') ?? '')
   const [skillId, setSkillId] = useState(params.get('skill_id') ?? '')
   const [matches, setMatches] = useState(params.get('matches') ?? '')
@@ -104,19 +117,35 @@ export default function AutoApprovalEditor() {
   useEffect(() => {
     void allPages<Named>('/v1/agents').then(setAgents).catch(() => setAgents([]))
     void allPages<Named>('/v1/skills').then(setSkills).catch(() => setSkills([]))
-  }, [])
+    if (!id) void listBands().then(setBands).catch(() => setBands(null))
+  }, [id])
+
+  const decimals = decimalsOf(bands)
 
   useEffect(() => {
     if (!id) return
     let stale = false
     void (async () => {
       try {
-        const p = await api<Policy>(`/v1/approval-policies/${id}`)
+        // Together, because a daily total arrives in minor units and is shown
+        // in whole ones, which needs its currency's decimals from the bands.
+        const [p, page] = await Promise.all([
+          api<Policy>(`/v1/approval-policies/${id}`),
+          listBands().catch(() => null),
+        ])
         if (stale) return
+        const known = decimalsOf(page)
+        setBands(page)
         setExisting(p)
         setEffect(p.effect)
         setSelector(p.selector)
-        setMaxRisk(p.max_risk ?? 'low')
+        setMaxRisk(p.max_risk ?? (p.selector === 'risk' ? 'low' : ''))
+        setTotals(
+          Object.entries(p.daily_totals ?? {}).map(([currency, amount]) => ({
+            currency,
+            amount: known[currency] === undefined ? String(amount) : toMajor(amount, known[currency]),
+          })),
+        )
         setRequires(p.requires ?? '')
         setSkillId(p.skill_id ?? '')
         setMatches(p.matches ?? '')
@@ -141,6 +170,19 @@ export default function AutoApprovalEditor() {
 
   const editable = canWrite && (!existing || existing.state !== 'revoked')
 
+  // A test on a field an operation declares its amount is written in that
+  // field's own units, so it is said as money beside it: `5000` is £50.00.
+  function asMoney(row: Row): string | null {
+    if (!/^\d+$/.test(row.value.trim())) return null
+    const op = bands?.operations.find(
+      (o) =>
+        o.field === row.field.trim() &&
+        (selector === 'risk' || o.requires === requires) &&
+        (selector !== 'operation' || (o.skill_id === skillId && o.matches === matches.trim())),
+    )
+    return op ? formatMoney(Number(row.value.trim()), op.currency, op.minor_units) : null
+  }
+
   async function save(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -148,11 +190,24 @@ export default function AutoApprovalEditor() {
     const conditions: Condition[] = rows
       .filter((r) => r.field.trim())
       .map((r) => ({ field: r.field.trim(), op: r.op, value: parseValue(r.op, r.value) }))
+    const daily: Record<string, number> = {}
+    for (const t of totals) {
+      const currency = t.currency.trim().toUpperCase()
+      if (!currency) continue
+      const amount = toMinor(t.amount, decimals[currency] ?? 0)
+      if (amount === null) {
+        setError(`the daily total in ${currency} is not an amount`)
+        setBusy(false)
+        return
+      }
+      daily[currency] = amount
+    }
     const body: WritePolicy = {
       agent_id: agentId || null,
       effect,
       selector,
-      max_risk: selector === 'risk' ? maxRisk : null,
+      max_risk: selector === 'risk' ? maxRisk || 'low' : maxRisk || null,
+      daily_totals: effect === 'exclude' ? {} : daily,
       requires: selector === 'risk' ? null : requires,
       skill_id: selector === 'operation' ? skillId || null : null,
       matches: selector === 'operation' ? matches : null,
@@ -282,16 +337,23 @@ export default function AutoApprovalEditor() {
             </select>
           </div>
 
-          {selector === 'risk' && (
-            <label className={label}>
-              Highest risk
-              <select className={field} value={maxRisk} onChange={(e) => setMaxRisk(e.target.value)}>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </label>
-          )}
+          <label className={label}>
+            Highest risk
+            <select
+              className={field}
+              value={maxRisk || (selector === 'risk' ? 'low' : '')}
+              onChange={(e) => setMaxRisk(e.target.value)}
+            >
+              {selector !== 'risk' && <option value="">Any the platform allows</option>}
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            <span className={hint}>
+              Where an operation moves money, a request's risk is worked out from its amount and the
+              workspace's bands.
+            </span>
+          </label>
           {selector !== 'risk' && (
             <label className={label}>
               Approval kind
@@ -366,12 +428,15 @@ export default function AutoApprovalEditor() {
                           </option>
                         ))}
                       </select>
-                      <input
-                        aria-label={`Value ${i + 1}`}
-                        className={field}
-                        value={row.value}
-                        onChange={(e) => setRows(rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
-                      />
+                      <div className="w-full">
+                        <input
+                          aria-label={`Value ${i + 1}`}
+                          className={field}
+                          value={row.value}
+                          onChange={(e) => setRows(rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
+                        />
+                        {asMoney(row) && <span className={hint}>{asMoney(row)}</span>}
+                      </div>
                       <button
                         type="button"
                         aria-label={`Remove test ${i + 1}`}
@@ -415,6 +480,73 @@ export default function AutoApprovalEditor() {
                     onChange={(e) => setSumPerDay(e.target.value)}
                   />
                 </label>
+              </div>
+
+              <div>
+                <span className={label}>Daily totals</span>
+                <p className={hint}>
+                  The most of each currency this lets out in a day, across everything it covers. With any
+                  set, a money operation is covered only in a currency named here.
+                </p>
+                <div className="mt-2 space-y-2">
+                  {totals.map((t, i) => {
+                    const known = decimals[t.currency.trim().toUpperCase()]
+                    const minor = toMinor(t.amount, known ?? 0)
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          aria-label={`Currency ${i + 1}`}
+                          className={`${field} w-24`}
+                          list="policy-currencies"
+                          value={t.currency}
+                          onChange={(e) =>
+                            setTotals(totals.map((x, j) => (j === i ? { ...x, currency: e.target.value } : x)))
+                          }
+                        />
+                        <input
+                          aria-label={`Daily total ${i + 1}`}
+                          className={field}
+                          inputMode="decimal"
+                          value={t.amount}
+                          onChange={(e) =>
+                            setTotals(totals.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))
+                          }
+                        />
+                        <span className="w-32 shrink-0 text-xs text-surface-600 dark:text-surface-400">
+                          {known === undefined
+                            ? 'in minor units'
+                            : minor === null
+                              ? 'not an amount'
+                              : formatMoney(minor, t.currency.trim().toUpperCase(), known)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remove daily total ${i + 1}`}
+                          className={iconButtonDanger}
+                          onClick={() => setTotals(totals.filter((_, j) => j !== i))}
+                        >
+                          <Trash2 size={14} aria-hidden />
+                        </button>
+                      </div>
+                    )
+                  })}
+                  <datalist id="policy-currencies">
+                    {Object.keys(decimals).map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </datalist>
+                  <button
+                    type="button"
+                    className={`${button} inline-flex items-center gap-1`}
+                    onClick={() =>
+                      setTotals([...totals, { currency: Object.keys(decimals)[0] ?? '', amount: '' }])
+                    }
+                  >
+                    <Plus size={14} aria-hidden /> Daily total
+                  </button>
+                </div>
               </div>
 
               <label className={label}>

@@ -3,7 +3,16 @@ import { ShieldCheck } from 'lucide-react'
 
 import { Badge, PageHeader, RecordList, RecordRow } from '../components/IndexPage'
 import { ApiError } from '../lib/api'
-import { covers, listPolicies, stateLabel, type Policy } from '../lib/autoApproval'
+import {
+  covers,
+  dailyTotals,
+  decimalsOf,
+  listBands,
+  listPolicies,
+  stateLabel,
+  type BandsPage,
+  type Policy,
+} from '../lib/autoApproval'
 import { paths } from '../lib/paths'
 import { useSession } from '../lib/session'
 
@@ -16,6 +25,8 @@ import { useSession } from '../lib/session'
 export default function AutoApproval() {
   const state = useSession()
   const [policies, setPolicies] = useState<Policy[]>([])
+  const [bands, setBands] = useState<BandsPage | null>(null)
+  const decimals = decimalsOf(bands)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -27,8 +38,12 @@ export default function AutoApproval() {
     let stale = false
     void (async () => {
       try {
-        const found = await listPolicies()
-        if (!stale) setPolicies(found)
+        // The bands page is where a currency's decimals are, so a daily total
+        // can be said as money; without it, a total is said in minor units.
+        const [found, page] = await Promise.all([listPolicies(), listBands().catch(() => null)])
+        if (stale) return
+        setPolicies(found)
+        setBands(page)
       } catch (e) {
         if (!stale) setError(e instanceof ApiError ? e.message : 'failed to load policies')
       } finally {
@@ -80,6 +95,11 @@ export default function AutoApproval() {
                 : `, until ${new Date(p.expires_at).toLocaleDateString()}`}
               {p.effect === 'include' && ` · ${p.auto_approved} approved automatically`}
             </p>
+            {dailyTotals(p.daily_totals, decimals).length > 0 && (
+              <p className="mt-0.5 text-xs text-surface-600 dark:text-surface-400">
+                Up to {dailyTotals(p.daily_totals, decimals).join(' and ')} a day
+              </p>
+            )}
           </RecordRow>
         ))}
       </RecordList>
