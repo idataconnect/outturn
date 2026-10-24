@@ -549,6 +549,22 @@ export type Annotation = {
   created_at: string
 }
 
+/** Mirrors `Risk` in crates/core/src/egress/policy.rs, serialized lowercase. */
+export type Risk = 'low' | 'medium' | 'high'
+
+export type SuggestedApproval = {
+  risk: Risk
+  gate: boolean
+  requires: string
+  /** The gate's path as the specification writes it, cut at the first
+   *  parameter and starred; the base URL's own path goes in front. */
+  matches_path: string
+  binds: string[]
+  numbers: string[]
+  amount?: { field: string; currency?: string; minor_units?: number }
+  reason: string
+}
+
 export type SkillSource = {
   base_url: string
   auth_header: string | null
@@ -564,6 +580,10 @@ export type SkillSource = {
       /** A guess at what makes one of this write the same as another: a
        *  create's required fields. Offered, never applied unasked. */
       suggested_identity?: string[]
+      /** How dangerous a call looks and what its approval rule would say.
+       *  Offered, never applied unasked: a risk decides what goes out without
+       *  a person. */
+      suggested_approval?: SuggestedApproval
     }[]
   } | null
 }

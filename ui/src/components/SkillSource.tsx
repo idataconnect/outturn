@@ -11,6 +11,7 @@ import {
   type Regenerated,
   type SkillSource as Source,
 } from '../lib/skills'
+import SuggestedApprovals from './SuggestedApprovals'
 
 const KIND: Record<Annotation['kind'], string> = {
   note: 'Note',
@@ -278,6 +279,29 @@ export default function SkillSource({
             Add
           </button>
         </form>
+      )}
+
+      {editable && outline && (
+        <SuggestedApprovals
+          operations={outline.operations}
+          annotations={source.annotations}
+          baseUrl={source.base_url}
+          busy={busy}
+          onConfirm={(rules) =>
+            void run(async () => {
+              for (const r of rules) {
+                await annotate(skillId, {
+                  level: 'operation',
+                  target: r.target,
+                  kind: 'approval',
+                  value: r.value,
+                })
+              }
+              setProposal(null)
+              await load()
+            })
+          }
+        />
       )}
 
       {editable && (

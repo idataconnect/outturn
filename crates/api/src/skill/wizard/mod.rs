@@ -1,12 +1,14 @@
 mod parse;
 mod preview;
 mod render;
+mod risk;
 mod schema;
 
 use std::collections::BTreeMap;
 
 pub use parse::{ParseError, document};
 pub use preview::{Kind, Preview, preview};
+pub use risk::{SuggestedAmount, SuggestedApproval};
 
 pub struct WizardInput {
     pub spec_json: Vec<u8>,
@@ -193,6 +195,10 @@ pub struct OutlineOperation {
     /// offer: a create's required fields. Empty for a read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suggested_identity: Vec<String>,
+    /// How dangerous a call to this looks, whether to gate it, and what the
+    /// rule would say: offered to confirm into an `approval` annotation, never
+    /// applied by generating. See `risk`.
+    pub suggested_approval: SuggestedApproval,
 }
 
 /// A guess at a write's identity: the required fields of its JSON body.
@@ -241,6 +247,7 @@ pub fn outline(spec_json: &[u8]) -> Result<Outline, ParseError> {
                 method: op.method.clone(),
                 path: op.path.clone(),
                 suggested_identity: suggested_identity(op),
+                suggested_approval: risk::suggest(op),
             }
         })
         .collect();
