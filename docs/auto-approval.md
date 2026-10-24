@@ -562,6 +562,30 @@ waved through, which is the one outcome this whole design must not permit.
   `daily_totals`, so the one line is a band (`PUT /v1/approval-bands`) and a
   policy (`selector: act`, `max_risk: low`, `daily_totals`, the agent, an
   expiry).
+- **The pages.** A queue item's `risk` and `money` are read by `lib/money`
+  (`riskOf`, `moneyOf`); the approval prompt and the queue rows show a
+  `RiskBadge` and the amount's `display`, the prompt beside the bound number
+  it came from, which stays. Amounts are typed in whole units and sent in
+  minor ones (`toMinor`, on the digits), and a figure worked out on the page
+  is written by `formatMoney` as the API writes `display`. Settings →
+  Auto-approval has, in order: the one line (`OneLinePolicy`), the policies,
+  the bands per currency and per operation (`ApprovalBands`), and who is
+  asked about high risk (`HighRiskRoute`). The editor takes `max_risk` on any
+  selector and daily totals per currency, and says a test on a declared
+  amount field as money.
+- **The one line** writes the low band of each operation of the kind in that
+  currency whose low is not that already -- per operation, never the
+  currency's row, which would move every other operation in it -- keeping a
+  medium bound still above it, then the policy, so a band the floor refuses
+  stops it before a policy exists. It is prefilled from
+  `/settings/auto-approval?line=&currency=&low=`. Its counts are one a turn
+  and twenty a day, which the full editor changes.
+- **The offer** reads `/v1/approvals/amounts` first, in the request's
+  currency or else the one most approved: "12 charges approved in the last
+  30 days, all under £40.00." -- the figure being the largest plus one,
+  rounded up at its leading digit -- linking to the one line at
+  `suggested_low`. An act with no amounts falls back to the count and the
+  full editor, as before. Neither is asked for on a follow-up.
 
 #### Deviations
 
@@ -582,9 +606,10 @@ waved through, which is the one outcome this whole design must not permit.
   wait, and a broad policy covers them in trial until accepted, though nothing
   about them changed.
 - **The admin agent proposing a policy**, which waits for the admin agent.
-- **The pages for risk from the amount**: money on every screen, the bands
-  editor, the one-line policy and the prefilled offer. The API above is what
-  they read.
+- **Risk and money in a conversation.** The held banner's approval
+  (`gated::answerable`, and the history's `awaiting`) carries neither `risk`
+  nor `money`, so the prompt in a conversation shows the bound values alone;
+  the inbox's, read from the item, shows both. The page already takes them.
 - **The wizard's suggestions** of base risk, amount field and currency.
 - **Bands mid-turn.** A band changed while a turn runs reaches it from the
   next turn, as a policy edit does.
