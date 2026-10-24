@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ShieldCheck } from 'lucide-react'
 
+import ApprovalBands from '../components/ApprovalBands'
+import HighRiskRoute from '../components/HighRiskRoute'
 import { Badge, PageHeader, RecordList, RecordRow } from '../components/IndexPage'
 import { ApiError } from '../lib/api'
 import {
@@ -29,6 +31,10 @@ export default function AutoApproval() {
   const decimals = decimalsOf(bands)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Moved on by anything here that writes, so the page reads again what it
+  // changed: a band moves what every operation in its currency says.
+  const [reloads, setReloads] = useState(0)
+  const reload = () => setReloads((n) => n + 1)
 
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
   const canWrite = authorities.includes('approvals:delegate') && authorities.includes('approvals:answer')
@@ -53,7 +59,7 @@ export default function AutoApproval() {
     return () => {
       stale = true
     }
-  }, [workspaceId])
+  }, [workspaceId, reloads])
 
   return (
     <div className="p-6 max-w-3xl">
@@ -103,6 +109,9 @@ export default function AutoApproval() {
           </RecordRow>
         ))}
       </RecordList>
+
+      {bands && <ApprovalBands page={bands} onChanged={reload} />}
+      <HighRiskRoute />
     </div>
   )
 }
