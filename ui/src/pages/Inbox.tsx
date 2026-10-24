@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AlarmClock, ArrowLeft, ArrowUpCircle, Boxes, Clock, Inbox as InboxIcon, ListChecks, MessageSquare } from 'lucide-react'
 
 import ApprovalPrompt, { type Bound } from '../components/ApprovalPrompt'
+import { moneyOf, riskOf } from '../lib/money'
 import { followUpOf, type ActionItem } from '../lib/actions'
 import { ApiError } from '../lib/api'
 import { wakeSession } from '../lib/chat'
@@ -394,6 +395,8 @@ function ApprovalDetail({ item, onAnswered }: { item: ActionItem; onAnswered: ()
           reason: typeof p.reason === 'string' ? p.reason : null,
           binds: Array.isArray(p.binds) ? (p.binds as Bound[]) : null,
           followup: followUpOf(item),
+          risk: riskOf(p),
+          money: moneyOf(p),
         }}
         onAnswered={onAnswered}
       />

@@ -3,6 +3,8 @@ import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
 import { answerApproval, followUpOf, type ActionItem } from '../lib/actions'
 import { waitingFor } from '../lib/elapsed'
+import { moneyOf, riskOf } from '../lib/money'
+import RiskBadge from './RiskBadge'
 
 /**
  * What is waiting on the reader, across every workspace they belong to.
@@ -180,6 +182,11 @@ function ApproveAll({
       <ul className="mt-1.5 space-y-0.5 text-xs text-surface-700 dark:text-surface-300">
         {items.map((item) => (
           <li key={item.id}>
+            {moneyOf(item.payload) && (
+              <span className="font-medium text-surface-900 dark:text-surface-100">
+                {moneyOf(item.payload)?.display} ·{' '}
+              </span>
+            )}
             {summarize(item) ?? shortId(item.id)}
             {failures[item.id] && (
               <span role="alert" className="text-red-700 dark:text-red-400">
@@ -216,6 +223,8 @@ function ActionRow({
   const age = waitingFor(item.id, now)
   const Icon = ICONS[iconKey(item.kind)]
   const summary = summarize(item)
+  const risk = riskOf(item.payload)
+  const money = moneyOf(item.payload)
 
   // A real `button` when there is somewhere to go, rather than a div wearing a
   // button's role: Enter and Space, the focus ring and the accessibility tree
@@ -241,10 +250,16 @@ function ActionRow({
           className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm text-surface-900 dark:text-surface-100">
-            <span className="font-medium">{rowLabel(item)}</span>
-            {summary && <span className="text-surface-700 dark:text-surface-300"> — {summary}</span>}
-          </p>
+          <div className="flex items-start gap-2">
+            <p className="min-w-0 flex-1 truncate text-sm text-surface-900 dark:text-surface-100">
+              <span className="font-medium">{rowLabel(item)}</span>
+              {/* The amount before anything else said about it: it is what a
+                  yes is mostly a yes to. */}
+              {money && <span className="font-medium"> {money.display}</span>}
+              {summary && <span className="text-surface-700 dark:text-surface-300"> — {summary}</span>}
+            </p>
+            {risk && <RiskBadge risk={risk} />}
+          </div>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-surface-600 dark:text-surface-400">
             {age && (
               <span className="inline-flex items-center gap-1">

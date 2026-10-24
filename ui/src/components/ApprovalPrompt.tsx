@@ -8,7 +8,9 @@ import {
   type FollowUp,
 } from '../lib/actions'
 import { OFFER_AFTER, answeredCount, policyLink } from '../lib/autoApproval'
+import type { FieldMoney, Risk } from '../lib/money'
 import { useHasAuthority } from '../lib/session'
+import RiskBadge from './RiskBadge'
 
 /**
  * An approval, answered where it was raised.
@@ -72,6 +74,11 @@ export default function ApprovalPrompt({
     /** Set when this asks what to do about an approved request that did not
      *  go, rather than whether to approve one. */
     followup?: FollowUp | null
+    /** What the request's risk worked out to. */
+    risk?: Risk | null
+    /** Its amount as money, where the request carried one to trust, with the
+     *  bound field it was read from. */
+    money?: FieldMoney | null
   }
   onAnswered: () => void
 }) {
@@ -133,9 +140,15 @@ export default function ApprovalPrompt({
           className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
         />
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-surface-900 dark:text-surface-100">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-surface-900 dark:text-surface-100">
             <span className="font-medium">{heading(followup, approval.requires)}</span>
+            {approval.risk && <RiskBadge risk={approval.risk} />}
           </p>
+          {approval.money && (
+            <p className="mt-1 text-base font-semibold text-surface-900 dark:text-surface-100">
+              {approval.money.display}
+            </p>
+          )}
           {approval.reason && (
             <p className="mt-0.5 text-xs text-surface-700 dark:text-surface-300">
               {approval.reason}
@@ -146,7 +159,9 @@ export default function ApprovalPrompt({
               is a yes to these -- the grant is keyed on them -- so they are
               shown as they are rather than as this page guesses they mean: it
               cannot know that a field is pence, and a rounded or converted
-              figure would be approving something the request does not say. */}
+              figure would be approving something the request does not say.
+              Where the operator declared the field an amount, the API says so
+              and gives it as money, shown beside the number it came from. */}
           {approval.binds && approval.binds.length > 0 && (
             <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
               {approval.binds.map(({ field, value }) => (
@@ -160,6 +175,12 @@ export default function ApprovalPrompt({
                     }`}
                   >
                     {shown(value)}
+                    {approval.money?.field === field && (
+                      <span className="font-sans text-surface-600 dark:text-surface-400">
+                        {' '}
+                        ({approval.money.display})
+                      </span>
+                    )}
                   </dd>
                 </div>
               ))}

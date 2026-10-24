@@ -273,3 +273,34 @@ describe('approving several of one kind together', () => {
     expect(group).not.toHaveTextContent('Charge bk_2 120 pence?')
   })
 })
+
+describe('a row with an amount', () => {
+  const money = { amount: 4000, currency: 'GBP', minor_units: 2, display: '£40.00', field: 'amount_pence' }
+
+  it('says the amount as money, and the risk it worked out to', () => {
+    render(
+      <ActionQueue items={[item({ payload: { question: 'Charge bk_1?', risk: 'medium', money } })]} now={NOW} />,
+    )
+    expect(screen.getByText('£40.00')).toBeInTheDocument()
+    expect(screen.getByText('Medium risk')).toBeInTheDocument()
+  })
+
+  it('says neither where the payload carries neither', () => {
+    render(<ActionQueue items={[item()]} now={NOW} />)
+    expect(screen.queryByText(/ risk$/)).toBeNull()
+  })
+
+  it('puts the amount beside each item an Approve all answers', () => {
+    const items = [
+      item({ id: idAt(NOW - 60_000), payload: { question: 'Charge bk_1?', money } }),
+      item({
+        id: idAt(NOW - 30_000),
+        payload: { question: 'Charge bk_2?', money: { ...money, amount: 999, display: '£9.99' } },
+      }),
+    ]
+    render(<ActionQueue items={items} now={NOW} />)
+    const group = screen.getByRole('region', { name: /approve all/i })
+    expect(group).toHaveTextContent('£40.00 · Charge bk_1?')
+    expect(group).toHaveTextContent('£9.99 · Charge bk_2?')
+  })
+})

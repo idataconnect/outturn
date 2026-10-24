@@ -3,6 +3,7 @@ import { ApiError } from './api'
 import { useDictation } from './dictation'
 import { triggerOf } from './triggers'
 import { mintedAt } from './elapsed'
+import type { FieldMoney, Risk } from './money'
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -76,6 +77,10 @@ export type PendingApproval = {
   covers?: { field?: string; unit?: string } | null
   /** Each field the grant is keyed on, with this request's value. */
   binds?: { field: string; value: unknown }[] | null
+  /** What its risk worked out to, and its amount as money, where the held
+   *  event carries them. */
+  risk?: Risk | null
+  money?: FieldMoney | null
 }
 
 export type Annotated = Message & {
