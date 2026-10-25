@@ -45,6 +45,7 @@ bytes = "1"
 wasmtime = "48.0.1"
 wasmtime-wasi = "48.0.1"
 anyhow = "1"
+rpassword = "7.5.4"
 pasetors = { version = "0.7", features = ["paserk"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"

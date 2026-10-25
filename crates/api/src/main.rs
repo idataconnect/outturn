@@ -72,6 +72,35 @@ async fn main() {
 
     let workspaces: Arc<dyn WorkspaceStore> = Arc::new(PostgresWorkspaceStore::new(pool.clone()));
     let users: Arc<dyn UserStore> = Arc::new(PostgresUserStore::new(pool.clone()));
+
+    // `api bootstrap`, run once with `kubectl exec -it` on a new deployment:
+    // the first operator and their organization's workspace, then exit.
+    if std::env::args().nth(1).as_deref() == Some("bootstrap") {
+        let roles: Arc<dyn RoleStore> = Arc::new(PostgresRoleStore::new(pool.clone()));
+        // Asked here as well as checked in first_operator, so nobody types a
+        // password into a deployment that was always going to refuse it.
+        let made = match users.is_empty().await {
+            Ok(false) => Err(anyhow::anyhow!(seed::ALREADY_SET_UP)),
+            Err(e) => Err(e.into()),
+            Ok(true) => match seed::ask_operator() {
+                Ok(operator) => seed::first_operator(&users, &workspaces, &roles, operator).await,
+                Err(e) => Err(e),
+            },
+        };
+        match made {
+            Ok(workspace) => {
+                println!(
+                    "Created. Sign in, then open the {} workspace.",
+                    workspace.name
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     let sessions: Arc<dyn SessionStore> = Arc::new(PostgresSessionStore::new(pool.clone()));
     let agents: Arc<dyn AgentStore> = Arc::new(PostgresAgentStore::new(pool.clone()));
     let chat: Arc<dyn ChatStore> = Arc::new(PostgresChatStore::new(pool.clone()));

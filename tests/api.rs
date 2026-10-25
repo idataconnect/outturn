@@ -454,6 +454,50 @@ async fn login_without_workspace_returns_picker() {
     finish!(h);
 }
 
+fn operator(email: &str, slug: &str) -> outturn::api::seed::Operator {
+    outturn::api::seed::Operator {
+        email: email.into(),
+        display_name: "Operator".into(),
+        password: "correct-horse".into(),
+        organization: "i Data Connect!".into(),
+        slug: slug.into(),
+    }
+}
+
+#[tokio::test]
+async fn first_operator_signs_in_to_their_workspace() {
+    let h = harness_or_skip!();
+    let seed = |op| outturn::api::seed::first_operator(&h.users, &h.workspaces, &h.roles, op);
+
+    // A bad slug is refused before anything is written, so the next attempt
+    // still finds an empty deployment.
+    assert!(
+        seed(operator("op@example.com", "Not A Slug"))
+            .await
+            .is_err()
+    );
+    let workspace = seed(operator("op@example.com", "i-data-connect"))
+        .await
+        .expect("first operator");
+    assert_eq!(workspace.name, "i Data Connect!");
+
+    let (status, body) = h
+        .post(
+            "/v1/login",
+            None,
+            r#"{"email":"op@example.com","password":"correct-horse"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body.contains("i-data-connect"), "body: {body}");
+
+    // Once anybody has an account, accounts are made by somebody signed in.
+    let again = seed(operator("second@example.com", "second")).await;
+    assert!(again.is_err(), "a second operator was created");
+
+    finish!(h);
+}
+
 #[tokio::test]
 async fn bad_password_is_unauthorized() {
     let h = harness_or_skip!();

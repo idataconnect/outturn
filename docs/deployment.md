@@ -238,6 +238,29 @@ The database is reached by port alone (5432, anywhere), since a managed
 database's address rarely stays put and neither the API nor the gateway runs
 workspace code. Narrow it if yours has a stable range.
 
+## The first operator
+
+A new deployment has no accounts, and nobody can sign in until it has one.
+Once the API is running, create yours from inside its pod:
+
+```bash
+kubectl -n outturn exec -it deploy/outturn-api -- api bootstrap
+```
+
+It asks for your email, your name, the organization's name and a password,
+and makes you a system admin and the admin of a workspace named for the
+organization; the workspace's slug is suggested from its name. The password is
+asked at the terminal rather than taken as a flag, so it is in neither the
+shell's history nor the process list -- which is also why `-it` matters.
+
+It refuses a deployment that already has an account. From then on people are
+added by somebody signed in, and a command that could make a system admin on a
+running deployment would be a way around them.
+
+`OUTTURN_DEV_SEED` is not this. It makes a known account on an empty database
+for local development, and `scripts/deploy-prod.sh` refuses manifests that set
+it.
+
 ## Upgrades
 
 Take a backup first. Then, in this order:

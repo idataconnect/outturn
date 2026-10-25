@@ -41,6 +41,7 @@ chrono = { workspace = true }
 chrono-tz = { workspace = true }
 serde-saphyr = { workspace = true }
 mail-parser = { workspace = true }
+rpassword = { workspace = true }
 
 [features]
 # The root's `slow-tests`, passed down: one of this crate's own tests is
