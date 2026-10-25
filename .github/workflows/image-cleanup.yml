@@ -36,6 +36,12 @@ jobs:
     name: Clean up
     runs-on: ubuntu-latest
     steps:
+      # For scripts/release-version.sh, which says what a release is the same
+      # way images.yml does.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
       - name: Delete old and untagged versions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,7 +55,6 @@ jobs:
           else
             base="/users/$OWNER"
           fi
-          release='(^|,)v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(,|$)'
           for tier in api gateway runtime ui; do
             pkg="$base/packages/container/outturn-$tier"
             if ! gh api "$pkg" >/dev/null 2>&1; then
@@ -61,7 +66,7 @@ jobs:
             gh api --paginate "$pkg/versions?per_page=100" \
               --jq '.[] | "\(.id)\t\(.metadata.container.tags | join(","))"' |
             while IFS=$'\t' read -r id tags; do
-              if [[ "$tags" =~ $release ]]; then
+              if scripts/release-version.sh tags "$tags"; then
                 continue
               fi
               if [[ -n "$tags" ]] && (( kept < KEEP )); then

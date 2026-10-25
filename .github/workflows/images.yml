@@ -56,14 +56,9 @@ jobs:
           # Registry names are lowercase; an owner need not be.
           echo "prefix=ghcr.io/${OWNER,,}/outturn" >>"$GITHUB_OUTPUT"
           echo "sha=$SHA" >>"$GITHUB_OUTPUT"
-          if [[ "$REF" == main ]]; then
-            echo "version=" >>"$GITHUB_OUTPUT"
-          elif [[ "$REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
-          else
-            echo "not main and not a release tag: $REF" >&2
-            exit 1
-          fi
+          # Empty for main; fails for a ref that is neither main nor a release.
+          version="$(scripts/release-version.sh ref "$REF")"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       # The container driver, for a layer cache kept between runs. The Rust
       # builder stage is shared by the three tiers, so it is built once here.
