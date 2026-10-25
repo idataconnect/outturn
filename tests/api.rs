@@ -13040,6 +13040,213 @@ async fn the_operator_configures_accounts_models_and_chains() {
     );
 }
 
+/// One key is enough: each provider has a recipe of its own, and setting one
+/// up the way the setup page does -- an account, a model per link, a chain
+/// for conversations and a smaller one for titles and summaries -- leaves
+/// every class answered at that provider and nowhere else. The keys named
+/// here are environment variables nothing sets.
+#[tokio::test]
+async fn a_recipe_sets_up_with_one_key() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, admin) = template_people(&h).await;
+    let json = |body: &str| -> Value { serde_json::from_str(body).unwrap() };
+
+    let (status, _) = h.get("/v1/platform/recipes", Some(&admin)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = h.get("/v1/platform/recipes", Some(&operator)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let recipes = json(&body);
+    let recipe = |id: &str| -> Value {
+        recipes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no recipe {id}: {recipes}"))
+            .clone()
+    };
+    let models_of = |links: &Value| -> Vec<String> {
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["model"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // Against the shipped catalog, whose newest in each family these are.
+    for (id, main, small) in [
+        ("anthropic", "claude-sonnet-5-5", "claude-haiku-5-5"),
+        ("openai", "gpt-6.1-sol", "gpt-5.4-mini"),
+        ("gemini", "gemini-3.8-flash", "gemini-3.5-flash-lite"),
+    ] {
+        let r = recipe(id);
+        assert_eq!(models_of(&r["links"]), [main], "{r}");
+        assert_eq!(models_of(&r["small"]), [small], "{r}");
+        assert_eq!(r["vendors"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(r["vendors"][0]["vendor"]["key"], id);
+        assert_eq!(r["dropped"], serde_json::json!([]));
+    }
+
+    let openai = recipe("openai");
+    let vendor = &openai["vendors"][0]["vendor"];
+    let (status, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            &serde_json::json!({
+                "name": vendor["name"],
+                "protocol": vendor["protocol"],
+                "base_url": openai["links"][0]["base_url"],
+                "credential_env": "OUTTURN_TEST_NOT_A_KEY",
+            })
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let account = json(&body)["id"].as_str().unwrap().to_string();
+    let mut chains = Vec::new();
+    for links in [&openai["links"], &openai["small"]] {
+        let mut ids = Vec::new();
+        for model in models_of(links) {
+            let (status, body) = h
+                .post(
+                    "/v1/platform/models",
+                    Some(&operator),
+                    &serde_json::json!({"account_id": account, "model": model, "tracks": true})
+                        .to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{model}: {body}");
+            let made = json(&body);
+            assert_eq!(made["catalog_provider"], "openai", "{body}");
+            ids.push(made["id"].clone());
+        }
+        let (status, body) = h
+            .post(
+                "/v1/platform/chains",
+                Some(&operator),
+                &serde_json::json!({"name": openai["title"], "models": ids}).to_string(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        chains.push(json(&body)["id"].as_str().unwrap().to_string());
+    }
+    for (class, chain) in [
+        ("assistant", &chains[0]),
+        ("background", &chains[0]),
+        ("session-name", &chains[1]),
+        ("compaction", &chains[1]),
+    ] {
+        let (status, body) = send_as(
+            &h,
+            "PUT",
+            &format!("/v1/platform/chain-assignments/{class}"),
+            &operator,
+            &serde_json::json!({"chain_id": chain}).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{class}: {body}");
+    }
+
+    let (_, body) = h.get("/v1/platform/models", Some(&operator)).await;
+    let held = json(&body);
+    // The harness seeds an account of its own; the recipe adds one beside it.
+    let made: Vec<&Value> = held["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["id"] == account.as_str())
+        .collect();
+    assert_eq!(made[0]["base_url"], "https://api.openai.com", "{body}");
+    assert_eq!(made[0]["credential_env"], "OUTTURN_TEST_NOT_A_KEY");
+    assert_eq!(held["assignments"]["assistant"], chains[0].as_str());
+    assert_eq!(held["assignments"]["session-name"], chains[1].as_str());
+    let model_of = |id: &Value| -> String {
+        held["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == *id)
+            .unwrap()["model"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let chain_models = |chain: &str| -> Vec<String> {
+        held["chains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == chain)
+            .unwrap()["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(model_of)
+            .collect()
+    };
+    assert_eq!(chain_models(&chains[0]), ["gpt-6.1-sol"]);
+    assert_eq!(chain_models(&chains[1]), ["gpt-5.4-mini"]);
+}
+
+/// A two-vendor recipe asked for with one vendor's key is what it becomes
+/// without the other: the missing vendor's link dropped and named, and the
+/// rest as it was. Named with neither, nothing is left to set up.
+#[tokio::test]
+async fn a_recipe_drops_the_vendor_without_a_key() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, _admin) = template_people(&h).await;
+    let medium = |with: &str| {
+        let h = &h;
+        let operator = &operator;
+        let with = with.to_string();
+        async move {
+            let (status, body) = h
+                .get(&format!("/v1/platform/recipes?with={with}"), Some(operator))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let all: Value = serde_json::from_str(&body).unwrap();
+            all.as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "medium")
+                .unwrap()
+                .clone()
+        }
+    };
+    let keys = |list: &Value| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                v["key"]
+                    .as_str()
+                    .or(v["vendor"]["key"].as_str())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+
+    let both = medium("anthropic,gemini").await;
+    assert_eq!(keys(&both["links"]), ["anthropic", "gemini"]);
+    assert_eq!(keys(&both["dropped"]), Vec::<String>::new());
+
+    let one = medium("gemini").await;
+    assert_eq!(keys(&one["links"]), ["gemini"], "{one}");
+    assert_eq!(one["links"][0]["model"], "gemini-3.8-flash");
+    assert_eq!(keys(&one["dropped"]), ["anthropic"]);
+    // What a key is asked for is still the whole recipe.
+    assert_eq!(keys(&one["vendors"]), ["anthropic", "gemini"]);
+
+    let none = medium("").await;
+    assert!(none["links"].as_array().unwrap().is_empty(), "{none}");
+    assert_eq!(keys(&none["dropped"]), ["anthropic", "gemini"]);
+}
+
 /// An account's key is sealed as a provider key, for every workspace, to the
 /// account's host alone; sealing it replaces the environment variable.
 #[tokio::test]

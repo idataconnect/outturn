@@ -1193,43 +1193,83 @@ const GEMINI: Vendor = Vendor {
     catalog: "google",
 };
 
-/// A recipe's tier, its name and what it is for, and its links in order: each
-/// a vendor and the family it is asked for.
-type RecipeRow = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static [(&'static Vendor, &'static str)],
-);
+const OPENAI: Vendor = Vendor {
+    key: "openai",
+    name: "OpenAI",
+    protocol: "openai",
+    base_url: "https://api.openai.com",
+    env: "OPENAI_API_KEY",
+    catalog: "openai",
+};
 
-/// Pairs of the same tier from two vendors, so a fallback answers about as
-/// well as what it stands in for. Named by family, never by model: which
-/// model a tier is today is the catalog's to say.
+/// A recipe: its id, its name and what it is for, the links of its chain in
+/// order -- each a vendor and the family it is asked for -- and, where it
+/// splits them off, the links of a smaller chain for the work nobody reads
+/// as it is written: a conversation's title and its summaries.
+struct RecipeRow {
+    id: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    links: &'static [(&'static Vendor, &'static str)],
+    small: &'static [(&'static Vendor, &'static str)],
+}
+
+/// One provider's each, for a deployment with one key: its everyday model,
+/// and its fast one for titles and summaries. Then pairs of the same tier
+/// from two vendors, so a fallback answers about as well as what it stands
+/// in for. Named by family, never by model: which model a tier is today is
+/// the catalog's to say. OpenAI's main line is `gpt-sol` because that is
+/// the family the catalog files GPT-5.6 itself under.
 const RECIPES: &[RecipeRow] = &[
-    (
-        "high",
-        "High tier",
-        "Claude Opus, falling back to Gemini Pro.",
-        &[(&ANTHROPIC, "claude-opus"), (&GEMINI, "gemini-pro")],
-    ),
-    (
-        "medium",
-        "Medium tier",
-        "Claude Sonnet, falling back to Gemini Flash.",
-        &[(&ANTHROPIC, "claude-sonnet"), (&GEMINI, "gemini-flash")],
-    ),
-    (
-        "low",
-        "Low tier",
-        "Claude Haiku, falling back to Gemini Flash-Lite.",
-        &[(&ANTHROPIC, "claude-haiku"), (&GEMINI, "gemini-flash-lite")],
-    ),
-    (
-        "two-doors",
-        "Claude, two doors",
-        "Claude Sonnet on Amazon Bedrock, falling back to the same model at Anthropic.",
-        &[(&BEDROCK, "claude-sonnet"), (&ANTHROPIC, "claude-sonnet")],
-    ),
+    RecipeRow {
+        id: "anthropic",
+        title: "Anthropic",
+        summary: "Claude Sonnet, with Claude Haiku for titles and summaries.",
+        links: &[(&ANTHROPIC, "claude-sonnet")],
+        small: &[(&ANTHROPIC, "claude-haiku")],
+    },
+    RecipeRow {
+        id: "openai",
+        title: "OpenAI",
+        summary: "GPT Sol, with GPT mini for titles and summaries.",
+        links: &[(&OPENAI, "gpt-sol")],
+        small: &[(&OPENAI, "gpt-mini")],
+    },
+    RecipeRow {
+        id: "gemini",
+        title: "Google Gemini",
+        summary: "Gemini Flash, with Gemini Flash-Lite for titles and summaries.",
+        links: &[(&GEMINI, "gemini-flash")],
+        small: &[(&GEMINI, "gemini-flash-lite")],
+    },
+    RecipeRow {
+        id: "high",
+        title: "High tier",
+        summary: "Claude Opus, falling back to Gemini Pro.",
+        links: &[(&ANTHROPIC, "claude-opus"), (&GEMINI, "gemini-pro")],
+        small: &[],
+    },
+    RecipeRow {
+        id: "medium",
+        title: "Medium tier",
+        summary: "Claude Sonnet, falling back to Gemini Flash.",
+        links: &[(&ANTHROPIC, "claude-sonnet"), (&GEMINI, "gemini-flash")],
+        small: &[],
+    },
+    RecipeRow {
+        id: "low",
+        title: "Low tier",
+        summary: "Claude Haiku, falling back to Gemini Flash-Lite.",
+        links: &[(&ANTHROPIC, "claude-haiku"), (&GEMINI, "gemini-flash-lite")],
+        small: &[],
+    },
+    RecipeRow {
+        id: "two-doors",
+        title: "Claude, two doors",
+        summary: "Claude Sonnet on Amazon Bedrock, falling back to the same model at Anthropic.",
+        links: &[(&BEDROCK, "claude-sonnet"), (&ANTHROPIC, "claude-sonnet")],
+        small: &[],
+    },
 ];
 
 /// Recipes not yet tried end to end against the provider they name, said
@@ -1253,6 +1293,11 @@ pub struct RecipeQuery {
     /// For a recipe with Bedrock in it; `us-east-1` when left out.
     #[serde(default)]
     pub region: Option<String>,
+    /// The vendors there are keys for, comma-separated: each recipe is then
+    /// what it becomes without the others, a link at a vendor left out
+    /// dropped. Left out, every recipe is whole.
+    #[serde(default)]
+    pub with: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1266,13 +1311,29 @@ pub struct RecipeLink {
     pub name: Option<String>,
 }
 
+/// A vendor at the address a recipe resolved for it.
+#[derive(Debug, Serialize)]
+pub struct RecipeVendor {
+    pub vendor: &'static Vendor,
+    pub base_url: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Recipe {
     pub id: &'static str,
     pub title: &'static str,
     pub summary: &'static str,
+    /// Every vendor the whole recipe uses, each once: what a key is asked
+    /// for.
+    pub vendors: Vec<RecipeVendor>,
     /// In order: the first is asked, the next when it is unavailable.
     pub links: Vec<RecipeLink>,
+    /// The chain for titles and summaries, or empty when they go where
+    /// `links` does.
+    pub small: Vec<RecipeLink>,
+    /// Vendors the recipe uses that `with` left out, whose links were
+    /// dropped.
+    pub dropped: Vec<&'static Vendor>,
     /// Not yet tried end to end against the provider it names.
     pub untried: bool,
     /// Every link the same model, by the catalog's canonical id: a fallback
@@ -1298,45 +1359,77 @@ pub async fn recipes(
             .await
             .map_err(internal)?
             .unwrap_or_default();
+    let with: Option<Vec<&str>> = query.with.as_deref().map(|w| {
+        w.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .collect()
+    });
+    let kept = |vendor: &Vendor| with.as_ref().is_none_or(|w| w.contains(&vendor.key));
+    // Each link resolved once, with the model it is whichever door it is
+    // reached through, for saying whether a fallback changes it.
+    let resolve = |links: &[(&'static Vendor, &'static str)]| -> Vec<(RecipeLink, Option<String>)> {
+        links
+            .iter()
+            .filter(|(vendor, _)| kept(vendor))
+            .map(|(vendor, family)| {
+                let prefix = if vendor.key == "bedrock" {
+                    bedrock_profile(&region)
+                } else {
+                    ""
+                };
+                let model = catalog::newest_of_family(&held, vendor.catalog, family, prefix);
+                let entry = model
+                    .as_deref()
+                    .and_then(|m| catalog::entry(&held, vendor.catalog, m));
+                let name = entry.and_then(|e| e["name"].as_str()).map(str::to_string);
+                let canonical = entry
+                    .and_then(|e| e["canonical_model_id"].as_str())
+                    .map(str::to_string);
+                let link = RecipeLink {
+                    vendor,
+                    base_url: vendor.base_url.replace("{region}", &region),
+                    model,
+                    name,
+                };
+                (link, canonical)
+            })
+            .collect()
+    };
     let recipes = RECIPES
         .iter()
-        .map(|(id, title, summary, links)| {
-            // Each link resolved once, with the model it is whichever door
-            // it is reached through, for saying whether a fallback changes it.
-            let resolved: Vec<(RecipeLink, Option<String>)> = links
-                .iter()
-                .map(|(vendor, family)| {
-                    let prefix = if vendor.key == "bedrock" {
-                        bedrock_profile(&region)
-                    } else {
-                        ""
-                    };
-                    let model = catalog::newest_of_family(&held, vendor.catalog, family, prefix);
-                    let entry = model
-                        .as_deref()
-                        .and_then(|m| catalog::entry(&held, vendor.catalog, m));
-                    let name = entry.and_then(|e| e["name"].as_str()).map(str::to_string);
-                    let canonical = entry
-                        .and_then(|e| e["canonical_model_id"].as_str())
-                        .map(str::to_string);
-                    let link = RecipeLink {
-                        vendor,
-                        base_url: vendor.base_url.replace("{region}", &region),
-                        model,
-                        name,
-                    };
-                    (link, canonical)
+        .map(|row| {
+            let mut vendors: Vec<&'static Vendor> = Vec::new();
+            for (vendor, _) in row.links.iter().chain(row.small) {
+                if !vendors.iter().any(|v| v.key == vendor.key) {
+                    vendors.push(vendor);
+                }
+            }
+            let dropped = vendors.iter().copied().filter(|v| !kept(v)).collect();
+            let vendors = vendors
+                .into_iter()
+                .map(|vendor| RecipeVendor {
+                    vendor,
+                    base_url: vendor.base_url.replace("{region}", &region),
                 })
                 .collect();
-            let same_model = resolved
-                .iter()
-                .all(|(_, c)| c.is_some() && *c == resolved[0].1);
+            let resolved = resolve(row.links);
+            let same_model = !resolved.is_empty()
+                && resolved
+                    .iter()
+                    .all(|(_, c)| c.is_some() && *c == resolved[0].1);
             Recipe {
-                id,
-                title,
-                summary,
+                id: row.id,
+                title: row.title,
+                summary: row.summary,
+                vendors,
                 links: resolved.into_iter().map(|(link, _)| link).collect(),
-                untried: UNTRIED.contains(id),
+                small: resolve(row.small)
+                    .into_iter()
+                    .map(|(link, _)| link)
+                    .collect(),
+                dropped,
+                untried: UNTRIED.contains(&row.id),
                 same_model,
             }
         })
