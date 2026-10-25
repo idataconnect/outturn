@@ -1241,6 +1241,18 @@ async fn the_one_line_writes_its_bands_and_policy_or_nothing() {
     finish!(h);
 }
 
+/// The approval waiting on a conversation, by id.
+async fn pending_on(h: &Harness, session: &str) -> Value {
+    let id: Uuid = sqlx::query_scalar(
+        "select id from action_items where payload->>'session_id' = $1 and state = 'pending'",
+    )
+    .bind(session)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    Value::String(id.to_string())
+}
+
 /// Relays a refused charge of this many pence, as the runtime does.
 async fn raise_charge(
     h: &Harness,
@@ -1365,6 +1377,27 @@ async fn a_high_charge_asks_whoever_the_workspace_named() {
     assert_eq!(payload["money"]["display"], "£300.00");
     assert_eq!(payload["money"]["field"], "amount_pence");
     assert_eq!(targets, vec![manager]);
+
+    // And the conversation's own prompt says what the inbox says: the risk, and
+    // the amount as money beside the field it came from.
+    let session = payload["session_id"].as_str().unwrap();
+    let (status, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(&c.admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let awaiting = &history["awaiting"];
+    assert_eq!(awaiting["item_id"], pending_on(&h, session).await, "{body}");
+    assert_eq!(awaiting["risk"], "high", "{body}");
+    assert_eq!(awaiting["money"]["display"], "£300.00", "{body}");
+    assert_eq!(awaiting["money"]["field"], "amount_pence", "{body}");
+    assert_eq!(
+        awaiting["money"], payload["money"],
+        "one money, both places"
+    );
 
     // £60 is medium: everyone who answers approvals, as before.
     let (job, lease, _) = a_turn(&h, &c).await;
