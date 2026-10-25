@@ -1,0 +1,59 @@
+name: Bug report
+description: Something outturn does that it should not, or fails to do.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A vulnerability is not a bug report: see SECURITY.md and report it privately.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, including any error message or log line.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. scripts/dev.sh, answering hosted
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+      description: The output of `git rev-parse --short HEAD`, or the image tag.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it runs
+      options:
+        - Local development, Linux
+        - Local development, Mac
+        - A deployment from k8s/deploy
+        - Somewhere else
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The provider and model that answered, if the bug is in a turn.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: From the api, gateway or runtime pod. Remove keys, tokens and anything else private first.
+      render: text
