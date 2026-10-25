@@ -627,6 +627,19 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
+**Reviewing what an import suggests, as a page of its own.** Driving the
+wizard on a real specification (Bigcapital, about three hundred operations)
+on 2026-10-25: *Accept all suggested* is the right idea and the wrong shape.
+It writes every rule at once with no progress shown, so a long list sits
+silent until it finishes; it reads as "approve everything" when what is
+being asked is "confirm how risky each operation is"; and it is a section
+at the foot of the skill's source rather than a step of its own. Wanted: a
+review page that walks the suggestions in groups (reads, writes, money,
+deletes), says plainly that each risk is a guess to confirm, shows progress
+while it writes, and works on a phone, which nobody has checked yet. Plain
+words throughout: an operator should not need to know what a gate, a bind or
+a risk band is to finish it.
+
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
 A skill's operations leave every header out of their tools
