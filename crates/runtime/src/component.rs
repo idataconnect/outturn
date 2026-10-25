@@ -1336,11 +1336,11 @@ impl outturn::agent::host::Host for AgentHost {
                 // re-derives the gates and refuses a shape that matches none, so
                 // this relaying a refusal it invented gets nowhere. Read from a
                 // parse of the bytes it carries, which is never what is sent on.
-                if self.gates.parse().is_ok_and(|gates| {
-                    gates
-                        .covering(&sent.host, &sent.method.to_ascii_uppercase(), &sent.path)
-                        .is_some()
-                }) && let Some(on_gated) = &self.on_gated
+                // Gates this build cannot read -- a field added by a newer API --
+                // are relayed anyway: the API decides, and the alternative is an
+                // approval nobody is ever asked for.
+                if gates_cover(&self.gates, &sent)
+                    && let Some(on_gated) = &self.on_gated
                 {
                     // The whole request, as it was about to go, so that what a
                     // person approves is what is later sent -- see
@@ -3051,6 +3051,56 @@ impl AgentRunner {
                 .cloned()
                 .collect(),
         })
+    }
+}
+
+/// Whether a refusal of this request may be for want of an approval: some gate
+/// the turn carries covers it, or the gates cannot be read here to say none
+/// does.
+fn gates_cover(gates: &outturn_core::egress::gate::RawGates, sent: &Sent) -> bool {
+    match gates.parse() {
+        Ok(gates) => gates
+            .covering(&sent.host, &sent.method.to_ascii_uppercase(), &sent.path)
+            .is_some(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                host = %sent.host,
+                "this turn's gates could not be read, so a refusal is relayed for the API to judge"
+            );
+            true
+        }
+    }
+}
+
+#[cfg(test)]
+mod gates_cover_tests {
+    use super::*;
+    use outturn_core::egress::gate::RawGates;
+
+    fn sent(path: &str) -> Sent {
+        Sent {
+            method: "post".into(),
+            url: format!("https://api.example.com{path}"),
+            host: "api.example.com".into(),
+            path: path.into(),
+            headers: Vec::new(),
+            body: None,
+            operation: None,
+        }
+    }
+
+    #[test]
+    fn gates_this_build_cannot_read_still_relay_the_refusal() {
+        let unreadable: RawGates = serde_json::from_str(r#"{"not": "gates"}"#).unwrap();
+        assert!(unreadable.parse().is_err());
+        assert!(gates_cover(&unreadable, &sent("/charges")));
+    }
+
+    #[test]
+    fn gates_that_cover_nothing_relay_nothing() {
+        let none = RawGates::from(outturn_core::egress::gate::Gates::none());
+        assert!(!gates_cover(&none, &sent("/charges")));
     }
 }
 
