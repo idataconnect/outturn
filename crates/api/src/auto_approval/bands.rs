@@ -386,13 +386,16 @@ pub struct WriteBands {
 
 /// What a write says, checked against what it is about.
 #[derive(Debug, PartialEq, Eq)]
-struct Checked {
+pub(super) struct Checked {
     currency: String,
     operation: Option<(Uuid, String, String)>,
     bands: Bands,
 }
 
-fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checked, ApiError> {
+pub(super) fn check(
+    input: WriteBands,
+    ops: &[(Declared, Option<String>)],
+) -> Result<Checked, ApiError> {
     let bands = Bands {
         low: input.low,
         medium: input.medium,
@@ -477,6 +480,139 @@ fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checke
     }
 }
 
+/// Writes a checked row, replacing the one for the same currency or
+/// operation in place, and says which it is.
+pub(super) async fn write(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    subject: Uuid,
+    checked: &Checked,
+) -> Result<Uuid, sqlx::Error> {
+    let (skill_id, requires, matches) = match checked.operation.clone() {
+        Some((s, r, m)) => (Some(s), Some(r), Some(m)),
+        None => (None, None, None),
+    };
+
+    // One row per currency or operation, by the partial unique indexes; the
+    // existing one is replaced in place, keeping its id.
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "select id from approval_bands \
+         where workspace_id = $1 and currency = $2 \
+           and skill_id is not distinct from $3 and requires is not distinct from $4 \
+           and matches is not distinct from $5 for update",
+    )
+    .bind(workspace_id)
+    .bind(&checked.currency)
+    .bind(skill_id)
+    .bind(&requires)
+    .bind(&matches)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let id = match existing {
+        Some(id) => {
+            sqlx::query(
+                "update approval_bands set low = $3, medium = $4, updated_by = $5, \
+                        updated_at = now() \
+                 where workspace_id = $1 and id = $2",
+            )
+            .bind(workspace_id)
+            .bind(id)
+            .bind(checked.bands.low)
+            .bind(checked.bands.medium)
+            .bind(subject)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+        None => {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                "insert into approval_bands \
+                     (workspace_id, id, currency, skill_id, requires, matches, low, medium, \
+                      updated_by) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(workspace_id)
+            .bind(id)
+            .bind(&checked.currency)
+            .bind(skill_id)
+            .bind(&requires)
+            .bind(&matches)
+            .bind(checked.bands.low)
+            .bind(checked.bands.medium)
+            .bind(subject)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+    };
+    Ok(id)
+}
+
+/// The rows the one line writes: for each operation of this kind in this
+/// currency, a low band at `low` -- given in the currency's standard units,
+/// and rounded down into the operation's own, the side that asks more often --
+/// keeping its medium bound where that is still above it. An operation whose
+/// low band is that already is left as it is. Each row checked as a write of
+/// it would be, so nothing is returned that the floor refuses.
+pub(super) fn one_line(
+    ops: &[(Declared, Option<String>)],
+    rows: &[Band],
+    requires: &str,
+    currency: &str,
+    low: i64,
+) -> Result<Vec<Checked>, ApiError> {
+    if low <= 0 {
+        return Err(invalid(format!(
+            "the amount requests go through under is a figure in {currency} above zero"
+        )));
+    }
+    let of_kind: Vec<&Declared> = ops
+        .iter()
+        .map(|(d, _)| d)
+        .filter(|d| d.gate.requires == requires)
+        .filter(|d| {
+            d.amount
+                .as_ref()
+                .is_some_and(|a| a.amount.currency == currency)
+        })
+        .collect();
+    if of_kind.is_empty() {
+        return Err(invalid(format!(
+            "no agent here reaches an operation of that kind with an amount in {currency}"
+        )));
+    }
+    let mut writes = Vec::new();
+    for d in of_kind {
+        let declared = d.amount.as_ref().expect("filtered on its amount");
+        let own =
+            amount::from_standard(low, currency, declared.amount.minor_units).ok_or_else(|| {
+                invalid(format!(
+                    "{} counts in coarser units than that figure says",
+                    d.operation()
+                ))
+            })?;
+        let Some((now, _)) = effective(d, rows) else {
+            continue;
+        };
+        if now.low == Some(own) {
+            continue;
+        }
+        writes.push(check(
+            WriteBands {
+                currency: None,
+                skill_id: Some(d.skill_id),
+                requires: Some(d.gate.requires.clone()),
+                matches: Some(d.operation()),
+                low: Some(own),
+                medium: now.medium.filter(|m| *m > own),
+            },
+            ops,
+        )?);
+    }
+    Ok(writes)
+}
+
 /// `PUT /v1/approval-bands`: sets a workspace's bands for a currency or an
 /// operation, replacing any it had. Takes effect from the next turn: a running
 /// one keeps what its token committed to, as with every other rule.
@@ -491,68 +627,10 @@ pub async fn put(
         .await
         .map_err(internal)?;
     let checked = check(input, &ops)?;
-    let (skill_id, requires, matches) = match checked.operation {
-        Some((s, r, m)) => (Some(s), Some(r), Some(m)),
-        None => (None, None, None),
-    };
-
-    // One row per currency or operation, by the partial unique indexes; the
-    // existing one is replaced in place, keeping its id.
     let mut tx = state.pool.begin().await.map_err(internal)?;
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "select id from approval_bands \
-         where workspace_id = $1 and currency = $2 \
-           and skill_id is not distinct from $3 and requires is not distinct from $4 \
-           and matches is not distinct from $5 for update",
-    )
-    .bind(claims.workspace_id)
-    .bind(&checked.currency)
-    .bind(skill_id)
-    .bind(&requires)
-    .bind(&matches)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(internal)?;
-    let id = match existing {
-        Some(id) => {
-            sqlx::query(
-                "update approval_bands set low = $3, medium = $4, updated_by = $5, \
-                        updated_at = now() \
-                 where workspace_id = $1 and id = $2",
-            )
-            .bind(claims.workspace_id)
-            .bind(id)
-            .bind(checked.bands.low)
-            .bind(checked.bands.medium)
-            .bind(claims.subject)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
-            id
-        }
-        None => {
-            let id = Uuid::now_v7();
-            sqlx::query(
-                "insert into approval_bands \
-                     (workspace_id, id, currency, skill_id, requires, matches, low, medium, \
-                      updated_by) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            )
-            .bind(claims.workspace_id)
-            .bind(id)
-            .bind(&checked.currency)
-            .bind(skill_id)
-            .bind(&requires)
-            .bind(&matches)
-            .bind(checked.bands.low)
-            .bind(checked.bands.medium)
-            .bind(claims.subject)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
-            id
-        }
-    };
+    let id = write(&mut tx, claims.workspace_id, claims.subject, &checked)
+        .await
+        .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     tracing::info!(
         workspace_id = %claims.workspace_id,
@@ -751,6 +829,35 @@ mod tests {
         // £4,000.00 in pence is under the £5,000 floor; £6,000.00 is past it.
         assert!(write(serde_json::json!({"currency": "GBP", "low": 400_000})).is_ok());
         assert!(write(serde_json::json!({"currency": "GBP", "low": 600_000})).is_err());
+    }
+
+    #[test]
+    fn the_one_line_sets_each_operations_low_band_in_its_own_units() {
+        let mut pence = declared("charge", Risk::High);
+        money(&mut pence);
+        let mut pounds = declared("charge", Risk::High);
+        in_whole_pounds(&mut pounds);
+        pounds.gate.path = "/payments".into();
+        let ops = vec![(pence.clone(), None), (pounds.clone(), None)];
+        // £40.50: pence take it as it is, whole pounds round down to £40.
+        let writes = one_line(&ops, &[], "charge", "GBP", 4050).unwrap();
+        let lows: Vec<_> = writes
+            .iter()
+            .map(|w| (w.bands.low, w.bands.medium))
+            .collect();
+        assert_eq!(lows, vec![(Some(4050), Some(20000)), (Some(40), Some(200))]);
+        // Where a low band is that already, nothing is written for it.
+        assert_eq!(one_line(&ops, &[], "charge", "GBP", 5000).unwrap().len(), 0);
+        // A medium the new low passes is dropped rather than left below it.
+        let writes = one_line(&ops, &[], "charge", "GBP", 30000).unwrap();
+        assert_eq!(writes[0].bands.medium, None);
+        // Past a floor, of another kind, or in another currency: refused.
+        assert!(one_line(&ops, &[], "charge", "GBP", 900_000).is_err());
+        assert!(one_line(&ops, &[], "refund", "GBP", 4000).is_err());
+        assert!(one_line(&ops, &[], "charge", "USD", 4000).is_err());
+        assert!(one_line(&ops, &[], "charge", "GBP", 0).is_err());
+        // Less than one whole pound means nothing to a whole-pound operation.
+        assert!(one_line(&ops, &[], "charge", "GBP", 50).is_err());
     }
 
     #[test]

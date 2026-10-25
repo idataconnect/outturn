@@ -86,6 +86,23 @@ export const listPolicies = () => allPages<Policy>('/v1/approval-policies')
 export const createPolicy = (body: WritePolicy) =>
   api<Policy>('/v1/approval-policies', { method: 'POST', body: JSON.stringify(body) })
 
+/** The one line: a kind, the figure its requests in one currency are low
+ *  under and a daily total -- both in the currency's standard minor units --
+ *  for an agent, until a date. */
+export type WriteOneLine = {
+  requires: string
+  currency: string
+  low: number
+  daily_total: number
+  agent_id: string | null
+  mode: 'trial' | 'on'
+  expires_at: string
+}
+
+/** Sets the bands and creates the policy in one write: both, or neither. */
+export const createOneLine = (body: WriteOneLine) =>
+  api<Policy>('/v1/approval-policies/one-line', { method: 'POST', body: JSON.stringify(body) })
+
 export const updatePolicy = (id: string, body: WritePolicy) =>
   api<Policy>(`/v1/approval-policies/${id}`, { method: 'PUT', body: JSON.stringify(body) })
 

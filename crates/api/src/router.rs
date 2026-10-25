@@ -1884,6 +1884,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::auto_approval::api::list).post(super::auto_approval::api::create),
         )
         .route(
+            "/v1/approval-policies/one-line",
+            post(super::auto_approval::api::one_line),
+        )
+        .route(
             "/v1/approval-policies/{id}",
             get(super::auto_approval::api::get).put(super::auto_approval::api::update),
         )

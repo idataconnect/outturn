@@ -378,18 +378,14 @@ async fn found(state: &ApiState, workspace_id: Uuid, id: Uuid) -> Result<Policy,
         .ok_or((StatusCode::NOT_FOUND, "no such policy".to_string()))
 }
 
-/// `POST /v1/approval-policies`.
-pub async fn create(
-    State(state): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    Json(input): Json<WritePolicy>,
-) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
-    let claims = authenticate(&state, &headers)?;
-    may_write(&state, &claims).await?;
-    let checked = check(input, Utc::now())?;
-    check_references(&state, claims.workspace_id, &checked).await?;
-
-    let id = Uuid::now_v7();
+/// Writes a checked policy as a new row.
+async fn insert<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    workspace_id: Uuid,
+    id: Uuid,
+    subject: Uuid,
+    checked: &Checked,
+) -> Result<(), ApiError> {
     sqlx::query(
         "insert into approval_policies \
              (workspace_id, id, agent_id, effect, selector, max_risk, requires, skill_id, \
@@ -398,7 +394,7 @@ pub async fn create(
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                  $17, $17, $17, $18, $19)",
     )
-    .bind(claims.workspace_id)
+    .bind(workspace_id)
     .bind(id)
     .bind(checked.agent_id)
     .bind(checked.effect)
@@ -414,12 +410,36 @@ pub async fn create(
     .bind(checked.sum_per_day)
     .bind(checked.mode)
     .bind(&checked.note)
-    .bind(claims.subject)
+    .bind(subject)
     .bind(checked.expires_at)
     .bind(serde_json::to_value(&checked.daily_totals).map_err(internal)?)
-    .execute(&state.pool)
+    .execute(executor)
     .await
     .map_err(internal)?;
+
+    Ok(())
+}
+
+/// `POST /v1/approval-policies`.
+pub async fn create(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<WritePolicy>,
+) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims).await?;
+    let checked = check(input, Utc::now())?;
+    check_references(&state, claims.workspace_id, &checked).await?;
+
+    let id = Uuid::now_v7();
+    insert(
+        &state.pool,
+        claims.workspace_id,
+        id,
+        claims.subject,
+        &checked,
+    )
+    .await?;
 
     tracing::info!(
         workspace_id = %claims.workspace_id,
@@ -427,6 +447,97 @@ pub async fn create(
         set_by = %claims.subject,
         mode = checked.mode,
         "an auto-approval policy was set"
+    );
+    super::waiting::reconcile(&state, claims.workspace_id).await;
+    let policy = found(&state, claims.workspace_id, id).await?;
+    Ok((StatusCode::CREATED, Json(view(policy))))
+}
+
+/// The one line, as the page sends it: a kind of act, a figure under which its
+/// requests in one currency are low, and a daily total -- both in the
+/// currency's standard minor units -- for an agent, until a date.
+#[derive(Debug, Deserialize)]
+pub struct WriteOneLine {
+    pub requires: String,
+    pub currency: String,
+    pub low: i64,
+    pub daily_total: i64,
+    #[serde(default)]
+    pub agent_id: Option<Uuid>,
+    #[serde(default = "trial")]
+    pub mode: String,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// The counts a one-line policy carries. The daily total bounds the money;
+/// these only have to be above zero, and the full editor changes them.
+const ONE_LINE_PER_TURN: i32 = 1;
+const ONE_LINE_PER_DAY: i32 = 20;
+
+/// `POST /v1/approval-policies/one-line`: the low band of every operation of
+/// that kind in that currency, where it is not that already, and a policy for
+/// the kind up to low with that daily total -- in one transaction, everything
+/// checked before anything is written, so a band the floor refuses leaves no
+/// policy and a policy refused leaves no band.
+///
+/// Per operation, never the currency's row, which would move every other
+/// operation in the currency too. Each keeps its medium bound where that is
+/// still above the new low one.
+pub async fn one_line(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<WriteOneLine>,
+) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims).await?;
+    let ops = super::bands::operations(&state, claims.workspace_id)
+        .await
+        .map_err(internal)?;
+    let rows = super::bands::of(&state.pool, claims.workspace_id)
+        .await
+        .map_err(internal)?;
+    let writes = super::bands::one_line(&ops, &rows, &input.requires, &input.currency, input.low)?;
+    let checked = check(
+        WritePolicy {
+            agent_id: input.agent_id,
+            effect: include(),
+            selector: "act".into(),
+            max_risk: Some(Risk::Low.as_str().to_string()),
+            requires: Some(input.requires.clone()),
+            skill_id: None,
+            matches: None,
+            conditions: Vec::new(),
+            per_turn: Some(ONE_LINE_PER_TURN),
+            per_day: Some(ONE_LINE_PER_DAY),
+            sum_field: None,
+            sum_per_day: None,
+            daily_totals: BTreeMap::from([(input.currency.clone(), input.daily_total)]),
+            mode: input.mode,
+            note: None,
+            expires_at: input.expires_at,
+        },
+        Utc::now(),
+    )?;
+    check_references(&state, claims.workspace_id, &checked).await?;
+
+    let id = Uuid::now_v7();
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    for write in &writes {
+        super::bands::write(&mut tx, claims.workspace_id, claims.subject, write)
+            .await
+            .map_err(internal)?;
+    }
+    insert(&mut *tx, claims.workspace_id, id, claims.subject, &checked).await?;
+    tx.commit().await.map_err(internal)?;
+
+    tracing::info!(
+        workspace_id = %claims.workspace_id,
+        policy_id = %id,
+        bands_set = writes.len(),
+        set_by = %claims.subject,
+        mode = checked.mode,
+        "a one-line auto-approval policy was set"
     );
     super::waiting::reconcile(&state, claims.workspace_id).await;
     let policy = found(&state, claims.workspace_id, id).await?;

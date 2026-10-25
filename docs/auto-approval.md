@@ -591,11 +591,15 @@ waved through, which is the one outcome this whole design must not permit.
   asked about high risk (`HighRiskRoute`). The editor takes `max_risk` on any
   selector and daily totals per currency, and says a test on a declared
   amount field as money.
-- **The one line** writes the low band of each operation of the kind in that
-  currency whose low is not that already -- per operation, never the
-  currency's row, which would move every other operation in it -- keeping a
-  medium bound still above it, then the policy, so a band the floor refuses
-  stops it before a policy exists. It is prefilled from
+- **The one line** is one write, `POST /v1/approval-policies/one-line`
+  (`requires`, `currency`, `low` and `daily_total` in the currency's standard
+  units, `agent_id`, `mode`, `expires_at`): the low band of each operation of
+  the kind in that currency whose low is not that already -- per operation,
+  never the currency's row, which would move every other operation in it --
+  in the operation's own units, rounded down, keeping a medium bound still
+  above it; and the policy. Everything is checked first and written in one
+  transaction, so a band the floor refuses leaves no policy and a policy
+  refused leaves no band. It is prefilled from
   `/settings/auto-approval?line=&currency=&low=`. Its counts are one a turn
   and twenty a day, which the full editor changes.
 - **The offer** reads `/v1/approvals/amounts` first, in the request's

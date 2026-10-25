@@ -1167,6 +1167,79 @@ async fn bands_are_set_by_whoever_may_set_a_policy() {
     finish!(h);
 }
 
+/// The one line is its bands and its policy together, or neither: a band the
+/// floor refuses leaves no policy, and a policy refused leaves no band.
+#[tokio::test]
+async fn the_one_line_writes_its_bands_and_policy_or_nothing() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let written = |h: &Harness| {
+        let pool = h.db.pool.clone();
+        let acme = c.acme;
+        async move {
+            let bands: i64 =
+                sqlx::query_scalar("select count(*) from approval_bands where workspace_id = $1")
+                    .bind(acme)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let policies: i64 = sqlx::query_scalar(
+                "select count(*) from approval_policies where workspace_id = $1",
+            )
+            .bind(acme)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            (bands, policies)
+        }
+    };
+    let line = |low: i64, daily: i64, agent: Option<Uuid>| {
+        serde_json::json!({
+            "requires": "charge", "currency": "GBP", "low": low, "daily_total": daily,
+            "agent_id": agent,
+        })
+        .to_string()
+    };
+    assert_eq!(written(&h).await, (0, 1));
+
+    for (body, why) in [
+        // Past the floor, which says high from £5,000.
+        (line(900_000, 25_000, None), "floor"),
+        // A band that could stand, under a policy that cannot.
+        (line(4000, -5, None), "total"),
+        (line(4000, 25_000, Some(Uuid::now_v7())), "agent"),
+    ] {
+        let (status, text) = h
+            .post("/v1/approval-policies/one-line", Some(&c.admin), &body)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {text}");
+        assert_eq!(written(&h).await, (0, 1), "{why}: nothing written");
+    }
+
+    let (status, body) = h
+        .post(
+            "/v1/approval-policies/one-line",
+            Some(&c.admin),
+            &line(4000, 25_000, Some(c.agent)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let policy: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(policy["max_risk"], "low");
+    assert_eq!(policy["daily_totals"]["GBP"], 25_000);
+    assert_eq!(policy["agent_id"], c.agent.to_string());
+    assert_eq!(written(&h).await, (1, 2));
+    let (low, medium): (Option<i64>, Option<i64>) = sqlx::query_as(
+        "select low, medium from approval_bands where workspace_id = $1 and skill_id is not null",
+    )
+    .bind(c.acme)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!((low, medium), (Some(4000), Some(20000)), "medium kept");
+    finish!(h);
+}
+
 /// Relays a refused charge of this many pence, as the runtime does.
 async fn raise_charge(
     h: &Harness,

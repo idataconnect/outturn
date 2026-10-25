@@ -7,10 +7,9 @@ import OneLinePolicy from './OneLinePolicy'
 import { ApiError } from '../lib/api'
 import {
   countOf,
-  createPolicy,
+  createOneLine,
   kindOf,
   oneLineLink,
-  putBands,
   roundUnder,
   type BandOperation,
   type BandsPage,
@@ -22,12 +21,10 @@ vi.mock('../lib/api', async (actual) => ({
 }))
 vi.mock('../lib/autoApproval', async (actual) => ({
   ...(await actual<typeof import('../lib/autoApproval')>()),
-  putBands: vi.fn(async () => ({})),
-  createPolicy: vi.fn(async () => ({ id: 'p-new' })),
+  createOneLine: vi.fn(async () => ({ id: 'p-new' })),
 }))
 
-const put = vi.mocked(putBands)
-const create = vi.mocked(createPolicy)
+const create = vi.mocked(createOneLine)
 
 const gbp = (amount: number) => ({ amount, currency: 'GBP', minor_units: 2, display: `£${(amount / 100).toFixed(2)}` })
 
@@ -67,7 +64,6 @@ const show = (at = '/settings/auto-approval') =>
 
 describe('OneLinePolicy', () => {
   beforeEach(() => {
-    put.mockClear()
     create.mockClear()
   })
 
@@ -78,17 +74,17 @@ describe('OneLinePolicy', () => {
     expect(screen.getByText('go through automatically, up to')).toBeTruthy()
   })
 
-  it('writes only the policy when the band is already that', async () => {
+  it('sends the bands and the policy as one write', async () => {
     show()
     await userEvent.type(screen.getByLabelText('A day'), '500')
     await userEvent.click(screen.getByRole('button', { name: 'Create policy' }))
-    expect(put).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledTimes(1)
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
-        selector: 'act',
         requires: 'charge',
-        max_risk: 'low',
-        daily_totals: { GBP: 50000 },
+        currency: 'GBP',
+        low: 5000,
+        daily_total: 50000,
         agent_id: null,
         mode: 'trial',
       }),
@@ -96,29 +92,34 @@ describe('OneLinePolicy', () => {
     expect(await screen.findByText('the policy page')).toBeTruthy()
   })
 
-  it('is prefilled from an offer, and moves the band first', async () => {
+  it('is prefilled from an offer', async () => {
     show(oneLineLink('charge', 'GBP', 4000))
     expect(screen.getByLabelText('Under')).toHaveProperty('value', '40')
     await userEvent.selectOptions(await screen.findByLabelText('Agent'), 'a1')
     await userEvent.type(screen.getByLabelText('A day'), '250.50')
     await userEvent.click(screen.getByRole('button', { name: 'Create policy' }))
-    expect(put).toHaveBeenCalledWith({
-      skill_id: 'sk1',
-      requires: 'charge',
-      matches: 'POST /charges',
-      low: 4000,
-      medium: 20000,
-    })
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ agent_id: 'a1', daily_totals: { GBP: 25050 } }))
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: 'a1', low: 4000, daily_total: 25050 }),
+    )
   })
 
-  it('stops at a band the floor refuses, before any policy exists', async () => {
-    put.mockRejectedValueOnce(new ApiError(400, 'low reaches past the floor'))
+  it('says why nothing was set when the API refuses it', async () => {
+    create.mockRejectedValueOnce(new ApiError(400, 'low reaches past the floor'))
     show(oneLineLink('charge', 'GBP', 900000))
     await userEvent.type(screen.getByLabelText('A day'), '10000')
     await userEvent.click(screen.getByRole('button', { name: 'Create policy' }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/floor/)
-    expect(create).not.toHaveBeenCalled()
+    expect(screen.queryByText('the policy page')).toBeNull()
+  })
+
+  it('starts from a band in whole pounds as pounds', () => {
+    const pounds = { ...charge, minor_units: 0, effective: { low: { ...gbp(30), minor_units: 0, display: '£30' }, medium: null } }
+    render(
+      <MemoryRouter initialEntries={['/settings/auto-approval']}>
+        <OneLinePolicy bands={{ ...bands, operations: [pounds] }} onChanged={vi.fn()} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByLabelText('Under')).toHaveProperty('value', '30')
   })
 
   it('refuses a figure that is not an amount', async () => {
