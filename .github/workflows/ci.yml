@@ -12,9 +12,12 @@
 
 name: CI
 
+# Release tags too, so a version is published only from a commit this has
+# passed on (images.yml runs after this, never instead of it).
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 # Checking out the code is all either job does with the repository token.

@@ -1,0 +1,110 @@
+# The images a deployment runs, published to this repository's container
+# registry once CI has passed on the commit they are built from.
+#
+#   ghcr.io/<owner>/outturn-api       ...-gateway   ...-runtime   ...-ui
+#
+# Tagged with the full commit SHA on every push to main, and with the version
+# as well on a release tag: v1.2.0 publishes 1.2.0. There is no `latest`, so
+# a deployment always names what it runs -- see docs/deployment.md.
+#
+# After CI rather than beside it, so an image is never published from a red
+# commit: this runs on CI's completion and does nothing unless CI succeeded.
+# The mock provider and the mock guesthouse are test fixtures and are not
+# published.
+
+name: Images
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+# Reading the code and writing packages; nothing else.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  publish:
+    name: Publish
+    # A push to main or a release tag -- the only pushes CI runs on -- and
+    # never a pull request, whose code is not this repository's to publish.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      # The tag name arrives as `head_branch`; read through the environment
+      # rather than pasted into the script, since a ref name is text somebody
+      # chose.
+      - name: Names
+        id: names
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REF: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Registry names are lowercase; an owner need not be.
+          echo "prefix=ghcr.io/${OWNER,,}/outturn" >>"$GITHUB_OUTPUT"
+          echo "sha=$SHA" >>"$GITHUB_OUTPUT"
+          if [[ "$REF" == main ]]; then
+            echo "version=" >>"$GITHUB_OUTPUT"
+          elif [[ "$REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
+          else
+            echo "not main and not a release tag: $REF" >&2
+            exit 1
+          fi
+
+      # The container driver, for a layer cache kept between runs. The Rust
+      # builder stage is shared by the three tiers, so it is built once here.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to the registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+      # One platform and no attestations, so each tag is a single manifest.
+      # An index with attestation children leaves untagged versions in the
+      # registry that the tagged one depends on, and image-cleanup.yml would
+      # have to tell those apart from orphans; this way every untagged
+      # version is an orphan.
+      - name: Build and push
+        env:
+          PREFIX: ${{ steps.names.outputs.prefix }}
+          SHA: ${{ steps.names.outputs.sha }}
+          VERSION: ${{ steps.names.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          build() {
+            local name="$1" context="$2" target="$3"
+            local tags=(--tag "$PREFIX-$name:$SHA")
+            [[ -n "$VERSION" ]] && tags+=(--tag "$PREFIX-$name:$VERSION")
+            docker buildx build "$context" \
+              --target "$target" \
+              --platform linux/amd64 \
+              --provenance=false --sbom=false \
+              --label "org.opencontainers.image.source=$SOURCE" \
+              --label "org.opencontainers.image.revision=$SHA" \
+              --label "org.opencontainers.image.version=${VERSION:-$SHA}" \
+              --cache-from "type=gha,scope=$name" \
+              --cache-to "type=gha,scope=$name,mode=max" \
+              "${tags[@]}" \
+              --push
+          }
+          build api . api
+          build gateway . gateway
+          build runtime . runtime
+          build ui ui ui
