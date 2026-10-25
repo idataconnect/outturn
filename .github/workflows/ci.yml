@@ -84,6 +84,12 @@ jobs:
       - name: Base and deploy agree
         run: scripts/check-k8s-parity.py
 
+      # The image built and run the way k8s/deploy runs it, since an image
+      # can pass every check above and still not start under its pod's
+      # securityContext; v0.1.0's did not.
+      - name: UI image starts under the pod's restrictions
+        run: scripts/check-ui-image.sh
+
   ui:
     name: UI
     runs-on: ubuntu-latest
