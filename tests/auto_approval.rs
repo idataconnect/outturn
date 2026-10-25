@@ -96,6 +96,7 @@ fn grant(policy_id: Uuid, job_id: Uuid) -> PolicyGrant {
         banding: None,
         max_risk: None,
         currency_per_day: None,
+        path_numbers: Vec::new(),
     }
 }
 
@@ -104,7 +105,7 @@ fn admitted(amount: i64) -> Admitted {
         bound: serde_json::json!({ "amount_pence": amount }),
         amount: Some(amount),
         money: None,
-        body: format!(r#"{{"amount_pence":{amount}}}"#),
+        body: Some(format!(r#"{{"amount_pence":{amount}}}"#)),
     }
 }
 
@@ -239,7 +240,7 @@ async fn a_daily_total_counts_one_currency_across_the_policy() {
             bound: serde_json::json!({ "amount_pence": pence }),
             amount: None,
             money: Some((currency.to_string(), pence)),
-            body: format!(r#"{{"amount_pence":{pence}}}"#),
+            body: Some(format!(r#"{{"amount_pence":{pence}}}"#)),
         };
         let g = g.clone();
         let pool = w.db.pool.clone();
@@ -301,7 +302,7 @@ async fn the_rows_daily_total_holds_over_a_looser_committed_one() {
         bound: serde_json::json!({ "amount_pence": 500 }),
         amount: None,
         money: Some(("GBP".to_string(), 500)),
-        body: r#"{"amount_pence":500}"#.into(),
+        body: Some(r#"{"amount_pence":500}"#.into()),
     };
     let written = record(
         &w.db.pool,

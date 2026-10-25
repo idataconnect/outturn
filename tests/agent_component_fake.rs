@@ -3959,6 +3959,7 @@ async fn a_banded_policy_reaches_the_gateway_as_committed() {
         }),
         max_risk: Some(Risk::Low),
         currency_per_day: Some(50000),
+        path_numbers: Vec::new(),
     };
     let gates = Gates::of(vec![charge]).with_policies(vec![grant]);
     let root = gates.root(workspace);

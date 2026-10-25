@@ -22,13 +22,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps and the indexes are in; name uniqueness
    (in the order given there) and the prompt and sandbox boundaries go next,
    then the rest in the order given there.
-2. **Gates that bind path parameters** ([approvals.md](approvals.md)): a
-   gate binds only body fields today, so `DELETE /invoices/{id}` or
-   `POST /invoices/{id}/void` cannot be gated, and the wizard can suggest such
-   a gate but not write it. Bind named path segments the way body fields are
-   bound -- in the grant digest, the policy's tests and the held request's
-   matching. The blocker for letting an agent write to an accounting system.
-3. **Deployable outturn**: what an operator needs to run a release rather
+2. **Deployable outturn**: what an operator needs to run a release rather
    than a checkout. Images published from CI to the registry, tagged by
    commit and by release; a production build of the UI in an image of its
    own, serving the built files and proxying `/v1`; branding read at startup
@@ -38,9 +32,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
    them; and `docs/deployment.md` -- the secrets to generate, an infra
    repository pinning a commit, upgrades (roll the gateway before the API,
    since it reads what the API commits), backups and rollback.
-4. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 

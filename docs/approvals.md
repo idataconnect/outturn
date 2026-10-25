@@ -216,10 +216,11 @@ must be the operation's url, name for name. A rule binding only path parameters
 is valid -- that is the `DELETE` case.
 
 Everywhere a bound value is read for a request, a path parameter is read from the
-request's path by the gate's pattern, by one function (`Gate::bound`): the grant
-digest, the gateway's matching, a policy's tests, the approval prompt, finding a
-held request again, the idempotency identity, and the unit a `covers` spans when
-`identified_by` names one. A path value is a string -- in the digest it is
+request's path by the gate's pattern, through one reading
+(`egress::gate::path_values`, and `Gate::bound` over it): the grant digest, the
+gateway's matching, a policy's tests, the approval prompt, finding a held
+request again, the idempotency identity -- which may name a path parameter too
+-- and the unit a `covers` spans when `identified_by` names one. A path value is a string -- in the digest it is
 tagged as one, so `/invoices/1` and a body's number `1` are never the same
 approval -- unless the declaration lists it in `numbers`, where a policy may
 compare it after a strict parse: digits with an optional minus, no leading zero,

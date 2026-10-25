@@ -1523,3 +1523,151 @@ async fn a_risk_that_cannot_be_worked_out_never_asks_more_people() {
         .unwrap();
     finish!(h);
 }
+
+/// A delete by path: nothing in the body, and the invoice's id the whole of
+/// what is approved. See docs/approvals.md, "Path parameters".
+fn delete_invoice_file() -> String {
+    "---\napproval:\n  requires: delete\n  matches: DELETE /invoices/{id}\n  binds: [id]\n  \
+     risk: low\n  auto: allowed\n  free: []\n---\n\n# delete_invoice\n"
+        .to_string()
+}
+
+/// A policy for deleting one invoice, named by the id in its path.
+fn delete_one_invoice_policy() -> String {
+    serde_json::json!({
+        "selector": "act",
+        "requires": "delete",
+        "conditions": [{"field": "id", "op": "in", "value": ["inv_9"]}],
+        "per_turn": 2,
+        "per_day": 20,
+    })
+    .to_string()
+}
+
+/// A gate bound by its path parameter, all the way through: a policy tests
+/// the id, a slash smuggled into it is refused rather than matched, a person
+/// is asked about one invoice and shown its id, and what they approve is sent
+/// as it was held -- while the same delete of another invoice, under that very
+/// grant, is refused.
+#[tokio::test]
+async fn a_delete_by_path_is_gated_by_its_id() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &delete_invoice_file(), &delete_one_invoice_policy()).await;
+    let (job, lease, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().expect("token");
+    let gates = &assignment["gates"];
+    let gateway = Gateway::new(&h);
+    let delete = |path: &'static str, token: &str, gates: &Value| {
+        let token = token.to_string();
+        let gates = gates.clone();
+        let gateway = &gateway;
+        let assignment = &assignment;
+        async move {
+            gateway
+                .send(c.acme, assignment, &token, &gates, "DELETE", path, None)
+                .await
+        }
+    };
+
+    // The policy names inv_9, read from the path, and the request goes out
+    // with no body, as it came.
+    let (status, body) = delete("/invoices/inv_9", token, gates).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(gateway.sent(), 1);
+    assert_eq!(auto_approved(&h).await, 1);
+
+    // A value that decodes to a slash is refused, not approved or asked about.
+    let (status, body) = delete("/invoices/inv_9%2F..%2Finv_1", token, gates).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("cannot be approved"), "{body}");
+
+    // Another invoice is not the policy's, so somebody is asked.
+    let (status, body) = delete("/invoices/inv_1", token, gates).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("needs approval"), "{body}");
+    assert_eq!(gateway.sent(), 1);
+
+    let session: Uuid =
+        sqlx::query_scalar("select (payload->>'session_id')::uuid from jobs where id = $1")
+            .bind(job)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    let url = format!("https://{CHARGE_HOST}/invoices/inv_1");
+    let (status, raised) = h
+        .send(
+            Request::post("/v1/work/gated")
+                .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+                .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "session_id": session, "job_id": job, "method": "DELETE",
+                        "host": CHARGE_HOST, "path": "/invoices/inv_1", "url": url,
+                        "headers": [],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{raised}");
+    let item = serde_json::from_str::<Value>(&raised).unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The person deciding is shown which invoice.
+    let payload: Value = sqlx::query_scalar("select payload from action_items where id = $1::uuid")
+        .bind(&item)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        payload["binds"],
+        serde_json::json!([{"field": "id", "value": "inv_1"}]),
+        "{payload}"
+    );
+
+    outturn::jobs::park(&h.db.pool, job, Some(lease))
+        .await
+        .expect("park");
+    let (status, body) = h
+        .post(
+            &format!("/v1/approvals/{item}/answer"),
+            Some(&c.admin),
+            r#"{"approved":true}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The resumed turn is handed the delete as it was held, and a token to
+    // send it under.
+    let (_, _, resumed) = take_assignment(&h).await;
+    let held = &resumed["held"];
+    assert_eq!(held.as_array().map(Vec::len), Some(1), "{resumed}");
+    assert_eq!(held[0]["method"], "DELETE");
+    assert_eq!(held[0]["url"], url.as_str());
+    let held_token = resumed["held_token"].as_str().expect("held token");
+    let held_gates = &resumed["held_gates"];
+
+    // Sent with the held request, it goes out.
+    let (status, body) = delete("/invoices/inv_1", held_token, held_gates).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(gateway.sent(), 2);
+
+    // The same grant does not reach another invoice.
+    let (status, body) = delete("/invoices/inv_2", held_token, held_gates).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("needs approval"), "{body}");
+    // Nor does the guest's own token carry it.
+    let (status, body) = delete(
+        "/invoices/inv_1",
+        resumed["gateway_token"].as_str().unwrap(),
+        &resumed["gates"],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(gateway.sent(), 2);
+    finish!(h);
+}
