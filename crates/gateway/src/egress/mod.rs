@@ -256,6 +256,20 @@ async fn vet_and_send(
     // Every gate covering the request, not the first: each is an obligation, and
     // one satisfied says nothing about another. See `Gates::covering_all`.
     for gate in request.gates.covering_all(&host, &method, url.path()) {
+        // A path the gate's pattern covers but whose named segments cannot be
+        // read -- one decoding to a slash, say -- is refused rather than
+        // approved: the recipient may read it as another path than the one a
+        // person would be shown. See "Path parameters" in docs/approvals.md.
+        if let Err(why) = gate.path_values(url.path()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "this request cannot be approved for \"{}\" as written: {why}. \
+                     Send each path parameter as one plain segment.",
+                    gate.requires,
+                ),
+            ));
+        }
         // Before anything is decided about approving it: a request missing a
         // field the declaration says its approval is keyed on cannot be
         // meaningfully approved, and must not become a differently-keyed request
@@ -263,9 +277,11 @@ async fn vet_and_send(
         //
         // Named, because the guest is the only thing that can fix it and a bare
         // refusal would have it guessing.
-        if let Some(field) =
-            outturn_core::egress::grant::missing_bound_field(gate, request.body.as_deref())
-        {
+        if let Some(field) = outturn_core::egress::grant::missing_bound_field(
+            gate,
+            url.path(),
+            request.body.as_deref(),
+        ) {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!(
@@ -312,6 +328,7 @@ async fn vet_and_send(
                         .admits(
                             claims.workspace_id,
                             gate,
+                            url.path(),
                             url.query(),
                             request.body.as_deref(),
                         )
@@ -567,11 +584,15 @@ async fn vet_and_send(
             return Err(needs_approval(&method, &url, &host, &gate.requires));
         }
         // What was tested is what is sent: the body as it was parsed, in JSON.
-        body = Some(first.body.clone());
-        outgoing.insert(
-            reqwest::header::CONTENT_TYPE,
-            reqwest::header::HeaderValue::from_static("application/json"),
-        );
+        // A request that had none -- a `DELETE` bound by its path -- still has
+        // none.
+        if let Some(parsed) = &first.body {
+            body = Some(parsed.clone());
+            outgoing.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+        }
         tracing::info!(
             workspace_id = %claims.workspace_id,
             policies = admitted.len(),
@@ -1439,6 +1460,7 @@ mod client_credentials {
                     banding: None,
                     max_risk: None,
                     currency_per_day: None,
+                    path_numbers: Vec::new(),
                 },
             ]);
         let rules = vec![rule.clone()];

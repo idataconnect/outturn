@@ -790,13 +790,19 @@ pub fn replay(
             let path = payload["path"].as_str().unwrap_or_default();
             if let Some(op) = &operation {
                 let (want, pattern) = op.split_once(' ')?;
-                let normalized = outturn_core::egress::gate::normalize_path(path);
-                let pattern = outturn_core::egress::gate::normalize_path(pattern);
-                let covers = match pattern.strip_suffix('*') {
-                    Some(prefix) => normalized.starts_with(prefix),
-                    None => normalized == pattern,
-                };
-                if method != want || !covers {
+                // Through the gate's own matcher, so a star and a named
+                // segment such as `/invoices/{id}` mean here what they mean
+                // at the gateway.
+                let covers = outturn_core::egress::gate::Gate {
+                    requires: requires.to_string(),
+                    host: host.to_string(),
+                    method: want.to_string(),
+                    path: pattern.to_string(),
+                    identified_by: None,
+                    binds: Vec::new(),
+                }
+                .covers_request(host, method, path);
+                if !covers {
                     return None;
                 }
             }

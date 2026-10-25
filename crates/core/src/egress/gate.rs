@@ -108,12 +108,80 @@ impl Gate {
         {
             return false;
         }
+        if self.has_path_params() {
+            // Covered if the path matches decoded whole *or* split before
+            // decoding. The first is what keeps `/invoices%2F1` gated, since a
+            // recipient may decode the slash; the second is what keeps
+            // `/invoices/a%2Fb` gated, so that it can be refused by `bound`
+            // rather than go out as a path the pattern does not have.
+            let pattern = segments(&self.path);
+            let decoded = normalize_path(path);
+            return fits_segments(&pattern, decoded.split('/'))
+                || fits_segments(&pattern, collapse(path).split('/').map(percent_decode));
+        }
         let path = normalize_path(path);
         let pattern = normalize_path(&self.path);
         match pattern.strip_suffix('*') {
             Some(prefix) => path.starts_with(prefix),
             None => path == pattern,
         }
+    }
+
+    /// The path parameters this gate's pattern names, `{id}` in
+    /// `/invoices/{id}`, in order.
+    pub fn path_params(&self) -> Vec<&str> {
+        self.path.split('/').filter_map(param_name).collect()
+    }
+
+    fn has_path_params(&self) -> bool {
+        self.path.split('/').any(|s| param_name(s).is_some())
+    }
+
+    /// The path parameters' values in a request this gate covers, by its
+    /// pattern.
+    ///
+    /// Split on the raw path's slashes and then decoded, segment by segment,
+    /// with the same decoding `normalize_path` does. A value that decodes to
+    /// contain `/`, or that is `.` or `..`, is refused: the recipient may read
+    /// it as more than one segment, or resolve it away, and act on something
+    /// nobody was shown. So is a path whose raw segments do not line up with
+    /// the pattern, which is the same thing found the other way round.
+    pub fn path_values(&self, path: &str) -> Result<Vec<(String, String)>, String> {
+        path_values(&self.path, path)
+    }
+
+    /// Every bound field's value in a request, path parameters read from the
+    /// path by this gate's pattern and the rest from the body's top level.
+    ///
+    /// The one reading, because there were several: the grant digest, the
+    /// gateway's check for a missing field, a policy's tests, the approval
+    /// prompt and the held request's matching each read the body, and a
+    /// reading that learned about the path in some of them and not others is a
+    /// grant keyed on one value and a prompt showing another. A path value is a
+    /// JSON string. A field the request does not carry is absent from the map.
+    ///
+    /// `Err` where the path's values cannot be read -- see `path_values` -- which
+    /// every caller treats as a request that cannot be approved as written.
+    pub fn bound(
+        &self,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let from_path = self.path_values(path)?;
+        let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
+        let read = |field: &str| match from_path.iter().find(|(name, _)| name == field) {
+            Some((_, value)) => Some(serde_json::Value::String(value.clone())),
+            None => parsed.as_ref().and_then(|v| v.get(field)).cloned(),
+        };
+        let mut out = serde_json::Map::new();
+        for field in self.binds.iter().chain(&self.identified_by) {
+            if !out.contains_key(field)
+                && let Some(value) = read(field)
+            {
+                out.insert(field.clone(), value);
+            }
+        }
+        Ok(out)
     }
 
     /// This gate's own leaf, as text: what a policy is committed against, so a
@@ -174,10 +242,15 @@ pub fn gated_suffix() -> String {
 }
 
 pub fn normalize_path(path: &str) -> String {
-    let decoded = percent_decode(path);
-    let mut out = String::with_capacity(decoded.len());
+    collapse(&percent_decode(path))
+}
+
+/// Repeated slashes collapsed and one trailing slash dropped, without
+/// decoding: what a path's segments are split from before each is decoded.
+fn collapse(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
     let mut last_was_slash = false;
-    for c in decoded.chars() {
+    for c in path.chars() {
         if c == '/' {
             if last_was_slash {
                 continue;
@@ -194,6 +267,73 @@ pub fn normalize_path(path: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// The values of a pattern's `{name}` segments in a path, as
+/// `Gate::path_values` reads them. Shared with the runtime, which reads an
+/// operation's identity out of its URL the same way.
+pub fn path_values(pattern: &str, path: &str) -> Result<Vec<(String, String)>, String> {
+    if !pattern.split('/').any(|s| param_name(s).is_some()) {
+        return Ok(Vec::new());
+    }
+    let names = segments(pattern);
+    let raw = collapse(path);
+    let sent: Vec<String> = raw.split('/').map(percent_decode).collect();
+    if sent.len() != names.len() {
+        return Err(format!(
+            "the path {path} does not have the segments {} names once its slashes are decoded",
+            pattern
+        ));
+    }
+    let mut out = Vec::new();
+    for (want, got) in names.iter().zip(sent) {
+        match param_name(want) {
+            Some(name) => {
+                if got.contains('/') || got == "." || got == ".." {
+                    return Err(format!(
+                        "the path segment for {{{name}}} is {got:?} once decoded, which a \
+                         recipient may read as another path"
+                    ));
+                }
+                out.push((name.to_string(), got));
+            }
+            None if *want == got => {}
+            None => {
+                return Err(format!(
+                    "the path {path} does not match {} segment by segment",
+                    pattern
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The name in a `{name}` segment, if it is one.
+fn param_name(segment: &str) -> Option<&str> {
+    segment
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+}
+
+/// A pattern's segments, collapsed as a path is.
+fn segments(pattern: &str) -> Vec<String> {
+    collapse(pattern).split('/').map(str::to_string).collect()
+}
+
+/// Whether decoded segments fit a pattern's: a `{name}` takes any one
+/// non-empty segment, and anything else is compared exactly.
+fn fits_segments(pattern: &[String], sent: impl Iterator<Item = impl AsRef<str>>) -> bool {
+    let sent: Vec<_> = sent.collect();
+    sent.len() == pattern.len()
+        && pattern.iter().zip(&sent).all(|(want, got)| {
+            let got = got.as_ref();
+            match param_name(want) {
+                Some(_) => !got.is_empty(),
+                None => want == got,
+            }
+        })
 }
 
 /// Decodes `%xx` escapes, leaving anything malformed as it stands.
@@ -1223,6 +1363,7 @@ mod the_tree_shape {
             }),
             max_risk: Some(Risk::Low),
             currency_per_day: Some(50000),
+            path_numbers: Vec::new(),
         };
         let gates = Gates::of(vec![charge, gate("look")]).with_policies(vec![grant]);
         let root = gates.root(workspace);
@@ -1253,5 +1394,105 @@ mod the_tree_shape {
         let taken: Assignment = serde_json::from_slice(&sent).unwrap();
         assert_eq!(taken.request.gates, gates);
         assert!(taken.request.gates.matches(workspace, &root));
+    }
+}
+
+#[cfg(test)]
+mod path_params {
+    use super::*;
+
+    fn void() -> Gate {
+        Gate {
+            requires: "void".into(),
+            host: "books.example.com".into(),
+            method: "POST".into(),
+            path: "/invoices/{id}/void".into(),
+            identified_by: None,
+            binds: vec!["id".into(), "reason".into()],
+        }
+    }
+
+    fn covers(g: &Gate, path: &str) -> bool {
+        g.covers_request("books.example.com", "POST", path)
+    }
+
+    #[test]
+    fn a_named_segment_matches_one_segment_in_its_place() {
+        let g = void();
+        assert!(covers(&g, "/invoices/inv_1/void"));
+        assert!(covers(&g, "//invoices/inv_1/void/"));
+        assert!(!covers(&g, "/invoices/void"));
+        assert!(!covers(&g, "/invoices/a/b/void"));
+        assert!(!covers(&g, "/invoices/inv_1"));
+        assert!(!covers(&g, "/invoices/inv_1/voids"));
+        assert_eq!(g.path_params(), ["id"]);
+    }
+
+    #[test]
+    fn a_value_is_read_from_its_segment_and_decoded() {
+        let g = void();
+        assert_eq!(
+            g.path_values("/invoices/inv%201/void").unwrap(),
+            [("id".to_string(), "inv 1".to_string())]
+        );
+        // Literal segments decode too, as `normalize_path` decodes them.
+        assert_eq!(
+            g.path_values("/%69nvoices/7/void").unwrap(),
+            [("id".to_string(), "7".to_string())]
+        );
+    }
+
+    /// A slash smuggled into a value is covered and refused, never matched: the
+    /// recipient may read `a%2Fb` as two segments and act on something nobody
+    /// was shown.
+    #[test]
+    fn a_value_that_decodes_to_a_slash_is_covered_and_refused() {
+        let g = void();
+        for path in ["/invoices/a%2Fb/void", "/invoices/%2F/void"] {
+            assert!(covers(&g, path), "{path} slipped past the gate");
+            assert!(g.path_values(path).is_err(), "{path} was matched");
+            assert!(g.bound(path, Some("{}")).is_err());
+        }
+    }
+
+    /// And the other way round: a slash in a literal segment that decodes into
+    /// the pattern's shape is still gated, since a recipient may decode it.
+    #[test]
+    fn a_path_that_only_fits_once_decoded_is_covered_and_refused() {
+        let g = void();
+        let path = "/invoices%2Finv_1%2Fvoid";
+        assert!(covers(&g, path));
+        assert!(g.path_values(path).is_err());
+    }
+
+    #[test]
+    fn a_dot_segment_is_refused() {
+        let g = void();
+        for path in ["/invoices/%2E/void", "/invoices/%2e%2e/void"] {
+            assert!(covers(&g, path));
+            assert!(g.path_values(path).is_err(), "{path} was matched");
+        }
+    }
+
+    #[test]
+    fn bound_reads_the_path_for_a_parameter_and_the_body_for_the_rest() {
+        let g = void();
+        let bound = g
+            .bound(
+                "/invoices/inv_1/void",
+                Some(r#"{"id":"inv_9","reason":"duplicate"}"#),
+            )
+            .unwrap();
+        // The path's, not the body's: the pattern says where `id` is.
+        assert_eq!(bound["id"], serde_json::json!("inv_1"));
+        assert_eq!(bound["reason"], serde_json::json!("duplicate"));
+    }
+
+    #[test]
+    fn a_pattern_without_parameters_reads_only_the_body() {
+        let mut g = void();
+        g.path = "/invoices/*".into();
+        assert!(g.path_values("/invoices/a%2Fb").unwrap().is_empty());
+        assert!(g.bound("/invoices/x", None).unwrap().is_empty());
     }
 }

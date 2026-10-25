@@ -340,6 +340,15 @@ pub fn grant(
         banding,
         max_risk,
         currency_per_day,
+        // Which path parameters a test may compare, since the gateway has only
+        // the gate and the gate does not say.
+        path_numbers: declared
+            .gate
+            .path_params()
+            .into_iter()
+            .filter(|p| declared.numbers.iter().any(|n| n == p))
+            .map(str::to_string)
+            .collect(),
     }
 }
 
@@ -681,6 +690,7 @@ pub async fn would_approve(
     agent_id: Uuid,
     skills: &[super::skill::ResolvedSkill],
     gate: &Gate,
+    path: &str,
     query: Option<&str>,
     body: Option<&str>,
 ) -> Option<Uuid> {
@@ -705,7 +715,7 @@ pub async fn would_approve(
     // The same test the gateway applies, against a grant built the same way, so
     // "would have" means what "does" would.
     grant(workspace_id, Uuid::nil(), d, p, Some(ceiling))
-        .admits(workspace_id, gate, query, body)
+        .admits(workspace_id, gate, path, query, body)
         .map(|_| p.id)
 }
 

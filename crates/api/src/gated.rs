@@ -179,6 +179,13 @@ pub async fn raise(
         ));
     };
 
+    // A path whose named segments cannot be read is one the gateway refuses
+    // outright rather than as gated, so a relay of it is not a question anybody
+    // can answer: what they would be shown is not what would be sent.
+    if let Err(why) = gate.path_values(&input.path) {
+        return Err((StatusCode::BAD_REQUEST, why));
+    }
+
     // What a grant would be keyed on, recorded on the item so answering it can
     // mint one without re-deriving any of this.
     let shape = outturn_core::egress::grant::digest(
@@ -188,10 +195,7 @@ pub async fn raise(
         &input.path,
         input.body.as_deref(),
     );
-    let unit = gate
-        .identified_by
-        .as_deref()
-        .and_then(|field| super::grant::unit_from_body(input.body.as_deref(), field));
+    let unit = outturn_core::egress::grant::unit(gate, &input.path, input.body.as_deref());
 
     // One pending approval per conversation. Without this an agent that retries
     // a refused call in the same round raises a second identical question, and
@@ -341,8 +345,9 @@ pub async fn raise(
     // was posted to. Just these fields rather than the body, because these are
     // what a yes is worth and anything else in it is not being approved; in the
     // order the skill declared them, and as the body had them, so a number stays
-    // a number.
-    payload_json["binds"] = bound_values(&gate.binds, input.body.as_deref());
+    // a number. A path parameter is shown as the text the path carried, since
+    // `DELETE /invoices/{id}` is about nothing but its id.
+    payload_json["binds"] = bound_values(gate, &input.path, input.body.as_deref());
     // The risk it worked out to, and the amount as money, so the question says
     // "£50.00" rather than a field and a number -- and so the offer of a policy
     // can be drawn from what was approved.
@@ -481,6 +486,7 @@ async fn trial_verdict(
         payload.agent_id,
         skills,
         gate,
+        &input.path,
         query.as_deref(),
         input.body.as_deref(),
     )
@@ -592,23 +598,35 @@ pub fn answerable(item: &super::actions::ActionItem) -> serde_json::Value {
     })
 }
 
-/// The declared fields of a request body, each with its value, in order.
+/// The declared fields of a request, each with its value, in order: a path
+/// parameter from the path by the gate's pattern, the rest from the body, read
+/// as the grant digest reads them (`Gate::bound`).
 ///
 /// A field the body lacks is listed with a null value rather than left out, so
 /// an approver sees that the request is missing something the skill said it
-/// must carry. A body that is not JSON has nothing to read and lists nothing.
-fn bound_values(fields: &[String], body: Option<&str>) -> serde_json::Value {
-    let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
-    let Some(parsed) = parsed else {
+/// must carry. A body that is not JSON has nothing to read, and where a body
+/// field is bound that lists nothing -- as does a path that cannot be read.
+fn bound_values(
+    gate: &outturn_core::egress::gate::Gate,
+    path: &str,
+    body: Option<&str>,
+) -> serde_json::Value {
+    let from_path = gate.path_params();
+    let wants_body = gate.binds.iter().any(|b| !from_path.contains(&b.as_str()));
+    let readable = body.is_some_and(|b| serde_json::from_str::<serde_json::Value>(b).is_ok());
+    let Ok(bound) = gate.bound(path, body) else {
         return serde_json::json!([]);
     };
+    if wants_body && !readable {
+        return serde_json::json!([]);
+    }
     serde_json::Value::Array(
-        fields
+        gate.binds
             .iter()
             .map(|field| {
                 serde_json::json!({
                     "field": field,
-                    "value": parsed.get(field).cloned().unwrap_or(serde_json::Value::Null),
+                    "value": bound.get(field).cloned().unwrap_or(serde_json::Value::Null),
                 })
             })
             .collect(),
@@ -617,7 +635,45 @@ fn bound_values(fields: &[String], body: Option<&str>) -> serde_json::Value {
 
 #[cfg(test)]
 mod bound_tests {
-    use super::{Assessed, bound_values, route_risk};
+    use super::{Assessed, route_risk};
+    use outturn_core::egress::gate::Gate;
+
+    fn bound_values(fields: &[String], body: Option<&str>) -> serde_json::Value {
+        super::bound_values(&charge(fields), "/charges", body)
+    }
+
+    fn charge(fields: &[String]) -> Gate {
+        Gate {
+            requires: "charge".into(),
+            host: "api.example.com".into(),
+            method: "POST".into(),
+            path: "/charges".into(),
+            identified_by: None,
+            binds: fields.to_vec(),
+        }
+    }
+
+    /// `DELETE /invoices/{id}` sends nothing but its id, and the approver is
+    /// shown it.
+    #[test]
+    fn a_path_parameter_is_shown_with_the_value_the_path_carried() {
+        let gate = Gate {
+            requires: "delete".into(),
+            host: "books.example.com".into(),
+            method: "DELETE".into(),
+            path: "/invoices/{id}".into(),
+            identified_by: None,
+            binds: vec!["id".into()],
+        };
+        assert_eq!(
+            super::bound_values(&gate, "/invoices/inv%2042", None),
+            serde_json::json!([{"field": "id", "value": "inv 42"}])
+        );
+        assert_eq!(
+            super::bound_values(&gate, "/invoices/a%2Fb", None),
+            serde_json::json!([])
+        );
+    }
 
     #[test]
     fn each_declared_field_is_listed_with_its_value_in_order() {

@@ -365,7 +365,7 @@ impl AgentHost {
         let mut claimed: Option<String> = None;
         let mut replay: Option<Dispatched> = None;
         if let Some(op) = &identity {
-            let key = idempotency_key(&op.name, &op.identity, &url, request.body.as_deref());
+            let key = idempotency_key(op, &url, request.body.as_deref())?;
             if let Some(header) = &op.key_header {
                 request
                     .headers
@@ -2356,41 +2356,51 @@ fn estimated_tokens(chars: usize) -> u32 {
 }
 
 /// The key a declared write is made under: its operation and the values of
-/// its identity, in declared order, from the query or the JSON body.
+/// its identity, in declared order, from the path, the query or the JSON body.
 ///
 /// The same booking derives the same key however many times, and whatever
-/// else the call carried -- a note, an action label -- is not part of it.
+/// else the call carried -- a note, an action label -- is not part of it. A
+/// path parameter is read from the URL by the operation's own, decoded as a
+/// gate decodes it (`egress::gate::path_values`), so `/invoices/{id}` keys on
+/// the invoice; a path whose values cannot be read is refused, as the gateway
+/// would refuse it under a gate.
 fn idempotency_key(
-    operation: &str,
-    identity: &[String],
+    op: &outturn_core::protocol::work::SkillOperation,
     url: &reqwest::Url,
     body: Option<&str>,
-) -> String {
+) -> Result<String, String> {
     use sha2::{Digest, Sha256};
+    let template = op.url.split_once("://").map_or(op.url.as_str(), |(_, r)| r);
+    let template = template.find('/').map_or("/", |i| &template[i..]);
+    let from_path = outturn_core::egress::gate::path_values(template, url.path())?;
     let body: serde_json::Value = body
         .and_then(|b| serde_json::from_str(b).ok())
         .unwrap_or_default();
-    let values: Vec<serde_json::Value> = identity
+    let values: Vec<serde_json::Value> = op
+        .identity
         .iter()
-        .map(|field| match body.get(field) {
-            Some(v) => v.clone(),
-            None => {
-                let mut found: Vec<String> = url
-                    .query_pairs()
-                    .filter(|(k, _)| k == field)
-                    .map(|(_, v)| v.into_owned())
-                    .collect();
-                match found.len() {
-                    0 => serde_json::Value::Null,
-                    1 => serde_json::json!(found.remove(0)),
-                    _ => serde_json::json!(found),
+        .map(
+            |field| match (from_path.iter().find(|(n, _)| n == field), body.get(field)) {
+                (Some((_, v)), _) => serde_json::json!(v),
+                (None, Some(v)) => v.clone(),
+                (None, None) => {
+                    let mut found: Vec<String> = url
+                        .query_pairs()
+                        .filter(|(k, _)| k == field)
+                        .map(|(_, v)| v.into_owned())
+                        .collect();
+                    match found.len() {
+                        0 => serde_json::Value::Null,
+                        1 => serde_json::json!(found.remove(0)),
+                        _ => serde_json::json!(found),
+                    }
                 }
-            }
-        })
+            },
+        )
         .collect();
-    let digest = Sha256::digest(serde_json::json!([operation, values]).to_string());
+    let digest = Sha256::digest(serde_json::json!([op.name, values]).to_string());
     let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    format!("outturn-{hex}")
+    Ok(format!("outturn-{hex}"))
 }
 
 /// A body with the key set in its `field`, for a recipient that takes the key
@@ -3070,6 +3080,63 @@ fn gates_cover(gates: &outturn_core::egress::gate::RawGates, sent: &Sent) -> boo
             );
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod idempotency_key_tests {
+    use super::*;
+
+    fn void() -> outturn_core::protocol::work::SkillOperation {
+        outturn_core::protocol::work::SkillOperation {
+            name: "books_void_invoice".into(),
+            method: "POST".into(),
+            url: "https://books.example.com/invoices/{id}/void".into(),
+            body: vec!["reason".into()],
+            identity: vec!["id".into()],
+            ..Default::default()
+        }
+    }
+
+    fn key(url: &str, body: &str) -> Result<String, String> {
+        idempotency_key(&void(), &reqwest::Url::parse(url).unwrap(), Some(body))
+    }
+
+    /// One invoice voided twice is one write, whatever reason was given; a
+    /// second invoice is another.
+    #[test]
+    fn an_identity_can_name_a_path_parameter() {
+        let one = key(
+            "https://books.example.com/invoices/inv_1/void",
+            r#"{"reason":"a"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            one,
+            key(
+                "https://books.example.com/invoices/inv%5F1/void",
+                r#"{"reason":"b"}"#
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            one,
+            key("https://books.example.com/invoices/inv_2/void", "{}").unwrap()
+        );
+        // The body cannot stand in for the path.
+        assert_eq!(
+            one,
+            key(
+                "https://books.example.com/invoices/inv_1/void",
+                r#"{"id":"inv_2"}"#
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_path_value_that_decodes_to_a_slash_is_refused() {
+        assert!(key("https://books.example.com/invoices/a%2Fb/void", "{}").is_err());
     }
 }
 

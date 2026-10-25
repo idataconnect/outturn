@@ -113,7 +113,11 @@ impl Shape {
 /// carrying the empty string: otherwise omitting a field would be a way to
 /// collide with a grant taken out when it was present.
 pub fn digest(gate: &Gate, method: &str, host: &str, path: &str, body: Option<&str>) -> String {
-    let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
+    // Read through `Gate::bound`, so a path parameter is read from the path by
+    // the gate's pattern exactly as everywhere else reads it. A path whose
+    // values cannot be read digests every field as unreadable, which the
+    // gateway refuses before a digest is asked for anyway.
+    let bound = gate.bound(path, body);
 
     let mut hasher = Sha256::new();
     hasher.update(b"outturn:grant:digest:v1\0");
@@ -129,11 +133,16 @@ pub fn digest(gate: &Gate, method: &str, host: &str, path: &str, body: Option<&s
         hasher.update([0]);
         hasher.update(field.as_bytes());
         hasher.update([0]);
-        match parsed.as_ref().and_then(|v| v.get(field)) {
+        let Ok(bound) = &bound else {
+            hasher.update(b"!");
+            continue;
+        };
+        match bound.get(field) {
             // Tagged by kind as well as by value, so the string "1" and the
             // number 1 are different approvals. A body that can choose its own
             // spelling of a value could otherwise reach a grant taken out on the
-            // other one.
+            // other one. A path parameter is a string here whatever
+            // `numbers` says: `/invoices/1` was sent as text.
             Some(serde_json::Value::String(s)) => {
                 hasher.update(b"s");
                 hasher.update(s.as_bytes());
@@ -164,7 +173,19 @@ pub fn digest(gate: &Gate, method: &str, host: &str, path: &str, body: Option<&s
 /// language.
 pub fn unit_from_body(body: Option<&str>, field: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(body?).ok()?;
-    match parsed.get(field)? {
+    unit_value(parsed.get(field)?)
+}
+
+/// The unit a `covers` grant is keyed on, read from the request by the gate's
+/// `identified_by` -- out of the path where that names a path parameter, and
+/// otherwise out of the body.
+pub fn unit(gate: &Gate, path: &str, body: Option<&str>) -> Option<String> {
+    let field = gate.identified_by.as_deref()?;
+    unit_value(gate.bound(path, body).ok()?.get(field)?)
+}
+
+fn unit_value(value: &serde_json::Value) -> Option<String> {
+    match value {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Number(n) => Some(n.to_string()),
         _ => None,
@@ -190,16 +211,20 @@ pub fn unit_from_body(body: Option<&str>, field: &str) -> Option<String> {
 /// An empty declaration is legal and always satisfied: the `reach` gate binds
 /// nothing, because what a person approves there is a host rather than anything
 /// in a body.
-pub fn missing_bound_field(gate: &Gate, body: Option<&str>) -> Option<String> {
+///
+/// A path parameter is always carried where the gate covers the path; one whose
+/// value cannot be read is named as missing, so the request is refused here too
+/// should a caller not have asked `Gate::path_values` first.
+pub fn missing_bound_field(gate: &Gate, path: &str, body: Option<&str>) -> Option<String> {
     // No guard for the empty declaration: a search over nothing finds nothing,
     // so the `reach` gate is satisfied by construction. An early return here
     // would read as the thing keeping it legal and would not be -- removing it
     // changes no behavior, which is how it was found.
-    let parsed: Option<serde_json::Value> = body.and_then(|b| serde_json::from_str(b).ok());
+    let bound = gate.bound(path, body).unwrap_or_default();
     gate.binds
         .iter()
         .find(|field| {
-            match parsed.as_ref().and_then(|v| v.get(field.as_str())) {
+            match bound.get(field.as_str()) {
                 Some(serde_json::Value::String(_))
                 | Some(serde_json::Value::Number(_))
                 | Some(serde_json::Value::Bool(_)) => false,
@@ -242,11 +267,7 @@ impl Granted {
         }
         match self.extent {
             Extent::Call => self.keyed_on == digest(gate, method, host, path, body),
-            Extent::Unit => gate
-                .identified_by
-                .as_deref()
-                .and_then(|field| unit_from_body(body, field))
-                .is_some_and(|unit| unit == self.keyed_on),
+            Extent::Unit => unit(gate, path, body).is_some_and(|unit| unit == self.keyed_on),
         }
     }
 }
@@ -525,7 +546,7 @@ mod tests {
         let gate = charge_gate();
         let without = r#"{"booking_id":"bk_8812","amount_pence":9000}"#;
         assert_eq!(
-            missing_bound_field(&gate, Some(without)).as_deref(),
+            missing_bound_field(&gate, "/charges", Some(without)).as_deref(),
             Some("payment_account_id"),
         );
     }
@@ -536,7 +557,7 @@ mod tests {
         let gate = charge_gate();
         let nulled = r#"{"payment_account_id":null,"booking_id":"bk_8812","amount_pence":9000}"#;
         assert_eq!(
-            missing_bound_field(&gate, Some(nulled)).as_deref(),
+            missing_bound_field(&gate, "/charges", Some(nulled)).as_deref(),
             Some("payment_account_id"),
         );
     }
@@ -549,7 +570,7 @@ mod tests {
         let nested =
             r#"{"payment_account_id":{"id":"pa_4471"},"booking_id":"bk_8812","amount_pence":9000}"#;
         assert_eq!(
-            missing_bound_field(&gate, Some(nested)).as_deref(),
+            missing_bound_field(&gate, "/charges", Some(nested)).as_deref(),
             Some("payment_account_id"),
         );
     }
@@ -559,8 +580,8 @@ mod tests {
     #[test]
     fn an_unparseable_body_is_missing_everything() {
         let gate = charge_gate();
-        assert!(missing_bound_field(&gate, Some("not json")).is_some());
-        assert!(missing_bound_field(&gate, None).is_some());
+        assert!(missing_bound_field(&gate, "/charges", Some("not json")).is_some());
+        assert!(missing_bound_field(&gate, "/charges", None).is_some());
     }
 
     /// A complete request passes, or the check would refuse the very thing it
@@ -569,7 +590,7 @@ mod tests {
     fn a_complete_request_is_not_missing_anything() {
         let gate = charge_gate();
         let whole = body("pa_4471", "bk_8812", 9000);
-        assert!(missing_bound_field(&gate, Some(&whole)).is_none());
+        assert!(missing_bound_field(&gate, "/charges", Some(&whole)).is_none());
     }
 
     /// A gate that binds nothing is always satisfied. `for_unreviewed_hosts`
@@ -585,8 +606,8 @@ mod tests {
             identified_by: None,
             binds: Vec::new(),
         };
-        assert!(missing_bound_field(&reach, None).is_none());
-        assert!(missing_bound_field(&reach, Some("{}")).is_none());
+        assert!(missing_bound_field(&reach, "/charges", None).is_none());
+        assert!(missing_bound_field(&reach, "/charges", Some("{}")).is_none());
     }
 }
 
@@ -654,5 +675,119 @@ mod shape_matches_the_guest {
             serde_json::json!(r#"{"method":"POST","url":"http://somewhere/x","body":{"a":1}}"#);
         let shape = Shape::of_fetch_arguments(&object_body).expect("shape");
         assert!(shape.body.is_none());
+    }
+}
+
+#[cfg(test)]
+mod path_params {
+    use super::*;
+
+    fn delete() -> Gate {
+        Gate {
+            requires: "delete".into(),
+            host: "books.example.com".into(),
+            method: "DELETE".into(),
+            path: "/invoices/{id}".into(),
+            identified_by: Some("id".into()),
+            binds: vec!["id".into()],
+        }
+    }
+
+    fn key(path: &str) -> String {
+        digest(&delete(), "DELETE", "books.example.com", path, None)
+    }
+
+    #[test]
+    fn a_grant_for_one_invoice_does_not_cover_another() {
+        assert_ne!(key("/invoices/1"), key("/invoices/2"));
+        let grant = Granted {
+            requires: "delete".into(),
+            extent: Extent::Call,
+            keyed_on: key("/invoices/1"),
+        };
+        assert!(grant.permits(
+            &delete(),
+            "DELETE",
+            "books.example.com",
+            "/invoices/1",
+            None
+        ));
+        assert!(!grant.permits(
+            &delete(),
+            "DELETE",
+            "books.example.com",
+            "/invoices/2",
+            None
+        ));
+    }
+
+    /// The same request spelled differently is the same approval, and the key
+    /// does not drift between builds: a grant written before an upgrade is
+    /// read after it.
+    #[test]
+    fn the_digest_is_stable() {
+        assert_eq!(key("/invoices/1"), key("//invoices/%31/"));
+        assert_eq!(
+            key("/invoices/1"),
+            "999fd5da76e4f2632b2587495dd9a20e569a7ddf6513a441c2194ed154c3a370"
+        );
+    }
+
+    /// A path segment is text, so it is never the body's number of the same
+    /// spelling under a gate that once read it from there.
+    #[test]
+    fn a_path_value_is_hashed_as_a_string() {
+        let mut from_body = delete();
+        from_body.path = "/invoices/1".into();
+        let number = digest(
+            &from_body,
+            "DELETE",
+            "books.example.com",
+            "/invoices/1",
+            Some(r#"{"id":1}"#),
+        );
+        let text = digest(
+            &from_body,
+            "DELETE",
+            "books.example.com",
+            "/invoices/1",
+            Some(r#"{"id":"1"}"#),
+        );
+        assert_ne!(number, text);
+        assert_ne!(key("/invoices/1"), number);
+    }
+
+    #[test]
+    fn a_path_only_gate_is_satisfied_without_a_body() {
+        assert!(missing_bound_field(&delete(), "/invoices/1", None).is_none());
+        // And refuses a path whose value cannot be read.
+        assert_eq!(
+            missing_bound_field(&delete(), "/invoices/a%2Fb", None).as_deref(),
+            Some("id")
+        );
+    }
+
+    #[test]
+    fn a_unit_can_be_named_by_the_path() {
+        let grant = Granted {
+            requires: "delete".into(),
+            extent: Extent::Unit,
+            keyed_on: "1".into(),
+        };
+        assert!(grant.permits(
+            &delete(),
+            "DELETE",
+            "books.example.com",
+            "/invoices/1",
+            None
+        ));
+        assert!(!grant.permits(
+            &delete(),
+            "DELETE",
+            "books.example.com",
+            "/invoices/2",
+            None
+        ));
+        assert_eq!(unit(&delete(), "/invoices/a%2Fb", None), None);
     }
 }

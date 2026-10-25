@@ -627,11 +627,13 @@ fn same_call(
     {
         return false;
     }
-    let fields = |body: Option<&str>| -> Option<serde_json::Value> {
-        body.and_then(|b| serde_json::from_str(b).ok())
-    };
-    let (Some(refused), Some(sent)) = (fields(shape.body.as_deref()), fields(held.body.as_deref()))
-    else {
+    // Each side read as the gate reads it, so a path parameter comes from the
+    // path -- which for an operation is the URL its result echoes, never an
+    // argument of the same name.
+    let (Ok(refused), Ok(sent)) = (
+        gate.bound(&shape.path, shape.body.as_deref()),
+        gate.bound(url.path(), held.body.as_deref()),
+    ) else {
         return false;
     };
     gate.binds.iter().all(|field| {
@@ -4033,6 +4035,41 @@ mod projection_tests {
             results[0]
         );
         assert!(results[1].contains("Approved by"), "{}", results[1]);
+    }
+
+    /// A gate bound by its path finds its held request by the path's value: an
+    /// approved delete of one invoice is not the refused delete of another.
+    #[test]
+    fn a_held_delete_is_found_by_the_id_in_its_path() {
+        let gate = outturn_core::egress::gate::Gate {
+            requires: "delete".into(),
+            host: "books.example.com".into(),
+            method: "DELETE".into(),
+            path: "/invoices/{id}".into(),
+            identified_by: None,
+            binds: vec!["id".into()],
+        };
+        let held = super::super::held::Held {
+            requires: "delete".into(),
+            method: "DELETE".into(),
+            url: "https://books.example.com/invoices/inv_1".into(),
+            body: None,
+            ..held_charge("approved", None)
+        };
+        let refused = |path: &str, arguments: Option<&str>| outturn_core::egress::grant::Shape {
+            method: "DELETE".into(),
+            host: "books.example.com".into(),
+            path: path.into(),
+            body: arguments.map(str::to_string),
+        };
+        assert!(same_call(&gate, &held, &refused("/invoices/inv_1", None)));
+        // An operation's arguments name the id too; the path's is the one read.
+        assert!(same_call(
+            &gate,
+            &held,
+            &refused("/invoices/inv_1", Some(r#"{"id":"inv_2"}"#))
+        ));
+        assert!(!same_call(&gate, &held, &refused("/invoices/inv_2", None)));
     }
 
     /// Two refusals of one call -- a guest that retried in the same round --

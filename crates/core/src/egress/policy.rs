@@ -249,6 +249,14 @@ fn list(value: &serde_json::Value) -> &[serde_json::Value] {
     value.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
+/// A path segment that is a whole number written exactly as one: digits, a
+/// minus if negative, no leading zero, no plus, no space. `042` and `+42` are
+/// not 42 here, since the recipient may not read them so.
+pub fn whole_text(text: &str) -> Option<i64> {
+    let n: i64 = text.parse().ok()?;
+    (n.to_string() == text).then_some(n)
+}
+
 /// A JSON number that is a whole one in range, and nothing else.
 fn whole(value: &serde_json::Value) -> Option<i64> {
     match value {
@@ -300,6 +308,12 @@ pub struct PolicyGrant {
     /// admitted against one, since it could not be counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency_per_day: Option<i64>,
+    /// The gate's path parameters that its declaration lists in `numbers`,
+    /// which a test reads as a whole number where the path writes one exactly.
+    /// Every other path parameter is text. Left out when empty, so a grant with
+    /// none hashes as it did before path parameters could be bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_numbers: Vec<String>,
 }
 
 /// What a policy admitted, and what the gateway sends and records for it.
@@ -316,8 +330,9 @@ pub struct Admitted {
     pub money: Option<(String, i64)>,
     /// The body as it was parsed, serialized again. What goes out, so what was
     /// tested is what is sent: a body naming a field twice cannot satisfy the
-    /// policy with one copy and reach the remote API with the other.
-    pub body: String,
+    /// policy with one copy and reach the remote API with the other. `None` for
+    /// a request that had no body, which goes out with none.
+    pub body: Option<String>,
 }
 
 impl PolicyGrant {
@@ -326,12 +341,17 @@ impl PolicyGrant {
     ///
     /// `None` is "ask a person", never an error: a query string on a gated path
     /// (which no test saw), a body that is not one JSON object, a top-level field
-    /// outside `fields` or differing from a bound one only by case, or a test
-    /// that does not hold.
+    /// outside `fields` or differing from a bound one only by case, a body key
+    /// named for a bound path parameter, a path whose values cannot be read, or
+    /// a test that does not hold.
+    ///
+    /// The tests see one set of fields: the body's top level, with each path
+    /// parameter the gate's pattern names read from `path` (`Gate::path_values`).
     pub fn admits(
         &self,
         workspace_id: Uuid,
         gate: &Gate,
+        path: &str,
         query: Option<&str>,
         body: Option<&str>,
     ) -> Option<Admitted> {
@@ -343,10 +363,28 @@ impl PolicyGrant {
         if gate.binds.is_empty() || query.is_some() {
             return None;
         }
-        let serde_json::Value::Object(parsed) = serde_json::from_str(body?).ok()? else {
-            return None;
+        let from_path = gate.path_values(path).ok()?;
+        // No body is an empty one only where nothing bound is meant to be in
+        // one: a `DELETE /invoices/{id}` binding the id alone.
+        let parsed = match body {
+            Some(body) => match serde_json::from_str(body).ok()? {
+                serde_json::Value::Object(parsed) => parsed,
+                _ => return None,
+            },
+            None if gate
+                .binds
+                .iter()
+                .all(|b| from_path.iter().any(|(name, _)| name == b)) =>
+            {
+                serde_json::Map::new()
+            }
+            None => return None,
         };
         for key in parsed.keys() {
+            // The body saying one value and the path sending another.
+            if from_path.iter().any(|(name, _)| name == key) {
+                return None;
+            }
             if !self.fields.iter().any(|f| f == key) {
                 return None;
             }
@@ -360,7 +398,19 @@ impl PolicyGrant {
                 return None;
             }
         }
-        if !holds(&self.tests, &parsed) {
+        let mut fields = parsed.clone();
+        for (name, value) in from_path {
+            let value = match self.path_numbers.contains(&name) {
+                true => match whole_text(&value) {
+                    Some(n) => serde_json::Value::from(n),
+                    // Absent to every test, which then fails.
+                    None => continue,
+                },
+                false => serde_json::Value::String(value),
+            };
+            fields.insert(name, value);
+        }
+        if !holds(&self.tests, &fields) {
             return None;
         }
         let amount = match &self.sum_field {
@@ -388,14 +438,17 @@ impl PolicyGrant {
         let bound = serde_json::Value::Object(
             gate.binds
                 .iter()
-                .filter_map(|b| parsed.get(b).map(|v| (b.clone(), v.clone())))
+                .filter_map(|b| fields.get(b).map(|v| (b.clone(), v.clone())))
                 .collect(),
         );
         Some(Admitted {
             bound,
             amount,
             money,
-            body: serde_json::to_string(&parsed).ok()?,
+            body: match body {
+                Some(_) => Some(serde_json::to_string(&parsed).ok()?),
+                None => None,
+            },
         })
     }
 }
@@ -564,6 +617,7 @@ mod tests {
             banding: None,
             max_risk: None,
             currency_per_day: None,
+            path_numbers: Vec::new(),
         }
     }
 
@@ -671,6 +725,7 @@ mod tests {
             .admits(
                 workspace(),
                 &gate,
+                "/charges",
                 None,
                 Some(r#"{"booking_id":"bk_1","amount_pence":4000,"description":"x"}"#),
             )
@@ -684,6 +739,7 @@ mod tests {
                 .admits(
                     workspace(),
                     &gate,
+                    "/charges",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":400000}"#)
                 )
@@ -700,6 +756,7 @@ mod tests {
                 .admits(
                     workspace(),
                     &gate,
+                    "/charges",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":1,"bcc":"x@example.com"}"#)
                 )
@@ -712,10 +769,20 @@ mod tests {
         let gate = charge();
         let mut grant = grant_for(&gate, vec![]);
         let ok = r#"{"booking_id":"bk_1","amount_pence":1}"#;
-        assert!(grant.admits(workspace(), &gate, None, Some(ok)).is_some());
         assert!(
             grant
-                .admits(workspace(), &gate, Some("amount_pence=9"), Some(ok))
+                .admits(workspace(), &gate, "/charges", None, Some(ok))
+                .is_some()
+        );
+        assert!(
+            grant
+                .admits(
+                    workspace(),
+                    &gate,
+                    "/charges",
+                    Some("amount_pence=9"),
+                    Some(ok)
+                )
                 .is_none()
         );
         // Even where the variant were listed as free.
@@ -725,6 +792,7 @@ mod tests {
                 .admits(
                     workspace(),
                     &gate,
+                    "/charges",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":1,"Amount_Pence":900}"#)
                 )
@@ -742,13 +810,23 @@ mod tests {
             .admits(
                 workspace(),
                 &gate,
+                "/charges",
                 None,
                 Some(r#"{"booking_id":"bk_1","amount_pence":900000,"amount_pence":40}"#),
             )
             .expect("the parse admits");
-        let sent: serde_json::Value = serde_json::from_str(&admitted.body).unwrap();
+        let sent: serde_json::Value =
+            serde_json::from_str(admitted.body.as_deref().unwrap()).unwrap();
         assert_eq!(sent["amount_pence"], json!(40));
-        assert_eq!(admitted.body.matches("amount_pence").count(), 1);
+        assert_eq!(
+            admitted
+                .body
+                .as_deref()
+                .unwrap()
+                .matches("amount_pence")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -764,6 +842,7 @@ mod tests {
                 .admits(
                     workspace(),
                     &other,
+                    "/payments",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":1}"#)
                 )
@@ -780,6 +859,7 @@ mod tests {
                 .admits(
                     Uuid::now_v7(),
                     &gate,
+                    "/charges",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":1}"#)
                 )
@@ -800,7 +880,7 @@ mod tests {
         let grant = grant_for(&reach, vec![]);
         assert!(
             grant
-                .admits(workspace(), &reach, None, Some("{}"))
+                .admits(workspace(), &reach, "/charges", None, Some("{}"))
                 .is_none()
         );
     }
@@ -815,6 +895,7 @@ mod tests {
             .admits(
                 workspace(),
                 &gate,
+                "/charges",
                 None,
                 Some(r#"{"booking_id":"bk_1","amount_pence":40}"#),
             )
@@ -847,6 +928,7 @@ mod tests {
             grant.admits(
                 workspace(),
                 &gate,
+                "/charges",
                 None,
                 Some(&json!({"booking_id": "bk_1", "amount_pence": pence}).to_string()),
             )
@@ -875,6 +957,7 @@ mod tests {
             .admits(
                 workspace(),
                 &gate,
+                "/charges",
                 None,
                 Some(r#"{"booking_id":"bk_1","amount_pence":49}"#),
             )
@@ -889,13 +972,18 @@ mod tests {
         banded(&mut grant, Risk::High);
         grant.currency_per_day = Some(50000);
         let ok = r#"{"booking_id":"bk_1","amount_pence":10}"#;
-        assert!(grant.admits(workspace(), &gate, None, Some(ok)).is_some());
+        assert!(
+            grant
+                .admits(workspace(), &gate, "/charges", None, Some(ok))
+                .is_some()
+        );
         // High, which the policy reaches, but not countable against the total.
         assert!(
             grant
                 .admits(
                     workspace(),
                     &gate,
+                    "/charges",
                     None,
                     Some(r#"{"booking_id":"bk_1","amount_pence":"10"}"#)
                 )
@@ -915,5 +1003,156 @@ mod tests {
             !text.contains("banding") && !text.contains("max_risk"),
             "{text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod path_params {
+    use super::*;
+    use serde_json::json;
+
+    fn delete() -> Gate {
+        Gate {
+            requires: "delete".into(),
+            host: "books.example.com".into(),
+            method: "DELETE".into(),
+            path: "/invoices/{id}".into(),
+            identified_by: None,
+            binds: vec!["id".into()],
+        }
+    }
+
+    fn workspace() -> Uuid {
+        Uuid::from_bytes([3; 16])
+    }
+
+    fn grant(gate: &Gate, tests: Vec<Test>, path_numbers: &[&str]) -> PolicyGrant {
+        PolicyGrant {
+            policy_id: Uuid::now_v7(),
+            version: 1,
+            job_id: Uuid::now_v7(),
+            gate: gate.key(workspace()),
+            requires: gate.requires.clone(),
+            tests,
+            fields: gate.binds.clone(),
+            per_turn: 5,
+            per_day: 50,
+            sum_field: None,
+            sum_per_day: None,
+            banding: None,
+            max_risk: None,
+            currency_per_day: None,
+            path_numbers: path_numbers.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn test(op: Op, value: serde_json::Value) -> Test {
+        Test {
+            field: "id".into(),
+            op,
+            value,
+        }
+    }
+
+    #[test]
+    fn a_test_reads_a_path_parameter_as_text() {
+        let gate = delete();
+        let grant = grant(&gate, vec![test(Op::In, json!(["inv_1", "inv_2"]))], &[]);
+        let admitted = grant
+            .admits(workspace(), &gate, "/invoices/inv_1", None, None)
+            .expect("inv_1 is named");
+        assert_eq!(admitted.bound, json!({"id": "inv_1"}));
+        // No body went in, so none goes out.
+        assert_eq!(admitted.body, None);
+        assert!(
+            grant
+                .admits(workspace(), &gate, "/invoices/inv_3", None, None)
+                .is_none()
+        );
+    }
+
+    /// Unlisted in `numbers`, a path value is text, and no bound applies.
+    #[test]
+    fn a_path_parameter_is_compared_only_where_numbers_lists_it() {
+        let gate = delete();
+        let bounded = vec![test(Op::Le, json!(100))];
+        assert!(
+            grant(&gate, bounded.clone(), &[])
+                .admits(workspace(), &gate, "/invoices/42", None, None)
+                .is_none()
+        );
+        let numeric = grant(&gate, bounded, &["id"]);
+        assert!(
+            numeric
+                .admits(workspace(), &gate, "/invoices/42", None, None)
+                .is_some()
+        );
+        // Parsed strictly: what is not written as a whole number is absent.
+        for path in [
+            "/invoices/042",
+            "/invoices/+42",
+            "/invoices/4.2",
+            "/invoices/%2042",
+        ] {
+            assert!(
+                numeric
+                    .admits(workspace(), &gate, path, None, None)
+                    .is_none(),
+                "{path} was read as a number"
+            );
+        }
+    }
+
+    /// The body naming a bound path parameter could say one value while the
+    /// path sends another.
+    #[test]
+    fn a_body_key_named_for_a_path_parameter_is_not_admitted() {
+        let gate = delete();
+        let grant = grant(&gate, vec![test(Op::Eq, json!("inv_1"))], &[]);
+        assert!(
+            grant
+                .admits(
+                    workspace(),
+                    &gate,
+                    "/invoices/inv_1",
+                    None,
+                    Some(r#"{"id":"inv_1"}"#)
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_read_is_not_admitted() {
+        let gate = delete();
+        let grant = grant(
+            &gate,
+            vec![test(Op::Ne, json!("x")), test(Op::In, json!(["a/b"]))],
+            &[],
+        );
+        assert!(
+            grant
+                .admits(workspace(), &gate, "/invoices/a%2Fb", None, None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn whole_text_is_strict() {
+        assert_eq!(whole_text("42"), Some(42));
+        assert_eq!(whole_text("-7"), Some(-7));
+        assert_eq!(whole_text("0"), Some(0));
+        for bad in [
+            "042",
+            "+42",
+            " 42",
+            "42 ",
+            "4e2",
+            "",
+            "-0",
+            "99999999999999999999",
+        ] {
+            assert_eq!(whole_text(bad), None, "{bad:?}");
+        }
     }
 }
