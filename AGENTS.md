@@ -44,7 +44,9 @@ should otherwise not mean adding a file.
 ## Running it locally
 
 Full detail, and the traps behind each line, in
-[docs/local-development.md](docs/local-development.md). A machine that has
+[docs/local-development.md](docs/local-development.md). Running a release
+rather than a checkout -- published images, `k8s/deploy`, an infrastructure
+repository pinning a commit -- is [docs/deployment.md](docs/deployment.md). A machine that has
 never run this: `.agents/skills/onboarding/SKILL.md` checks the requirements.
 
 ```bash
@@ -83,7 +85,7 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say. A credential may also travel to them over plain http, unencrypted; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
-| `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`; the UI's is `VITE_BRAND_NAME`, set at build time |
+| `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`. The UI container reads the same name at startup; under `npm run dev` it is `VITE_BRAND_NAME` |
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
 | `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |
 | `OUTTURN_CATALOG_FETCH` | api | `off` stops fetching the catalog; the deployment keeps what it shipped with and what it is given |
@@ -289,6 +291,7 @@ are near before changing it.
   [prompt-contributors.md](docs/prompt-contributors.md),
   [personalities.md](docs/personalities.md),
   [admin-agent.md](docs/admin-agent.md).
+- Running a release: [deployment.md](docs/deployment.md).
 - Storage and search: [storage.md](docs/storage.md),
   [streaming-storage.md](docs/streaming-storage.md),
   [document-extraction.md](docs/document-extraction.md),

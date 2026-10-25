@@ -13,6 +13,11 @@ Tenancy, whose credential pays and what is attributed are written up in
 `workspace_id` is the isolation boundary and stays that way, with organizations
 added above it rather than nesting beneath it.
 
+Running a release rather than a checkout -- the images CI publishes once it
+has passed, `k8s/deploy` pointed at an external Postgres and object store, an
+infrastructure repository pinning a commit, and the order an upgrade rolls
+the tiers in -- is [docs/deployment.md](deployment.md).
+
 Storage layout and retention are written up separately, in
 [docs/storage.md](storage.md) — including why the object prefixes are
 ordered scope-first rather than as the hierarchy you would expect, which looks

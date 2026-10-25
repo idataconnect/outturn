@@ -252,5 +252,7 @@ files. Nothing privileged, and nothing patched into the platform, so replacing
 The same goes for the look, which step 1 already had you run: `ui/src/themes/`
 is one file per brand and `VITE_THEME` picks it, while `VITE_BRAND_NAME`,
 `VITE_BRAND_LOGO` and `VITE_BRAND_TAGLINE` carry the name and the mark. Skinning
-outturn is not forking it -- `src/lib/brand.ts` says why those are build
-variables rather than source, and `Logo.tsx` is the one place the mark is drawn.
+outturn is not forking it -- `src/lib/brand.ts` says why those are configuration
+rather than source, and `Logo.tsx` is the one place the mark is drawn. The
+published UI image reads the same four from its environment when it starts
+instead, so one image serves every brand; see [deployment.md](deployment.md).

@@ -225,8 +225,8 @@ fi
 cat >&2 <<EOF
 Next:
   1. Review $secret_file, and keep it out of version control.
-  2. Write $dir/kustomization.yaml pointing the deployments at the
-     outturn-secrets Secret -- k8s/overlays/local shows the shape, with
-     secretKeyRef in place of each value.
+  2. Write $dir/kustomization.yaml over k8s/deploy, which reads this
+     Secret by name, with the images pinned and an outturn-config
+     ConfigMap -- docs/deployment.md has the whole of one.
   3. kubectl apply -k $dir
 EOF
