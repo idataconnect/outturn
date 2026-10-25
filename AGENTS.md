@@ -85,7 +85,11 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say. A credential may also travel to them over plain http, unencrypted; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | runtime | Days before a session's scratch files are swept from object storage. Default 30 |
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
-| `OUTTURN_BRAND_NAME` | api | What the product calls itself in the platform preamble of every system prompt. Default `outturn`. The UI container reads the same name at startup; under `npm run dev` it is `VITE_BRAND_NAME` |
+| `OUTTURN_BRAND_NAME` | api, ui | What the product calls itself: in the platform preamble of every system prompt, and in the UI, whose container writes it into `/config.json`. Default `outturn`; under `npm run dev` it is `VITE_BRAND_NAME` |
+| `OUTTURN_BRAND_LOGO` | ui | A same-origin path to the mark, such as `/brand/logo.svg`. Anything else is refused and the shipped mark kept |
+| `OUTTURN_BRAND_TAGLINE` | ui | A line under the name on the login page. Unset, none |
+| `OUTTURN_THEME` | ui | A shipped theme by name (`hollowbrook`), or a same-origin `/brand/<file>.css`. Unset, the theme the build compiled in |
+| `OUTTURN_API_UPSTREAM` | ui | Where the UI container carries `/v1`, as `host:port`. Default `outturn-api:8080`
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
 | `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |
 | `OUTTURN_CATALOG_FETCH` | api | `off` stops fetching the catalog; the deployment keeps what it shipped with and what it is given |

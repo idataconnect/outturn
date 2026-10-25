@@ -104,6 +104,11 @@ says how to write a theme. A logo or theme of your own is a file mounted into
 the UI container at `/srv/brand/` -- from a ConfigMap, say -- and named by its
 path under `/brand/`.
 
+The UI container reads one more variable, set in `k8s/deploy` itself rather
+than the ConfigMap: `OUTTURN_API_UPSTREAM`, the `host:port` it carries `/v1`
+to, `outturn-api:8080` by default. Change it only if the API's Service is
+renamed or lives in another namespace.
+
 Models are not configured here. Sign in and go to Platform → Models, which
 offers a recipe to a deployment with none; provider keys typed there are
 sealed in the browser to `OUTTURN_SEAL_PUBLIC_KEY` and never pass through the
