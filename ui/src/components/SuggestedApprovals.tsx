@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import {
   acceptable,
+  amountComplete,
   amountFields,
   approvalYaml,
   basePath,
@@ -197,6 +198,12 @@ export default function SuggestedApprovals({
                         onChange={(e) => setChoice({ ...choice, currencyField: e.target.value })}
                         className={`${FIELD} w-28 font-mono`}
                       />
+                      {!amountComplete(choice) && (
+                        <span className="w-full text-xs text-surface-500 dark:text-surface-400">
+                          Without its currency and decimal places the amount is left out of
+                          the rule, which then asks at the operation's own risk.
+                        </span>
+                      )}
                     </>
                   )}
                   <button

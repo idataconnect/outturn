@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { amountFields, approvalYaml, cannotWrite, choiceFrom } from './approvalSuggestion'
+import { amountComplete, amountFields, approvalYaml, cannotWrite, choiceFrom } from './approvalSuggestion'
 import type { SuggestedApproval } from './skills'
 
 const suggested: SuggestedApproval = {
@@ -37,14 +37,17 @@ describe('the approval rule the page writes', () => {
     ])
   })
 
-  it('leaves out the currency and units that were not given', () => {
+  it('leaves out an amount whose currency or units are not known', () => {
+    // The parser refuses an amount missing either, so writing it would make a
+    // rule that cannot be published -- which accepting every suggestion did.
     const bare = { ...suggested, amount: { field: 'amount_pence' } }
     const yaml = approvalYaml(
       { ...op, suggested_approval: bare },
       choiceFrom(bare),
       null,
     )
-    expect(yaml).toContain('  amount: { field: amount_pence }')
+    expect(yaml).not.toContain('amount:')
+    expect(yaml).toContain('  risk: ')
   })
 
   it('binds and writes the field a request names its currency in', () => {
@@ -96,5 +99,12 @@ describe('the approval rule the page writes', () => {
     )
     expect(cannotWrite(remove)).toBeNull()
     expect(amountFields(remove)).toEqual([])
+  })
+
+  it('counts an amount complete only with its currency and units', () => {
+    const base = { gate: true, risk: 'high' as const, amount: 'amount', currency: '', minorUnits: '', currencyField: '' }
+    expect(amountComplete(base)).toBe(false)
+    expect(amountComplete({ ...base, currency: 'USD' })).toBe(false)
+    expect(amountComplete({ ...base, currency: 'USD', minorUnits: '2' })).toBe(true)
   })
 })

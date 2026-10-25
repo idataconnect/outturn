@@ -54,9 +54,17 @@ export function amountFields(s: SuggestedApproval): string[] {
   )
 }
 
+/** Whether a choice says enough about its amount to be read as money: a
+ *  field, the currency, and the digits after the point. The parser refuses an
+ *  amount missing either of the last two, so a part-known one is left out of
+ *  the rule rather than written and refused -- the operation is still gated,
+ *  at its base risk. */
+export function amountComplete(c: Choice): boolean {
+  return Boolean(c.amount && c.currency.trim() && c.minorUnits.trim())
+}
+
 /** The `approval` frontmatter for a confirmed choice. Only what the operator
- *  confirmed is written: an amount appears when one is chosen, and the currency
- *  units and currency field only where they were given. */
+ *  confirmed is written, and an amount only where it is complete. */
 export function approvalYaml(op: Operation, c: Choice, baseUrl: string | null): string {
   const s = op.suggested_approval!
   const currencyField = c.amount ? c.currencyField.trim() : ''
@@ -73,10 +81,12 @@ export function approvalYaml(op: Operation, c: Choice, baseUrl: string | null): 
     `  risk: ${c.risk}`,
     `  numbers: [${numbers.join(', ')}]`,
   ]
-  if (c.amount) {
-    const parts = [`field: ${c.amount}`]
-    if (c.currency.trim()) parts.push(`currency: ${c.currency.trim().toUpperCase()}`)
-    if (c.minorUnits.trim()) parts.push(`minor_units: ${c.minorUnits.trim()}`)
+  if (amountComplete(c)) {
+    const parts = [
+      `field: ${c.amount}`,
+      `currency: ${c.currency.trim().toUpperCase()}`,
+      `minor_units: ${c.minorUnits.trim()}`,
+    ]
     if (currencyField) parts.push(`currency_field: ${currencyField}`)
     lines.push(`  amount: { ${parts.join(', ')} }`)
   }
