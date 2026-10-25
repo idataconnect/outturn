@@ -2079,6 +2079,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             ),
         )
         .route(
+            "/v1/platform/skills/from-openapi/opened",
+            post(super::skills::platform_host_opened),
+        )
+        .route(
             "/v1/platform/skills/{id}",
             axum::routing::patch(super::skills::update_platform_skill)
                 .delete(super::skills::delete_platform_skill),

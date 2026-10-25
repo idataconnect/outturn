@@ -491,6 +491,39 @@ pub async fn preview_platform_skill_from_openapi(
     Ok(Json(PreviewResponse { preview, spec }))
 }
 
+#[derive(serde::Deserialize)]
+pub struct OpenedRequest {
+    pub url: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct OpenedResponse {
+    /// Whether an operator named this URL's host and port in
+    /// `OUTTURN_INTERNAL_HOSTS`, so a key may travel to it over plain http.
+    pub opened: bool,
+}
+
+/// Whether a base URL's host is one the operator opened, for the wizard's
+/// plain-http warning: told which, it can say whether a key will go there
+/// rather than describe the rule. Operators only, who wrote the list.
+pub async fn platform_host_opened(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<OpenedRequest>,
+) -> Result<Json<OpenedResponse>, ApiError> {
+    let claims = super::router::authenticate(&state, &headers)?;
+    as_operator(&claims)?;
+    let opened = reqwest::Url::parse(req.url.trim()).is_ok_and(|url| {
+        match (url.host_str(), url.port_or_known_default()) {
+            (Some(host), Some(port)) => {
+                outturn_core::egress::internal::Internal::shared().allows(host, port)
+            }
+            _ => false,
+        }
+    });
+    Ok(Json(OpenedResponse { opened }))
+}
+
 /// Fetches a specification through the gateway (`crate::fetch`).
 async fn fetch_document(state: &ApiState, actor: Uuid, url: &str) -> Result<Vec<u8>, ApiError> {
     let gateway = std::env::var("OUTTURN_GATEWAY_URL").map_err(|_| {

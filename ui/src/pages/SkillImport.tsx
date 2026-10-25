@@ -5,6 +5,7 @@ import { ArrowLeft, FileUp } from 'lucide-react'
 import { ApiError } from '../lib/api'
 import {
   createFromOpenApi,
+  hostOpened,
   listSkills,
   previewOpenApi,
   authKindLabel,
@@ -58,6 +59,22 @@ export default function SkillImport() {
       .then((skills) => setTaken(new Set(skills.map((s) => s.slug))))
       .catch(() => setTaken(new Set()))
   }, [created])
+
+  // Whether a plain-http base URL is one the operator opened, keyed by the
+  // URL it was asked about so a stale answer is never shown against a new one.
+  const plainHttp = form?.base_url.trim().toLowerCase().startsWith('http://') ?? false
+  const baseUrl = form?.base_url.trim() ?? ''
+  const [opened, setOpened] = useState<{ url: string; opened: boolean } | null>(null)
+  useEffect(() => {
+    if (!plainHttp) return
+    const t = setTimeout(() => {
+      hostOpened(baseUrl)
+        .then((o) => setOpened({ url: baseUrl, opened: o }))
+        .catch(() => setOpened(null))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [plainHttp, baseUrl])
+  const openedHere = opened?.url === baseUrl ? opened.opened : null
 
   // Sent as text: the API tells JSON from YAML, so there is one reader of
   // the format rather than two that might disagree.
@@ -253,11 +270,24 @@ export default function SkillImport() {
                 The specification names no server, so this has to come from you.
               </span>
             )}
-            {form.base_url.trim().toLowerCase().startsWith('http://') && (
+            {plainHttp && openedHere === true && (
+              <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
+                Plain http, to a host and port opened in <code>OUTTURN_INTERNAL_HOSTS</code> as
+                one inside the network. The key is sent over it unencrypted.
+              </span>
+            )}
+            {plainHttp && openedHere === null && (
               <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
                 Plain http. A key is never sent over it unless an operator names this host and
                 port in <code>OUTTURN_INTERNAL_HOSTS</code>, as one inside the network; anywhere
                 else, connect the API over https.
+              </span>
+            )}
+            {plainHttp && openedHere === false && (
+              <span className="mt-1 block text-xs text-amber-700 dark:text-amber-500">
+                Plain http, to a host and port not opened in <code>OUTTURN_INTERNAL_HOSTS</code>,
+                so no key is sent over it. Connect the API over https, or open the host as one
+                inside the network.
               </span>
             )}
           </label>

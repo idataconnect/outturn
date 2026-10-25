@@ -522,6 +522,15 @@ export function previewOpenApi(
   })
 }
 
+/** Whether the operator opened this URL's host and port in
+ *  `OUTTURN_INTERNAL_HOSTS`, so a key may go to it over plain http. */
+export function hostOpened(url: string): Promise<boolean> {
+  return api<{ opened: boolean }>('/v1/platform/skills/from-openapi/opened', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  }).then((r) => r.opened)
+}
+
 export function createFromOpenApi(input: {
   slug: string
   name: string
