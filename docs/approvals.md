@@ -134,7 +134,8 @@ none: it says the operation is gated, and a reader believes it.
 
 ### `binds` -- which fields a yes is about
 
-The names of the request-body fields a person is really approving. Required
+The names of the request fields a person is really approving -- body fields,
+and the path's own segments where `matches` names them (below). Required
 wherever an approval is declared, and the reason is the whole of what a grant is
 for.
 
@@ -187,6 +188,58 @@ the API it documents rather than a query syntax here.
 A field a request does not carry is part of the digest as absent, distinctly from
 carrying the empty string. Otherwise omitting a field would be a way to collide
 with a grant taken out when it was present.
+
+### Path parameters
+
+Some operations carry what makes them distinctive in the path rather than the
+body. `DELETE /invoices/{id}` sends no body at all, and `POST
+/invoices/{id}/void` sends one that says nothing about *which* invoice. Bound by
+body fields alone, neither could be gated with anything identifying what was
+approved. So `matches` may name a path segment, and `binds` may list it beside
+the body fields:
+
+```yaml
+approval:
+  requires: void
+  matches: POST /invoices/{id}/void
+  binds: [id, reason]
+```
+
+A parameter is a whole segment, `{name}`, matching any one segment in that
+place. A pattern names its segments or ends in a star, not both -- the star
+already stands for anything below, and a pattern doing both is one whose bound
+values depend on where a reader thinks the star stops. A name is either a path
+parameter or a body field: the same name in both would be read from one and
+sent in the other, so it is refused at publish, as is a bound name the pattern
+does not have. In a file that also declares the operation, the pattern's segments
+must be the operation's url, name for name. A rule binding only path parameters
+is valid -- that is the `DELETE` case.
+
+Everywhere a bound value is read for a request, a path parameter is read from the
+request's path by the gate's pattern, by one function (`Gate::bound`): the grant
+digest, the gateway's matching, a policy's tests, the approval prompt, finding a
+held request again, the idempotency identity, and the unit a `covers` spans when
+`identified_by` names one. A path value is a string -- in the digest it is
+tagged as one, so `/invoices/1` and a body's number `1` are never the same
+approval -- unless the declaration lists it in `numbers`, where a policy may
+compare it after a strict parse: digits with an optional minus, no leading zero,
+no plus, no space. Anything else is absent to the test, which fails. An `amount`
+may not be a path parameter: money read out of a URL is money nobody can type
+back into one.
+
+Decoding is the gate's path normalization (`egress::gate::normalize_path`), the
+same in every place: percent-escapes decoded, repeated slashes collapsed, one
+trailing slash dropped. Segments are split *before* they are decoded, so
+`/invoices/a%2Fb` is the one segment `a/b` -- and a value containing `/` once
+decoded is **refused, not matched**: the recipient may read it as two segments
+and act on something nobody was shown. So are `.` and `..`, which a recipient
+may resolve away. The request is still covered by the gate -- the path decoded
+whole is what decides that, so `%2F` cannot be used to step around one -- and the
+gateway answers that it cannot be approved as written.
+
+The gate's pattern travels to the gateway as the text it was written in, so a
+gateway older than this reads `{id}` as a literal segment and gates nothing that
+matches it. Roll the gateway before the API, as every upgrade does.
 
 ### `covers` -- the unit one yes may span
 

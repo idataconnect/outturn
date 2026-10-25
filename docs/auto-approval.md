@@ -80,7 +80,10 @@ approval:
   in `binds` may be tested for equality; only what is listed here may be
   compared. The unit is the operation's prose, which the admin agent reads
   anyway, rather than a type system in frontmatter -- the precise part is only
-  "this field is a number and may be bounded".
+  "this field is a number and may be bounded". A path parameter listed here is
+  read as a whole number only when it is written as one exactly -- `42`, not
+  `042` or `+42` -- and is otherwise absent to the test; unlisted, it is text
+  ([approvals.md](approvals.md#path-parameters)).
 - **`free`** -- the top-level body fields that carry nothing worth approving: a
   note, a client reference. Required with `auto: allowed`, because a policy
   tests only `binds` and `binds` was chosen for another job -- what a person's
@@ -315,8 +318,11 @@ fields, and forwards the original bytes -- so a body with `amount_pence` twice
 can satisfy the policy with the first and charge the second, if the remote API
 reads JSON differently. For a request a policy admits, the gateway forwards the
 body as it parsed it, re-serialized, with `Content-Type: application/json`, and
-refuses: a query string on a gated path, which the policy never saw; and a
-top-level key that differs from a bound field only by case.
+refuses: a query string on a gated path, which the policy never saw; a
+top-level key that differs from a bound field only by case; and a body key named
+for a bound path parameter, which would let the body say one value while the
+path sends another. A request with no body is an empty one, so a gate binding
+only path parameters can be covered.
 
 What the token commits to is the policy as it stood when the turn started --
 the same rule as egress, where removing a host does not reach a running turn.
