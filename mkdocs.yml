@@ -71,6 +71,7 @@ nav:
       - Concepts: guide/concepts.md
       - Take it for a spin: take-it-for-a-spin.md
       - Local development: local-development.md
+      - Deployment: deployment.md
   - Design:
       - Roadmap: roadmap.md
       - Design notes: design-notes.md

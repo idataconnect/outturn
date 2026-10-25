@@ -1,0 +1,77 @@
+# The UI's production server: the built files, the API behind them at /v1 on
+# the same origin, and the deployment's branding read from the environment.
+#
+# Same origin rather than the API on a host of its own, because the refresh
+# cookie is Path-scoped to /v1/session/refresh and a browser matches that
+# against the URL it asked for -- see vite.config.ts, which keeps the dev
+# server to the same paths for the same reason.
+#
+# TLS is the ingress's job; this listens in plain HTTP on 8080 as a non-root
+# user, writes nothing, and keeps no admin endpoint.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		X-Frame-Options DENY
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Streams -- a reply as it is written -- are passed on as they arrive
+	# rather than buffered, and so are not compressed here either.
+	handle /v1/* {
+		reverse_proxy {$OUTTURN_API_UPSTREAM:outturn-api:8080} {
+			flush_interval -1
+		}
+	}
+
+	# Who this deployment says it is, written from the environment on each
+	# request. Through the template's JSON encoding rather than pasted into a
+	# string, so a name with a quote in it is a name and not a broken file.
+	# Read by ui/src/lib/brand.ts before the first render.
+	handle /config.json {
+		root * /srv/config
+		templates {
+			mime application/json
+		}
+		header Cache-Control no-cache
+		file_server
+	}
+
+	# A deployment's own logo or theme, mounted here (a ConfigMap, say) and
+	# named in OUTTURN_BRAND_LOGO or OUTTURN_THEME as /brand/<file>. Empty in
+	# the image.
+	handle /brand/* {
+		root * /srv
+		file_server
+	}
+
+	# Hashed, so cached for good -- and a name that is not here is a 404, not
+	# the app's index.html kept for a year under an asset's name.
+	handle /assets/* {
+		root * /srv/www
+		encode zstd gzip
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# The app. Checked on every load, index.html above all, so a new release
+	# is picked up by the next reload rather than whenever a cache decides.
+	# Any path that is not a file is a route the app draws itself.
+	handle {
+		root * /srv/www
+		encode zstd gzip
+		header Cache-Control no-cache
+		try_files {path} /index.html
+		file_server
+	}
+}

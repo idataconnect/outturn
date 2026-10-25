@@ -1,0 +1,76 @@
+# Keeps the registry to what somebody might still deploy.
+#
+# Every push to main publishes four images tagged by commit, and nothing ever
+# removes one, so the registry grows by a build a commit forever. Once a week
+# this deletes, for each of the four packages:
+#
+# - every untagged version -- orphans, since images.yml pushes one manifest per
+#   tag and no attestations, so nothing tagged depends on an untagged one;
+# - every commit-tagged version but the newest KEEP.
+#
+# A version carrying a release tag (1.2.0) is never deleted, however old.
+# KEEP is 30: a month or so of main at the pace it moves, which is further
+# back than anybody rolls back to without a release. Run it by hand with
+# dry_run to see what it would delete.
+
+name: Image cleanup
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, and delete nothing
+        type: boolean
+        default: true
+
+permissions:
+  packages: write
+
+env:
+  KEEP: 30
+
+jobs:
+  cleanup:
+    name: Clean up
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old and untagged versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          # Unset on a schedule, which is not a dry run.
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          if [[ "$(gh api "/users/$OWNER" --jq .type)" == Organization ]]; then
+            base="/orgs/$OWNER"
+          else
+            base="/users/$OWNER"
+          fi
+          release='(^|,)v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(,|$)'
+          for tier in api gateway runtime ui; do
+            pkg="$base/packages/container/outturn-$tier"
+            if ! gh api "$pkg" >/dev/null 2>&1; then
+              echo "outturn-$tier: not published yet"
+              continue
+            fi
+            kept=0
+            # Newest first, as the API lists them.
+            gh api --paginate "$pkg/versions?per_page=100" \
+              --jq '.[] | "\(.id)\t\(.metadata.container.tags | join(","))"' |
+            while IFS=$'\t' read -r id tags; do
+              if [[ "$tags" =~ $release ]]; then
+                continue
+              fi
+              if [[ -n "$tags" ]] && (( kept < KEEP )); then
+                kept=$((kept + 1))
+                continue
+              fi
+              echo "outturn-$tier: deleting $id (${tags:-untagged})"
+              if [[ "$DRY_RUN" != true ]]; then
+                gh api --method DELETE "$pkg/versions/$id" >/dev/null
+              fi
+            done
+          done

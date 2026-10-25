@@ -1,0 +1,110 @@
+# A nightly pg_dump, as a starting point rather than a backup strategy. Not in
+# k8s/deploy's resources: where a dump goes, and how long it is kept, is the
+# operator's to decide. Add this file to an overlay's resources and change
+# what it says about storage.
+#
+# Dumps to a PersistentVolumeClaim, in the custom format so pg_restore can
+# restore one table or the whole. Keeps the last fourteen. A dump on a volume
+# in the same cluster as the database survives a bad migration, which is what
+# an upgrade risks, but not the loss of the cluster -- copy the files
+# somewhere else for that.
+#
+# The database URL is read from the same Secret the tiers use.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: outturn-backup
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: outturn-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: dump
+              # The client's major version must be at least the server's.
+              image: postgres:17-alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  out="/backups/outturn-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  pg_dump --format=custom --no-owner --file="$out.partial" "$DATABASE_URL"
+                  mv "$out.partial" "$out"
+                  ls -1t /backups/outturn-*.dump | tail -n +15 | xargs -r rm --
+                  echo "wrote $out"
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: outturn-secrets
+                      key: DATABASE_URL
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: outturn-backups
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: outturn-backups
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+# The namespace denies everything by default; the dump reaches DNS and the
+# database port, as the API does, and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-backup
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-backup
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 5432
