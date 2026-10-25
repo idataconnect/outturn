@@ -222,10 +222,12 @@ export function Connection({
 
   return (
     <li className="rounded-md border border-surface-200 dark:border-surface-800 px-3 py-3 text-sm">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-surface-900 dark:text-surface-100">{rule.host}</span>
+      {/* Wraps rather than scrolls: an in-cluster host alone is wider than a
+          phone, and the status goes under it when both will not fit. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="min-w-0 break-all font-mono text-surface-900 dark:text-surface-100">{rule.host}</span>
         {connected ? (
-          <span className="ml-auto flex items-center gap-1 text-xs text-green-700 dark:text-green-400">
+          <span className="ml-auto flex flex-wrap items-center gap-1 text-xs text-green-700 dark:text-green-400">
             <KeyRound size={12} aria-hidden />
             Connected, in <span className="font-mono">{rule.header}</span>
             {credential &&

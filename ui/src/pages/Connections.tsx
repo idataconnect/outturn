@@ -122,7 +122,7 @@ export default function Connections() {
           <ul key={rule.id} className="relative">
             {rule.credential_env ? (
               <li className="rounded-md border border-surface-200 dark:border-surface-800 px-3 py-3 text-sm">
-                <span className="font-mono">{rule.host}</span>
+                <span className="break-all font-mono">{rule.host}</span>
                 <span className="ml-2 text-xs text-surface-500">
                   key from the gateway&apos;s environment ({rule.credential_env})
                 </span>
@@ -136,7 +136,7 @@ export default function Connections() {
                 onChanged={load}
               />
             ) : (
-              <li className="rounded-md border border-surface-200 dark:border-surface-800 px-3 py-3 text-sm font-mono">
+              <li className="break-all rounded-md border border-surface-200 dark:border-surface-800 px-3 py-3 text-sm font-mono">
                 {rule.host}
               </li>
             )}
@@ -170,9 +170,9 @@ export default function Connections() {
           </p>
           <ul className="mt-2 space-y-1">
             {unused.map((c) => (
-              <li key={c.id} className="flex items-center gap-2 text-sm">
+              <li key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                 <span>{c.name}</span>
-                <span className="font-mono text-xs text-surface-500">
+                <span className="min-w-0 break-all font-mono text-xs text-surface-500">
                   {(c.binding.hosts ?? []).join(', ')}
                 </span>
                 {canKey && (
