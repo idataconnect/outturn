@@ -274,9 +274,11 @@ is read at gateway start, so changing it is still a roll.
 
 ## First run
 
-The first person to sign in as the operator, on a deployment with no models
-configured, is taken to setup. It is skippable, and reachable later from the
-Platform page.
+An operator who signs in to a deployment where no chain answers assistant
+traffic, and lands on the dashboard, is taken to setup -- once a browser
+session, and as a navigation Back undoes, so leaving it is never undone by
+coming back. A link straight to some other page is followed, not
+redirected. Setup is reachable later from the Models page.
 
 1. **The catalog** is the shipped snapshot or something newer, with its age
    shown, and the file import and hand entry offered beside it.

@@ -47,6 +47,7 @@ import SkillImport from './pages/SkillImport'
 import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
 import Dashboard from './pages/Dashboard'
+import FirstRun from './components/FirstRun'
 import Workspaces from './pages/Workspaces'
 import Roles from './pages/Roles'
 import RoleEditor from './pages/RoleEditor'
@@ -561,7 +562,14 @@ function Shell() {
               itself and says which authority is missing, which tells somebody
               who arrived by a bookmark more than a silent redirect would. The
               nav simply stops offering it. */}
-          <Route path="/" element={<Dashboard />} />
+          <Route
+            path="/"
+            element={
+              <FirstRun>
+                <Dashboard />
+              </FirstRun>
+            }
+          />
           <Route path={paths.inbox} element={<Inbox />} />
           <Route path={`${paths.inbox}/:id`} element={<Inbox />} />
           <Route path="/sessions" element={<Chat />} />
