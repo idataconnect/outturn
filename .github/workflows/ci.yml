@@ -20,7 +20,7 @@ on:
     tags: ["v*"]
   pull_request:
 
-# Checking out the code is all either job does with the repository token.
+# Checking out the code is all any job does with the repository token.
 permissions:
   contents: read
 
@@ -64,6 +64,25 @@ jobs:
       # dependency on a live service fails here, in the open.
       - name: Test
         run: cargo test
+
+  # k8s/deploy and k8s/base are kept apart, and must still agree on what a
+  # local cluster is there to teach about production: grace periods, the
+  # runtime's memory limit, probes, security contexts. The script says why
+  # this is a check and not a shared Component.
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # kubectl is on the runner image; PyYAML is not on its system Python.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - run: pip install pyyaml
+
+      - name: Base and deploy agree
+        run: scripts/check-k8s-parity.py
 
   ui:
     name: UI
