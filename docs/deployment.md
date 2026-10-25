@@ -202,6 +202,38 @@ nothing. Two need your attention:
   that would hand a compromised runtime every HTTPS host on the internet: the
   one path every other policy here closes.
 
+Neither Tika nor the PDF renderer is part of a release, and no policy here
+opens a path to one. Setting `OUTTURN_TIKA_URL` or `OUTTURN_PDF_RENDERER_URL`
+alone gets a refused connection -- documents that are never extracted, a PDF
+tool that fails -- rather than an error saying why.
+`k8s/deploy/examples/document-services-networkpolicy.yaml` opens both: the API
+to Tika, and the runtime to the renderer and nothing further. The runtime
+reads `OUTTURN_TIKA_URL` only to know extraction is on, and is not let
+through to Tika. A sketch of one half, for a renderer in the same namespace:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-runtime-to-pdf-renderer
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-runtime
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-pdf-renderer
+      ports:
+        - protocol: TCP
+          port: 8090
+```
+
+The renderer's own pod is under the default deny too, so the example also
+admits the runtime to it.
+
 The database is reached by port alone (5432, anywhere), since a managed
 database's address rarely stays put and neither the API nor the gateway runs
 workspace code. Narrow it if yours has a stable range.

@@ -21,6 +21,11 @@
 #   a documentation range that reaches nothing. Until it is replaced, files
 #   cannot be stored.
 # - outturn-ui admits the ingress controller by its namespace's name.
+#
+# Nothing here opens Tika or the PDF renderer. Setting OUTTURN_TIKA_URL or
+# OUTTURN_PDF_RENDERER_URL without opening the path is a connection the default
+# deny refuses, which looks like the feature failing rather than missing;
+# examples/document-services-networkpolicy.yaml opens both.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
