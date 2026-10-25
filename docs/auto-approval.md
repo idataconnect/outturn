@@ -552,6 +552,15 @@ waved through, which is the one outcome this whole design must not permit.
 - **Daily totals.** `approval_policies.daily_totals`, `{"GBP": 15000}` in minor
   units, on any selector. A policy with totals covers money operations only in
   a currency it totals; one moving no money is covered as before.
+- **One unit per currency.** What is kept for a whole currency -- its row of
+  bands, a policy's daily totals, a day's `currency_amount`, the offer's
+  figures -- is in the currency's standard minor units by ISO 4217
+  (`egress::amount::standard_minor_units`: a short table, two for anything
+  not in it), and an operation's own row is in its amount field's units
+  (migration 0069). A currency's band reaches an operation counting in other
+  units rounded down (`from_standard`), and a request's amount reaches the
+  day's total rounded up (`to_standard`), so a conversion that loses
+  precision always lands on more risk and a larger day.
 - **Routing.** `api::gated` works out the risk of the refused request from the
   workspace's bands (the API's reading rather than the token's: it lets nothing
   out, only chooses who is asked) and, for high, asks the roles in

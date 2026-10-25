@@ -151,6 +151,63 @@ impl Floor {
     }
 }
 
+/// How many digits after the point a currency is ordinarily written with, by
+/// ISO 4217: the one unit every amount stored for a whole currency is kept in
+/// -- a workspace's bands for a currency, a policy's daily total, what a day
+/// has let out -- so an operation counting in pence and one counting in whole
+/// pounds are held to one figure. Two for any currency not listed, which is
+/// most of them; a currency missing here that is not two is written and
+/// counted in hundredths of its unit, which reads oddly but never loosely.
+pub fn standard_minor_units(currency: &str) -> u8 {
+    match currency {
+        "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX"
+        | "UYI" | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
+        "CLF" | "UYW" => 4,
+        _ => 2,
+    }
+}
+
+/// An amount in an operation's own units, in its currency's standard ones:
+/// what a daily total counts. Rounded up where the operation's units are
+/// finer, so a day is never counted as less than it let out; `None` where it
+/// would not fit, which counts as no amount at all.
+pub fn to_standard(amount: i64, currency: &str, minor_units: u8) -> Option<i64> {
+    let standard = standard_minor_units(currency);
+    if minor_units >= standard {
+        let scale = 10i64.checked_pow(u32::from(minor_units - standard))?;
+        Some(amount.div_euclid(scale) + i64::from(amount.rem_euclid(scale) != 0))
+    } else {
+        amount.checked_mul(10i64.checked_pow(u32::from(standard - minor_units))?)
+    }
+}
+
+/// A bound in a currency's standard units -- a currency's band -- in an
+/// operation's own. Rounded down where the operation's units are coarser, so
+/// an amount is never banded lower than the bound says; `None` where it would
+/// not fit, or rounds to nothing, which is no band and so the higher risk.
+pub fn from_standard(bound: i64, currency: &str, minor_units: u8) -> Option<i64> {
+    let standard = standard_minor_units(currency);
+    let converted = if minor_units >= standard {
+        bound.checked_mul(10i64.checked_pow(u32::from(minor_units - standard))?)?
+    } else {
+        bound.div_euclid(10i64.checked_pow(u32::from(standard - minor_units))?)
+    };
+    (converted > 0).then_some(converted)
+}
+
+impl Bands {
+    /// Bands written for a whole currency, in its standard units, as they
+    /// apply to an operation counting in these.
+    pub fn from_standard(&self, currency: &str, minor_units: u8) -> Bands {
+        let at = |b: Option<i64>| b.and_then(|b| from_standard(b, currency, minor_units));
+        Bands {
+            low: at(self.low),
+            medium: at(self.medium),
+        }
+    }
+}
+
 /// Three upper-case letters. Never a symbol, which several currencies share.
 pub fn check_currency(currency: &str) -> Result<(), String> {
     if currency.len() == 3 && currency.bytes().all(|b| b.is_ascii_uppercase()) {
@@ -245,6 +302,9 @@ pub struct Banding {
     /// Where the request names its currency, if the operation says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency_field: Option<String>,
+    /// The amount field's digits after the point, so what a day lets out is
+    /// counted in the currency's standard units.
+    pub minor_units: u8,
     pub base: Risk,
     pub bands: Bands,
     pub floor: Floor,
@@ -263,6 +323,11 @@ impl Banding {
         });
         let amount = read(body, &self.field).filter(|_| in_currency);
         (risk(self.base, &self.bands, &self.floor, amount), amount)
+    }
+
+    /// An amount `assess` read, as a daily total counts it: see `to_standard`.
+    pub fn counted(&self, amount: i64) -> Option<i64> {
+        to_standard(amount, &self.currency, self.minor_units)
     }
 
     /// The lowest risk any request through this operation can have, which is
@@ -344,6 +409,7 @@ mod tests {
             field: d.amount.field.clone(),
             currency: d.amount.currency.clone(),
             currency_field: d.amount.currency_field.clone(),
+            minor_units: d.amount.minor_units,
             base: Risk::High,
             bands,
             floor: d.floor.clone(),
@@ -479,6 +545,7 @@ mod tests {
             field: "n".into(),
             currency: "GBP".into(),
             currency_field: None,
+            minor_units: 2,
             base: Risk::Low,
             bands: Bands {
                 low: None,
@@ -544,6 +611,60 @@ mod tests {
             medium: None,
         };
         assert!(past.check(Risk::High, &d.floor).is_err());
+    }
+
+    #[test]
+    fn a_currency_is_counted_in_its_standard_units() {
+        assert_eq!(standard_minor_units("GBP"), 2);
+        assert_eq!(standard_minor_units("JPY"), 0);
+        assert_eq!(standard_minor_units("KWD"), 3);
+        assert_eq!(standard_minor_units("XYZ"), 2, "the default");
+        // Pence are pence; whole pounds are hundreds of them.
+        assert_eq!(to_standard(4999, "GBP", 2), Some(4999));
+        assert_eq!(to_standard(50, "GBP", 0), Some(5000));
+        // Finer than pence, rounded up: never counted as less.
+        assert_eq!(to_standard(50001, "GBP", 3), Some(5001));
+        assert_eq!(to_standard(50000, "GBP", 3), Some(5000));
+        assert_eq!(to_standard(i64::MAX, "GBP", 0), None);
+        // A pence band, for a whole-pound operation, rounded down: never
+        // banded lower than it says.
+        assert_eq!(from_standard(5000, "GBP", 0), Some(50));
+        assert_eq!(from_standard(5099, "GBP", 0), Some(50));
+        assert_eq!(from_standard(99, "GBP", 0), None, "nothing is below it");
+        assert_eq!(from_standard(5000, "GBP", 3), Some(50000));
+        assert_eq!(from_standard(i64::MAX, "GBP", 3), None);
+    }
+
+    #[test]
+    fn one_band_in_pounds_holds_pence_and_whole_pounds_alike() {
+        let row = Bands {
+            low: Some(5050),
+            medium: Some(20000),
+        };
+        let pence = row.from_standard("GBP", 2);
+        let pounds = row.from_standard("GBP", 0);
+        assert_eq!(pence, row);
+        assert_eq!(
+            pounds,
+            Bands {
+                low: Some(50),
+                medium: Some(200)
+            }
+        );
+        // £50 is under £50.50 in pence; in whole pounds it is not under 50,
+        // which is the higher risk -- the conservative side of the rounding.
+        assert_eq!(
+            risk(Risk::High, &pence, &Floor::default(), Some(5000)),
+            Risk::Low
+        );
+        assert_eq!(
+            risk(Risk::High, &pounds, &Floor::default(), Some(50)),
+            Risk::Medium
+        );
+        assert_eq!(
+            risk(Risk::High, &pounds, &Floor::default(), Some(49)),
+            Risk::Low
+        );
     }
 
     #[test]

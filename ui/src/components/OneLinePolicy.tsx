@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { ApiError, allPages } from '../lib/api'
-import { createPolicy, kindOf, putBands, type BandsPage } from '../lib/autoApproval'
+import { createPolicy, decimalsOf, kindOf, putBands, type BandsPage } from '../lib/autoApproval'
 import { currencyMark, formatMoney, toMajor, toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
 
@@ -44,6 +44,9 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
   })
   const ops = bands.operations.filter((o) => o.requires === requires && o.currency === currency)
   const minorUnits = ops[0]?.minor_units ?? 2
+  // A daily total is in the currency's standard units, whatever its operations
+  // count in.
+  const standardUnits = decimalsOf(bands)[currency] ?? 2
 
   const [low, setLow] = useState(() => {
     const given = Number(params.get('low'))
@@ -76,7 +79,7 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
   if (kinds.length === 0) return null
 
   const lowMinor = toMinor(low, minorUnits)
-  const dailyMinor = toMinor(daily, minorUnits)
+  const dailyMinor = toMinor(daily, standardUnits)
 
   async function save(e: React.FormEvent) {
     e.preventDefault()

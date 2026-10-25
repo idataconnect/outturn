@@ -311,7 +311,8 @@ pub struct Admitted {
     /// The summed field's value, where the policy sums one.
     pub amount: Option<i64>,
     /// The amount in the operation's declared currency, where it declares one
-    /// and the request carried one to trust: what a daily total counts.
+    /// and the request carried one to trust: what a daily total counts, in the
+    /// currency's standard units (`amount::to_standard`).
     pub money: Option<(String, i64)>,
     /// The body as it was parsed, serialized again. What goes out, so what was
     /// tested is what is sent: a body naming a field twice cannot satisfy the
@@ -374,7 +375,10 @@ impl PolicyGrant {
                 if self.max_risk.is_none_or(|max| risk > max) {
                     return None;
                 }
-                money.map(|m| (banding.currency.clone(), m))
+                // In the currency's standard units, as the day's total is.
+                money
+                    .and_then(|m| banding.counted(m))
+                    .map(|m| (banding.currency.clone(), m))
             }
             None => None,
         };
@@ -823,6 +827,7 @@ mod tests {
             field: "amount_pence".into(),
             currency: "GBP".into(),
             currency_field: None,
+            minor_units: 2,
             base: Risk::High,
             bands: super::super::amount::Bands {
                 low: Some(5000),
@@ -852,6 +857,29 @@ mod tests {
         // An amount nobody can trust is the base risk, high.
         assert!(charge(json!("10")).is_none());
         assert!(charge(json!(-10)).is_none());
+    }
+
+    #[test]
+    fn a_day_is_counted_in_the_currencys_standard_units() {
+        let gate = charge();
+        let mut grant = grant_for(&gate, vec![]);
+        banded(&mut grant, Risk::High);
+        // An operation counting in whole pounds: £49 is 4,900 pence of the day.
+        let banding = grant.banding.as_mut().unwrap();
+        banding.minor_units = 0;
+        banding.bands = super::super::amount::Bands {
+            low: Some(50),
+            medium: Some(200),
+        };
+        let admitted = grant
+            .admits(
+                workspace(),
+                &gate,
+                None,
+                Some(r#"{"booking_id":"bk_1","amount_pence":49}"#),
+            )
+            .unwrap();
+        assert_eq!(admitted.money, Some(("GBP".to_string(), 4900)));
     }
 
     #[test]

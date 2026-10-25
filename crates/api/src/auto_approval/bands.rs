@@ -114,8 +114,14 @@ pub fn effective(d: &Declared, rows: &[Band]) -> Option<(Bands, Source)> {
     if let Some(own) = in_currency.clone().find(|r| r.names(d)) {
         return Some((own.bands(), Source::Operation));
     }
+    // A currency's row is in the currency's standard units, the operation's own
+    // in the operation's.
     if let Some(all) = in_currency.clone().find(|r| r.skill_id.is_none()) {
-        return Some((all.bands(), Source::Currency));
+        return Some((
+            all.bands()
+                .from_standard(currency, declared.amount.minor_units),
+            Source::Currency,
+        ));
     }
     Some((declared.bands.clone(), Source::Operator))
 }
@@ -216,6 +222,8 @@ pub struct Operation {
 #[derive(Debug, Clone, Serialize)]
 pub struct Currency {
     pub currency: String,
+    /// The currency's standard digits after the point, which its row is in
+    /// whatever its operations count in: `amount::standard_minor_units`.
     pub minor_units: u8,
     pub band: Option<Band>,
     pub effective: Option<BandsView>,
@@ -282,7 +290,9 @@ fn page(ops: &[(Declared, Option<String>)], rows: &[Band], may_write: bool) -> B
             continue;
         };
         let (currency, minor) = (&declared.amount.currency, declared.amount.minor_units);
-        currencies.entry(currency.clone()).or_insert(minor);
+        currencies
+            .entry(currency.clone())
+            .or_insert(amount::standard_minor_units(currency));
         let Some((bands, source)) = effective(d, rows) else {
             continue;
         };
@@ -411,9 +421,11 @@ fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checke
                 if declared.amount.currency != currency {
                     continue;
                 }
+                // In the operation's own units, as it will be applied.
+                let own = bands.from_standard(&currency, declared.amount.minor_units);
                 let at_base = Bands {
-                    low: bands.low.filter(|_| Risk::Low < d.risk),
-                    medium: bands.medium.filter(|_| Risk::Medium < d.risk),
+                    low: own.low.filter(|_| Risk::Low < d.risk),
+                    medium: own.medium.filter(|_| Risk::Medium < d.risk),
                 };
                 at_base.check(d.risk, &declared.floor).map_err(|why| {
                     invalid(format!(
@@ -615,6 +627,7 @@ mod tests {
             field: "amount_pence".into(),
             currency: "GBP".into(),
             currency_field: None,
+            minor_units: 2,
             base: d.risk,
             bands: declaration.bands.clone(),
             floor: declaration.floor.clone(),
@@ -668,6 +681,76 @@ mod tests {
 
         // An operation with no amount has no bands to set.
         assert!(effective(&declared("delete", Risk::High), &[]).is_none());
+    }
+
+    /// The same charge, counted in whole pounds rather than pence.
+    fn in_whole_pounds(d: &mut Declared) {
+        money(d);
+        let declared = d.amount.as_mut().unwrap();
+        declared.amount.field = "amount_gbp".into();
+        declared.amount.minor_units = 0;
+        declared.bands = Bands {
+            low: Some(50),
+            medium: Some(200),
+        };
+        declared.floor = Floor {
+            medium: None,
+            high: Some(5000),
+        };
+        let banding = d.banding.as_mut().unwrap();
+        banding.field = "amount_gbp".into();
+        banding.minor_units = 0;
+        banding.bands = declared.bands.clone();
+        banding.floor = declared.floor.clone();
+    }
+
+    #[test]
+    fn one_pounds_row_bands_a_pence_operation_and_a_whole_pound_one_alike() {
+        let mut pence = declared("charge", Risk::High);
+        money(&mut pence);
+        let mut pounds = declared("refund", Risk::High);
+        in_whole_pounds(&mut pounds);
+        // £30.00, in pence as every currency row is.
+        let gbp = row("GBP", None, 3000);
+        let mut both = vec![pence.clone(), pounds.clone()];
+        apply(&mut both, std::slice::from_ref(&gbp));
+        assert_eq!(both[0].banding.as_ref().unwrap().bands.low, Some(3000));
+        assert_eq!(both[1].banding.as_ref().unwrap().bands.low, Some(30));
+
+        // £30.50 is no whole number of pounds: the pound operation is held to
+        // £30, the side that asks more often.
+        let gbp = row("GBP", None, 3050);
+        let mut both = vec![pence.clone(), pounds.clone()];
+        apply(&mut both, &[gbp]);
+        assert_eq!(both[0].banding.as_ref().unwrap().bands.low, Some(3050));
+        assert_eq!(both[1].banding.as_ref().unwrap().bands.low, Some(30));
+
+        // An operation's own row stays in its own units.
+        let own = row("GBP", Some(&pounds), 40);
+        assert_eq!(effective(&pounds, &[own]).unwrap().0.low, Some(40));
+
+        // The page shows the currency's row in pence whatever its operations
+        // count in, and each operation's effective bands in its own.
+        let ops = vec![(pence, None), (pounds, None)];
+        let page = page(&ops, &[row("GBP", None, 3000)], true);
+        assert_eq!(page.currencies[0].minor_units, 2);
+        let refund = page
+            .operations
+            .iter()
+            .find(|o| o.requires == "refund")
+            .unwrap();
+        assert_eq!(refund.effective.low.as_ref().unwrap().display, "£30");
+    }
+
+    #[test]
+    fn a_currency_row_is_checked_against_each_floor_in_its_own_units() {
+        let mut pounds = declared("refund", Risk::High);
+        in_whole_pounds(&mut pounds);
+        let ops = vec![(pounds, None)];
+        let write = |v: serde_json::Value| check(serde_json::from_value(v).unwrap(), &ops);
+        // £4,000.00 in pence is under the £5,000 floor; £6,000.00 is past it.
+        assert!(write(serde_json::json!({"currency": "GBP", "low": 400_000})).is_ok());
+        assert!(write(serde_json::json!({"currency": "GBP", "low": 600_000})).is_err());
     }
 
     #[test]

@@ -711,6 +711,12 @@ pub fn replay(
                     )
                 };
                 let total = policy.daily_totals.get(&banding.currency).copied();
+                // A day is counted in the currency's standard units, whatever
+                // the operation's own.
+                let standard =
+                    outturn_core::egress::amount::standard_minor_units(&banding.currency);
+                let counted =
+                    |v: i64| outturn_core::egress::amount::format(v, &banding.currency, standard);
                 if risk > max {
                     would = false;
                     why = Some(match amount {
@@ -724,6 +730,7 @@ pub fn replay(
                             why = Some("no amount to count against the day's total".into());
                         }
                         Some(v) => {
+                            let v = banding.counted(v).unwrap_or(i64::MAX);
                             let day: i64 = let_out
                                 .iter()
                                 .filter(|(at, c, _)| {
@@ -731,18 +738,18 @@ pub fn replay(
                                 })
                                 .map(|(_, _, v)| v)
                                 .sum();
-                            if day + v > total {
+                            if day.saturating_add(v) > total {
                                 would = false;
                                 why = Some(format!(
                                     "{} would take the day past {}",
-                                    said(v),
-                                    said(total)
+                                    counted(v),
+                                    counted(total)
                                 ));
                             }
                         }
                     }
                 }
-                if would && let Some(v) = amount {
+                if would && let Some(v) = amount.and_then(|v| banding.counted(v)) {
                     let_out.push((a.at, banding.currency.clone(), v));
                 }
             }
@@ -914,6 +921,8 @@ pub struct AmountsQuery {
 #[derive(Debug, Serialize)]
 pub struct ApprovedIn {
     pub currency: String,
+    /// The currency's standard digits after the point, which every figure here
+    /// is in.
     pub minor_units: u8,
     /// How many a person said yes to.
     pub approved: i64,
@@ -982,21 +991,36 @@ pub async fn amounts(
     .fetch_all(&state.pool)
     .await
     .map_err(internal)?;
-    let currencies = rows
-        .iter()
-        .filter_map(|r| {
-            let currency: String = r.get("currency");
-            let minor: u8 = u8::try_from(r.get::<i32, _>("minor_units")).ok()?;
-            let max: i64 = r.get("max");
+    // One figure per currency, in its standard units, whatever each operation
+    // counts in: an offer's figure becomes a band for the whole currency.
+    let mut per: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+    for r in &rows {
+        let currency: String = r.get("currency");
+        let Ok(minor) = u8::try_from(r.get::<i32, _>("minor_units")) else {
+            continue;
+        };
+        let standard = |v: i64| outturn_core::egress::amount::to_standard(v, &currency, minor);
+        let (Some(max), Some(total)) = (standard(r.get("max")), standard(r.get("total"))) else {
+            continue;
+        };
+        let e = per.entry(currency.clone()).or_insert((0, 0, 0));
+        e.0 += r.get::<i64, _>("approved");
+        e.1 = e.1.max(max);
+        e.2 = e.2.saturating_add(total);
+    }
+    let currencies = per
+        .into_iter()
+        .map(|(currency, (approved, max, total))| {
+            let minor = outturn_core::egress::amount::standard_minor_units(&currency);
             let m = |v| super::bands::Money::of(v, &currency, minor);
-            Some(ApprovedIn {
-                approved: r.get("approved"),
+            ApprovedIn {
+                approved,
                 max: m(max),
-                total: m(r.get("total")),
+                total: m(total),
                 suggested_low: m(round_above(max, minor)),
                 minor_units: minor,
                 currency: currency.clone(),
-            })
+            }
         })
         .collect();
     Ok(Json(Amounts {
@@ -1208,6 +1232,7 @@ mod tests {
             field: "amount_pence".into(),
             currency: "GBP".into(),
             currency_field: None,
+            minor_units: 2,
             base: Risk::High,
             bands,
             floor: Floor::default(),

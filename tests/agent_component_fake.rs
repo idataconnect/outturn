@@ -3949,6 +3949,7 @@ async fn a_banded_policy_reaches_the_gateway_as_committed() {
             field: "amount_pence".into(),
             currency: "GBP".into(),
             currency_field: None,
+            minor_units: 2,
             base: Risk::High,
             bands: Bands {
                 low: Some(5000),
