@@ -11,9 +11,10 @@
 # `--with` takes any of k8s/components. What differs from Linux is the base
 # overlay and that this script starts ollama; the rest is scripts/lib/dev.sh.
 #
-# The first run asks which model, at what context window, and how much of a
-# conversation to send it, suggesting the smaller model on a Mac with less
-# than 48GB -- see scripts/dev-setup.sh and docs/local-development.md.
+# The first run asks whether the model is hosted, with its key pasted into
+# Platform -> Models, or local; for a local one, which model, at what context
+# window, and how much of a conversation to send it, suggesting the smaller
+# model on a Mac with less than 48GB -- see scripts/dev-setup.sh and docs/local-development.md.
 #
 # Expects a cluster already running (Docker Desktop's Kubernetes, kind, or
 # colima --kubernetes) and kubectl pointed at it. Starting one is left to you:

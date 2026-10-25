@@ -11,9 +11,11 @@
 # `--with` takes any of k8s/components. Nothing is built or deployed until
 # asked for: `scripts/build.sh` triggers a round over the Control API.
 #
-# The first run asks which model, at what context window, and how much of a
-# conversation to send it, and keeps the answers -- see scripts/dev-setup.sh
-# and docs/local-development.md. ollama is expected to be running already;
+# The first run asks whether the model is hosted -- a provider's, with a key
+# pasted into Platform -> Models once signed in -- or local, and for a local
+# one which model, at what context window, and how much of a conversation to
+# send it, and keeps the answers -- see scripts/dev-setup.sh and
+# docs/local-development.md. A local ollama is expected to be running already;
 # this script makes the model it serves, but starting the server is yours.
 #
 # Expects a cluster already running and kubectl pointed at it. Starting one is

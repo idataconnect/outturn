@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Asks this machine's model settings, once, into a gitignored file.
+# Asks this machine's model settings, once, into a gitignored file: a hosted
+# model, whose key goes on Platform -> Models, or a local one and its server.
 #
 #   scripts/dev-setup.sh                 # ask if there are no answers yet, otherwise say nothing
 #   scripts/dev-setup.sh --reconfigure   # ask again, the current answers as the suggestions
@@ -34,6 +35,11 @@ if [[ "$show" == true ]]; then
     echo "$file"
   else
     echo "no answers yet; these are the suggestions (${dev_hint:-nothing detected})"
+  fi
+  echo "  models          $dev_models"
+  if [[ "$dev_models" == hosted ]]; then
+    echo "  configured on   Platform -> Models, with a key pasted there"
+    exit 0
   fi
   echo "  model server    $dev_server"
   echo "  model           $dev_model"

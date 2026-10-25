@@ -120,6 +120,35 @@ dev_write_overlay() {
         hosts="${hosts:+$hosts,}$entry"
       done <"k8s/components/$feature/internal-host"
     done
+    echo
+    echo "patches:"
+
+    # A hosted model is reached over the internet, as any provider is, and is
+    # configured on Platform -> Models with a key pasted there and sealed. So
+    # nothing on this machine is opened to the gateway, and the
+    # platform-settings Job is left out: its chain points at a local model,
+    # and its budget is sized for a local window. A deployment with no chain
+    # is what makes the Models page offer a recipe.
+    if [[ "${dev_models:-local}" == hosted ]]; then
+      echo "  # From $(dev_machine_file): a hosted model, so nothing local to reach."
+      echo "  - patch: |"
+      echo "      \$patch: delete"
+      echo "      apiVersion: batch/v1"
+      echo "      kind: Job"
+      echo "      metadata:"
+      echo "        name: platform-settings"
+      echo "  - patch: |"
+      echo "      \$patch: delete"
+      echo "      apiVersion: networking.k8s.io/v1"
+      echo "      kind: NetworkPolicy"
+      echo "      metadata:"
+      echo "        name: outturn-local-ollama"
+      # Written even when empty, since ../local names the Docker bridge's
+      # ollama for the case below.
+      dev_internal_hosts_patch "$hosts"
+      return
+    fi
+
     # Where the model is, from inside the cluster: the platform-settings Job
     # gives assistant traffic a chain to it. Opened as an internal host too,
     # since on Linux it is a private address -- the Docker bridge -- which
@@ -133,9 +162,6 @@ dev_write_overlay() {
       *) model_host="$model_host:80" ;;
     esac
     hosts="${hosts:+$hosts,}$model_host"
-
-    echo
-    echo "patches:"
 
     # This machine's answers (see dev_machine_load). Strategic merge, so env
     # is matched by name rather than by its position in ../local.
@@ -193,30 +219,34 @@ dev_write_overlay() {
       echo "warning: could not resolve $model_name; the gateway's network policy will not let it through" >&2
     fi
 
-    if [[ -n "$hosts" ]]; then
-      # Both tiers, because both halves of the decision read it: the gateway
-      # to decide whether a connection may go out, and the API to decide
-      # whether a rule may name the host at all.
-      for tier in gateway api; do
-        echo "  - target:"
-        echo "      kind: Deployment"
-        echo "      name: outturn-$tier"
-        echo "    patch: |"
-        echo "      apiVersion: apps/v1"
-        echo "      kind: Deployment"
-        echo "      metadata:"
-        echo "        name: outturn-$tier"
-        echo "      spec:"
-        echo "        template:"
-        echo "          spec:"
-        echo "            containers:"
-        echo "              - name: $tier"
-        echo "                env:"
-        echo "                  - name: OUTTURN_INTERNAL_HOSTS"
-        echo "                    value: \"$hosts\""
-      done
-    fi
+    dev_internal_hosts_patch "$hosts"
   } >"$generated/kustomization.yaml"
+}
+
+# The overlay's OUTTURN_INTERNAL_HOSTS, given the whole list. Both tiers,
+# because both halves of the decision read it: the gateway to decide whether a
+# connection may go out, and the API to decide whether a rule may name the
+# host at all.
+dev_internal_hosts_patch() {
+  local hosts=$1 tier
+  for tier in gateway api; do
+    echo "  - target:"
+    echo "      kind: Deployment"
+    echo "      name: outturn-$tier"
+    echo "    patch: |"
+    echo "      apiVersion: apps/v1"
+    echo "      kind: Deployment"
+    echo "      metadata:"
+    echo "        name: outturn-$tier"
+    echo "      spec:"
+    echo "        template:"
+    echo "          spec:"
+    echo "            containers:"
+    echo "              - name: $tier"
+    echo "                env:"
+    echo "                  - name: OUTTURN_INTERNAL_HOSTS"
+    echo "                    value: \"$hosts\""
+  done
 }
 
 # Before anything slow: finding out after a build or a model pull that there
@@ -290,6 +320,7 @@ dev_budget_for() {
 dev_machine_defaults() {
   local base
   base=$(dev_machine_base)
+  dev_models=local
   dev_model=$(awk '/name: MODEL$/ { getline; gsub(/.*value: "|"$/, ""); print; exit }' \
     "k8s/overlays/$base/kustomization.yaml" k8s/overlays/local/platform-settings-job.yaml)
   dev_context_window=32768
@@ -336,6 +367,9 @@ dev_machine_defaults() {
 # rather than sourced, so a stray line in a hand-edited file is ignored rather
 # than run.
 #
+# A file written before hosted models were a choice has no OUTTURN_DEV_MODELS,
+# and meant a local one, so that is what it still means.
+#
 # A file written before there was a choice of server has no
 # OUTTURN_DEV_SERVER, and meant ollama wherever it named one and some other
 # server where it left the address empty -- so that is what it still means.
@@ -346,6 +380,7 @@ dev_machine_load() {
   if [[ -f "$file" ]]; then
     while IFS='=' read -r key value; do
       case "$key" in
+        OUTTURN_DEV_MODELS) dev_models=$value ;;
         OUTTURN_DEV_MODEL) dev_model=$value ;;
         OUTTURN_DEV_CONTEXT_WINDOW) dev_context_window=$value ;;
         OUTTURN_DEV_CONTEXT_BUDGET) dev_context_budget=$value ;;
@@ -409,15 +444,41 @@ dev_served_model_for() {
 dev_llama_default_model=unsloth/Qwen3.5-9B-GGUF:Q4_K_M
 
 # Asks, with the current values as the suggestions, and writes the file.
+#
+# Hosted or local first, because most people trying this have a key for a
+# hosted model and no machine that runs a capable one, and every other
+# question is about the local server. No key is asked for: it is pasted into
+# Platform -> Models and sealed in the browser to the gateway, so it is never
+# in a file here, in the environment, or in the cluster's manifests. See
+# docs/sealed-credentials.md.
 dev_machine_ask() {
   local file answer derived
   file=$(dev_machine_file)
   derived=$(dev_budget_for "$dev_context_window")
 
-  echo "Local model settings for this machine, saved to $file."
-  echo "Enter keeps the suggestion.${dev_hint:+ ($dev_hint.)}"
+  echo "Model settings for this machine, saved to $file."
+  echo "Enter keeps the suggestion."
   echo
+  echo "Which model answers: a hosted one, with an API key from Anthropic, OpenAI or"
+  echo "Gemini, or a local one, which is free but needs a capable machine."
+  while :; do
+    read -r -p "hosted or local [$dev_models]: " answer
+    answer=${answer:-$dev_models}
+    case "$answer" in hosted | local) break ;; esac
+    echo "  hosted or local"
+  done
+  dev_models=$answer
 
+  if [[ "$dev_models" == hosted ]]; then
+    echo
+    echo "Nothing more to ask. After signing in, the key goes on Platform -> Models,"
+    echo "where it is sealed in the browser; it is not stored on this machine."
+    dev_machine_write
+    return
+  fi
+
+  echo
+  echo "The local model.${dev_hint:+ ($dev_hint.)}"
   while :; do
     read -r -p "Model server: ollama, llama.cpp or other [$dev_server]: " answer
     answer=${answer:-$dev_server}
@@ -488,12 +549,24 @@ dev_machine_ask() {
       ;;
   esac
 
+  dev_machine_write
+}
+
+# Writes the answers, every one of them: a hosted answer keeps the local
+# server's, so switching back suggests what was there.
+dev_machine_write() {
+  local file
+  file=$(dev_machine_file)
   cat >"$file" <<EOF
 # This machine's answers for local development, written by
 # scripts/dev-setup.sh and read by scripts/dev.sh and scripts/dev-mac.sh.
 # Not committed. Edit it, or run scripts/dev-setup.sh --reconfigure.
 #
 # See docs/local-development.md for what each one drives.
+
+# hosted: a provider's model, configured on Platform -> Models with a key
+# pasted there, and nothing below is used. local: the server below.
+OUTTURN_DEV_MODELS=$dev_models
 
 # ollama, llama.cpp, or other: some OpenAI-compatible server, at
 # OUTTURN_DEV_OTHER_URL or else the address the base overlay names, which
@@ -541,7 +614,7 @@ dev_machine_setup() {
   fi
   if [[ ! -t 0 ]]; then
     echo "no terminal to ask on; using the suggested model settings" \
-      "($dev_model, ${dev_context_window} tokens, ${dev_context_budget} bytes)." >&2
+      "(local: $dev_model, ${dev_context_window} tokens, ${dev_context_budget} bytes)." >&2
     echo "run scripts/dev-setup.sh to choose and keep them." >&2
     return
   fi
@@ -550,6 +623,10 @@ dev_machine_setup() {
 
 # Readies whichever server this machine answered, before skaffold.
 dev_model_server_prepare() {
+  if [[ "$dev_models" == hosted ]]; then
+    echo "hosted model: configure it on Platform -> Models after signing in"
+    return
+  fi
   case "$dev_server" in
     ollama) dev_ollama_prepare ;;
     llama.cpp) dev_llamacpp_prepare ;;
@@ -715,7 +792,10 @@ dev_ollama_prepare() {
 # new budget is refused, and the loop fails on the first build after the
 # answer changed. A finished Job is only a record of a PUT, so one holding a
 # different number is removed and the deploy makes it again.
+#
+# A hosted answer deploys no Job, so there is nothing to clear.
 dev_clear_stale_settings_job() {
+  [[ "$dev_models" != hosted ]] || return 0
   local deployed
   deployed=$(kubectl get job platform-settings \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTEXT_BUDGET")].value}' 2>/dev/null) || return 0
