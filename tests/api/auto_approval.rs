@@ -1167,6 +1167,32 @@ async fn bands_are_set_by_whoever_may_set_a_policy() {
     finish!(h);
 }
 
+/// Relays a refused charge of this many pence, as the runtime does.
+async fn raise_charge(
+    h: &Harness,
+    job: Uuid,
+    lease: Uuid,
+    session: Uuid,
+    pence: i64,
+) -> (StatusCode, String) {
+    let body = serde_json::json!({"booking_id": "bk_1", "amount_pence": pence}).to_string();
+    h.send(
+        Request::post("/v1/work/gated")
+            .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
+            .header(outturn::api::work::LEASE_HEADER, lease.to_string())
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "session_id": session, "job_id": job, "method": "POST",
+                    "host": CHARGE_HOST, "path": "/charges", "body": body,
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+}
+
 /// Raises an approval for a refused charge of this many pence, as the runtime
 /// relays one, and returns the queue item's payload and targets.
 async fn refuse_charge(h: &Harness, job: Uuid, lease: Uuid, pence: i64) -> (Value, Vec<Uuid>) {
@@ -1176,23 +1202,7 @@ async fn refuse_charge(h: &Harness, job: Uuid, lease: Uuid, pence: i64) -> (Valu
             .fetch_one(&h.db.pool)
             .await
             .unwrap();
-    let body = serde_json::json!({"booking_id": "bk_1", "amount_pence": pence}).to_string();
-    let (status, raised) = h
-        .send(
-            Request::post("/v1/work/gated")
-                .header("authorization", format!("Bearer {TEST_RUNTIME_KEY}"))
-                .header(outturn::api::work::LEASE_HEADER, lease.to_string())
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "session_id": session, "job_id": job, "method": "POST",
-                        "host": CHARGE_HOST, "path": "/charges", "body": body,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await;
+    let (status, raised) = raise_charge(h, job, lease, session, pence).await;
     assert_eq!(status, StatusCode::OK, "{raised}");
     let item: Uuid = serde_json::from_str::<Value>(&raised).unwrap()["item_id"]
         .as_str()
@@ -1321,5 +1331,85 @@ async fn a_high_charge_asks_whoever_the_workspace_named() {
     let (job, lease, _) = a_turn(&h, &c).await;
     let (_, targets) = refuse_charge(&h, job, lease, 30000).await;
     assert_eq!(targets.len(), 2);
+    finish!(h);
+}
+
+/// A question whose risk cannot be worked out is asked as high -- of the
+/// roles named for it, never everyone -- and one whose named roles cannot be
+/// read is not raised at all.
+#[tokio::test]
+async fn a_risk_that_cannot_be_worked_out_never_asks_more_people() {
+    use outturn::api::role::CreateRole;
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let manager = h
+        .roles
+        .create(
+            c.acme,
+            CreateRole {
+                name: "manager".into(),
+                description: String::new(),
+                authorities: vec!["approvals:answer".into()],
+            },
+        )
+        .await
+        .expect("role")
+        .id;
+    let (status, body) = put(
+        &h,
+        "/v1/approval-routes/high",
+        &c.admin,
+        &serde_json::json!({ "role_ids": [manager] }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The workspace's bands unreadable: £60, medium when they can be read, is
+    // asked of the manager alone, and the question claims no risk it could not
+    // work out.
+    sqlx::query("alter table approval_bands rename to approval_bands_away")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let (job, lease, _) = a_turn(&h, &c).await;
+    let (payload, targets) = refuse_charge(&h, job, lease, 6000).await;
+    assert_eq!(targets, vec![manager]);
+    assert!(payload.get("risk").is_none(), "{payload}");
+    sqlx::query("alter table approval_bands_away rename to approval_bands")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    // Who is named for high unreadable: £300 is not asked of everyone instead.
+    sqlx::query("alter table approval_routes rename to approval_routes_away")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let (job, lease, _) = a_turn(&h, &c).await;
+    let session: Uuid =
+        sqlx::query_scalar("select (payload->>'session_id')::uuid from jobs where id = $1")
+            .bind(job)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    let (status, _) = raise_charge(&h, job, lease, session, 30000).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let items: i64 =
+        sqlx::query_scalar("select count(*) from action_items where payload->>'session_id' = $1")
+            .bind(session.to_string())
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(items, 0, "nothing was raised");
+    let held: i64 = sqlx::query_scalar("select count(*) from inhibitors where session_id = $1")
+        .bind(session)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(held, 0, "the hold was given back");
+    sqlx::query("alter table approval_routes_away rename to approval_routes")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
     finish!(h);
 }

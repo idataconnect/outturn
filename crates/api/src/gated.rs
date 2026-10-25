@@ -239,10 +239,10 @@ pub async fn raise(
         super::skill::PostgresSkillStore::new(state.pool.clone())
             .resolve_for_agent(payload.workspace_id, payload.agent_id)
             .await
-            .ok()
+            .map_err(|e| e.to_string())
     };
     let assessed = match &skills {
-        Some(skills) => {
+        Ok(skills) => {
             assess(
                 &state,
                 payload.workspace_id,
@@ -252,31 +252,62 @@ pub async fn raise(
             )
             .await
         }
-        None => None,
+        Err(why) => Err(format!("the agent's skills: {why}")),
     };
+    if let Err(why) = &assessed {
+        tracing::warn!(
+            workspace_id = %payload.workspace_id,
+            session_id = %payload.session_id,
+            inhibitor_id = %held.id,
+            error = %why,
+            "a refused request's risk could not be worked out, so it is asked as high"
+        );
+    }
+    let risk = route_risk(&assessed, gate);
+    let assessed = assessed.ok().flatten();
 
     // Who gets asked. The workspace's approvers, resolved as a role rather than
     // as the people in it, for the reason `action_targets` exists: membership
     // outlives the moment -- and of them, for a high-risk request, the roles
-    // the workspace named for it, where it named any.
+    // the workspace named for it, where it named any. Named roles that cannot
+    // be read fail the raise rather than ask everyone, which would be the
+    // question going wider than the workspace said.
     let targets = {
         let answerers = state
             .roles
             .roles_with(payload.workspace_id, Authority::ApprovalsAnswer)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let named = match assessed.as_ref().map(|a| a.risk) {
-            Some(outturn_core::egress::policy::Risk::High) => {
+            .await;
+        let named = match risk {
+            outturn_core::egress::policy::Risk::High => {
                 super::auto_approval::routes::named(&state.pool, payload.workspace_id)
                     .await
-                    .unwrap_or_default()
+                    .map_err(|e| e.to_string())
             }
-            _ => Vec::new(),
+            _ => Ok(Vec::new()),
         };
-        let risk = assessed
-            .as_ref()
-            .map_or(outturn_core::egress::policy::Risk::Medium, |a| a.risk);
-        super::auto_approval::routes::targets(risk, &named, &answerers)
+        match (answerers, named) {
+            (Ok(answerers), Ok(named)) => {
+                super::auto_approval::routes::targets(risk, &named, &answerers)
+            }
+            (Err(e), _) => {
+                let _ = inhibitors.release(held.id).await;
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+            (_, Err(why)) => {
+                let _ = inhibitors.release(held.id).await;
+                tracing::warn!(
+                    workspace_id = %payload.workspace_id,
+                    session_id = %payload.session_id,
+                    error = %why,
+                    "a high-risk request needed approval but who is asked could not be read"
+                );
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "who is asked about that request could not be read, so it stays refused"
+                        .to_string(),
+                ));
+            }
+        }
     };
     if targets.is_empty() {
         // Nobody can answer, so the turn would park for ever. The hold is given
@@ -329,8 +360,8 @@ pub async fn raise(
     // refused, by the same test the gateway would apply; it lets nothing
     // through, so a failure to decide only leaves the question unmarked.
     let verdict = match &skills {
-        Some(skills) => trial_verdict(&state, &payload, skills, gate, &input).await,
-        None => None,
+        Ok(skills) => trial_verdict(&state, &payload, skills, gate, &input).await,
+        Err(_) => None,
     };
     if let Some(policy_id) = verdict {
         payload_json["would_auto_approve"] = serde_json::json!(policy_id.to_string());
@@ -467,32 +498,34 @@ struct Assessed {
 
 /// What a refused request's risk works out to: the gate's base risk, or for a
 /// money operation the band its amount falls in under this workspace's bands.
-/// `None` where the gate is not one the turn's skills declare, which leaves the
-/// question routed as every question was before.
+/// `Ok(None)` where the gate is not one the turn's skills declare; an error
+/// where the declarations could not be read.
 async fn assess(
     state: &ApiState,
     workspace_id: Uuid,
     skills: &[super::skill::ResolvedSkill],
     gate: &outturn_core::egress::gate::Gate,
     body: Option<&str>,
-) -> Option<Assessed> {
+) -> Result<Option<Assessed>, String> {
     let declared = super::auto_approval::declared_in(&state.pool, workspace_id, skills)
         .await
-        .ok()?;
-    let d = declared.iter().find(|d| d.gate == *gate)?;
+        .map_err(|e| format!("the declared gates: {e}"))?;
+    let Some(d) = declared.iter().find(|d| d.gate == *gate) else {
+        return Ok(None);
+    };
     let (Some(banding), Some(amount)) = (&d.banding, &d.amount) else {
-        return Some(Assessed {
+        return Ok(Some(Assessed {
             risk: d.risk,
             field: None,
             money: None,
-        });
+        }));
     };
     let parsed = body
         .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     let (risk, value) = banding.assess(&parsed);
-    Some(Assessed {
+    Ok(Some(Assessed {
         risk,
         field: Some(amount.amount.field.clone()),
         money: value.map(|v| {
@@ -502,7 +535,23 @@ async fn assess(
                 amount.amount.minor_units,
             )
         }),
-    })
+    }))
+}
+
+/// The risk a question is routed as. What was worked out, where it was; a
+/// host gate, which no skill declares, as every answerer, as before risks
+/// routed anything; and anything that could not be worked out as high, the
+/// narrowest, so a failure never asks more people than the workspace said.
+fn route_risk(
+    assessed: &Result<Option<Assessed>, String>,
+    gate: &outturn_core::egress::gate::Gate,
+) -> outturn_core::egress::policy::Risk {
+    use outturn_core::egress::policy::Risk;
+    match assessed {
+        Ok(Some(a)) => a.risk,
+        Ok(None) if gate.binds.is_empty() => Risk::Medium,
+        Ok(None) | Err(_) => Risk::High,
+    }
 }
 
 /// The roles in this workspace whose holders may answer an approval.
@@ -568,7 +617,7 @@ fn bound_values(fields: &[String], body: Option<&str>) -> serde_json::Value {
 
 #[cfg(test)]
 mod bound_tests {
-    use super::bound_values;
+    use super::{Assessed, bound_values, route_risk};
 
     #[test]
     fn each_declared_field_is_listed_with_its_value_in_order() {
@@ -597,5 +646,32 @@ mod bound_tests {
         let fields = vec!["x".to_string()];
         assert_eq!(bound_values(&fields, Some("x=1")), serde_json::json!([]));
         assert_eq!(bound_values(&fields, None), serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_risk_nobody_could_work_out_is_asked_as_high() {
+        use outturn_core::egress::gate::Gate;
+        use outturn_core::egress::policy::Risk;
+        let gate = |binds: &[&str]| Gate {
+            requires: "charge".into(),
+            host: "api.example.com".into(),
+            method: "POST".into(),
+            path: "/charges".into(),
+            identified_by: None,
+            binds: binds.iter().map(|b| b.to_string()).collect(),
+        };
+        let charge = gate(&["amount_pence"]);
+        let low = Ok(Some(Assessed {
+            risk: Risk::Low,
+            field: None,
+            money: None,
+        }));
+        assert_eq!(route_risk(&low, &charge), Risk::Low);
+        assert_eq!(route_risk(&Err("gone".into()), &charge), Risk::High);
+        // Bound fields but no declaration found: nobody knows its risk.
+        assert_eq!(route_risk(&Ok(None), &charge), Risk::High);
+        // A host gate is declared by no skill, and asks every answerer.
+        assert_eq!(route_risk(&Ok(None), &gate(&[])), Risk::Medium);
+        assert_eq!(route_risk(&Err("gone".into()), &gate(&[])), Risk::High);
     }
 }
