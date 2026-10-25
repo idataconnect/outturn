@@ -18,6 +18,12 @@ RUN npm run build
 # Only for its binary, which is static. Copied onto distroless like the tiers,
 # so the image has no shell or package manager under the server.
 FROM caddy:2.11.7-alpine AS caddy
+# The binary ships with a file capability to bind ports below 1024. This
+# server listens on 8080 and its pod drops every capability and forbids
+# escalation, so the kernel refuses to exec a binary that asks for one:
+# "operation not permitted", before Caddy runs a line. Stripped here, so the
+# image starts under the securityContext k8s/deploy gives it.
+RUN apk add --no-cache libcap && setcap -r /usr/bin/caddy
 
 FROM gcr.io/distroless/static-debian13 AS ui
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
