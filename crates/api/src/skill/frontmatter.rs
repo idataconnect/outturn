@@ -32,8 +32,9 @@ pub struct ApprovalRule {
     /// the same act are the same act for the purposes of one grant.
     pub requires: String,
     /// The request this applies to, as the gateway will see it: a method, a
-    /// space, and a path. `POST /charges`, or `DELETE /bookings/*` where a
-    /// trailing star stands for anything below.
+    /// space, and a path. `POST /charges`, `DELETE /bookings/*` where a
+    /// trailing star stands for anything below, or `DELETE /invoices/{id}`
+    /// where a named segment stands for one segment that `binds` may name.
     ///
     /// Declared rather than read out of the prose below. The body says
     /// `fetch_url with POST http://.../charges` because that is what a model
@@ -50,8 +51,8 @@ pub struct ApprovalRule {
     /// Which field of the request names that unit. Required when `covers` is
     /// present and meaningless without it.
     pub identified_by: Option<String>,
-    /// The request-body fields a person approving this is really approving, in
-    /// declared order.
+    /// The request fields a person approving this is really approving, in
+    /// declared order: body fields, and path parameters `matches` names.
     ///
     /// What a `call` grant is keyed on. Required, because a grant keyed on less
     /// than what made the request distinctive covers requests nobody looked at:
@@ -515,7 +516,7 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
                 .into(),
         ));
     };
-    check_matches(&matches)?;
+    let path_params = check_matches(&matches)?;
 
     let binds = binds.unwrap_or_default();
     if binds.is_empty() {
@@ -569,8 +570,25 @@ fn approval_from(yaml: &str) -> Result<Option<ApprovalRule>, FrontmatterError> {
             "{field} is bound, so it cannot also be free"
         )));
     }
+    // `free` is about the body, and a path parameter is not in it.
+    if let Some(field) = free.iter().find(|f| path_params.contains(f)) {
+        return Err(FrontmatterError::Invalid(format!(
+            "{field} is a path parameter, so it cannot be free"
+        )));
+    }
 
     let amount = declaration(amount, bands, floor)?;
+    // Money read out of a URL is money nobody can type back into one, and the
+    // bands are read from the body.
+    if let Some(declared) = &amount
+        && let Some(field) = std::iter::once(&declared.amount.field)
+            .chain(&declared.amount.currency_field)
+            .find(|f| path_params.contains(f))
+    {
+        return Err(FrontmatterError::Invalid(format!(
+            "amount names {field}, a path parameter; an amount and its currency are body fields"
+        )));
+    }
     if let Some(declared) = &amount {
         declared
             .check(risk, &binds, &numbers)
@@ -857,10 +875,10 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     // one, and is meaningless on a read.
     if let Some(stray) = identity
         .iter()
-        .find(|n| !body.contains(n) && !query.contains(n))
+        .find(|n| !body.contains(n) && !query.contains(n) && !path.contains(n))
     {
         return Err(FrontmatterError::Invalid(format!(
-            "identity names {stray}, which is not in the body or query"
+            "identity names {stray}, which is not in the path, body or query"
         )));
     }
     if idempotency_key.is_some() && identity.is_empty() {
@@ -1006,9 +1024,11 @@ fn gate_fits_operation(rule: &ApprovalRule, op: &Operation) -> Result<(), Frontm
     let fits = method == op.method
         && match pattern.strip_suffix('*') {
             Some(prefix) => path.starts_with(prefix),
-            // Without a star the gate matches one literal path, which a path
-            // with a parameter in it never is.
-            None => pattern == path && !path.contains('{'),
+            // Without a star the gate matches the operation's path segment for
+            // segment, a named segment only where the url has the same name:
+            // `{id}` gating `{invoice_id}` would bind a name the request never
+            // fills.
+            None => pattern == path,
         };
     if !fits {
         return Err(FrontmatterError::Invalid(format!(
@@ -1016,12 +1036,15 @@ fn gate_fits_operation(rule: &ApprovalRule, op: &Operation) -> Result<(), Frontm
             rule.matches, op.method
         )));
     }
-    // A grant is keyed on body fields. One the operation never sends would be
-    // keyed on nothing, and cover every request.
+    // A grant is keyed on body fields and the path parameters the pattern
+    // names. One the operation never sends would be keyed on nothing, and
+    // cover every request. The pattern's names are the url's, checked above,
+    // and the operation refuses a name in both its path and its body.
+    let path_params = placeholders(pattern).unwrap_or_default();
     for field in rule.binds.iter().chain(&rule.identified_by) {
-        if !op.body.contains(field) {
+        if !op.body.contains(field) && !path_params.contains(field) {
             return Err(FrontmatterError::Invalid(format!(
-                "the approval binds {field}, which is not in this operation's body"
+                "the approval binds {field}, which is not in this operation's body or its path"
             )));
         }
     }
@@ -1035,7 +1058,12 @@ fn gate_fits_operation(rule: &ApprovalRule, op: &Operation) -> Result<(), Frontm
 /// more than they meant -- and a gate that is too wide refuses work nobody
 /// intended to gate, which reads as the platform being broken rather than as a
 /// rule being wrong.
-fn check_matches(value: &str) -> Result<(), FrontmatterError> {
+///
+/// A named segment, `{id}`, is a whole segment as in an operation's url, and
+/// its names are returned. Named segments and a trailing star are not
+/// combined: the star stands for anything below, and a pattern doing both has
+/// bound values that depend on where a reader thinks the star stops.
+fn check_matches(value: &str) -> Result<Vec<String>, FrontmatterError> {
     let Some((method, path)) = value.split_once(' ') else {
         return Err(FrontmatterError::Invalid(format!(
             "{value} is not a method and a path, e.g. `POST /charges`"
@@ -1062,7 +1090,23 @@ fn check_matches(value: &str) -> Result<(), FrontmatterError> {
             "{path} has a star somewhere other than the end, which would gate more than it names"
         )));
     }
-    Ok(())
+    let names = placeholders(path)?;
+    if let Some(twice) = names
+        .iter()
+        .enumerate()
+        .find(|(i, n)| names[..*i].contains(n))
+        .map(|(_, n)| n)
+    {
+        return Err(FrontmatterError::Invalid(format!(
+            "{path} names {{{twice}}} twice"
+        )));
+    }
+    if !names.is_empty() && path.ends_with('*') {
+        return Err(FrontmatterError::Invalid(format!(
+            "{path} names its segments and ends in a star; a pattern does one or the other"
+        )));
+    }
+    Ok(names)
 }
 
 /// Strips one layer of matching quotes, so `requires: "charge"` reads the same
@@ -1863,13 +1907,84 @@ mod operations {
     }
 
     #[test]
-    fn a_star_covers_a_path_parameter_and_a_literal_does_not() {
+    fn a_star_covers_a_path_parameter_and_cannot_bind_it() {
         parse(
             "---\napproval:\n  requires: cancel\n  matches: DELETE /bookings/*\n  binds: [reason]\noperation:\n  method: DELETE\n  url: http://h/bookings/{id}\n  body: [reason]\n---\n",
         )
         .expect("a star covers the id");
+        // The star names nothing, so there is no `id` for it to bind.
         refused(
-            "---\napproval:\n  requires: cancel\n  matches: DELETE /bookings/{id}\n  binds: [reason]\noperation:\n  method: DELETE\n  url: http://h/bookings/{id}\n  body: [reason]\n---\n",
+            "---\napproval:\n  requires: cancel\n  matches: DELETE /bookings/*\n  binds: [id]\noperation:\n  method: DELETE\n  url: http://h/bookings/{id}\n---\n",
+        );
+    }
+
+    /// `DELETE /invoices/{id}` sends no body, and its approval is about the
+    /// id alone -- which is a rule.
+    #[test]
+    fn a_gate_may_bind_only_its_path_parameters() {
+        let parsed = parse(
+            "---\napproval:\n  requires: delete\n  matches: DELETE /invoices/{id}\n  binds: [id]\noperation:\n  method: DELETE\n  url: https://books.example.com/invoices/{id}\n---\n",
+        )
+        .expect("parse");
+        assert_eq!(parsed.approval.unwrap().binds, ["id"]);
+
+        // And beside body fields, with the unit and a number named by the path.
+        parse(
+            "---\napproval:\n  requires: void\n  matches: POST /invoices/{id}/void\n  binds: [id, reason]\n  covers: invoice\n  identified_by: id\n  numbers: [id]\n  auto: allowed\n  free: []\noperation:\n  method: POST\n  url: https://books.example.com/invoices/{id}/void\n  body: [reason]\n  identity: [id]\n---\n",
+        )
+        .expect("a path parameter beside a body field");
+    }
+
+    #[test]
+    fn a_gate_naming_segments_the_operation_does_not_have_is_refused() {
+        for (matches, url) in [
+            // Another name for the same segment binds what the request never fills.
+            ("DELETE /invoices/{invoice_id}", "https://h/invoices/{id}"),
+            ("DELETE /invoices/{id}", "https://h/invoices/{id}/lines"),
+            ("DELETE /invoices/{id}", "https://h/invoices/current"),
+        ] {
+            refused(&format!(
+                "---\napproval:\n  requires: delete\n  matches: {matches}\n  binds: [id]\noperation:\n  method: DELETE\n  url: {url}\n---\n"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_path_pattern_is_refused_where_it_cannot_mean_one_thing() {
+        let rule = |matches: &str, extra: &str| {
+            parse(&format!(
+                "---\napproval:\n  requires: void\n  matches: {matches}\n  binds: [id]\n{extra}---\n"
+            ))
+            .map(|p| p.approval)
+        };
+        assert!(rule("POST /invoices/{id}/void", "").is_ok());
+        for (matches, extra) in [
+            // Part of a segment, a name twice, and a name beside a star.
+            ("POST /invoices/inv_{id}", ""),
+            ("POST /invoices/{id/void", ""),
+            ("POST /a/{id}/b/{id}", ""),
+            ("POST /invoices/{id}/*", ""),
+            // A path parameter is not in the body, so it is not free.
+            ("POST /invoices/{id}", "  auto: allowed\n  free: [id]\n"),
+            // Nor an amount.
+            (
+                "POST /invoices/{id}",
+                "  numbers: [id]\n  amount: { field: id, currency: GBP, minor_units: 2 }\n",
+            ),
+        ] {
+            assert!(
+                matches!(rule(matches, extra), Err(FrontmatterError::Invalid(_))),
+                "{matches} {extra} was accepted"
+            );
+        }
+    }
+
+    /// A name in the path and the body is read from one and sent in the
+    /// other.
+    #[test]
+    fn a_name_that_is_both_a_path_parameter_and_a_body_field_is_refused() {
+        refused(
+            "---\napproval:\n  requires: void\n  matches: POST /invoices/{id}/void\n  binds: [id]\noperation:\n  method: POST\n  url: https://h/invoices/{id}/void\n  body: [id]\n---\n",
         );
     }
 
