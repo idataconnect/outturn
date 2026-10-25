@@ -614,7 +614,7 @@ fn declaration(
             .map_err(|_| invalid(format!("{key}'s {level} is a whole number, not {raw}")))
     };
 
-    let (mut field, mut currency, mut minor_units) = (None, None, None);
+    let (mut field, mut currency, mut minor_units, mut currency_field) = (None, None, None, None);
     for (key, value) in amount {
         match key.as_str() {
             "field" => field = Some(value),
@@ -624,6 +624,7 @@ fn declaration(
                     invalid(format!("minor_units is a small whole number, not {value}"))
                 })?)
             }
+            "currency_field" => currency_field = Some(value),
             other => return Err(invalid(format!("{other} is not a key of amount"))),
         }
     }
@@ -666,6 +667,7 @@ fn declaration(
             field,
             currency,
             minor_units,
+            currency_field,
         },
         bands: declared_bands,
         floor: declared_floor,
@@ -1209,7 +1211,14 @@ mod tests {
         };
         let amount = "  amount: { field: amount_pence, currency: GBP, minor_units: 2 }\n";
         assert!(rule(amount).is_ok());
+        assert!(
+            rule("  amount: { field: amount_pence, currency: GBP, minor_units: 2, currency_field: booking_id }\n")
+                .is_ok()
+        );
         for extra in [
+            // A currency named in a field the approval does not bind.
+            "  amount: { field: amount_pence, currency: GBP, minor_units: 2, currency_field: currency }\n"
+                .to_string(),
             // Not a number comparisons read, and not bound at all.
             "  amount: { field: booking_id, currency: GBP, minor_units: 2 }\n".to_string(),
             "  amount: { field: total, currency: GBP, minor_units: 2 }\n".to_string(),

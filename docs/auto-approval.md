@@ -214,6 +214,10 @@ how far it trusts the agent: *auto-approve up to `low`*.
 
   The amount field must be in `numbers`, so every rule about comparing numbers
   above applies to it unchanged.
+  Where a request names its own currency, `currency_field` says which bound
+  field: `amount: { field: amount, currency: GBP, minor_units: 2,
+  currency_field: currency }`. A request whose value there is anything but
+  exactly `GBP` carries an amount nobody can trust, and takes the base risk.
 - **The workspace.** Its own bands for an operation, or for every operation in
   one currency, starting from the operator's defaults -- moved either way, but
   never past the floor. A workspace that thinks £500 is small for its business
@@ -548,6 +552,15 @@ waved through, which is the one outcome this whole design must not permit.
 - **Daily totals.** `approval_policies.daily_totals`, `{"GBP": 15000}` in minor
   units, on any selector. A policy with totals covers money operations only in
   a currency it totals; one moving no money is covered as before.
+- **One unit per currency.** What is kept for a whole currency -- its row of
+  bands, a policy's daily totals, a day's `currency_amount`, the offer's
+  figures -- is in the currency's standard minor units by ISO 4217
+  (`egress::amount::standard_minor_units`: a short table, two for anything
+  not in it), and an operation's own row is in its amount field's units
+  (migration 0069). A currency's band reaches an operation counting in other
+  units rounded down (`from_standard`), and a request's amount reaches the
+  day's total rounded up (`to_standard`), so a conversion that loses
+  precision always lands on more risk and a larger day.
 - **Routing.** `api::gated` works out the risk of the refused request from the
   workspace's bands (the API's reading rather than the token's: it lets nothing
   out, only chooses who is asked) and, for high, asks the roles in
@@ -571,25 +584,32 @@ waved through, which is the one outcome this whole design must not permit.
   (`riskOf`, `moneyOf`); the approval prompt and the queue rows show a
   `RiskBadge` and the amount's `display`, the prompt beside the bound number
   it came from, which stays. Amounts are typed in whole units and sent in
-  minor ones (`toMinor`, on the digits), and a figure worked out on the page
-  is written by `formatMoney` as the API writes `display`. Settings →
+  minor ones (`toMinor`, on the digits, refusing what a number cannot hold
+  exactly). The page writes no money of its own: every amount it shows is
+  the API's `display`, a policy's totals arrive as `daily_totals_money`, the
+  offer's figure as `all_under`, and a form starts from a `Money`'s
+  `figure` (`50`, `12.50`). Settings →
   Auto-approval has, in order: the one line (`OneLinePolicy`), the policies,
   the bands per currency and per operation (`ApprovalBands`), and who is
   asked about high risk (`HighRiskRoute`). The editor takes `max_risk` on any
   selector and daily totals per currency, and says a test on a declared
   amount field as money.
-- **The one line** writes the low band of each operation of the kind in that
-  currency whose low is not that already -- per operation, never the
-  currency's row, which would move every other operation in it -- keeping a
-  medium bound still above it, then the policy, so a band the floor refuses
-  stops it before a policy exists. It is prefilled from
+- **The one line** is one write, `POST /v1/approval-policies/one-line`
+  (`requires`, `currency`, `low` and `daily_total` in the currency's standard
+  units, `agent_id`, `mode`, `expires_at`): the low band of each operation of
+  the kind in that currency whose low is not that already -- per operation,
+  never the currency's row, which would move every other operation in it --
+  in the operation's own units, rounded down, keeping a medium bound still
+  above it; and the policy. Everything is checked first and written in one
+  transaction, so a band the floor refuses leaves no policy and a policy
+  refused leaves no band. It is prefilled from
   `/settings/auto-approval?line=&currency=&low=`. Its counts are one a turn
   and twenty a day, which the full editor changes.
 - **The offer** reads `/v1/approvals/amounts` first, in the request's
   currency or else the one most approved: "12 charges approved in the last
-  30 days, all under £40.00." -- the figure being the largest plus one,
-  rounded up at its leading digit -- linking to the one line at
-  `suggested_low`. An act with no amounts falls back to the count and the
+  30 days, all under £40.00." -- `all_under`, the largest plus one, rounded
+  up at its leading digit -- linking to the one line at `suggested_low`. Both
+  are worked out by the API, in the currency's standard units. An act with no amounts falls back to the count and the
   full editor, as before. Neither is asked for on a follow-up.
 
 #### Deviations

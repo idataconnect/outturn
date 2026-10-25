@@ -9,7 +9,6 @@ import { ApiError } from '../lib/api'
 import {
   covers,
   dailyTotals,
-  decimalsOf,
   listBands,
   listPolicies,
   stateLabel,
@@ -29,7 +28,6 @@ export default function AutoApproval() {
   const state = useSession()
   const [policies, setPolicies] = useState<Policy[]>([])
   const [bands, setBands] = useState<BandsPage | null>(null)
-  const decimals = decimalsOf(bands)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // Moved on by anything here that writes, so the page reads again what it
@@ -108,9 +106,9 @@ export default function AutoApproval() {
                 : `, until ${new Date(p.expires_at).toLocaleDateString()}`}
               {p.effect === 'include' && ` · ${p.auto_approved} approved automatically`}
             </p>
-            {dailyTotals(p.daily_totals, decimals).length > 0 && (
+            {dailyTotals(p).length > 0 && (
               <p className="mt-0.5 text-xs text-surface-600 dark:text-surface-400">
-                Up to {dailyTotals(p.daily_totals, decimals).join(' and ')} a day
+                Up to {dailyTotals(p).join(' and ')} a day
               </p>
             )}
           </RecordRow>

@@ -11,6 +11,8 @@ export type Choice = {
   amount: string
   currency: string
   minorUnits: string
+  /** The field a request names its currency in, or '' for none. */
+  currencyField: string
 }
 
 export function choiceFrom(s: SuggestedApproval): Choice {
@@ -20,6 +22,7 @@ export function choiceFrom(s: SuggestedApproval): Choice {
     amount: s.amount?.field ?? '',
     currency: s.amount?.currency ?? '',
     minorUnits: s.amount?.minor_units === undefined ? '' : String(s.amount.minor_units),
+    currencyField: s.amount?.currency_field ?? '',
   }
 }
 
@@ -43,10 +46,13 @@ export function cannotWrite(s: SuggestedApproval): string | null {
 
 /** The `approval` frontmatter for a confirmed choice. Only what the operator
  *  confirmed is written: an amount appears when one is chosen, and the currency
- *  and units only where they were given. */
+ *  units and currency field only where they were given. */
 export function approvalYaml(op: Operation, c: Choice, baseUrl: string | null): string {
   const s = op.suggested_approval!
-  const binds = c.amount && !s.binds.includes(c.amount) ? [...s.binds, c.amount] : s.binds
+  const currencyField = c.amount ? c.currencyField.trim() : ''
+  // Both are read from the body, so both are bound.
+  const binds = [...s.binds]
+  for (const f of [c.amount, currencyField]) if (f && !binds.includes(f)) binds.push(f)
   const numbers = c.amount && !s.numbers.includes(c.amount) ? [...s.numbers, c.amount] : s.numbers
   const lines = [
     'approval:',
@@ -60,6 +66,7 @@ export function approvalYaml(op: Operation, c: Choice, baseUrl: string | null): 
     const parts = [`field: ${c.amount}`]
     if (c.currency.trim()) parts.push(`currency: ${c.currency.trim().toUpperCase()}`)
     if (c.minorUnits.trim()) parts.push(`minor_units: ${c.minorUnits.trim()}`)
+    if (currencyField) parts.push(`currency_field: ${currencyField}`)
     lines.push(`  amount: { ${parts.join(', ')} }`)
   }
   return lines.join('\n')

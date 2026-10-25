@@ -20,6 +20,7 @@ const gbp = (amount: number) => ({
   currency: 'GBP',
   minor_units: 2,
   display: `£${(amount / 100).toLocaleString('en-GB', { minimumFractionDigits: 2 })}`,
+  figure: amount % 100 ? (amount / 100).toFixed(2) : String(amount / 100),
 })
 
 const charge: BandOperation = {

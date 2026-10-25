@@ -1690,6 +1690,10 @@ fn an_amount_is_found_by_name_with_its_currency_and_units() {
     let transfer = suggestion("create_transfer").amount.unwrap();
     assert_eq!(transfer.field, "total");
     assert_eq!(transfer.currency.as_deref(), Some("EUR"));
+    // And named as where a request says its currency, so another is not
+    // read against these bands.
+    assert_eq!(transfer.currency_field.as_deref(), Some("currency"));
+    assert_eq!(charge.currency_field, None);
 
     assert!(suggestion("create_customer").amount.is_none());
 }
@@ -1819,4 +1823,21 @@ fn the_rule_the_page_writes_for_an_amount_is_read() {
     // with the `numbers` the amount field has to be in.
     let rule = charge_with(AMOUNT_RULE).expect("the rule is kept");
     assert_eq!(rule.numbers, ["amount_pence"]);
+}
+
+#[test]
+fn the_rule_the_page_writes_with_a_currency_field_is_read() {
+    // approvalYaml binds the currency field when the wizard found one.
+    let rule = AMOUNT_RULE
+        .replace(
+            "binds: [payment_account_id, booking_id, amount_pence]",
+            "binds: [payment_account_id, booking_id, amount_pence, currency]",
+        )
+        .replace(
+            "minor_units: 2 }",
+            "minor_units: 2, currency_field: currency }",
+        );
+    let rule = charge_with(&rule).expect("the rule is kept");
+    let declared = rule.amount.expect("an amount");
+    assert_eq!(declared.amount.currency_field.as_deref(), Some("currency"));
 }

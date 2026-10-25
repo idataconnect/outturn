@@ -72,11 +72,22 @@ pub struct PolicyView {
     #[serde(flatten)]
     pub policy: Policy,
     pub state: &'static str,
+    /// Each daily total as money, so the page writes none itself.
+    pub daily_totals_money: BTreeMap<String, super::bands::Money>,
 }
 
 fn view(policy: Policy) -> PolicyView {
     let state = policy.state(Utc::now());
-    PolicyView { policy, state }
+    let daily_totals_money = policy
+        .daily_totals
+        .iter()
+        .map(|(c, v)| (c.clone(), super::bands::Money::standard(*v, c)))
+        .collect();
+    PolicyView {
+        policy,
+        state,
+        daily_totals_money,
+    }
 }
 
 /// What a person writes. The same shape for a new policy and an edit.
@@ -378,18 +389,14 @@ async fn found(state: &ApiState, workspace_id: Uuid, id: Uuid) -> Result<Policy,
         .ok_or((StatusCode::NOT_FOUND, "no such policy".to_string()))
 }
 
-/// `POST /v1/approval-policies`.
-pub async fn create(
-    State(state): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    Json(input): Json<WritePolicy>,
-) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
-    let claims = authenticate(&state, &headers)?;
-    may_write(&state, &claims).await?;
-    let checked = check(input, Utc::now())?;
-    check_references(&state, claims.workspace_id, &checked).await?;
-
-    let id = Uuid::now_v7();
+/// Writes a checked policy as a new row.
+async fn insert<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    workspace_id: Uuid,
+    id: Uuid,
+    subject: Uuid,
+    checked: &Checked,
+) -> Result<(), ApiError> {
     sqlx::query(
         "insert into approval_policies \
              (workspace_id, id, agent_id, effect, selector, max_risk, requires, skill_id, \
@@ -398,7 +405,7 @@ pub async fn create(
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                  $17, $17, $17, $18, $19)",
     )
-    .bind(claims.workspace_id)
+    .bind(workspace_id)
     .bind(id)
     .bind(checked.agent_id)
     .bind(checked.effect)
@@ -414,12 +421,36 @@ pub async fn create(
     .bind(checked.sum_per_day)
     .bind(checked.mode)
     .bind(&checked.note)
-    .bind(claims.subject)
+    .bind(subject)
     .bind(checked.expires_at)
     .bind(serde_json::to_value(&checked.daily_totals).map_err(internal)?)
-    .execute(&state.pool)
+    .execute(executor)
     .await
     .map_err(internal)?;
+
+    Ok(())
+}
+
+/// `POST /v1/approval-policies`.
+pub async fn create(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<WritePolicy>,
+) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims).await?;
+    let checked = check(input, Utc::now())?;
+    check_references(&state, claims.workspace_id, &checked).await?;
+
+    let id = Uuid::now_v7();
+    insert(
+        &state.pool,
+        claims.workspace_id,
+        id,
+        claims.subject,
+        &checked,
+    )
+    .await?;
 
     tracing::info!(
         workspace_id = %claims.workspace_id,
@@ -427,6 +458,97 @@ pub async fn create(
         set_by = %claims.subject,
         mode = checked.mode,
         "an auto-approval policy was set"
+    );
+    super::waiting::reconcile(&state, claims.workspace_id).await;
+    let policy = found(&state, claims.workspace_id, id).await?;
+    Ok((StatusCode::CREATED, Json(view(policy))))
+}
+
+/// The one line, as the page sends it: a kind of act, a figure under which its
+/// requests in one currency are low, and a daily total -- both in the
+/// currency's standard minor units -- for an agent, until a date.
+#[derive(Debug, Deserialize)]
+pub struct WriteOneLine {
+    pub requires: String,
+    pub currency: String,
+    pub low: i64,
+    pub daily_total: i64,
+    #[serde(default)]
+    pub agent_id: Option<Uuid>,
+    #[serde(default = "trial")]
+    pub mode: String,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// The counts a one-line policy carries. The daily total bounds the money;
+/// these only have to be above zero, and the full editor changes them.
+const ONE_LINE_PER_TURN: i32 = 1;
+const ONE_LINE_PER_DAY: i32 = 20;
+
+/// `POST /v1/approval-policies/one-line`: the low band of every operation of
+/// that kind in that currency, where it is not that already, and a policy for
+/// the kind up to low with that daily total -- in one transaction, everything
+/// checked before anything is written, so a band the floor refuses leaves no
+/// policy and a policy refused leaves no band.
+///
+/// Per operation, never the currency's row, which would move every other
+/// operation in the currency too. Each keeps its medium bound where that is
+/// still above the new low one.
+pub async fn one_line(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Json(input): Json<WriteOneLine>,
+) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    may_write(&state, &claims).await?;
+    let ops = super::bands::operations(&state, claims.workspace_id)
+        .await
+        .map_err(internal)?;
+    let rows = super::bands::of(&state.pool, claims.workspace_id)
+        .await
+        .map_err(internal)?;
+    let writes = super::bands::one_line(&ops, &rows, &input.requires, &input.currency, input.low)?;
+    let checked = check(
+        WritePolicy {
+            agent_id: input.agent_id,
+            effect: include(),
+            selector: "act".into(),
+            max_risk: Some(Risk::Low.as_str().to_string()),
+            requires: Some(input.requires.clone()),
+            skill_id: None,
+            matches: None,
+            conditions: Vec::new(),
+            per_turn: Some(ONE_LINE_PER_TURN),
+            per_day: Some(ONE_LINE_PER_DAY),
+            sum_field: None,
+            sum_per_day: None,
+            daily_totals: BTreeMap::from([(input.currency.clone(), input.daily_total)]),
+            mode: input.mode,
+            note: None,
+            expires_at: input.expires_at,
+        },
+        Utc::now(),
+    )?;
+    check_references(&state, claims.workspace_id, &checked).await?;
+
+    let id = Uuid::now_v7();
+    let mut tx = state.pool.begin().await.map_err(internal)?;
+    for write in &writes {
+        super::bands::write(&mut tx, claims.workspace_id, claims.subject, write)
+            .await
+            .map_err(internal)?;
+    }
+    insert(&mut *tx, claims.workspace_id, id, claims.subject, &checked).await?;
+    tx.commit().await.map_err(internal)?;
+
+    tracing::info!(
+        workspace_id = %claims.workspace_id,
+        policy_id = %id,
+        bands_set = writes.len(),
+        set_by = %claims.subject,
+        mode = checked.mode,
+        "a one-line auto-approval policy was set"
     );
     super::waiting::reconcile(&state, claims.workspace_id).await;
     let policy = found(&state, claims.workspace_id, id).await?;
@@ -711,6 +833,12 @@ pub fn replay(
                     )
                 };
                 let total = policy.daily_totals.get(&banding.currency).copied();
+                // A day is counted in the currency's standard units, whatever
+                // the operation's own.
+                let standard =
+                    outturn_core::egress::amount::standard_minor_units(&banding.currency);
+                let counted =
+                    |v: i64| outturn_core::egress::amount::format(v, &banding.currency, standard);
                 if risk > max {
                     would = false;
                     why = Some(match amount {
@@ -724,6 +852,7 @@ pub fn replay(
                             why = Some("no amount to count against the day's total".into());
                         }
                         Some(v) => {
+                            let v = banding.counted(v).unwrap_or(i64::MAX);
                             let day: i64 = let_out
                                 .iter()
                                 .filter(|(at, c, _)| {
@@ -731,18 +860,18 @@ pub fn replay(
                                 })
                                 .map(|(_, _, v)| v)
                                 .sum();
-                            if day + v > total {
+                            if day.saturating_add(v) > total {
                                 would = false;
                                 why = Some(format!(
                                     "{} would take the day past {}",
-                                    said(v),
-                                    said(total)
+                                    counted(v),
+                                    counted(total)
                                 ));
                             }
                         }
                     }
                 }
-                if would && let Some(v) = amount {
+                if would && let Some(v) = amount.and_then(|v| banding.counted(v)) {
                     let_out.push((a.at, banding.currency.clone(), v));
                 }
             }
@@ -914,6 +1043,8 @@ pub struct AmountsQuery {
 #[derive(Debug, Serialize)]
 pub struct ApprovedIn {
     pub currency: String,
+    /// The currency's standard digits after the point, which every figure here
+    /// is in.
     pub minor_units: u8,
     /// How many a person said yes to.
     pub approved: i64,
@@ -922,6 +1053,10 @@ pub struct ApprovedIn {
     /// The figure an offer prefills: the first round amount above the largest
     /// approved -- £50 after approvals all under £40.
     pub suggested_low: super::bands::Money,
+    /// The round figure every approved amount was under, which the offer says:
+    /// the largest plus one, rounded up at its leading digit -- £40 after a
+    /// largest of £39.99.
+    pub all_under: super::bands::Money,
 }
 
 #[derive(Debug, Serialize)]
@@ -945,6 +1080,16 @@ fn round_above(max: i64, minor_units: u8) -> i64 {
         }
         step = step.saturating_mul(10);
     }
+}
+
+/// One more than `max`, rounded up at its leading digit, and never less than
+/// one whole unit of the currency.
+fn round_under(max: i64, minor_units: u8) -> i64 {
+    let above = max
+        .saturating_add(1)
+        .max(10i64.saturating_pow(u32::from(minor_units)));
+    let magnitude = 10i64.saturating_pow(above.ilog10());
+    (above / magnitude + i64::from(above % magnitude != 0)).saturating_mul(magnitude)
 }
 
 /// `GET /v1/approvals/amounts?requires=charge&days=30`: the amounts this
@@ -982,21 +1127,37 @@ pub async fn amounts(
     .fetch_all(&state.pool)
     .await
     .map_err(internal)?;
-    let currencies = rows
-        .iter()
-        .filter_map(|r| {
-            let currency: String = r.get("currency");
-            let minor: u8 = u8::try_from(r.get::<i32, _>("minor_units")).ok()?;
-            let max: i64 = r.get("max");
+    // One figure per currency, in its standard units, whatever each operation
+    // counts in: an offer's figure becomes a band for the whole currency.
+    let mut per: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+    for r in &rows {
+        let currency: String = r.get("currency");
+        let Ok(minor) = u8::try_from(r.get::<i32, _>("minor_units")) else {
+            continue;
+        };
+        let standard = |v: i64| outturn_core::egress::amount::to_standard(v, &currency, minor);
+        let (Some(max), Some(total)) = (standard(r.get("max")), standard(r.get("total"))) else {
+            continue;
+        };
+        let e = per.entry(currency.clone()).or_insert((0, 0, 0));
+        e.0 += r.get::<i64, _>("approved");
+        e.1 = e.1.max(max);
+        e.2 = e.2.saturating_add(total);
+    }
+    let currencies = per
+        .into_iter()
+        .map(|(currency, (approved, max, total))| {
+            let minor = outturn_core::egress::amount::standard_minor_units(&currency);
             let m = |v| super::bands::Money::of(v, &currency, minor);
-            Some(ApprovedIn {
-                approved: r.get("approved"),
+            ApprovedIn {
+                approved,
                 max: m(max),
-                total: m(r.get("total")),
+                total: m(total),
                 suggested_low: m(round_above(max, minor)),
+                all_under: m(round_under(max, minor)),
                 minor_units: minor,
                 currency: currency.clone(),
-            })
+            }
         })
         .collect();
     Ok(Json(Amounts {
@@ -1018,6 +1179,16 @@ mod tests {
         assert_eq!(round_above(5000, 2), 10000);
         assert_eq!(round_above(12, 2), 100, "never below one whole unit");
         assert_eq!(round_above(1500, 0), 2000);
+    }
+
+    #[test]
+    fn the_offer_says_a_round_figure_every_amount_was_under() {
+        assert_eq!(round_under(3999, 2), 4000);
+        assert_eq!(round_under(4000, 2), 5000);
+        assert_eq!(round_under(12, 2), 100, "never below one whole unit");
+        assert_eq!(round_under(123_456, 2), 200_000);
+        assert_eq!(round_under(7, 0), 8);
+        assert_eq!(round_under(i64::MAX, 2), i64::MAX);
     }
 
     fn write(v: serde_json::Value) -> WritePolicy {
@@ -1199,6 +1370,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: "GBP".into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: bands.clone(),
             floor: Floor::default(),
@@ -1206,6 +1378,8 @@ mod tests {
         d.banding = Some(Banding {
             field: "amount_pence".into(),
             currency: "GBP".into(),
+            currency_field: None,
+            minor_units: 2,
             base: Risk::High,
             bands,
             floor: Floor::default(),

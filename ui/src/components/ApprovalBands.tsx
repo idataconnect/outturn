@@ -10,7 +10,7 @@ import {
   type BandsView,
   type WriteBands,
 } from '../lib/autoApproval'
-import { currencyMark, toMajor, toMinor, type Risk } from '../lib/money'
+import { toMinor, type Risk } from '../lib/money'
 import RiskBadge from './RiskBadge'
 
 const input =
@@ -207,8 +207,8 @@ function Editor({
   const [error, setError] = useState<string | null>(null)
 
   function open() {
-    setLow(initial?.low ? toMajor(initial.low.amount, minorUnits) : '')
-    setMedium(initial?.medium ? toMajor(initial.medium.amount, minorUnits) : '')
+    setLow(initial?.low?.figure ?? '')
+    setMedium(initial?.medium?.figure ?? '')
     setError(null)
     setEditing(true)
   }
@@ -270,16 +270,15 @@ function Editor({
       </div>
     )
   }
-  const mark = currencyMark(currency)
   return (
     <form onSubmit={save} className="mt-2 space-y-2" aria-label={`Edit ${what}`}>
       <div className="grid grid-cols-2 gap-3">
         <label className="text-xs text-surface-700 dark:text-surface-300">
-          Low below ({mark})
+          Low below ({currency})
           <input className={input} inputMode="decimal" value={low} onChange={(e) => setLow(e.target.value)} />
         </label>
         <label className="text-xs text-surface-700 dark:text-surface-300">
-          Medium below ({mark})
+          Medium below ({currency})
           <input className={input} inputMode="decimal" value={medium} onChange={(e) => setMedium(e.target.value)} />
         </label>
       </div>

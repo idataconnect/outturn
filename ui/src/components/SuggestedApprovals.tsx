@@ -189,6 +189,13 @@ export default function SuggestedApprovals({
                         onChange={(e) => setChoice({ ...choice, minorUnits: e.target.value })}
                         className={`${FIELD} w-12 font-mono`}
                       />
+                      <input
+                        aria-label="Field naming the currency"
+                        placeholder="currency"
+                        value={choice.currencyField}
+                        onChange={(e) => setChoice({ ...choice, currencyField: e.target.value })}
+                        className={`${FIELD} w-28 font-mono`}
+                      />
                     </>
                   )}
                   <button

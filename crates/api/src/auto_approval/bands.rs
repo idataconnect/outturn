@@ -114,8 +114,14 @@ pub fn effective(d: &Declared, rows: &[Band]) -> Option<(Bands, Source)> {
     if let Some(own) = in_currency.clone().find(|r| r.names(d)) {
         return Some((own.bands(), Source::Operation));
     }
+    // A currency's row is in the currency's standard units, the operation's own
+    // in the operation's.
     if let Some(all) = in_currency.clone().find(|r| r.skill_id.is_none()) {
-        return Some((all.bands(), Source::Currency));
+        return Some((
+            all.bands()
+                .from_standard(currency, declared.amount.minor_units),
+            Source::Currency,
+        ));
     }
     Some((declared.bands.clone(), Source::Operator))
 }
@@ -142,6 +148,8 @@ pub struct Money {
     pub minor_units: u8,
     /// `£50.00`.
     pub display: String,
+    /// `50`: the amount as a form shows it to be typed again.
+    pub figure: String,
 }
 
 impl Money {
@@ -151,7 +159,13 @@ impl Money {
             currency: currency.to_string(),
             minor_units,
             display: amount::format(amount, currency, minor_units),
+            figure: amount::figure(amount, minor_units),
         }
+    }
+
+    /// An amount kept for a whole currency, in its standard units.
+    pub fn standard(amount: i64, currency: &str) -> Self {
+        Self::of(amount, currency, amount::standard_minor_units(currency))
     }
 }
 
@@ -216,6 +230,8 @@ pub struct Operation {
 #[derive(Debug, Clone, Serialize)]
 pub struct Currency {
     pub currency: String,
+    /// The currency's standard digits after the point, which its row is in
+    /// whatever its operations count in: `amount::standard_minor_units`.
     pub minor_units: u8,
     pub band: Option<Band>,
     pub effective: Option<BandsView>,
@@ -282,7 +298,9 @@ fn page(ops: &[(Declared, Option<String>)], rows: &[Band], may_write: bool) -> B
             continue;
         };
         let (currency, minor) = (&declared.amount.currency, declared.amount.minor_units);
-        currencies.entry(currency.clone()).or_insert(minor);
+        currencies
+            .entry(currency.clone())
+            .or_insert(amount::standard_minor_units(currency));
         let Some((bands, source)) = effective(d, rows) else {
             continue;
         };
@@ -376,13 +394,16 @@ pub struct WriteBands {
 
 /// What a write says, checked against what it is about.
 #[derive(Debug, PartialEq, Eq)]
-struct Checked {
+pub(super) struct Checked {
     currency: String,
     operation: Option<(Uuid, String, String)>,
     bands: Bands,
 }
 
-fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checked, ApiError> {
+pub(super) fn check(
+    input: WriteBands,
+    ops: &[(Declared, Option<String>)],
+) -> Result<Checked, ApiError> {
     let bands = Bands {
         low: input.low,
         medium: input.medium,
@@ -411,9 +432,11 @@ fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checke
                 if declared.amount.currency != currency {
                     continue;
                 }
+                // In the operation's own units, as it will be applied.
+                let own = bands.from_standard(&currency, declared.amount.minor_units);
                 let at_base = Bands {
-                    low: bands.low.filter(|_| Risk::Low < d.risk),
-                    medium: bands.medium.filter(|_| Risk::Medium < d.risk),
+                    low: own.low.filter(|_| Risk::Low < d.risk),
+                    medium: own.medium.filter(|_| Risk::Medium < d.risk),
                 };
                 at_base.check(d.risk, &declared.floor).map_err(|why| {
                     invalid(format!(
@@ -465,6 +488,139 @@ fn check(input: WriteBands, ops: &[(Declared, Option<String>)]) -> Result<Checke
     }
 }
 
+/// Writes a checked row, replacing the one for the same currency or
+/// operation in place, and says which it is.
+pub(super) async fn write(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    subject: Uuid,
+    checked: &Checked,
+) -> Result<Uuid, sqlx::Error> {
+    let (skill_id, requires, matches) = match checked.operation.clone() {
+        Some((s, r, m)) => (Some(s), Some(r), Some(m)),
+        None => (None, None, None),
+    };
+
+    // One row per currency or operation, by the partial unique indexes; the
+    // existing one is replaced in place, keeping its id.
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "select id from approval_bands \
+         where workspace_id = $1 and currency = $2 \
+           and skill_id is not distinct from $3 and requires is not distinct from $4 \
+           and matches is not distinct from $5 for update",
+    )
+    .bind(workspace_id)
+    .bind(&checked.currency)
+    .bind(skill_id)
+    .bind(&requires)
+    .bind(&matches)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let id = match existing {
+        Some(id) => {
+            sqlx::query(
+                "update approval_bands set low = $3, medium = $4, updated_by = $5, \
+                        updated_at = now() \
+                 where workspace_id = $1 and id = $2",
+            )
+            .bind(workspace_id)
+            .bind(id)
+            .bind(checked.bands.low)
+            .bind(checked.bands.medium)
+            .bind(subject)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+        None => {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                "insert into approval_bands \
+                     (workspace_id, id, currency, skill_id, requires, matches, low, medium, \
+                      updated_by) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(workspace_id)
+            .bind(id)
+            .bind(&checked.currency)
+            .bind(skill_id)
+            .bind(&requires)
+            .bind(&matches)
+            .bind(checked.bands.low)
+            .bind(checked.bands.medium)
+            .bind(subject)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+    };
+    Ok(id)
+}
+
+/// The rows the one line writes: for each operation of this kind in this
+/// currency, a low band at `low` -- given in the currency's standard units,
+/// and rounded down into the operation's own, the side that asks more often --
+/// keeping its medium bound where that is still above it. An operation whose
+/// low band is that already is left as it is. Each row checked as a write of
+/// it would be, so nothing is returned that the floor refuses.
+pub(super) fn one_line(
+    ops: &[(Declared, Option<String>)],
+    rows: &[Band],
+    requires: &str,
+    currency: &str,
+    low: i64,
+) -> Result<Vec<Checked>, ApiError> {
+    if low <= 0 {
+        return Err(invalid(format!(
+            "the amount requests go through under is a figure in {currency} above zero"
+        )));
+    }
+    let of_kind: Vec<&Declared> = ops
+        .iter()
+        .map(|(d, _)| d)
+        .filter(|d| d.gate.requires == requires)
+        .filter(|d| {
+            d.amount
+                .as_ref()
+                .is_some_and(|a| a.amount.currency == currency)
+        })
+        .collect();
+    if of_kind.is_empty() {
+        return Err(invalid(format!(
+            "no agent here reaches an operation of that kind with an amount in {currency}"
+        )));
+    }
+    let mut writes = Vec::new();
+    for d in of_kind {
+        let declared = d.amount.as_ref().expect("filtered on its amount");
+        let own =
+            amount::from_standard(low, currency, declared.amount.minor_units).ok_or_else(|| {
+                invalid(format!(
+                    "{} counts in coarser units than that figure says",
+                    d.operation()
+                ))
+            })?;
+        let Some((now, _)) = effective(d, rows) else {
+            continue;
+        };
+        if now.low == Some(own) {
+            continue;
+        }
+        writes.push(check(
+            WriteBands {
+                currency: None,
+                skill_id: Some(d.skill_id),
+                requires: Some(d.gate.requires.clone()),
+                matches: Some(d.operation()),
+                low: Some(own),
+                medium: now.medium.filter(|m| *m > own),
+            },
+            ops,
+        )?);
+    }
+    Ok(writes)
+}
+
 /// `PUT /v1/approval-bands`: sets a workspace's bands for a currency or an
 /// operation, replacing any it had. Takes effect from the next turn: a running
 /// one keeps what its token committed to, as with every other rule.
@@ -479,68 +635,10 @@ pub async fn put(
         .await
         .map_err(internal)?;
     let checked = check(input, &ops)?;
-    let (skill_id, requires, matches) = match checked.operation {
-        Some((s, r, m)) => (Some(s), Some(r), Some(m)),
-        None => (None, None, None),
-    };
-
-    // One row per currency or operation, by the partial unique indexes; the
-    // existing one is replaced in place, keeping its id.
     let mut tx = state.pool.begin().await.map_err(internal)?;
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "select id from approval_bands \
-         where workspace_id = $1 and currency = $2 \
-           and skill_id is not distinct from $3 and requires is not distinct from $4 \
-           and matches is not distinct from $5 for update",
-    )
-    .bind(claims.workspace_id)
-    .bind(&checked.currency)
-    .bind(skill_id)
-    .bind(&requires)
-    .bind(&matches)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(internal)?;
-    let id = match existing {
-        Some(id) => {
-            sqlx::query(
-                "update approval_bands set low = $3, medium = $4, updated_by = $5, \
-                        updated_at = now() \
-                 where workspace_id = $1 and id = $2",
-            )
-            .bind(claims.workspace_id)
-            .bind(id)
-            .bind(checked.bands.low)
-            .bind(checked.bands.medium)
-            .bind(claims.subject)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
-            id
-        }
-        None => {
-            let id = Uuid::now_v7();
-            sqlx::query(
-                "insert into approval_bands \
-                     (workspace_id, id, currency, skill_id, requires, matches, low, medium, \
-                      updated_by) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            )
-            .bind(claims.workspace_id)
-            .bind(id)
-            .bind(&checked.currency)
-            .bind(skill_id)
-            .bind(&requires)
-            .bind(&matches)
-            .bind(checked.bands.low)
-            .bind(checked.bands.medium)
-            .bind(claims.subject)
-            .execute(&mut *tx)
-            .await
-            .map_err(internal)?;
-            id
-        }
-    };
+    let id = write(&mut tx, claims.workspace_id, claims.subject, &checked)
+        .await
+        .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     tracing::info!(
         workspace_id = %claims.workspace_id,
@@ -600,6 +698,7 @@ mod tests {
                 field: "amount_pence".into(),
                 currency: "GBP".into(),
                 minor_units: 2,
+                currency_field: None,
             },
             bands: Bands {
                 low: Some(5000),
@@ -613,6 +712,8 @@ mod tests {
         d.banding = Some(Banding {
             field: "amount_pence".into(),
             currency: "GBP".into(),
+            currency_field: None,
+            minor_units: 2,
             base: d.risk,
             bands: declaration.bands.clone(),
             floor: declaration.floor.clone(),
@@ -666,6 +767,105 @@ mod tests {
 
         // An operation with no amount has no bands to set.
         assert!(effective(&declared("delete", Risk::High), &[]).is_none());
+    }
+
+    /// The same charge, counted in whole pounds rather than pence.
+    fn in_whole_pounds(d: &mut Declared) {
+        money(d);
+        let declared = d.amount.as_mut().unwrap();
+        declared.amount.field = "amount_gbp".into();
+        declared.amount.minor_units = 0;
+        declared.bands = Bands {
+            low: Some(50),
+            medium: Some(200),
+        };
+        declared.floor = Floor {
+            medium: None,
+            high: Some(5000),
+        };
+        let banding = d.banding.as_mut().unwrap();
+        banding.field = "amount_gbp".into();
+        banding.minor_units = 0;
+        banding.bands = declared.bands.clone();
+        banding.floor = declared.floor.clone();
+    }
+
+    #[test]
+    fn one_pounds_row_bands_a_pence_operation_and_a_whole_pound_one_alike() {
+        let mut pence = declared("charge", Risk::High);
+        money(&mut pence);
+        let mut pounds = declared("refund", Risk::High);
+        in_whole_pounds(&mut pounds);
+        // £30.00, in pence as every currency row is.
+        let gbp = row("GBP", None, 3000);
+        let mut both = vec![pence.clone(), pounds.clone()];
+        apply(&mut both, std::slice::from_ref(&gbp));
+        assert_eq!(both[0].banding.as_ref().unwrap().bands.low, Some(3000));
+        assert_eq!(both[1].banding.as_ref().unwrap().bands.low, Some(30));
+
+        // £30.50 is no whole number of pounds: the pound operation is held to
+        // £30, the side that asks more often.
+        let gbp = row("GBP", None, 3050);
+        let mut both = vec![pence.clone(), pounds.clone()];
+        apply(&mut both, &[gbp]);
+        assert_eq!(both[0].banding.as_ref().unwrap().bands.low, Some(3050));
+        assert_eq!(both[1].banding.as_ref().unwrap().bands.low, Some(30));
+
+        // An operation's own row stays in its own units.
+        let own = row("GBP", Some(&pounds), 40);
+        assert_eq!(effective(&pounds, &[own]).unwrap().0.low, Some(40));
+
+        // The page shows the currency's row in pence whatever its operations
+        // count in, and each operation's effective bands in its own.
+        let ops = vec![(pence, None), (pounds, None)];
+        let page = page(&ops, &[row("GBP", None, 3000)], true);
+        assert_eq!(page.currencies[0].minor_units, 2);
+        let refund = page
+            .operations
+            .iter()
+            .find(|o| o.requires == "refund")
+            .unwrap();
+        assert_eq!(refund.effective.low.as_ref().unwrap().display, "£30");
+    }
+
+    #[test]
+    fn a_currency_row_is_checked_against_each_floor_in_its_own_units() {
+        let mut pounds = declared("refund", Risk::High);
+        in_whole_pounds(&mut pounds);
+        let ops = vec![(pounds, None)];
+        let write = |v: serde_json::Value| check(serde_json::from_value(v).unwrap(), &ops);
+        // £4,000.00 in pence is under the £5,000 floor; £6,000.00 is past it.
+        assert!(write(serde_json::json!({"currency": "GBP", "low": 400_000})).is_ok());
+        assert!(write(serde_json::json!({"currency": "GBP", "low": 600_000})).is_err());
+    }
+
+    #[test]
+    fn the_one_line_sets_each_operations_low_band_in_its_own_units() {
+        let mut pence = declared("charge", Risk::High);
+        money(&mut pence);
+        let mut pounds = declared("charge", Risk::High);
+        in_whole_pounds(&mut pounds);
+        pounds.gate.path = "/payments".into();
+        let ops = vec![(pence.clone(), None), (pounds.clone(), None)];
+        // £40.50: pence take it as it is, whole pounds round down to £40.
+        let writes = one_line(&ops, &[], "charge", "GBP", 4050).unwrap();
+        let lows: Vec<_> = writes
+            .iter()
+            .map(|w| (w.bands.low, w.bands.medium))
+            .collect();
+        assert_eq!(lows, vec![(Some(4050), Some(20000)), (Some(40), Some(200))]);
+        // Where a low band is that already, nothing is written for it.
+        assert_eq!(one_line(&ops, &[], "charge", "GBP", 5000).unwrap().len(), 0);
+        // A medium the new low passes is dropped rather than left below it.
+        let writes = one_line(&ops, &[], "charge", "GBP", 30000).unwrap();
+        assert_eq!(writes[0].bands.medium, None);
+        // Past a floor, of another kind, or in another currency: refused.
+        assert!(one_line(&ops, &[], "charge", "GBP", 900_000).is_err());
+        assert!(one_line(&ops, &[], "refund", "GBP", 4000).is_err());
+        assert!(one_line(&ops, &[], "charge", "USD", 4000).is_err());
+        assert!(one_line(&ops, &[], "charge", "GBP", 0).is_err());
+        // Less than one whole pound means nothing to a whole-pound operation.
+        assert!(one_line(&ops, &[], "charge", "GBP", 50).is_err());
     }
 
     #[test]

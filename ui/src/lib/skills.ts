@@ -561,7 +561,7 @@ export type SuggestedApproval = {
   matches_path: string
   binds: string[]
   numbers: string[]
-  amount?: { field: string; currency?: string; minor_units?: number }
+  amount?: { field: string; currency?: string; minor_units?: number; currency_field?: string }
   reason: string
 }
 

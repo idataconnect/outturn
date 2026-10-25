@@ -13,6 +13,7 @@ const gbp = (amount: number) => ({
   currency: 'GBP',
   minor_units: 2,
   display: `£${(amount / 100).toFixed(2)}`,
+  figure: amount % 100 ? (amount / 100).toFixed(2) : String(amount / 100),
 })
 
 /** One money operation, at the skill's defaults. */
@@ -58,6 +59,7 @@ const policy = {
   sum_field: null,
   sum_per_day: null,
   daily_totals: { GBP: 15000 },
+  daily_totals_money: { GBP: gbp(15000) },
   mode: 'trial',
   version: 1,
   note: null,
@@ -130,9 +132,9 @@ describe('AutoApprovalEditor', () => {
     )
     expect(await screen.findByLabelText('Daily total 1')).toHaveProperty('value', '150')
     expect(screen.getByLabelText('Currency 1')).toHaveProperty('value', 'GBP')
-    expect(screen.getByText('£150.00')).toBeTruthy()
-    // The amount field's test is in its own units, and said as money beside it.
-    expect(screen.getByText('£50.00')).toBeTruthy()
+    expect(screen.getByText('in whole GBP')).toBeTruthy()
+    // The amount field's test is in its own units, and says which beside it.
+    expect(screen.getByText('in hundredths of GBP')).toBeTruthy()
     expect(screen.getByLabelText(/^Highest risk/)).toHaveProperty('value', 'low')
 
     await userEvent.clear(screen.getByLabelText('Daily total 1'))
