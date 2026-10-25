@@ -333,6 +333,15 @@ pub fn placeholders(path: &str) -> Result<Vec<&str>, &str> {
         .collect()
 }
 
+/// The path of an absolute URL, as written: placeholders left in, and `/`
+/// where it has none. Shared by the API, which checks an operation's url
+/// against its gate, and the runtime, which reads an operation's identity out
+/// of a request by the same template.
+pub fn url_path(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.find('/').map_or("/", |i| &rest[i..])
+}
+
 /// A pattern's segments, collapsed as a path is.
 fn segments(pattern: &str) -> Vec<String> {
     collapse(pattern).split('/').map(str::to_string).collect()
@@ -757,6 +766,17 @@ fn root_of(leaves: &[Hash]) -> Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_path_keeps_placeholders_and_drops_scheme_and_host() {
+        assert_eq!(
+            url_path("https://books.example.com/invoices/{id}/void"),
+            "/invoices/{id}/void"
+        );
+        assert_eq!(url_path("https://books.example.com:8443/v1/x"), "/v1/x");
+        assert_eq!(url_path("https://books.example.com"), "/");
+        assert_eq!(url_path("/already/a/path"), "/already/a/path");
+    }
 
     fn gate(requires: &str, method: &str, path: &str) -> Gate {
         Gate {

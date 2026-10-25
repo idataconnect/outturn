@@ -201,7 +201,7 @@ impl Operation {
 
     /// The URL's path parameters, in the order they appear.
     pub fn path_params(&self) -> Vec<String> {
-        placeholders(url_path(&self.url)).unwrap_or_default()
+        placeholders(gate::url_path(&self.url)).unwrap_or_default()
     }
 }
 
@@ -793,7 +793,7 @@ fn operation_from(yaml: &str) -> Result<Option<Operation>, FrontmatterError> {
     // One name, one place. A field that is both in the body and the query, or
     // both a path parameter and either, is sent twice or not at all, and which
     // is a guess.
-    let path = placeholders(url_path(&url))?;
+    let path = placeholders(gate::url_path(&url))?;
     let mut seen: Vec<&str> = Vec::new();
     for name in path.iter().chain(&body).chain(&query) {
         if seen.contains(&name.as_str()) {
@@ -978,12 +978,6 @@ fn url_authority(url: &str) -> &str {
     rest.split('/').next().unwrap_or("")
 }
 
-/// The path of an absolute URL, as written: placeholders left in.
-fn url_path(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    rest.find('/').map_or("/", |i| &rest[i..])
-}
-
 /// The `{name}` parameters in a path, in order, by the grammar a gate reads
 /// them with.
 fn placeholders(path: &str) -> Result<Vec<String>, FrontmatterError> {
@@ -1008,7 +1002,7 @@ fn gate_fits_operation(rule: &ApprovalRule, op: &Operation) -> Result<(), Frontm
         .split_once(' ')
         .map(|(m, p)| (m.trim().to_ascii_uppercase(), p.trim()))
         .unwrap_or_default();
-    let path = url_path(&op.url);
+    let path = gate::url_path(&op.url);
     let fits = method == op.method
         && match pattern.strip_suffix('*') {
             Some(prefix) => path.starts_with(prefix),

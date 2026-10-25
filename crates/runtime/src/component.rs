@@ -2370,8 +2370,7 @@ fn idempotency_key(
     body: Option<&str>,
 ) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let template = op.url.split_once("://").map_or(op.url.as_str(), |(_, r)| r);
-    let template = template.find('/').map_or("/", |i| &template[i..]);
+    let template = outturn_core::egress::gate::url_path(&op.url);
     let from_path = outturn_core::egress::gate::path_values(template, url.path())?;
     let body: serde_json::Value = body
         .and_then(|b| serde_json::from_str(b).ok())
