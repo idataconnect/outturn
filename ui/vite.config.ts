@@ -1,17 +1,40 @@
 /// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
+import { plainThemeCss } from './src/themes/plain.ts'
 
-// Which brand's tokens get compiled in. A deployment sets VITE_THEME to a
-// file in src/themes/; the default is outturn's own look. Resolved at build
-// time rather than fetched, so there is no frame where the page is the wrong
-// color, and no theme a deployment is not using shipped in its bundle.
+// Which brand's tokens get compiled in: a file in src/themes/, outturn's own
+// look unless VITE_THEME says otherwise. The published image keeps the
+// default and lets a deployment choose another at startup, from the files
+// themeStylesheets() writes below.
 const theme = process.env.VITE_THEME ?? 'outturn'
 
+const themesDir = fileURLToPath(new URL('./src/themes/', import.meta.url))
+
+// Every theme, also written out as a stylesheet of its own at
+// /themes/<name>.css, so a deployment can pick one at startup from the UI
+// container's config rather than by rebuilding. See src/lib/brand.ts.
+function themeStylesheets(): Plugin {
+  return {
+    name: 'outturn-theme-stylesheets',
+    apply: 'build',
+    generateBundle() {
+      for (const file of readdirSync(themesDir).filter((f) => f.endsWith('.css'))) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `themes/${file}`,
+          source: plainThemeCss(readFileSync(themesDir + file, 'utf8')),
+        })
+      }
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), themeStylesheets()],
   resolve: {
     alias: {
       // `index.css` imports this name; the alias decides what it means.

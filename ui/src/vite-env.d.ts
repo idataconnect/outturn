@@ -1,7 +1,11 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** The product name a deployment shows. Defaults to "outturn". */
+  /**
+   * The product name a deployment shows. Defaults to "outturn". These four are
+   * the fallback for what the UI container's `/config.json` says at startup;
+   * see src/lib/brand.ts.
+   */
   readonly VITE_BRAND_NAME?: string
   /** Path to the mark, served from `public/`. Defaults to "/favicon.svg". */
   readonly VITE_BRAND_LOGO?: string

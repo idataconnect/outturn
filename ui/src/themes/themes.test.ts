@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, type Dirent } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { plainThemeCss } from './plain'
 
 const DIR = dirname(fileURLToPath(import.meta.url))
 const themes = readdirSync(DIR).filter((f) => f.endsWith('.css'))
@@ -108,5 +109,16 @@ describe('a theme that imports a webfont', () => {
     )
     if (!Number.isFinite(firstRule)) return
     expect(lastImport).toBeLessThan(firstRule)
+  })
+})
+
+// What a deployment picks at startup is this, not the Tailwind source: the
+// same tokens with nothing left that only Tailwind understands.
+describe('a theme as a stylesheet of its own', () => {
+  it.each(themes.map((t) => [t] as const))('%s keeps every token and no @theme', (theme) => {
+    const css = read(theme)
+    const plain = plainThemeCss(css)
+    expect(plain).not.toMatch(/@theme/)
+    expect(tokensOf(plain)).toEqual(tokensOf(css))
   })
 })

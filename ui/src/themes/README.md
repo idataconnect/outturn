@@ -16,7 +16,13 @@ a test checks rather than something someone claimed once.
 
 ## Adding one
 
-Copy `hollowbrook.css`, change the values, and set `VITE_THEME` to its name.
+Copy `hollowbrook.css`, change the values, and either set `VITE_THEME` to its
+name and build, or -- with the published UI image -- mount the file, with
+`@theme {` written as `:root {` since nothing compiles it there, into the
+container's `/srv/brand/` and set `OUTTURN_THEME=/brand/<file>.css`. A theme
+shipped here is chosen at startup by name alone (`OUTTURN_THEME=hollowbrook`):
+the build writes each one to `/themes/<name>.css` with `@theme` made `:root`
+(`plain.ts`), and the page waits for it before drawing anything.
 Every token the default defines should be set; anything left out falls back
 to outturn's value and will look like outturn by accident.
 
@@ -35,4 +41,5 @@ it came from.
 | `--font-sans`, `--font-display` | Body text, and the wordmark |
 
 Branding that is not color -- the product name, the logo -- comes from
-`src/lib/brand.ts`, which reads the same environment.
+`src/lib/brand.ts`, which reads the UI container's `/config.json` at startup
+and falls back to the same build environment.
