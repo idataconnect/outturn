@@ -3,8 +3,11 @@
  * docs/auto-approval.md, *Risk from the amount*.
  */
 
-/** How risky a request works out to be, from its operation and its amount. */
-export type Risk = 'low' | 'medium' | 'high'
+import type { Risk } from './skills'
+
+/** How risky a request works out to be, from its operation and its amount:
+ *  the one type, declared beside the skills that declare base risks. */
+export type { Risk }
 
 /** An amount as the API hands it over: the number in minor units, what it is
  *  in, how a person reads it, and the figure a form starts from. Every amount
