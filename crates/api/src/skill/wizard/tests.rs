@@ -1878,6 +1878,7 @@ fn a_delete_by_path_is_suggested_a_rule_binding_its_id() {
     assert!(s.gate);
     assert_eq!(s.requires, "delete");
     assert_eq!(s.matches_path, "/invoices/{id}");
+    assert_eq!(s.path_params, ["id"]);
     assert_eq!(s.binds, ["id"]);
     assert!(s.numbers.is_empty());
 }

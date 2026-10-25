@@ -559,6 +559,8 @@ export type SuggestedApproval = {
   /** The gate's path as the specification writes it, cut at the first
    *  parameter and starred; the base URL's own path goes in front. */
   matches_path: string
+  /** The parameters `matches_path` names, in order, as the API reads them. */
+  path_params: string[]
   binds: string[]
   numbers: string[]
   amount?: { field: string; currency?: string; minor_units?: number; currency_field?: string }

@@ -23,6 +23,7 @@
 
 use std::borrow::Cow;
 
+use outturn_core::egress::gate;
 use serde::{Deserialize, Serialize};
 
 /// What an operation's file declares about needing approval.
@@ -983,29 +984,16 @@ fn url_path(url: &str) -> &str {
     rest.find('/').map_or("/", |i| &rest[i..])
 }
 
-/// The `{name}` parameters in a path, in order.
-///
-/// A parameter is a whole segment: `/bookings/{id}`, not `/bookings/bk_{id}`.
-/// Part of a segment would have to be matched by a gate's pattern, which can
-/// only end in a star.
+/// The `{name}` parameters in a path, in order, by the grammar a gate reads
+/// them with.
 fn placeholders(path: &str) -> Result<Vec<String>, FrontmatterError> {
-    let mut names = Vec::new();
-    for segment in path.split('/') {
-        if !segment.contains('{') && !segment.contains('}') {
-            continue;
-        }
-        let name = segment
-            .strip_prefix('{')
-            .and_then(|s| s.strip_suffix('}'))
-            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-            .ok_or_else(|| {
-                FrontmatterError::Invalid(format!(
-                    "{segment} is not a path parameter; one is a whole segment, like {{id}}"
-                ))
-            })?;
-        names.push(name.to_string());
-    }
-    Ok(names)
+    gate::placeholders(path)
+        .map(|names| names.into_iter().map(str::to_string).collect())
+        .map_err(|segment| {
+            FrontmatterError::Invalid(format!(
+                "{segment} is not a path parameter; one is a whole segment, like {{id}}"
+            ))
+        })
 }
 
 /// Checks a gate in the same file as an operation applies to that operation.
@@ -1406,6 +1394,26 @@ mod tests {
     fn a_key_with_no_value_is_refused() {
         let err = parse("---\napproval:\n  requires:\n---\n").unwrap_err();
         assert!(matches!(err, FrontmatterError::Invalid(_)));
+    }
+
+    // A segment the publish check let through as a parameter but a gate read
+    // as a literal would be a rule binding a name no request ever carries.
+    #[test]
+    fn a_malformed_parameter_is_refused_here_and_literal_to_a_gate() {
+        for bad in ["{in-voice}", "{}", "{a.b}", "x{id}", "{id}x"] {
+            let path = format!("/invoices/{bad}");
+            assert!(
+                placeholders(&path).is_err(),
+                "{bad} published as a parameter"
+            );
+            assert_eq!(
+                gate::param_name(bad),
+                None,
+                "{bad} read by a gate as a parameter"
+            );
+        }
+        assert_eq!(placeholders("/invoices/{inv_id}").unwrap(), ["inv_id"]);
+        assert_eq!(gate::param_name("{inv_id}"), Some("inv_id"));
     }
 }
 

@@ -7,6 +7,7 @@
 //! an `approval` annotation. See docs/auto-approval.md, "Where the wizard comes
 //! in".
 
+use outturn_core::egress::gate;
 use outturn_core::egress::policy::Risk;
 
 use super::parse::{BodyField, Operation};
@@ -25,6 +26,10 @@ pub struct SuggestedApproval {
     /// where a parameter's name is not one a rule can say. The page puts the
     /// base URL's own path in front.
     pub matches_path: String,
+    /// The parameters `matches_path` names, in order, so the page reads them
+    /// here rather than parsing the path by a grammar of its own. Empty where
+    /// the path was starred.
+    pub path_params: Vec<String>,
     /// The path parameters and body fields the rule is about. A rule needs at
     /// least one, so an operation with neither cannot have one written.
     pub binds: Vec<String>,
@@ -193,6 +198,7 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
             Some(_) => op.path.clone(),
             None => gate_path(&op.path),
         },
+        path_params: path.unwrap_or_default(),
         binds,
         numbers,
         amount,
@@ -265,18 +271,11 @@ pub(super) fn is_form_of(token: &str, word: &str) -> bool {
 /// digits and underscores, as an operation's url takes them -- and `None` where
 /// there are none or one is not.
 fn path_params(path: &str) -> Option<Vec<String>> {
-    let names: Vec<String> = path
-        .split('/')
-        .filter(|s| s.contains('{') || s.contains('}'))
-        .map(|s| {
-            s.strip_prefix('{')
-                .and_then(|s| s.strip_suffix('}'))
-                .filter(|n| {
-                    !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                })
-                .map(str::to_string)
-        })
-        .collect::<Option<_>>()?;
+    let names: Vec<String> = gate::placeholders(path)
+        .ok()?
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let unique = names
         .iter()
         .enumerate()

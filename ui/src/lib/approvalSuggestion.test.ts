@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalYaml, cannotWrite, choiceFrom, pathParams } from './approvalSuggestion'
+import { amountFields, approvalYaml, cannotWrite, choiceFrom } from './approvalSuggestion'
 import type { SuggestedApproval } from './skills'
 
 const suggested: SuggestedApproval = {
@@ -8,6 +8,7 @@ const suggested: SuggestedApproval = {
   gate: true,
   requires: 'charge',
   matches_path: '/charges',
+  path_params: [],
   binds: ['payment_account_id', 'booking_id', 'amount_pence'],
   numbers: ['amount_pence'],
   amount: { field: 'amount_pence', currency: 'GBP', minor_units: 2 },
@@ -67,6 +68,7 @@ describe('the approval rule the page writes', () => {
       gate: true,
       requires: 'delete',
       matches_path: '/invoices/{id}',
+      path_params: ['id'],
       binds: ['id'],
       numbers: [],
       reason: 'a delete cannot be taken back',
@@ -93,6 +95,6 @@ describe('the approval rule the page writes', () => {
       ].join('\n'),
     )
     expect(cannotWrite(remove)).toBeNull()
-    expect(pathParams(remove.matches_path)).toEqual(['id'])
+    expect(amountFields(remove)).toEqual([])
   })
 })

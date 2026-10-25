@@ -309,12 +309,28 @@ pub fn path_values(pattern: &str, path: &str) -> Result<Vec<(String, String)>, S
     Ok(out)
 }
 
-/// The name in a `{name}` segment, if it is one.
-fn param_name(segment: &str) -> Option<&str> {
+/// The name in a `{name}` segment, if it is one: letters, digits and
+/// underscores, the whole segment. The one statement of the grammar, so an
+/// operation's url, a gate's path and the wizard's suggestion cannot disagree
+/// about which segments are parameters.
+pub fn param_name(segment: &str) -> Option<&str> {
     segment
         .strip_prefix('{')
         .and_then(|s| s.strip_suffix('}'))
         .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+}
+
+/// The `{name}` parameters in a path, in order, or the first segment that
+/// has a brace without being one.
+///
+/// A parameter is a whole segment: `/bookings/{id}`, not `/bookings/bk_{id}`.
+/// Part of a segment would have to be matched by a gate's pattern, which can
+/// only end in a star.
+pub fn placeholders(path: &str) -> Result<Vec<&str>, &str> {
+    path.split('/')
+        .filter(|s| s.contains('{') || s.contains('}'))
+        .map(|s| param_name(s).ok_or(s))
+        .collect()
 }
 
 /// A pattern's segments, collapsed as a path is.

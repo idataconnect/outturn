@@ -36,14 +36,6 @@ export function basePath(baseUrl: string | null): string {
   }
 }
 
-/** The path parameters a gate's path names, `id` in `/invoices/{id}`. */
-export function pathParams(matchesPath: string): string[] {
-  return matchesPath
-    .split('/')
-    .map((segment) => /^\{(\w+)\}$/.exec(segment)?.[1])
-    .filter((name): name is string => name !== undefined)
-}
-
 /** Why a rule cannot be written for this operation, or null if one can. A rule
  *  is keyed on body fields and path parameters, and one with neither would
  *  cover every request. */
@@ -56,7 +48,7 @@ export function cannotWrite(s: SuggestedApproval): string | null {
 /** The fields an amount may be: the bound body fields. A path parameter is
  *  not money anybody can be shown. */
 export function amountFields(s: SuggestedApproval): string[] {
-  const path = pathParams(s.matches_path)
+  const path = s.path_params
   return [...new Set([...s.binds, ...(s.amount ? [s.amount.field] : [])])].filter(
     (f) => !path.includes(f),
   )
