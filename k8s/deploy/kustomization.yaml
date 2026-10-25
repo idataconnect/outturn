@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# outturn as a release rather than a checkout: the three tiers and the UI,
+# their Services, disruption budgets and network policies, and nothing else.
+# Postgres and object storage are the operator's, reached at the addresses in
+# a Secret this does not create. docs/deployment.md has the whole of it -- the
+# Secret's keys, the ConfigMap's, and an infrastructure repository pinning a
+# commit of this directory.
+#
+# k8s/base is the development cluster's, with its own Postgres, object store
+# and mocks, and is kept separate rather than built on this: the two differ in
+# nearly every Deployment's env, and an overlay that undid most of a base would
+# be harder to read than either.
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+
+# The published images, as CI names them. No tag here on purpose: there is no
+# `latest`, so a deployment that forgot to choose one fails to pull rather
+# than running whatever was built last. Pin one in the overlay:
+#
+#   images:
+#     - name: ghcr.io/idataconnect/outturn-api
+#       newTag: <full commit SHA, or a release version>
+#
+# and the same for -gateway, -runtime and -ui. A fork publishing its own sets
+# newName as well.
+images:
+  - name: outturn-api
+    newName: ghcr.io/idataconnect/outturn-api
+  - name: outturn-gateway
+    newName: ghcr.io/idataconnect/outturn-gateway
+  - name: outturn-runtime
+    newName: ghcr.io/idataconnect/outturn-runtime
+  - name: outturn-ui
+    newName: ghcr.io/idataconnect/outturn-ui

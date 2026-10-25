@@ -1,0 +1,470 @@
+# The tiers as a release runs them. The pod and container hardening is
+# k8s/base's, line for line; what differs is where each value comes from.
+#
+# Two objects the operator provides, both in this namespace:
+#
+# - Secret `outturn-secrets`: the keys and the two addresses that carry a
+#   password. scripts/deploy-prod.sh writes one with these exact keys.
+# - ConfigMap `outturn-config`: everything else. Only OUTTURN_CORS_ORIGINS is
+#   required -- the API refuses a credentialed call from any origin not in it,
+#   so a deployment without it cannot sign anybody in.
+#
+# Each tier is handed only the keys it needs, by name, rather than the whole
+# Secret through envFrom: the signing secret is the API's alone and the seal
+# key the gateway's alone, and a pod that never received a key cannot leak it.
+# docs/deployment.md lists every key.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-api
+spec:
+  # No replicas here on purpose: k8s/autoscaling gives this an HPA, and a
+  # count in the manifest would be reset to it on every apply.
+  selector:
+    matchLabels:
+      app: outturn-api
+  template:
+    metadata:
+      labels:
+        app: outturn-api
+    spec:
+      # A runtime asking for work waits up to 25s, and graceful shutdown waits
+      # for every such request to answer. Well past that, so a rollout never
+      # cuts a poll or a stream mid-answer.
+      terminationGracePeriodSeconds: 60
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: outturn-api
+          ports:
+            - containerPort: 8080
+          env:
+            # The API is the only tier that signs anything, and migrates the schema
+            # on start -- forward only, so take a backup before an upgrade.
+            - name: OUTTURN_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_TOKEN_SECRET
+            - name: OUTTURN_TOKEN_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_TOKEN_PUBLIC_KEY
+            - name: OUTTURN_RUNTIME_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_RUNTIME_KEY
+            # Handed to the browser to seal to. The API holds no way to open one.
+            - name: OUTTURN_SEAL_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_SEAL_PUBLIC_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: DATABASE_URL
+            - name: OUTTURN_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_ENDPOINT
+            - name: OUTTURN_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_BUCKET
+            - name: OUTTURN_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_ACCESS_KEY
+            - name: OUTTURN_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_SECRET_KEY
+            - name: OUTTURN_GATEWAY_URL
+              value: "http://outturn-gateway:8081"
+            - name: OUTTURN_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_CORS_ORIGINS
+            # The name in every system prompt's platform preamble; the UI reads the
+            # same key, so the two cannot disagree.
+            - name: OUTTURN_BRAND_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_BRAND_NAME
+                  optional: true
+            # The same lists the gateway reads, for the other half of the same
+            # decision -- see docs/egress.md and docs/credential-bindings.md. One key
+            # each, read by both, so they cannot drift apart.
+            - name: OUTTURN_INTERNAL_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_INTERNAL_HOSTS
+                  optional: true
+            - name: OUTTURN_CREDENTIAL_BINDINGS
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_CREDENTIAL_BINDINGS
+                  optional: true
+            - name: OUTTURN_TIKA_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_TIKA_URL
+                  optional: true
+            - name: OUTTURN_CATALOG_FETCH
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_CATALOG_FETCH
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outturn-gateway
+  template:
+    metadata:
+      labels:
+        app: outturn-gateway
+    spec:
+      # A model's stream may sit silent for the idle read timeout (five
+      # minutes) before the gateway gives up on it, and shutdown waits for
+      # streams in flight.
+      terminationGracePeriodSeconds: 360
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: outturn-gateway
+          ports:
+            - containerPort: 8081
+          env:
+            # What sealed credentials are opened with. Gateway only, as the token
+            # secret is API only. See docs/sealed-credentials.md.
+            - name: OUTTURN_SEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_SEAL_KEY
+            - name: OUTTURN_TOKEN_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_TOKEN_PUBLIC_KEY
+            # The circuit breaker, shared across replicas, and what the API commits
+            # for the gateway to read -- which is why it is rolled before the API.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: DATABASE_URL
+            - name: OUTTURN_INTERNAL_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_INTERNAL_HOSTS
+                  optional: true
+            - name: OUTTURN_CREDENTIAL_BINDINGS
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_CREDENTIAL_BINDINGS
+                  optional: true
+            # A workspace credential named rather than sealed is an OUTTURN_EGRESS_*
+            # variable here, added by the overlay from a Secret of its own.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-runtime
+spec:
+  # No replicas here on purpose, as for the API.
+  selector:
+    matchLabels:
+      app: outturn-runtime
+  template:
+    metadata:
+      labels:
+        app: outturn-runtime
+    spec:
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      # Long enough for a turn already streaming to finish and be reported.
+      # On SIGTERM the runtime stops asking for work and waits for the turns
+      # it holds; if this runs out first the lease recovers them.
+      terminationGracePeriodSeconds: 360
+      containers:
+        - name: runtime
+          image: outturn-runtime
+          ports:
+            - containerPort: 8082
+          env:
+            # No signing key and no seal key: this tier runs workspace code, and holds
+            # nothing that could mint or open a credential. This one only says "I am
+            # the runtime tier".
+            - name: OUTTURN_RUNTIME_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_RUNTIME_KEY
+            - name: OUTTURN_GATEWAY_URL
+              value: "http://outturn-gateway:8081"
+            - name: OUTTURN_API_URL
+              value: "http://outturn-api:8080"
+            # A session's files. The network policy outturn-object-storage has to
+            # name where this is, or the runtime cannot reach it.
+            - name: OUTTURN_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_ENDPOINT
+            - name: OUTTURN_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_BUCKET
+            - name: OUTTURN_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_ACCESS_KEY
+            - name: OUTTURN_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_SECRET_KEY
+            - name: OUTTURN_TIKA_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_TIKA_URL
+                  optional: true
+            - name: OUTTURN_PDF_RENDERER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_PDF_RENDERER_URL
+                  optional: true
+          # Compiling the guest component at boot is slow on a cold pod, and
+          # the pod answers "not ready" until it is done. Until this passes
+          # the other probes are held off, so neither a liveness restart nor
+          # a short readiness window can interrupt the compile.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "2"
+              memory: 512Mi
+          volumeMounts:
+            # The root is read-only; anything that wants a scratch file lands
+            # here, and it is gone with the pod.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# The built UI on a static file server, carrying /v1 through to the API on the
+# same origin -- the refresh cookie is path-scoped, and a separate API host is
+# never sent it. Point the ingress here, not at the API. See ui/Dockerfile.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: outturn-ui
+  template:
+    metadata:
+      labels:
+        app: outturn-ui
+    spec:
+      # A reply streams through this pod, so a rollout waits for one to end.
+      terminationGracePeriodSeconds: 360
+      # Nothing here talks to the Kubernetes API, so nothing should be handed
+      # a token that could.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ui
+          image: outturn-ui
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OUTTURN_API_UPSTREAM
+              value: "outturn-api:8080"
+            # Read into /config.json at startup; see ui/src/lib/brand.ts. A logo or
+            # theme of the deployment's own is a file mounted at /srv/brand and named
+            # here as /brand/<file>.
+            - name: OUTTURN_BRAND_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_BRAND_NAME
+                  optional: true
+            - name: OUTTURN_BRAND_LOGO
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_BRAND_LOGO
+                  optional: true
+            - name: OUTTURN_BRAND_TAGLINE
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_BRAND_TAGLINE
+                  optional: true
+            - name: OUTTURN_THEME
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_THEME
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: "500m"
+              memory: 128Mi
+          volumeMounts:
+            # The root is read-only; anything that wants a scratch file lands
+            # here, and it is gone with the pod.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

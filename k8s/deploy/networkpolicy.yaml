@@ -1,0 +1,296 @@
+# The namespace's boundary, and then the runtime's -- k8s/base's policies, less
+# the development mocks, with Postgres and object storage outside the
+# namespace rather than in it.
+#
+# Nothing is reachable until a policy below says so: the first object denies
+# every connection to and from every pod, and each one after it opens exactly
+# one path. Policies add, so an overlay opening something new brings its own
+# allow rather than editing these.
+#
+# The runtime executes workspace code, and every outbound request an agent
+# makes is made for it by the gateway. These policies say the same thing
+# somewhere a compromised runtime cannot edit: even a host that grew a socket
+# reaches nothing but the API, the gateway, DNS and the object store.
+#
+# Requires a CNI that enforces NetworkPolicy. On a cluster that ignores them
+# these apply cleanly and do nothing, so check rather than assume.
+#
+# Two need the operator's attention -- see docs/deployment.md:
+#
+# - outturn-object-storage names the object store by address, and ships naming
+#   a documentation range that reaches nothing. Until it is replaced, files
+#   cannot be stored.
+# - outturn-ui admits the ingress controller by its namespace's name.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The UI: reached from the ingress, and reaching only the API it proxies /v1 to.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-ui
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-ui
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        # The ingress controller's namespace. Change the name to the one this
+        # cluster's controller runs in.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-runtime-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS, or nothing resolves. Deliberately not a license to reach the
+    # internet: a name is not a connection.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Where turns come from, and where models and outbound requests are asked
+    # for. The object store is outturn-object-storage, below.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# The API: reached by the runtimes that take work from it, by the UI that
+# fronts it, and by in-cluster clients that say so with `outturn-client: api`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-api
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+        - podSelector:
+            matchLabels:
+              app: outturn-ui
+        - podSelector:
+            matchLabels:
+              outturn-client: api
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# The gateway: the egress tier. It holds the credentials and makes every
+# outbound request an agent asks for, so it may reach the internet -- and that
+# is the whole of what it may reach. The private ranges and the cloud metadata
+# address are carved out of "anywhere": a request an agent steered at them is
+# the one thing the egress rules exist to stop, and the network refusing it too
+# means a bug in the rules is not the only line. Replace the three private
+# ranges with the cluster's own if it uses others, and open a model or API
+# inside the network with a rule beside this one -- see OUTTURN_INTERNAL_HOSTS
+# in docs/egress.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-runtime
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+---
+# Postgres, for the two tiers that keep state in it, wherever it is: by port
+# rather than by address, since a managed database's address is rarely one
+# that stays put. Neither tier runs workspace code. Narrow the destination to
+# the database's own range where it has one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-database
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [outturn-api, outturn-gateway]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Object storage, for the API, which writes uploads, and the runtime, which
+# keeps a session's files there. By address, unlike the database, because the
+# runtime is in it: "anywhere on 443" would hand a compromised runtime every
+# HTTPS host on the internet, which is the path everything else here closes.
+#
+# 192.0.2.0/24 is a documentation range and reaches nothing. Replace it with
+# the object store's own -- or, for one inside the cluster, a podSelector or
+# namespaceSelector -- in the overlay.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-object-storage
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [outturn-api, outturn-runtime]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 9000
+---
+# Anything that calls the API from inside the cluster -- a Job installing a
+# skill, say -- says so with the label `outturn-client: api`,
+# and may reach it and resolve its name, nothing more.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-api-clients
+spec:
+  podSelector:
+    matchLabels:
+      outturn-client: api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8080

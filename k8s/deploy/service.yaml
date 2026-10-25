@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-api
+spec:
+  selector:
+    app: outturn-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-gateway
+spec:
+  selector:
+    app: outturn-gateway
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-runtime
+spec:
+  selector:
+    app: outturn-runtime
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+# What the ingress points at. The API's own Service is for the runtimes and
+# this pod; nothing outside the cluster reaches it except through here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-ui
+spec:
+  selector:
+    app: outturn-ui
+  ports:
+    - port: 8080
+      targetPort: 8080
