@@ -19,14 +19,20 @@ vi.mock('../lib/autoApproval', async (actual) => ({
 const counted = vi.mocked(answeredCount)
 const amounts = vi.mocked(approvedAmounts)
 
-const gbp = (amount: number) => ({ amount, currency: 'GBP', minor_units: 2, display: `£${(amount / 100).toFixed(2)}` })
+const gbp = (amount: number) => ({
+  amount,
+  currency: 'GBP',
+  minor_units: 2,
+  display: `£${(amount / 100).toFixed(2)}`,
+  figure: amount % 100 ? (amount / 100).toFixed(2) : String(amount / 100),
+})
 
 /** What a workspace approved of charges in pounds. */
 const approvedInPounds = (approved: number) => ({
   requires: 'charge',
   days: 30,
   currencies: [
-    { currency: 'GBP', minor_units: 2, approved, max: gbp(3999), total: gbp(30000), suggested_low: gbp(5000) },
+    { currency: 'GBP', minor_units: 2, approved, max: gbp(3999), total: gbp(30000), suggested_low: gbp(5000), all_under: gbp(4000) },
   ],
   may_delegate: true,
 })
@@ -79,7 +85,7 @@ describe('the offer drawn from what was approved', () => {
     const query = new URLSearchParams((link.getAttribute('href') ?? '').split('?')[1])
     expect(query.get('line')).toBe('charge')
     expect(query.get('currency')).toBe('GBP')
-    expect(query.get('low')).toBe('5000')
+    expect(query.get('low')).toBe('50')
     // The count alone is not asked for when the amounts said enough.
     expect(counted).not.toHaveBeenCalled()
   })

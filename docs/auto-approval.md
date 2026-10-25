@@ -584,8 +584,11 @@ waved through, which is the one outcome this whole design must not permit.
   (`riskOf`, `moneyOf`); the approval prompt and the queue rows show a
   `RiskBadge` and the amount's `display`, the prompt beside the bound number
   it came from, which stays. Amounts are typed in whole units and sent in
-  minor ones (`toMinor`, on the digits), and a figure worked out on the page
-  is written by `formatMoney` as the API writes `display`. Settings →
+  minor ones (`toMinor`, on the digits, refusing what a number cannot hold
+  exactly). The page writes no money of its own: every amount it shows is
+  the API's `display`, a policy's totals arrive as `daily_totals_money`, the
+  offer's figure as `all_under`, and a form starts from a `Money`'s
+  `figure` (`50`, `12.50`). Settings →
   Auto-approval has, in order: the one line (`OneLinePolicy`), the policies,
   the bands per currency and per operation (`ApprovalBands`), and who is
   asked about high risk (`HighRiskRoute`). The editor takes `max_risk` on any
@@ -604,9 +607,9 @@ waved through, which is the one outcome this whole design must not permit.
   and twenty a day, which the full editor changes.
 - **The offer** reads `/v1/approvals/amounts` first, in the request's
   currency or else the one most approved: "12 charges approved in the last
-  30 days, all under £40.00." -- the figure being the largest plus one,
-  rounded up at its leading digit -- linking to the one line at
-  `suggested_low`. An act with no amounts falls back to the count and the
+  30 days, all under £40.00." -- `all_under`, the largest plus one, rounded
+  up at its leading digit -- linking to the one line at `suggested_low`. Both
+  are worked out by the API, in the currency's standard units. An act with no amounts falls back to the count and the
   full editor, as before. Neither is asked for on a follow-up.
 
 #### Deviations

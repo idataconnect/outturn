@@ -23,7 +23,7 @@ import {
   type WritePolicy,
 } from '../lib/autoApproval'
 import { iconButtonDanger } from '../lib/buttons'
-import { formatMoney, toMajor, toMinor } from '../lib/money'
+import { toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
 import { useSession } from '../lib/session'
 
@@ -127,14 +127,13 @@ export default function AutoApprovalEditor() {
     let stale = false
     void (async () => {
       try {
-        // Together, because a daily total arrives in minor units and is shown
-        // in whole ones, which needs its currency's decimals from the bands.
+        // Together, because a daily total is typed back in whole units, which
+        // needs its currency's decimals from the bands to be read again.
         const [p, page] = await Promise.all([
           api<Policy>(`/v1/approval-policies/${id}`),
           listBands().catch(() => null),
         ])
         if (stale) return
-        const known = decimalsOf(page)
         setBands(page)
         setExisting(p)
         setEffect(p.effect)
@@ -143,7 +142,7 @@ export default function AutoApprovalEditor() {
         setTotals(
           Object.entries(p.daily_totals ?? {}).map(([currency, amount]) => ({
             currency,
-            amount: known[currency] === undefined ? String(amount) : toMajor(amount, known[currency]),
+            amount: p.daily_totals_money?.[currency]?.figure ?? String(amount),
           })),
         )
         setRequires(p.requires ?? '')
@@ -171,16 +170,17 @@ export default function AutoApprovalEditor() {
   const editable = canWrite && (!existing || existing.state !== 'revoked')
 
   // A test on a field an operation declares its amount is written in that
-  // field's own units, so it is said as money beside it: `5000` is £50.00.
+  // field's own units, so what those are is said beside it.
   function asMoney(row: Row): string | null {
-    if (!/^\d+$/.test(row.value.trim())) return null
     const op = bands?.operations.find(
       (o) =>
         o.field === row.field.trim() &&
         (selector === 'risk' || o.requires === requires) &&
         (selector !== 'operation' || (o.skill_id === skillId && o.matches === matches.trim())),
     )
-    return op ? formatMoney(Number(row.value.trim()), op.currency, op.minor_units) : null
+    if (!op) return null
+    const part = ['', 'tenths', 'hundredths', 'thousandths', 'ten-thousandths'][op.minor_units]
+    return part ? `in ${part} of ${op.currency}` : `in whole ${op.currency}`
   }
 
   async function save(e: React.FormEvent) {
@@ -515,11 +515,7 @@ export default function AutoApprovalEditor() {
                           }
                         />
                         <span className="w-32 shrink-0 text-xs text-surface-600 dark:text-surface-400">
-                          {known === undefined
-                            ? 'in minor units'
-                            : minor === null
-                              ? 'not an amount'
-                              : formatMoney(minor, t.currency.trim().toUpperCase(), known)}
+                          {known === undefined ? 'in minor units' : minor === null ? 'not an amount' : `in whole ${t.currency.trim().toUpperCase()}`}
                         </span>
                         <button
                           type="button"

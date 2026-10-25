@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router'
 
 import { ApiError, allPages } from '../lib/api'
 import { createOneLine, decimalsOf, kindOf, type BandsPage } from '../lib/autoApproval'
-import { currencyMark, toMajor, toMinor } from '../lib/money'
+import { toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
 
 const field =
@@ -26,8 +26,8 @@ type Named = { id: string; name: string }
  * kind up to low risk with that daily total -- both, or neither, so a band the
  * floor refuses leaves no policy behind.
  *
- * Prefilled from the address -- `line` (the kind), `currency` and `low` in the
- * currency's standard minor units -- which is how an approval's offer opens it.
+ * Prefilled from the address -- `line` (the kind), `currency` and `low` in
+ * whole units -- which is how an approval's offer opens it.
  */
 export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; onChanged: () => void }) {
   const [params] = useSearchParams()
@@ -47,10 +47,9 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
   const minorUnits = decimalsOf(bands)[currency] ?? 2
 
   const [low, setLow] = useState(() => {
-    const given = Number(params.get('low'))
-    if (params.get('low') && Number.isInteger(given) && given > 0) return toMajor(given, minorUnits)
-    const now = ops[0]
-    return now?.effective.low ? toMajor(now.effective.low.amount, now.minor_units) : ''
+    const given = params.get('low') ?? ''
+    if (toMinor(given, minorUnits)) return given
+    return ops[0]?.effective.low?.figure ?? ''
   })
   const [daily, setDaily] = useState('')
   const [agentId, setAgentId] = useState('')
@@ -111,7 +110,6 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
     }
   }
 
-  const mark = currencyMark(currency)
   return (
     <form
       ref={ref}
@@ -153,7 +151,7 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
                 ))}
               </select>
             ) : (
-              <span aria-hidden>{mark}</span>
+              <span aria-hidden>{currency}</span>
             )}
             <input
               aria-label="Under"
@@ -165,7 +163,7 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
           </span>
           <span>go through automatically, up to</span>
           <span className="inline-flex items-center gap-1">
-            <span aria-hidden>{mark}</span>
+            <span aria-hidden>{currency}</span>
             <input
               aria-label="A day"
               className={`${field} w-24`}

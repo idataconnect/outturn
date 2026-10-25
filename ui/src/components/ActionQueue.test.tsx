@@ -275,7 +275,7 @@ describe('approving several of one kind together', () => {
 })
 
 describe('a row with an amount', () => {
-  const money = { amount: 4000, currency: 'GBP', minor_units: 2, display: '£40.00', field: 'amount_pence' }
+  const money = { amount: 4000, currency: 'GBP', minor_units: 2, display: '£40.00', figure: '40', field: 'amount_pence' }
 
   it('says the amount as money, and the risk it worked out to', () => {
     render(

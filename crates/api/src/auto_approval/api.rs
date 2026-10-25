@@ -72,11 +72,22 @@ pub struct PolicyView {
     #[serde(flatten)]
     pub policy: Policy,
     pub state: &'static str,
+    /// Each daily total as money, so the page writes none itself.
+    pub daily_totals_money: BTreeMap<String, super::bands::Money>,
 }
 
 fn view(policy: Policy) -> PolicyView {
     let state = policy.state(Utc::now());
-    PolicyView { policy, state }
+    let daily_totals_money = policy
+        .daily_totals
+        .iter()
+        .map(|(c, v)| (c.clone(), super::bands::Money::standard(*v, c)))
+        .collect();
+    PolicyView {
+        policy,
+        state,
+        daily_totals_money,
+    }
 }
 
 /// What a person writes. The same shape for a new policy and an edit.
@@ -1042,6 +1053,10 @@ pub struct ApprovedIn {
     /// The figure an offer prefills: the first round amount above the largest
     /// approved -- £50 after approvals all under £40.
     pub suggested_low: super::bands::Money,
+    /// The round figure every approved amount was under, which the offer says:
+    /// the largest plus one, rounded up at its leading digit -- £40 after a
+    /// largest of £39.99.
+    pub all_under: super::bands::Money,
 }
 
 #[derive(Debug, Serialize)]
@@ -1065,6 +1080,16 @@ fn round_above(max: i64, minor_units: u8) -> i64 {
         }
         step = step.saturating_mul(10);
     }
+}
+
+/// One more than `max`, rounded up at its leading digit, and never less than
+/// one whole unit of the currency.
+fn round_under(max: i64, minor_units: u8) -> i64 {
+    let above = max
+        .saturating_add(1)
+        .max(10i64.saturating_pow(u32::from(minor_units)));
+    let magnitude = 10i64.saturating_pow(above.ilog10());
+    (above / magnitude + i64::from(above % magnitude != 0)).saturating_mul(magnitude)
 }
 
 /// `GET /v1/approvals/amounts?requires=charge&days=30`: the amounts this
@@ -1129,6 +1154,7 @@ pub async fn amounts(
                 max: m(max),
                 total: m(total),
                 suggested_low: m(round_above(max, minor)),
+                all_under: m(round_under(max, minor)),
                 minor_units: minor,
                 currency: currency.clone(),
             }
@@ -1153,6 +1179,16 @@ mod tests {
         assert_eq!(round_above(5000, 2), 10000);
         assert_eq!(round_above(12, 2), 100, "never below one whole unit");
         assert_eq!(round_above(1500, 0), 2000);
+    }
+
+    #[test]
+    fn the_offer_says_a_round_figure_every_amount_was_under() {
+        assert_eq!(round_under(3999, 2), 4000);
+        assert_eq!(round_under(4000, 2), 5000);
+        assert_eq!(round_under(12, 2), 100, "never below one whole unit");
+        assert_eq!(round_under(123_456, 2), 200_000);
+        assert_eq!(round_under(7, 0), 8);
+        assert_eq!(round_under(i64::MAX, 2), i64::MAX);
     }
 
     fn write(v: serde_json::Value) -> WritePolicy {

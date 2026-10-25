@@ -164,7 +164,7 @@ describe('what an approval is for', () => {
         { field: 'amount_pence', value: 4000 },
       ],
       risk: 'low',
-      money: { amount: 4000, currency: 'GBP', minor_units: 2, display: '£40.00', field: 'amount_pence' },
+      money: { amount: 4000, currency: 'GBP', minor_units: 2, display: '£40.00', figure: '40', field: 'amount_pence' },
     })
     expect(screen.getByText('Low risk')).toBeTruthy()
     expect(screen.getByText('£40.00', { selector: 'p' })).toBeTruthy()

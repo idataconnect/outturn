@@ -1,5 +1,5 @@
 import { allPages, api } from './api'
-import { formatMoney, type Money, type Risk } from './money'
+import { type Money, type Risk } from './money'
 
 /** One test a policy applies to a field the gate binds. See docs/auto-approval.md. */
 export type Op = 'eq' | 'ne' | 'in' | 'not_in' | 'lt' | 'le' | 'gt' | 'ge'
@@ -22,8 +22,11 @@ export type Policy = {
   per_day: number
   sum_field: string | null
   sum_per_day: number | null
-  /** The most of each currency it lets out in a day, in minor units. */
+  /** The most of each currency it lets out in a day, in its standard minor
+   *  units. */
   daily_totals: Record<string, number>
+  /** The same, as money. */
+  daily_totals_money: Record<string, Money>
   mode: 'trial' | 'on'
   version: number
   note: string | null
@@ -266,6 +269,8 @@ export type ApprovedIn = {
   max: Money
   total: Money
   suggested_low: Money
+  /** The round figure every approved amount was under. */
+  all_under: Money
 }
 
 export type Amounts = { requires: string; days: number; currencies: ApprovedIn[]; may_delegate: boolean }
@@ -275,12 +280,13 @@ export const approvedAmounts = (requires: string, days = 30) =>
 
 /**
  * The link to the one-line policy on the Auto-approval page, its kind and,
- * where known, currency and amount filled in.
+ * where known, currency and amount filled in -- the amount as its figure, in
+ * whole units.
  */
-export function oneLineLink(requires: string, currency?: string, low?: number): string {
+export function oneLineLink(requires: string, currency?: string, low?: Money): string {
   const query = new URLSearchParams({ line: requires })
   if (currency) query.set('currency', currency)
-  if (low !== undefined) query.set('low', String(low))
+  if (low) query.set('low', low.figure)
   return `/settings/auto-approval?${query.toString()}`
 }
 
@@ -301,17 +307,6 @@ export function kindOf(requires: string): string {
   return `${word.charAt(0).toUpperCase()}${word.slice(1)}s`
 }
 
-/**
- * A round figure every approved amount was under: one more than the largest,
- * up to its leading digit -- £40.00 after a largest of £39.99. Never less than
- * one whole unit.
- */
-export function roundUnder(max: number, minorUnits: number): number {
-  const above = Math.max(max + 1, 10 ** minorUnits)
-  const magnitude = 10 ** (String(above).length - 1)
-  return Math.ceil(above / magnitude) * magnitude
-}
-
 /** The decimals of each currency the workspace's money operations are in. */
 export function decimalsOf(page: BandsPage | null | undefined):Record<string, number> {
   const out: Record<string, number> = {}
@@ -320,12 +315,7 @@ export function decimalsOf(page: BandsPage | null | undefined):Record<string, nu
   return out
 }
 
-/** A policy's daily totals as money, with each currency's decimals where they
- *  are known, and the figure in its minor units where they are not. */
-export function dailyTotals(totals: Record<string, number> | undefined, decimals: Record<string, number>): string[] {
-  return Object.entries(totals ?? {}).map(([currency, amount]) =>
-    decimals[currency] === undefined
-      ? `${currency} ${amount} in minor units`
-      : formatMoney(amount, currency, decimals[currency]),
-  )
+/** A policy's daily totals, as the API writes them. */
+export function dailyTotals(p: Pick<Policy, 'daily_totals_money'>): string[] {
+  return Object.values(p.daily_totals_money ?? {}).map((m) => m.display)
 }

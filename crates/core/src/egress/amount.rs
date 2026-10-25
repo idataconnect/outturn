@@ -364,6 +364,26 @@ pub fn format(amount: i64, currency: &str, minor_units: u8) -> String {
     }
 }
 
+/// An amount in a currency's own units as a person types it back: `50`,
+/// `12.50`, `1250` -- no symbol, no grouping, and no point for a whole
+/// figure -- so a form can start from what the API holds without working out
+/// the digits itself.
+pub fn figure(amount: i64, minor_units: u8) -> String {
+    let minor_units = minor_units.min(MAX_MINOR_UNITS);
+    let scale = 10i64.pow(u32::from(minor_units));
+    let sign = if amount < 0 { "-" } else { "" };
+    let whole = (amount / scale).unsigned_abs();
+    let part = (amount % scale).unsigned_abs();
+    if part == 0 {
+        format!("{sign}{whole}")
+    } else {
+        format!(
+            "{sign}{whole}.{part:0width$}",
+            width = usize::from(minor_units)
+        )
+    }
+}
+
 /// The symbols worth writing in place of a code: one each, and unambiguous
 /// among the currencies listed. Anything else is written as its code.
 fn symbol(currency: &str) -> Option<&'static str> {
@@ -676,5 +696,14 @@ mod tests {
         assert_eq!(format(500, "JPY", 0), "¥500");
         assert_eq!(format(5, "GBP", 2), "£0.05");
         assert_eq!(format(-5, "GBP", 2), "-£0.05");
+    }
+
+    #[test]
+    fn a_figure_is_what_a_person_types() {
+        assert_eq!(figure(5000, 2), "50");
+        assert_eq!(figure(1250, 2), "12.50");
+        assert_eq!(figure(5, 2), "0.05");
+        assert_eq!(figure(500, 0), "500");
+        assert_eq!(figure(123_456_789, 2), "1234567.89");
     }
 }

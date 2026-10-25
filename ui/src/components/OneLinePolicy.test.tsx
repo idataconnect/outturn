@@ -10,7 +10,6 @@ import {
   createOneLine,
   kindOf,
   oneLineLink,
-  roundUnder,
   type BandOperation,
   type BandsPage,
 } from '../lib/autoApproval'
@@ -26,7 +25,13 @@ vi.mock('../lib/autoApproval', async (actual) => ({
 
 const create = vi.mocked(createOneLine)
 
-const gbp = (amount: number) => ({ amount, currency: 'GBP', minor_units: 2, display: `£${(amount / 100).toFixed(2)}` })
+const gbp = (amount: number) => ({
+  amount,
+  currency: 'GBP',
+  minor_units: 2,
+  display: `£${(amount / 100).toFixed(2)}`,
+  figure: amount % 100 ? (amount / 100).toFixed(2) : String(amount / 100),
+})
 
 const charge: BandOperation = {
   skill_id: 'sk1',
@@ -93,7 +98,7 @@ describe('OneLinePolicy', () => {
   })
 
   it('is prefilled from an offer', async () => {
-    show(oneLineLink('charge', 'GBP', 4000))
+    show(oneLineLink('charge', 'GBP', gbp(4000)))
     expect(screen.getByLabelText('Under')).toHaveProperty('value', '40')
     await userEvent.selectOptions(await screen.findByLabelText('Agent'), 'a1')
     await userEvent.type(screen.getByLabelText('A day'), '250.50')
@@ -105,7 +110,7 @@ describe('OneLinePolicy', () => {
 
   it('says why nothing was set when the API refuses it', async () => {
     create.mockRejectedValueOnce(new ApiError(400, 'low reaches past the floor'))
-    show(oneLineLink('charge', 'GBP', 900000))
+    show(oneLineLink('charge', 'GBP', gbp(900000)))
     await userEvent.type(screen.getByLabelText('A day'), '10000')
     await userEvent.click(screen.getByRole('button', { name: 'Create policy' }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/floor/)
@@ -113,7 +118,7 @@ describe('OneLinePolicy', () => {
   })
 
   it('starts from a band in whole pounds as pounds', () => {
-    const pounds = { ...charge, minor_units: 0, effective: { low: { ...gbp(30), minor_units: 0, display: '£30' }, medium: null } }
+    const pounds = { ...charge, minor_units: 0, effective: { low: { ...gbp(30), minor_units: 0, display: '£30', figure: '30' }, medium: null } }
     render(
       <MemoryRouter initialEntries={['/settings/auto-approval']}>
         <OneLinePolicy bands={{ ...bands, operations: [pounds] }} onChanged={vi.fn()} />
@@ -137,12 +142,5 @@ describe('the words for an offer', () => {
     expect(countOf(1, 'charge')).toBe('1 charge')
     expect(countOf(3, 'send_email')).toBe('3 approvals of “send email”')
     expect(kindOf('charge')).toBe('Charges')
-  })
-
-  it('finds a round figure every amount was under', () => {
-    expect(roundUnder(3999, 2)).toBe(4000)
-    expect(roundUnder(4000, 2)).toBe(5000)
-    expect(roundUnder(12, 2)).toBe(100)
-    expect(roundUnder(123456, 2)).toBe(200000)
   })
 })

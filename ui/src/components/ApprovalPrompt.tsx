@@ -15,9 +15,8 @@ import {
   kindOf,
   oneLineLink,
   policyLink,
-  roundUnder,
 } from '../lib/autoApproval'
-import { formatMoney, type FieldMoney, type Risk } from '../lib/money'
+import { type FieldMoney, type Risk } from '../lib/money'
 import { useHasAuthority } from '../lib/session'
 import RiskBadge from './RiskBadge'
 
@@ -124,13 +123,12 @@ export default function ApprovalPrompt({
       const most = [...(amounts?.currencies ?? [])].sort((a, b) => b.approved - a.approved)[0]
       const chosen = inCurrency ?? most
       if (amounts?.may_delegate && chosen && chosen.approved >= OFFER_AFTER) {
-        const under = formatMoney(roundUnder(chosen.max.amount, chosen.minor_units), chosen.currency, chosen.minor_units)
         if (!stale) {
           setOffer({
             money: true,
-            said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${under}.`,
+            said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${chosen.all_under.display}.`,
             action: `Approve ${kindOf(requires).replace(/^./, (c) => c.toLowerCase())} under ${chosen.suggested_low.display} automatically`,
-            href: oneLineLink(requires, chosen.currency, chosen.suggested_low.amount),
+            href: oneLineLink(requires, chosen.currency, chosen.suggested_low),
           })
         }
         return

@@ -1227,6 +1227,7 @@ async fn the_one_line_writes_its_bands_and_policy_or_nothing() {
     let policy: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(policy["max_risk"], "low");
     assert_eq!(policy["daily_totals"]["GBP"], 25_000);
+    assert_eq!(policy["daily_totals_money"]["GBP"]["display"], "£250.00");
     assert_eq!(policy["agent_id"], c.agent.to_string());
     assert_eq!(written(&h).await, (1, 2));
     let (low, medium): (Option<i64>, Option<i64>) = sqlx::query_as(
@@ -1390,6 +1391,9 @@ async fn a_high_charge_asks_whoever_the_workspace_named() {
     assert_eq!(pounds["approved"], 2);
     assert_eq!(pounds["max"]["display"], "£300.00");
     assert_eq!(pounds["suggested_low"]["display"], "£500.00");
+    // And the round figure every one was under, which the offer says.
+    assert_eq!(pounds["all_under"]["display"], "£400.00");
+    assert_eq!(pounds["suggested_low"]["figure"], "500");
     assert_eq!(amounts["may_delegate"], true);
 
     // Nothing named: high asks everyone again.

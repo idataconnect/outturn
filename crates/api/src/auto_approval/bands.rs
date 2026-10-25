@@ -148,6 +148,8 @@ pub struct Money {
     pub minor_units: u8,
     /// `£50.00`.
     pub display: String,
+    /// `50`: the amount as a form shows it to be typed again.
+    pub figure: String,
 }
 
 impl Money {
@@ -157,7 +159,13 @@ impl Money {
             currency: currency.to_string(),
             minor_units,
             display: amount::format(amount, currency, minor_units),
+            figure: amount::figure(amount, minor_units),
         }
+    }
+
+    /// An amount kept for a whole currency, in its standard units.
+    pub fn standard(amount: i64, currency: &str) -> Self {
+        Self::of(amount, currency, amount::standard_minor_units(currency))
     }
 }
 
